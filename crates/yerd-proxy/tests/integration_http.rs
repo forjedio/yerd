@@ -2471,13 +2471,34 @@ const RECORD_STDERR: u8 = 7;
 
 const END_REQUEST_BODY: [u8; 8] = [0; 8];
 
-/// How long the HEAD test waits to prove the backend socket stays open. This is
-/// an absence assertion, so CI load can only make it safer: without the
-/// bodyless carve-out the proxy closes the socket immediately after the head.
+/// How long the HEAD test waits to prove the backend socket stays open, once
+/// the backend has signalled that it wrote its first record. Waiting on that
+/// signal is what stops the assertion passing vacuously while the proxy has yet
+/// to connect; past it the wait is a pure absence assertion, so CI load can only
+/// make it safer.
 const NO_EOF_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Generous backstop so a regression fails the test instead of hanging it.
 const HARNESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Knobs on [`run_fake_fcgi_staged`] beyond its record sequence.
+#[derive(Default)]
+struct StagedOptions {
+    /// Stop reading at the PARAMS terminator and leave STDIN untouched until a
+    /// permit arrives, so the proxy's request write has nothing draining it.
+    respond_before_stdin: bool,
+    /// With `respond_before_stdin`, never drain STDIN at all - the backend
+    /// answers and finishes with the upload still wedged in the socket, which
+    /// is the shape a 419 on a large POST takes. The connection is then parked
+    /// until the gate is dropped rather than closed, because closing a socket
+    /// with unread data in its receive buffer sends an RST that would discard
+    /// the records just written.
+    never_read_stdin: bool,
+    /// Fired once the first record is on the wire. Tests that assert the
+    /// backend socket is *still open* wait on this first, so the assertion
+    /// cannot pass merely because the proxy has yet to connect.
+    first_record: Option<oneshot::Sender<()>>,
+}
 
 /// A fake FastCGI backend that emits records on cue instead of all at once.
 ///
@@ -2494,13 +2515,20 @@ const HARNESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// detected by the terminal read phase instead.
 ///
 /// Once the sequence is exhausted every mode reads to EOF and returns, so the
-/// `JoinHandle` completing always means the proxy let go of the socket.
+/// `JoinHandle` completing always means the proxy let go of the socket. Dropping
+/// the gate before the sequence runs out instead makes the backend vanish
+/// mid-response, which is how the truncation test cuts a stream short.
 async fn run_fake_fcgi_staged(
     listener: TcpListener,
     records: Vec<(u8, Vec<u8>)>,
     mut gate: tokio::sync::mpsc::Receiver<()>,
-    respond_before_stdin: bool,
+    options: StagedOptions,
 ) {
+    let StagedOptions {
+        respond_before_stdin,
+        never_read_stdin,
+        first_record,
+    } = options;
     let (mut conn, _) = listener.accept().await.unwrap();
     let stop_at = if respond_before_stdin {
         RECORD_PARAMS
@@ -2513,16 +2541,25 @@ async fn run_fake_fcgi_staged(
     if let Some((record_type, payload)) = records.next() {
         write_record(&mut conn, record_type, &payload).await;
     }
+    if let Some(signal) = first_record {
+        let _ = signal.send(());
+    }
     for (record_type, payload) in records {
         if respond_before_stdin {
             if gate.recv().await.is_none() {
                 return;
             }
-            read_records_until_empty(&mut conn, RECORD_STDIN).await;
+            if !never_read_stdin {
+                read_records_until_empty(&mut conn, RECORD_STDIN).await;
+            }
         } else if !wait_for_permit_or_close(&mut conn, &mut gate).await {
             return;
         }
         write_record(&mut conn, record_type, &payload).await;
+    }
+    if never_read_stdin {
+        while gate.recv().await.is_some() {}
+        return;
     }
     read_to_eof(&mut conn).await;
 }
@@ -2584,14 +2621,16 @@ async fn read_to_eof(conn: &mut TcpStream) {
     }
 }
 
-/// A router holding one linked site named `app`, rooted anywhere - these tests
-/// never touch the filesystem, every request falls through to FastCGI.
-fn streaming_router() -> SiteRouter {
+/// A router holding one linked site named `app`, rooted at an empty temp dir so
+/// nothing on disk can satisfy a request and every one falls through to
+/// FastCGI. The caller keeps the `TempDir` alive for the length of the test.
+fn streaming_router() -> (SiteRouter, tempfile::TempDir) {
+    let docroot = tempfile::tempdir().unwrap();
     let cfg = RouterConfig::with_tld(Tld::new("test").unwrap());
     let mut router = SiteRouter::new(cfg);
-    let site = Site::linked("app", PathBuf::from("/srv/www/app"), PhpVersion::new(8, 3)).unwrap();
+    let site = Site::linked("app", docroot.path().to_path_buf(), PhpVersion::new(8, 3)).unwrap();
     router.insert(site).unwrap();
-    router
+    (router, docroot)
 }
 
 /// Issue #212: the head and body frames must reach the client while the backend
@@ -2614,13 +2653,19 @@ async fn fcgi_response_streams_before_end_request() {
         (RECORD_STDOUT, b"chunk-two".to_vec()),
         (RECORD_END_REQUEST, END_REQUEST_BODY.to_vec()),
     ];
-    let fake_task = tokio::spawn(run_fake_fcgi_staged(fcgi_listener, records, gate_rx, false));
+    let fake_task = tokio::spawn(run_fake_fcgi_staged(
+        fcgi_listener,
+        records,
+        gate_rx,
+        StagedOptions::default(),
+    ));
 
     let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy_addr = proxy_listener.local_addr().unwrap();
+    let (router, _docroot) = streaming_router();
     let (tx_shutdown, proxy_task) = spawn_route_proxy(
         proxy_listener,
-        streaming_router(),
+        router,
         Arc::new(StaticResolver {
             backend: Backend::PhpFpmTcp { addr: fcgi_addr },
         }),
@@ -2695,9 +2740,10 @@ async fn php_content_length_passes_through_and_x_accel_is_stripped() {
 
     let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy_addr = proxy_listener.local_addr().unwrap();
+    let (router, _docroot) = streaming_router();
     let (tx_shutdown, proxy_task) = spawn_route_proxy(
         proxy_listener,
-        streaming_router(),
+        router,
         Arc::new(StaticResolver {
             backend: Backend::PhpFpmTcp { addr: fcgi_addr },
         }),
@@ -2719,6 +2765,10 @@ async fn php_content_length_passes_through_and_x_accel_is_stripped() {
 /// disconnect and close the FCGI socket, killing the PHP script mid-run, so
 /// bodyless responses are drained to END_REQUEST instead. The discriminator is
 /// a read: the backend must not see EOF while it is still holding END_REQUEST.
+///
+/// Draining is also where the `Content-Length` comes from. Hyper will not write
+/// an implicit one for HEAD, so without totting up the discarded bytes a HEAD
+/// on a page that sets no length of its own answers with no length at all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn head_request_drains_backend_instead_of_killing_the_script() {
     let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2731,13 +2781,23 @@ async fn head_request_drains_backend_instead_of_killing_the_script() {
         ),
         (RECORD_END_REQUEST, END_REQUEST_BODY.to_vec()),
     ];
-    let mut fake_task = tokio::spawn(run_fake_fcgi_staged(fcgi_listener, records, gate_rx, false));
+    let (responded_tx, responded_rx) = oneshot::channel();
+    let mut fake_task = tokio::spawn(run_fake_fcgi_staged(
+        fcgi_listener,
+        records,
+        gate_rx,
+        StagedOptions {
+            first_record: Some(responded_tx),
+            ..StagedOptions::default()
+        },
+    ));
 
     let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy_addr = proxy_listener.local_addr().unwrap();
+    let (router, _docroot) = streaming_router();
     let (tx_shutdown, proxy_task) = spawn_route_proxy(
         proxy_listener,
-        streaming_router(),
+        router,
         Arc::new(StaticResolver {
             backend: Backend::PhpFpmTcp { addr: fcgi_addr },
         }),
@@ -2746,16 +2806,16 @@ async fn head_request_drains_backend_instead_of_killing_the_script() {
     let request = tokio::spawn(async move {
         let resp = client_request_streaming(proxy_addr, "app.test", "HEAD", "/").await;
         let status = resp.status().as_u16();
-        let content_type = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        let headers = resp.headers().clone();
         let mut body = resp.into_body();
         let frame = next_data_frame(&mut body).await;
-        (status, content_type, frame)
+        (status, headers, frame)
     });
 
+    tokio::time::timeout(HARNESS_TIMEOUT, responded_rx)
+        .await
+        .expect("the backend must get as far as writing its head record")
+        .unwrap();
     assert!(
         tokio::time::timeout(NO_EOF_WINDOW, &mut fake_task)
             .await
@@ -2765,12 +2825,18 @@ async fn head_request_drains_backend_instead_of_killing_the_script() {
     );
 
     gate_tx.send(()).await.unwrap();
-    let (status, content_type, frame) = tokio::time::timeout(HARNESS_TIMEOUT, request)
+    let (status, headers, frame) = tokio::time::timeout(HARNESS_TIMEOUT, request)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(status, 200);
-    assert_eq!(content_type.as_deref(), Some("text/plain"));
+    assert_eq!(headers.get("content-type").unwrap(), "text/plain");
+    assert_eq!(
+        headers.get("content-length").unwrap(),
+        "5",
+        "HEAD must report the length the same GET would have sent; hyper writes \
+         no implicit one for HEAD, so the drained byte count has to supply it"
+    );
     assert!(frame.is_none(), "a HEAD response carries no body");
 
     let joined = tokio::time::timeout(HARNESS_TIMEOUT, fake_task)
@@ -2795,13 +2861,19 @@ async fn client_disconnect_mid_stream_closes_backend_socket() {
         RECORD_STDOUT,
         b"Content-Type: text/event-stream\r\n\r\nfirst".to_vec(),
     )];
-    let fake_task = tokio::spawn(run_fake_fcgi_staged(fcgi_listener, records, gate_rx, false));
+    let fake_task = tokio::spawn(run_fake_fcgi_staged(
+        fcgi_listener,
+        records,
+        gate_rx,
+        StagedOptions::default(),
+    ));
 
     let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy_addr = proxy_listener.local_addr().unwrap();
+    let (router, _docroot) = streaming_router();
     let (tx_shutdown, proxy_task) = spawn_route_proxy(
         proxy_listener,
-        streaming_router(),
+        router,
         Arc::new(StaticResolver {
             backend: Backend::PhpFpmTcp { addr: fcgi_addr },
         }),
@@ -2848,9 +2920,14 @@ async fn client_disconnect_mid_stream_closes_backend_socket() {
 
 /// The read and write halves run concurrently, so a backend that answers before
 /// draining STDIN no longer deadlocks the forwarder. The body is sized well past
-/// what an unread loopback link absorbs (measured at 727-814 KiB on macOS with
-/// 4 MiB autotuning maxima), so the pre-split code wedges in its request write
-/// and the head never arrives.
+/// what an unread loopback link absorbs, so the pre-split code wedges in its
+/// request write and the head never arrives.
+///
+/// Sizing has to clear the *largest* plausible pair of socket buffers, not the
+/// one this developer measured: macOS wedges by around 800 KiB, but Linux
+/// autotuning defaults (`tcp_wmem` to 4 MiB plus `tcp_rmem` to 6 MiB) can
+/// swallow well over 10 MiB, and a body under that would let the old code pass
+/// too - a green test guarding nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn large_post_does_not_deadlock_when_backend_responds_first() {
     let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2863,19 +2940,28 @@ async fn large_post_does_not_deadlock_when_backend_responds_first() {
         ),
         (RECORD_END_REQUEST, END_REQUEST_BODY.to_vec()),
     ];
-    let fake_task = tokio::spawn(run_fake_fcgi_staged(fcgi_listener, records, gate_rx, true));
+    let fake_task = tokio::spawn(run_fake_fcgi_staged(
+        fcgi_listener,
+        records,
+        gate_rx,
+        StagedOptions {
+            respond_before_stdin: true,
+            ..StagedOptions::default()
+        },
+    ));
 
     let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy_addr = proxy_listener.local_addr().unwrap();
+    let (router, _docroot) = streaming_router();
     let (tx_shutdown, proxy_task) = spawn_route_proxy(
         proxy_listener,
-        streaming_router(),
+        router,
         Arc::new(StaticResolver {
             backend: Backend::PhpFpmTcp { addr: fcgi_addr },
         }),
     );
 
-    let upload = Bytes::from(vec![b'z'; 4 * 1024 * 1024]);
+    let upload = Bytes::from(vec![b'z'; 32 * 1024 * 1024]);
     let exchange = async move {
         let stream = TcpStream::connect(proxy_addr).await.unwrap();
         let io = TokioIo::new(stream);
@@ -2904,6 +2990,192 @@ async fn large_post_does_not_deadlock_when_backend_responds_first() {
         .await
         .expect("the response must arrive while the request body is still being written");
     assert!(rest.is_empty());
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(HARNESS_TIMEOUT, proxy_task).await;
+    let _ = tokio::time::timeout(HARNESS_TIMEOUT, fake_task).await;
+}
+
+/// A backend that vanishes mid-body cannot retract a head already on the wire,
+/// so the truncation has to surface as a body error rather than a short but
+/// apparently complete response. Hyper turns that into an aborted connection,
+/// which the client sees as a failed frame.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn backend_dying_mid_stream_fails_the_body_rather_than_truncating_it() {
+    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fcgi_addr = fcgi_listener.local_addr().unwrap();
+    let (gate_tx, gate_rx) = tokio::sync::mpsc::channel::<()>(8);
+    let records = vec![
+        (
+            RECORD_STDOUT,
+            b"Content-Type: text/event-stream\r\n\r\nfirst".to_vec(),
+        ),
+        (RECORD_STDOUT, b"never sent".to_vec()),
+    ];
+    let fake_task = tokio::spawn(run_fake_fcgi_staged(
+        fcgi_listener,
+        records,
+        gate_rx,
+        StagedOptions::default(),
+    ));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let (router, _docroot) = streaming_router();
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(StaticResolver {
+            backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+        }),
+    );
+
+    let resp = tokio::time::timeout(
+        HARNESS_TIMEOUT,
+        client_request_streaming(proxy_addr, "app.test", "GET", "/events"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let mut body = resp.into_body();
+    assert_eq!(
+        tokio::time::timeout(HARNESS_TIMEOUT, next_data_frame(&mut body))
+            .await
+            .unwrap()
+            .unwrap(),
+        b"first"
+    );
+
+    drop(gate_tx);
+    let outcome = tokio::time::timeout(HARNESS_TIMEOUT, body.collect())
+        .await
+        .expect("the truncated body must resolve, not hang");
+    assert!(
+        outcome.is_err(),
+        "a backend that disappeared mid-stream must not look like a clean end of body"
+    );
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(HARNESS_TIMEOUT, proxy_task).await;
+    let _ = tokio::time::timeout(HARNESS_TIMEOUT, fake_task).await;
+}
+
+/// 204 takes the same bodyless carve-out as HEAD, and unlike HEAD it must come
+/// out with no `Content-Length` at all - hyper refuses one for 204, and adding
+/// one anyway would put a length on a response defined to have no body.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_content_response_is_drained_and_carries_no_length() {
+    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fcgi_addr = fcgi_listener.local_addr().unwrap();
+    let captured = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let payload = b"Status: 204 No Content\r\nX-Marker: seen\r\n\r\n".to_vec();
+    let fake_task = tokio::spawn(run_fake_fcgi(fcgi_listener, payload, captured));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let (router, _docroot) = streaming_router();
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(StaticResolver {
+            backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+        }),
+    );
+
+    let (status, headers) = client_get_headers(proxy_addr, "app.test", "/ping").await;
+    assert_eq!(status, 204);
+    assert_eq!(headers.get("x-marker").unwrap(), "seen");
+    assert!(headers.get("content-length").is_none());
+    assert!(headers.get("transfer-encoding").is_none());
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(HARNESS_TIMEOUT, proxy_task).await;
+    let _ = tokio::time::timeout(HARNESS_TIMEOUT, fake_task).await;
+}
+
+/// PHP is free to answer before it has read STDIN - a 419 or a 401 on a large
+/// upload. Cutting the request writer off at END_REQUEST would leave hyper with
+/// a part-read request body, and hyper responds to that by closing the client's
+/// read side, which the browser reports as a reset instead of showing the
+/// response. The writer therefore keeps draining after END_REQUEST, and the
+/// discriminator is that the client can still read its body to completion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn upload_rejected_before_stdin_is_read_still_reaches_the_client() {
+    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fcgi_addr = fcgi_listener.local_addr().unwrap();
+    let (gate_tx, gate_rx) = tokio::sync::mpsc::channel::<()>(8);
+    let records = vec![
+        (
+            RECORD_STDOUT,
+            b"Status: 419 Page Expired\r\nContent-Type: text/plain\r\n\r\ntoken expired".to_vec(),
+        ),
+        (RECORD_END_REQUEST, END_REQUEST_BODY.to_vec()),
+    ];
+    let fake_task = tokio::spawn(run_fake_fcgi_staged(
+        fcgi_listener,
+        records,
+        gate_rx,
+        StagedOptions {
+            respond_before_stdin: true,
+            never_read_stdin: true,
+            ..StagedOptions::default()
+        },
+    ));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let (router, _docroot) = streaming_router();
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(StaticResolver {
+            backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+        }),
+    );
+
+    let upload = Bytes::from(vec![b'u'; 32 * 1024 * 1024]);
+    let exchange = async move {
+        let stream = TcpStream::connect(proxy_addr).await.unwrap();
+        let io = TokioIo::new(stream);
+        let (mut sender, conn) =
+            hyper::client::conn::http1::handshake::<_, http_body_util::Full<Bytes>>(io)
+                .await
+                .unwrap();
+        let conn_task = tokio::spawn(async move { conn.await.is_ok() });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header("Host", "app.test")
+            .body(http_body_util::Full::new(upload))
+            .unwrap();
+        let resp = sender.send_request(req).await.unwrap();
+        assert_eq!(resp.status().as_u16(), 419);
+        gate_tx.send(()).await.unwrap();
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .map(http_body_util::Collected::to_bytes);
+        let alive = tokio::time::timeout(std::time::Duration::from_millis(400), conn_task)
+            .await
+            .is_err();
+        drop(sender);
+        (body, alive)
+    };
+
+    let (body, reusable) = tokio::time::timeout(std::time::Duration::from_secs(30), exchange)
+        .await
+        .expect("the exchange must not stall");
+    assert_eq!(
+        body.expect("the client must be able to read the whole response"),
+        Bytes::from_static(b"token expired")
+    );
+    assert!(
+        reusable,
+        "the client connection was closed under an upload still in flight: the \
+         request writer was cut off at END_REQUEST, leaving hyper with a part-read \
+         request body, and hyper answers that by closing the read side"
+    );
 
     let _ = tx_shutdown.send(());
     let _ = tokio::time::timeout(HARNESS_TIMEOUT, proxy_task).await;

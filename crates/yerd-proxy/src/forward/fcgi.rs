@@ -13,6 +13,9 @@
 //!   here rather than streamed. Hyper drops such a body the instant the head is
 //!   encoded, which would otherwise read as a client disconnect and kill the
 //!   PHP script mid-run.
+//! * The request write outliving the response read is deliberate: PHP may
+//!   answer before it has read STDIN, and abandoning a part-read request body
+//!   makes hyper close the client's read side under an upload still in flight.
 
 use std::io;
 use std::net::SocketAddr;
@@ -27,7 +30,7 @@ use hyper::body::Incoming;
 use hyper::{Request, Response};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::backend::Backend;
@@ -52,6 +55,12 @@ const STDOUT_CHANNEL_RECORDS: usize = 8;
 
 /// Response header nginx consumes rather than forwarding, so neither do we.
 const X_ACCEL_BUFFERING: &str = "x-accel-buffering";
+
+/// Cap on the response body discarded for a request that cannot receive one.
+/// `HEAD /events` against an endpoint that streams forever would otherwise hold
+/// an FPM worker for as long as the script runs, against a default pool of 16.
+/// Past the cap the backend socket is dropped instead.
+const MAX_DISCARDED_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Forward `req` to a FastCGI `backend`, streaming the response.
 ///
@@ -115,8 +124,14 @@ pub async fn forward(
     write_record(&mut prelude, RecordType::Params, &[]);
 
     let writer_label = backend_label.clone();
-    let writer = AbortOnDrop(tokio::spawn(async move {
-        if let Err(e) = write_request(write_half, prelude, body, &writer_label).await {
+    let (stop_writing, stop_signal) = oneshot::channel();
+    let task = tokio::spawn(async move {
+        let mut body = body;
+        let wrote = tokio::select! {
+            result = write_request(write_half, prelude, &mut body, &writer_label) => result,
+            _ = stop_signal => Ok(()),
+        };
+        if let Err(e) = wrote {
             tracing::debug!(
                 target: "yerd_proxy::fcgi",
                 backend = %writer_label,
@@ -124,7 +139,12 @@ pub async fn forward(
                 "FPM request write ended"
             );
         }
-    }));
+        drain_client_body(&mut body).await;
+    });
+    let mut writer = WriterHandle {
+        task: Some(task),
+        stop_writing: Some(stop_writing),
+    };
 
     let mut accumulator = HeadAccumulator::new();
     let parsed = loop {
@@ -145,11 +165,16 @@ pub async fn forward(
         }
     };
     let Some(mut head) = parsed else {
+        writer.wind_down();
         return synthesise_response(accumulator.finish(), empty_body());
     };
 
     if !can_have_body(&parts.method, head.status) {
-        drain_to_end_request(&mut read_half, &backend_label).await?;
+        if let Some(discarded) = drain_to_end_request(&mut read_half, &backend_label).await? {
+            writer.wind_down();
+            let seen = u64::try_from(head.body_remainder.len()).unwrap_or(u64::MAX);
+            restore_head_content_length(&mut head, &parts.method, seen.saturating_add(discarded));
+        }
         return synthesise_response(head, empty_body());
     }
 
@@ -166,19 +191,43 @@ pub async fn forward(
 }
 
 /// Whether hyper will let this response carry a body. Mirrors hyper's own rule
-/// (`proto::h1::role::Server::can_have_body`): it drops the body of anything
-/// else the moment the head is encoded, and on the streaming path that drop is
+/// (`proto::h1::role::Server::can_chunked`, which is exactly
+/// `can_have_content_length` minus HEAD): it drops the body of anything else
+/// the moment the head is encoded, and on the streaming path that drop is
 /// indistinguishable from the client hanging up.
 fn can_have_body(method: &http::Method, status: http::StatusCode) -> bool {
-    if *method == http::Method::HEAD {
+    *method != http::Method::HEAD && can_have_content_length(method, status)
+}
+
+/// Whether a `Content-Length` is meaningful here. Mirrors hyper's
+/// `proto::h1::role::Server::can_have_content_length`.
+fn can_have_content_length(method: &http::Method, status: http::StatusCode) -> bool {
+    if status.is_informational() || (*method == http::Method::CONNECT && status.is_success()) {
         return false;
     }
-    if *method == http::Method::CONNECT && status.is_success() {
-        return false;
+    !(status == http::StatusCode::NO_CONTENT || status == http::StatusCode::NOT_MODIFIED)
+}
+
+/// Give a HEAD response the `Content-Length` the same GET would have carried.
+///
+/// The bodyless path hands hyper an exact zero-length body, and hyper refuses
+/// to write an implicit `content-length: 0` for HEAD
+/// (`can_have_implicit_zero_content_length`), so without this a HEAD on a page
+/// that sets no length of its own answers with no length at all - RFC 9110
+/// 9.3.2 wants the field a GET would have sent. A length PHP set itself wins.
+fn restore_head_content_length(head: &mut Head, method: &http::Method, body_len: u64) {
+    if *method != http::Method::HEAD || !can_have_content_length(method, head.status) {
+        return;
     }
-    !(status.is_informational()
-        || status == http::StatusCode::NO_CONTENT
-        || status == http::StatusCode::NOT_MODIFIED)
+    if head
+        .headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+    {
+        return;
+    }
+    head.headers
+        .push(("Content-Length".to_owned(), body_len.to_string()));
 }
 
 /// Read records to `END_REQUEST`, discarding STDOUT and logging STDERR.
@@ -187,15 +236,32 @@ fn can_have_body(method: &http::Method, status: http::StatusCode) -> bool {
 /// PHP still runs to completion exactly as it did before the forwarder
 /// streamed. Nothing has reached the client yet, so an error here still maps to
 /// a clean 5xx.
+///
+/// Returns how many STDOUT bytes were discarded, or `None` once past
+/// [`MAX_DISCARDED_BYTES`] - the caller then drops the socket, which frees the
+/// worker, and answers without a `Content-Length` it can no longer total.
 async fn drain_to_end_request(
     read_half: &mut ReadHalf<BackendStream>,
     backend_label: &str,
-) -> Result<(), ProxyError> {
+) -> Result<Option<u64>, ProxyError> {
+    let mut discarded: u64 = 0;
     loop {
         let (header, content) = read_record(read_half).await?;
         match header.record_type {
+            RecordType::Stdout => {
+                discarded =
+                    discarded.saturating_add(u64::try_from(content.len()).unwrap_or(u64::MAX));
+                if discarded > MAX_DISCARDED_BYTES {
+                    tracing::debug!(
+                        target: "yerd_proxy::fcgi",
+                        backend = %backend_label,
+                        "bodyless response passed the drain limit; closing the FPM connection"
+                    );
+                    return Ok(None);
+                }
+            }
             RecordType::Stderr => log_stderr(backend_label, &content),
-            RecordType::EndRequest => return Ok(()),
+            RecordType::EndRequest => return Ok(Some(discarded)),
             _ => {}
         }
     }
@@ -203,14 +269,15 @@ async fn drain_to_end_request(
 
 /// Relay STDOUT records to the client until `END_REQUEST` or the client leaves.
 ///
-/// Owns the writer guard, so finishing here also tears down the request writer,
+/// Owns the writer guard, so giving up here also tears down the request writer,
 /// drops both socket halves, and lets FPM abort the request and free its
-/// worker.
+/// worker. A clean `END_REQUEST` winds the writer down first, leaving it to
+/// finish draining the client's request body.
 async fn read_response(
     mut read_half: ReadHalf<BackendStream>,
     tx: mpsc::Sender<Result<Frame<Bytes>, io::Error>>,
     body_remainder: Vec<u8>,
-    _writer: AbortOnDrop,
+    mut writer: WriterHandle,
     backend_label: String,
 ) {
     if !body_remainder.is_empty()
@@ -247,7 +314,10 @@ async fn read_response(
                 }
             }
             RecordType::Stderr => log_stderr(&backend_label, &content),
-            RecordType::EndRequest => break,
+            RecordType::EndRequest => {
+                writer.wind_down();
+                break;
+            }
             _ => {}
         }
     }
@@ -259,17 +329,29 @@ async fn read_response(
 /// Runs concurrently with the response read, so a large request body can no
 /// longer deadlock against a backend that answers before draining STDIN. HTTP
 /// trailers are dropped - FastCGI cannot represent them.
+///
+/// Takes the write half by value so it is released as soon as the request is
+/// on the wire; the socket itself stays open until the read half goes too.
+///
+/// A `body` that errors part-way gets a `shutdown` rather than the terminator:
+/// dropping the half alone sends nothing, and writing the terminator would tell
+/// PHP a truncated body was the whole of it. The half-close is a protocol
+/// error FPM answers by abandoning the request, which is what the pre-streaming
+/// forwarder achieved by dropping the socket outright.
 async fn write_request(
     mut write_half: WriteHalf<BackendStream>,
     prelude: Vec<u8>,
-    mut body: Incoming,
+    body: &mut Incoming,
     backend_label: &str,
 ) -> io::Result<()> {
     write_half.write_all(&prelude).await?;
     loop {
         match body.frame().await {
             None => break,
-            Some(Err(source)) => return Err(io::Error::other(source.to_string())),
+            Some(Err(source)) => {
+                let _ = write_half.shutdown().await;
+                return Err(io::Error::other(source.to_string()));
+            }
             Some(Ok(frame)) => {
                 if frame.is_trailers() {
                     tracing::debug!(
@@ -293,6 +375,21 @@ async fn write_request(
     let mut term = Vec::with_capacity(8);
     write_record(&mut term, RecordType::Stdin, &[]);
     write_half.write_all(&term).await
+}
+
+/// Read whatever is left of the client's request body and throw it away.
+///
+/// PHP is free to answer before it has read STDIN - a 419 or a 401 on a large
+/// upload - and hyper closes a connection's read side when a request body is
+/// dropped part-read, which a client still uploading sees as a reset instead of
+/// the response it was about to be handed. Consuming the rest costs one frame
+/// of memory and no FPM worker.
+///
+/// Deliberately uncapped: the upload that most needs the courtesy is the big
+/// one, and a cap would abandon exactly those. The client's own `Content-Length`
+/// bounds it, as does the connection going away.
+async fn drain_client_body(body: &mut Incoming) {
+    while let Some(Ok(_)) = body.frame().await {}
 }
 
 /// Read one whole FCGI record: header, content, and any padding.
@@ -346,6 +443,11 @@ fn log_stderr(backend_label: &str, content: &[u8]) {
 /// Header names/values that aren't valid HTTP are skipped, as is
 /// `X-Accel-Buffering`. A PHP-supplied `Content-Length` passes through
 /// verbatim; without one, hyper frames the streaming body as chunked.
+///
+/// Hop-by-hop headers are stripped for the same reason the plain reverse-proxy
+/// path strips them: the canonical PHP SSE snippet emits `Connection:
+/// keep-alive` beside `X-Accel-Buffering: no`, and a PHP-set `Transfer-Encoding`
+/// would pre-empt hyper's own framing of the stream.
 fn synthesise_response(head: Head, body: BoxBody) -> Result<Response<BoxBody>, ProxyError> {
     let mut resp = Response::builder().status(head.status);
     if let Some(resp_headers) = resp.headers_mut() {
@@ -360,6 +462,7 @@ fn synthesise_response(head: Head, body: BoxBody) -> Result<Response<BoxBody>, P
                 resp_headers.append(n, v);
             }
         }
+        crate::forward::upgrade::strip_hop_by_hop_only(resp_headers);
     }
     resp.body(body).map_err(|_| ProxyError::BackendProtocol {
         source: io::Error::other("failed to build response"),
@@ -383,18 +486,40 @@ impl Body for ChannelBody {
     }
 }
 
-/// Aborts the request-writing task when dropped.
+/// Handle on the request-writing task, which aborts it when dropped.
 ///
 /// `tokio::io::split` keeps the socket alive until *both* halves drop, and
-/// dropping a `JoinHandle` detaches rather than cancels. Holding the handle in
-/// this guard makes teardown unconditional: the headers-only fallback, a
-/// pre-head error return, the reader task finishing, and cancellation of the
+/// dropping a `JoinHandle` detaches rather than cancels, so holding the handle
+/// here is what makes teardown unconditional: the headers-only fallback, a
+/// pre-head error return, the reader task giving up, and cancellation of the
 /// `forward` future itself all release the write half.
-struct AbortOnDrop(JoinHandle<()>);
+struct WriterHandle {
+    task: Option<JoinHandle<()>>,
+    stop_writing: Option<oneshot::Sender<()>>,
+}
 
-impl Drop for AbortOnDrop {
+impl WriterHandle {
+    /// Stop sending to FPM, but leave the task alive to drain what is left of
+    /// the client's request body.
+    ///
+    /// Used once the backend has said `END_REQUEST`. Nothing more may be sent -
+    /// a backend that answered without reading STDIN would never drain the
+    /// socket, and the writer would block against a full kernel buffer for
+    /// good - but abandoning a part-read request body makes hyper close the
+    /// client's read side, which a client still uploading sees as a reset.
+    fn wind_down(&mut self) {
+        if let Some(stop) = self.stop_writing.take() {
+            let _ = stop.send(());
+        }
+        self.task = None;
+    }
+}
+
+impl Drop for WriterHandle {
     fn drop(&mut self) {
-        self.0.abort();
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
     }
 }
 
@@ -562,6 +687,36 @@ mod tests {
         assert_eq!(resp.headers().get("Content-Type").unwrap(), "text/plain");
     }
 
+    /// The canonical PHP SSE snippet sets `Connection: keep-alive` next to
+    /// `X-Accel-Buffering: no`; neither belongs on the wire to the client.
+    #[test]
+    fn synthesise_response_strips_hop_by_hop_headers() {
+        let resp = synthesise_response(
+            head(
+                http::StatusCode::OK,
+                &[
+                    ("Connection", "keep-alive, X-Vendor"),
+                    ("Keep-Alive", "timeout=5"),
+                    ("Transfer-Encoding", "identity"),
+                    ("X-Vendor", "dropped by the Connection token"),
+                    ("Content-Type", "text/event-stream"),
+                ],
+            ),
+            empty_body(),
+        )
+        .unwrap();
+        for stripped in ["connection", "keep-alive", "transfer-encoding", "x-vendor"] {
+            assert!(
+                resp.headers().get(stripped).is_none(),
+                "{stripped} must not reach the client"
+            );
+        }
+        assert_eq!(
+            resp.headers().get("Content-Type").unwrap(),
+            "text/event-stream"
+        );
+    }
+
     #[test]
     fn synthesise_response_empty_head_builds() {
         let resp =
@@ -588,6 +743,64 @@ mod tests {
                 expected,
                 "{method} {status}"
             );
+        }
+    }
+
+    #[test]
+    fn can_have_content_length_matches_hypers_rule() {
+        let cases = [
+            (http::Method::GET, http::StatusCode::OK, true),
+            (http::Method::HEAD, http::StatusCode::OK, true),
+            (http::Method::GET, http::StatusCode::NO_CONTENT, false),
+            (http::Method::GET, http::StatusCode::NOT_MODIFIED, false),
+            (http::Method::GET, http::StatusCode::CONTINUE, false),
+            (http::Method::CONNECT, http::StatusCode::OK, false),
+            (http::Method::CONNECT, http::StatusCode::BAD_GATEWAY, true),
+        ];
+        for (method, status, expected) in cases {
+            assert_eq!(
+                can_have_content_length(&method, status),
+                expected,
+                "{method} {status}"
+            );
+        }
+    }
+
+    #[test]
+    fn restore_head_content_length_fills_in_the_length_for_head() {
+        let mut h = head(http::StatusCode::OK, &[("Content-Type", "text/plain")]);
+        restore_head_content_length(&mut h, &http::Method::HEAD, 42);
+        assert_eq!(
+            h.headers,
+            vec![
+                ("Content-Type".to_owned(), "text/plain".to_owned()),
+                ("Content-Length".to_owned(), "42".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn restore_head_content_length_leaves_a_php_supplied_length_alone() {
+        let mut h = head(http::StatusCode::OK, &[("content-length", "7")]);
+        restore_head_content_length(&mut h, &http::Method::HEAD, 42);
+        assert_eq!(
+            h.headers,
+            vec![("content-length".to_owned(), "7".to_owned())]
+        );
+    }
+
+    /// GET never needs it (hyper frames the real body) and 204/304 must not
+    /// carry one at all.
+    #[test]
+    fn restore_head_content_length_skips_everything_else() {
+        for (method, status) in [
+            (http::Method::GET, http::StatusCode::OK),
+            (http::Method::HEAD, http::StatusCode::NO_CONTENT),
+            (http::Method::HEAD, http::StatusCode::NOT_MODIFIED),
+        ] {
+            let mut h = head(status, &[]);
+            restore_head_content_length(&mut h, &method, 42);
+            assert!(h.headers.is_empty(), "{method} {status}");
         }
     }
 

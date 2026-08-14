@@ -6,8 +6,8 @@
 //! [`HeadFeed::Complete`] comes back, so nothing waits for `END_REQUEST`.
 //!
 //! Buffering until the terminator is found is what makes a record boundary
-//! falling inside a `\r\n\r\n` harmless: each feed rescans the whole buffer,
-//! so the split point never matters.
+//! falling inside a `\r\n\r\n` harmless: a feed resumes its scan three bytes
+//! back into what was already there, so the split point never matters.
 
 use http::StatusCode;
 
@@ -15,6 +15,10 @@ use http::StatusCode;
 /// `fastcgi_buffer_size` of 4-8 KiB: a head past this is a runaway backend,
 /// not a real response.
 const MAX_HEAD_BYTES: usize = 64 * 1024;
+
+/// Bytes of the previous buffer a rescan has to revisit so a terminator split
+/// across two feeds is still found: one less than the longest terminator.
+const TERMINATOR_OVERLAP: usize = 3;
 
 /// A parsed CGI response head, plus any body bytes that arrived with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,8 +57,9 @@ impl HeadAccumulator {
 
     /// Add `chunk` and rescan for the header terminator.
     pub fn feed(&mut self, chunk: &[u8]) -> HeadFeed {
+        let scan_from = self.buf.len().saturating_sub(TERMINATOR_OVERLAP);
         self.buf.extend_from_slice(chunk);
-        match find_header_terminator(&self.buf) {
+        match find_header_terminator(&self.buf, scan_from) {
             Some((offset, terminator_len)) => {
                 let (head, rest) = self.buf.split_at(offset);
                 let body_remainder = rest.get(terminator_len..).unwrap_or_default().to_vec();
@@ -86,13 +91,19 @@ impl HeadAccumulator {
 
 /// Parse a CGI header block: `Status: NNN Reason` drives the status code and is
 /// not surfaced as a header; everything else is passed through trimmed. Lines
-/// without a colon are skipped, as is a block that isn't UTF-8.
+/// without a colon are skipped.
+///
+/// Decoding is lossy and per line, so a header carrying bytes that aren't UTF-8
+/// (a `setrawcookie` payload, a latin-1 filename in `Content-Disposition`) costs
+/// only that one value. Decoding the block as a whole would instead drop every
+/// header and the `Status:` line with them, turning a 302 into a bare 200 with
+/// no `Location`.
 fn parse_head(head: &[u8]) -> (StatusCode, Vec<(String, String)>) {
-    let head_str = std::str::from_utf8(head).unwrap_or("");
     let mut status = StatusCode::OK;
     let mut headers: Vec<(String, String)> = Vec::new();
-    for line in head_str.split('\n') {
-        let line = line.trim_end_matches('\r');
+    for raw_line in head.split(|byte| *byte == b'\n') {
+        let decoded = String::from_utf8_lossy(raw_line);
+        let line = decoded.trim_end_matches('\r');
         if line.is_empty() {
             continue;
         }
@@ -121,8 +132,11 @@ fn parse_cgi_status(value: &str) -> Option<StatusCode> {
 
 /// Locate the blank line ending the header block, returning
 /// `(offset, terminator_len)`. `None` when the buffer holds no terminator yet.
-fn find_header_terminator(buf: &[u8]) -> Option<(usize, usize)> {
-    for i in 0..buf.len() {
+///
+/// Scanning starts at `from`, which lets a repeated feed skip the bytes it has
+/// already rejected instead of rescanning the whole buffer each time.
+fn find_header_terminator(buf: &[u8], from: usize) -> Option<(usize, usize)> {
+    for i in from..buf.len() {
         if buf.get(i..i + 4) == Some(b"\r\n\r\n".as_slice()) {
             return Some((i, 4));
         }
@@ -304,9 +318,37 @@ mod tests {
     }
 
     #[test]
-    fn non_utf8_head_yields_no_headers() {
-        let head = complete(feed_all(&[b"A: \xff\xfe\r\n\r\nbody"]));
-        assert!(head.headers.is_empty());
+    fn non_utf8_value_is_lossy_and_costs_only_its_own_line() {
+        let head = complete(feed_all(&[
+            b"Status: 302 Found\r\nSet-Cookie: \xff\xfe\r\nLocation: /next\r\n\r\nbody",
+        ]));
+        assert_eq!(head.status, StatusCode::FOUND);
+        assert_eq!(
+            head.headers,
+            vec![
+                ("Set-Cookie".to_owned(), "\u{fffd}\u{fffd}".to_owned()),
+                ("Location".to_owned(), "/next".to_owned()),
+            ]
+        );
         assert_eq!(head.body_remainder, b"body");
+    }
+
+    #[test]
+    fn many_tiny_feeds_still_find_a_terminator_the_scan_resumes_past() {
+        let mut acc = HeadAccumulator::new();
+        let whole: &[u8] = b"Content-Type: text/plain\r\n\r\ntail";
+        let mut outcome = HeadFeed::Pending;
+        for byte in whole {
+            outcome = acc.feed(std::slice::from_ref(byte));
+            if matches!(outcome, HeadFeed::Complete(_)) {
+                break;
+            }
+        }
+        let head = complete(outcome);
+        assert_eq!(
+            head.headers,
+            vec![("Content-Type".to_owned(), "text/plain".to_owned())]
+        );
+        assert!(head.body_remainder.is_empty());
     }
 }
