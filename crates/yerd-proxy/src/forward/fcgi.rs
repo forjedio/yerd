@@ -170,8 +170,9 @@ pub async fn forward(
     };
 
     if !can_have_body(&parts.method, head.status) {
-        if let Some(discarded) = drain_to_end_request(&mut read_half, &backend_label).await? {
-            writer.wind_down();
+        let drained = drain_to_end_request(&mut read_half, &backend_label).await?;
+        writer.wind_down();
+        if let Some(discarded) = drained {
             let seen = u64::try_from(head.body_remainder.len()).unwrap_or(u64::MAX);
             restore_head_content_length(&mut head, &parts.method, seen.saturating_add(discarded));
         }
@@ -238,8 +239,9 @@ fn restore_head_content_length(head: &mut Head, method: &http::Method, body_len:
 /// a clean 5xx.
 ///
 /// Returns how many STDOUT bytes were discarded, or `None` once past
-/// [`MAX_DISCARDED_BYTES`] - the caller then drops the socket, which frees the
-/// worker, and answers without a `Content-Length` it can no longer total.
+/// [`MAX_DISCARDED_BYTES`] - the caller then answers without a `Content-Length`
+/// it can no longer total. Either way it winds the writer down and drops the
+/// read half, which closes the connection and frees the worker.
 async fn drain_to_end_request(
     read_half: &mut ReadHalf<BackendStream>,
     backend_label: &str,
@@ -502,11 +504,16 @@ impl WriterHandle {
     /// Stop sending to FPM, but leave the task alive to drain what is left of
     /// the client's request body.
     ///
-    /// Used once the backend has said `END_REQUEST`. Nothing more may be sent -
-    /// a backend that answered without reading STDIN would never drain the
+    /// Used once the response is settled, whether the backend said
+    /// `END_REQUEST` or overran the drain limit. Nothing more may be sent - a
+    /// backend that answered without reading STDIN would never drain the
     /// socket, and the writer would block against a full kernel buffer for
     /// good - but abandoning a part-read request body makes hyper close the
     /// client's read side, which a client still uploading sees as a reset.
+    ///
+    /// Cancelling the write also releases the write half, so together with the
+    /// caller dropping the read half the FPM connection closes and the worker
+    /// is freed, all without taking the drain down with it.
     fn wind_down(&mut self) {
         if let Some(stop) = self.stop_writing.take() {
             let _ = stop.send(());
