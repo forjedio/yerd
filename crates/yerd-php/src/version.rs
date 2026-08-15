@@ -13,7 +13,7 @@ use crate::error::PhpError;
 
 /// Filename of the server binary inside each per-version install dir. Unix has
 /// a real `php-fpm` SAPI; Windows has no FPM binary at all, so discovery keys
-/// off the bundle's FastCGI server `php-cgi.exe` (a single-threaded NTS build).
+/// off the bundle's `FastCGI` server `php-cgi.exe` (a single-threaded NTS build).
 #[cfg(unix)]
 const FPM_BINARY_PATH: &[&str] = &["sbin", "php-fpm"];
 #[cfg(not(unix))]

@@ -830,13 +830,14 @@ fn build_cmd(
 
     #[cfg(not(windows))]
     {
+        use std::os::unix::process::CommandExt;
+
         let _ = listen;
         cmd.arg("--fpm-config").arg(config_path);
         cmd.env_clear();
         for (k, val) in env {
             cmd.env(k, val);
         }
-        use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
     #[cfg(windows)]
