@@ -34,14 +34,18 @@ export function loadIdes(): Promise<void> {
 }
 
 /** Re-run host detection and replace the cached list. Backs the Settings
- *  "Rescan" button, and refreshes the host-side launch-target cache with it. */
-export async function rescanIdes(): Promise<void> {
+ *  "Rescan" button, and refreshes the host-side launch-target cache with it.
+ *  Returns how many editors are now cached, so the button can report the result
+ *  back; a superseded scan reports the newer list rather than its own stale one,
+ *  since that is what the user is looking at. */
+export async function rescanIdes(): Promise<number> {
   const mine = ++generation;
   const ides = await getInstalledIdes();
   if (mine === generation) {
     installedIdes.value = ides;
   }
   loadPromise = Promise.resolve();
+  return installedIdes.value.length;
 }
 
 /** Test-only: drop the singleton so each spec starts from a clean detection. */

@@ -132,8 +132,6 @@ describe("SitesView WordPress auto-login controls", () => {
     const wrapper = await mountSites();
     await openEditFor(wrapper, alpha);
 
-    // Rendering the picker against an unloaded list would show the site's
-    // configured "editor" with no matching <option> - a blank control.
     expect(wrapper.find("#site-wp-admin-user").exists()).toBe(false);
 
     pending.resolve(usersEnvelope(["editor"]));

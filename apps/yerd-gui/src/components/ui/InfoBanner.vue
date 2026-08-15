@@ -46,10 +46,15 @@ const VARIANT_ICONS = {
 } as const;
 
 const glyph = computed(() => props.icon ?? VARIANT_ICONS[props.variant ?? "info"]);
+
+/** A destructive banner reports a failure the user needs told about now (a
+ *  rejected entry), so it announces itself; the calmer variants are static
+ *  guidance a screen reader should reach in document order. */
+const role = computed(() => (props.variant === "destructive" ? "alert" : undefined));
 </script>
 
 <template>
-  <div :class="cn(infoBannerVariants({ variant }))">
+  <div :class="cn(infoBannerVariants({ variant }))" :role="role">
     <component :is="glyph" class="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
     <div class="min-w-0"><slot /></div>
   </div>

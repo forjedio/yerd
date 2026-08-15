@@ -10,8 +10,9 @@ export type IdeChoice =
 const SYSTEM = "system";
 
 /** Button/tooltip wording for the system arm; also the name shown by the
- *  sidebar's `Use default (…)` option when nothing is detected. */
-const SYSTEM_LABEL = "Open folder";
+ *  sidebar's `Use default (…)` option when nothing is detected, and by the
+ *  system entry in both editor pickers - one wording, one place. */
+export const SYSTEM_LABEL = "Open folder";
 
 /**
  * Resolve the preference chain: per-site override, then the global preference,

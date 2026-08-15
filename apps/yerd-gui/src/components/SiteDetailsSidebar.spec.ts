@@ -209,7 +209,7 @@ describe("SiteDetailsSidebar", () => {
     expect(openInIde).not.toHaveBeenCalled();
     expect(
       wrapper.get('[aria-label="Site IDE"]').findAll("option").map((option) => option.text()),
-    ).toEqual(["Use default (Open folder)", "System default (open folder)"]);
+    ).toEqual(["Use default (Open folder)", "Open folder"]);
   });
 
   it("opens the site folder with the selected detected IDE and stores the override", async () => {
@@ -222,7 +222,7 @@ describe("SiteDetailsSidebar", () => {
 
     expect(
       wrapper.get('[aria-label="Site IDE"]').findAll("option").map((option) => option.text()),
-    ).toEqual(["Use default (VS Code)", "VS Code", "Zed", "System default (open folder)"]);
+    ).toEqual(["Use default (VS Code)", "VS Code", "Zed", "Open folder"]);
     await wrapper.get('[aria-label="Site IDE"]').setValue("zed");
     await flushPromises();
     expect(setSiteIdeOverride).toHaveBeenCalledWith("blog", "zed");
@@ -623,6 +623,23 @@ describe("SiteDetailsSidebar WordPress controls", () => {
     expect(wrapper.find('[aria-label="Sign in as"]').exists()).toBe(false);
   });
 
+  it("ignores an admin-user failure that lands after the sidebar closes", async () => {
+    let fail!: (e: Error) => void;
+    wordpressAdminUsers.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        fail = reject;
+      }),
+    );
+    const wrapper = mountSidebar(wpSite({ wp_auto_login: true }));
+
+    await wrapper.setProps({ open: false });
+    fail(new Error("wp-cli exploded"));
+    await flushPromises();
+
+    expect(toastError).not.toHaveBeenCalled();
+    expect(wrapper.emitted("changeWpAutoLogin")).toBeUndefined();
+  });
+
   it("reads no admin users at all while auto-login is off", async () => {
     wordpressAdminUsers.mockRejectedValue(new Error("wp-cli exploded"));
     const wrapper = mountSidebar(wpSite({ wp_auto_login: false }));
@@ -641,7 +658,6 @@ describe("SiteDetailsSidebar WordPress controls", () => {
     await wrapper.get('[aria-label="WordPress Auto Admin Login"]').trigger("click");
     await flushPromises();
 
-    // One click, one toast: no "enabled" write to undo, so no success toasts.
     expect(wordpressAdminUsers).toHaveBeenCalledOnce();
     expect(toastError).toHaveBeenCalledOnce();
     expect(wrapper.emitted("changeWpAutoLogin")).toBeUndefined();

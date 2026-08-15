@@ -37,7 +37,7 @@ import {
   wordpressAdminUsers,
 } from "@/ipc/client";
 import type { SiteEntry, StatusReport } from "@/ipc/types";
-import { resolveIde } from "@/lib/ideChoice";
+import { resolveIde, SYSTEM_LABEL } from "@/lib/ideChoice";
 import { siteUrl } from "@/lib/siteUrl";
 import { openWpAdmin } from "@/lib/wpAdmin";
 import { loadIdes, useIdes } from "@/composables/useIdes";
@@ -116,7 +116,7 @@ const ideOptions = computed(() => [
     label: `Use default (${resolveIde(null, globalIde.value, installedIdes.value).label})`,
   },
   ...installedIdes.value.map((ide) => ({ value: ide.id, label: ide.label })),
-  { value: "system", label: "System default (open folder)" },
+  { value: "system", label: SYSTEM_LABEL },
 ]);
 
 // A native <select> renders blank when its value matches no option, so an
@@ -144,7 +144,12 @@ const wpAutoLoginChecking = ref(false);
 let wpAdminUsersRequestId = 0;
 
 /** Fetch `name`'s admin list, reporting whether it is now loaded. A stale
- *  response (the user moved on) counts as a failure: it must not be acted on. */
+ *  response (the user moved on) counts as a failure: it must not be acted on.
+ *
+ *  On failure a site already set to auto-login is switched back off, since
+ *  auto-login can't work without an admin to mint the token for. That write is
+ *  silent - the error toast is the only message worth showing for one failure -
+ *  and only happens for the site still in view. */
 async function loadWpAdminUsers(name: string): Promise<boolean> {
   const requestId = ++wpAdminUsersRequestId;
   wpAdminUsersStatus.value = "loading";
@@ -164,11 +169,6 @@ async function loadWpAdminUsers(name: string): Promise<boolean> {
       "Couldn't load WordPress admin users",
       (e as IpcError).message || "couldn't load admin users",
     );
-    // Auto-login can't work without an admin to mint the token for, so a site
-    // already set to use it is switched back off - silently, because the toast
-    // above is the only message worth showing for one failure. Guarded on the
-    // site still being the one in view: a failure for a site the user has
-    // navigated away from must not write to it.
     if (props.site?.name === name && props.site.wp_auto_login) {
       emit("changeWpAutoLogin", props.site, false, null, { silent: true });
     }
@@ -378,10 +378,12 @@ watch(
 // list is needed for. Opening a site that isn't using it must not reach for the
 // database (nor report that it couldn't); switching the toggle on fetches then.
 //
-// The editor preference is invalidated (request id bumped) and cleared in the
-// same tick, before any await: leaving the previous site's values in place would
-// let the Editor button open the new site's folder in the old site's editor for
-// as long as the two host calls take to resolve.
+// Both request ids are invalidated and their state cleared in the same tick,
+// ahead of every early return: leaving the previous site's editor preference in
+// place would let the Editor button open the new site's folder in the old site's
+// editor until the host calls resolve, and an admin-user fetch left live across
+// a close would land on a panel that is no longer showing - toasting, and
+// writing auto-login off, behind the user's back.
 watch(
   [() => props.open, () => props.site?.name],
   () => {
@@ -389,14 +391,13 @@ watch(
     editorPreferenceRequestId += 1;
     globalIde.value = null;
     siteIdeOverride.value = null;
-    if (!props.open || !props.site) return;
-    void loadIdes();
-    void loadEditorPreferences(props.site.name);
-    if (!props.open || !props.site?.is_wordpress) return;
     wpAdminUsersRequestId += 1;
     wpAdminUsersStatus.value = "idle";
     wpAdminUsersOptions.value = [DEFAULT_ADMIN_OPTION];
-    if (!props.site.wp_auto_login) return;
+    if (!props.open || !props.site) return;
+    void loadIdes();
+    void loadEditorPreferences(props.site.name);
+    if (!props.site.is_wordpress || !props.site.wp_auto_login) return;
     void loadWpAdminUsers(props.site.name);
   },
   { immediate: true },

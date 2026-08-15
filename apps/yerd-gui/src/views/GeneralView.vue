@@ -38,6 +38,7 @@ import {
   setTrayIconVariant,
 } from "@/ipc/client";
 import type { AutostartState, CliPathStatus, TitleBarStyle, TrayIconVariant } from "@/ipc/types";
+import { SYSTEM_LABEL } from "@/lib/ideChoice";
 import { useTheme, type ThemePref } from "@/lib/theme";
 import { useTitleBarStyle } from "@/lib/titleBarStyle";
 
@@ -123,7 +124,7 @@ const preferredIde = ref("auto");
 const preferredIdeOptions = computed(() => [
   { value: "auto", label: "Auto-detect" },
   ...installedIdes.value.map((ide) => ({ value: ide.id, label: ide.label })),
-  { value: "system", label: "System default (open folder)" },
+  { value: "system", label: SYSTEM_LABEL },
 ]);
 
 // A native <select> renders blank when its value matches no option, so an
@@ -153,10 +154,21 @@ async function setPreferredIdePref(next: string): Promise<void> {
   }
 }
 
+/** A rescan usually changes nothing visible (the picker already lists what was
+ *  found), so it confirms itself with a count. Kept brief: it's an idempotent
+ *  action the user may click a few times while installing an editor, and a
+ *  stack of identical toasts would be worse than none. */
+const RESCAN_TOAST_MS = 1500;
+
 async function rescanEditors(): Promise<void> {
   busy.value = "ide:rescan";
   try {
-    await rescanIdes();
+    const found = await rescanIdes();
+    toast.success(
+      found === 0 ? "No editors found" : `Found ${found} editor${found === 1 ? "" : "s"}`,
+      undefined,
+      RESCAN_TOAST_MS,
+    );
   } catch (e) {
     toast.error("Couldn't detect installed editors", (e as IpcError).message);
   } finally {
