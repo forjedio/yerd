@@ -399,6 +399,21 @@ A rule only applies when the request matched no real file, so assets and real di
 
 See [Routing rules](../reference/cli/routes) for the full semantics, and note this is different from a [reverse proxy path rule](./proxies), which forwards to a separate running service rather than to a file inside the site.
 
+## Streaming responses (SSE / Livewire `wire:stream`)
+
+Streamed responses pass straight through as PHP flushes them - server-sent events, `response()->stream()`, Livewire's `wire:stream`, and token-by-token AI output all reach the browser incrementally. There is no setting to turn on and no header to send: `X-Accel-Buffering: no` is unnecessary (Yerd consumes it rather than forwarding it), and a response that sets no `Content-Length` is sent chunked.
+
+Each open stream occupies one PHP-FPM worker for as long as it stays open, so a page holding several event streams, or a few tabs left open on one, can reach the per-version ceiling of 16 workers and leave later requests queueing. Raise it with [`yerd php pool`](./php-versions#pool-size) if you work with streaming regularly.
+
+If a stream still arrives in one burst, the buffering is on the application side. Check `output_buffering` and any `ob_*` handlers your framework installs, and `zlib.output_compression`, which buffers to compress:
+
+```php
+while (ob_get_level() > 0) {
+    ob_end_flush();
+}
+flush();
+```
+
 ## Related
 
 - [PHP Versions](./php-versions) - set the global default and pin a site to a version.
