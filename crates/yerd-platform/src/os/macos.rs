@@ -178,12 +178,20 @@ const APPLICATION_SCAN_DEPTH: u8 = 3;
 /// Recursive `read_dir` over one application root, replacing the old Spotlight
 /// query so detection also works with `mdutil -i off`.
 ///
+/// `wanted` is the set of IDE ids still unresolved by the CLI lookup; only those
+/// are matched, and the walk stops as soon as all of them are found.
+///
 /// `path.is_dir()` follows symlinks on purpose: nix-darwin populates
 /// `~/Applications/Nix Apps` with links, and the unfollowed entry type would
 /// skip every one. A `*.app` is matched but never descended into, which keeps
 /// the walk bounded on a large `/Applications`.
-fn application_bundles_in(directory: &Path, depth: u8, found: &mut Vec<(&'static str, PathBuf)>) {
-    if found.len() == IDE_SPECS.len() {
+fn application_bundles_in(
+    directory: &Path,
+    depth: u8,
+    wanted: &[&'static str],
+    found: &mut Vec<(&'static str, PathBuf)>,
+) {
+    if found.len() == wanted.len() {
         return;
     }
     let Ok(entries) = fs::read_dir(directory) else {
@@ -200,7 +208,7 @@ fn application_bundles_in(directory: &Path, depth: u8, found: &mut Vec<(&'static
             .unwrap_or_default();
         if let Some(stem) = name.strip_suffix(".app") {
             for spec in IDE_SPECS {
-                if found.iter().any(|(id, _)| *id == spec.id) {
+                if !wanted.contains(&spec.id) || found.iter().any(|(id, _)| *id == spec.id) {
                     continue;
                 }
                 if mac_app_name_matches(spec.id, stem) {
@@ -209,19 +217,19 @@ fn application_bundles_in(directory: &Path, depth: u8, found: &mut Vec<(&'static
                 }
             }
         } else if depth > 0 {
-            application_bundles_in(&path, depth - 1, found);
+            application_bundles_in(&path, depth - 1, wanted, found);
         }
-        if found.len() == IDE_SPECS.len() {
+        if found.len() == wanted.len() {
             return;
         }
     }
 }
 
-fn detected_applications() -> Vec<(&'static str, PathBuf)> {
+fn detected_applications(wanted: &[&'static str]) -> Vec<(&'static str, PathBuf)> {
     let mut found = Vec::new();
     for root in application_locations() {
-        application_bundles_in(&root, APPLICATION_SCAN_DEPTH, &mut found);
-        if found.len() == IDE_SPECS.len() {
+        application_bundles_in(&root, APPLICATION_SCAN_DEPTH, wanted, &mut found);
+        if found.len() == wanted.len() {
             break;
         }
     }
@@ -269,30 +277,56 @@ impl SystemOpener for MacosSystemOpener {
     }
 }
 
+/// Two-pass detection: resolve every spec's CLI target first, then hand only the
+/// ids that are still unresolved to `scan`. When `PATH` already covers every
+/// installed editor, `scan` is never called and detection touches no application
+/// root at all. Both halves are parameters so a test can drive them without an
+/// installed IDE or a mutated environment.
+fn detect_ides<C, S>(cli: C, scan: S) -> Vec<DetectedIde>
+where
+    C: Fn(&IdeSpec) -> Option<PathBuf>,
+    S: FnOnce(&[&'static str]) -> Vec<(&'static str, PathBuf)>,
+{
+    let cli_targets: Vec<Option<PathBuf>> = IDE_SPECS.iter().map(&cli).collect();
+    let unresolved: Vec<&'static str> = IDE_SPECS
+        .iter()
+        .zip(&cli_targets)
+        .filter(|(_, target)| target.is_none())
+        .map(|(spec, _)| spec.id)
+        .collect();
+    let applications = if unresolved.is_empty() {
+        Vec::new()
+    } else {
+        scan(&unresolved)
+    };
+
+    let mut detected: Vec<DetectedIde> = IDE_SPECS
+        .iter()
+        .zip(cli_targets)
+        .filter_map(|(spec, target)| {
+            let launch = if let Some(executable) = target {
+                LaunchTarget::Cli(executable)
+            } else {
+                let bundle = applications
+                    .iter()
+                    .find(|(found, _)| *found == spec.id)
+                    .map(|(_, path)| path.clone())?;
+                LaunchTarget::Application(bundle)
+            };
+            Some(DetectedIde {
+                id: spec.id,
+                display_name: spec.display_name,
+                launch,
+            })
+        })
+        .collect();
+    detected.sort_by_key(|ide| spec_for(ide.id).map_or(u8::MAX, |spec| spec.rank));
+    detected
+}
+
 impl IdeLauncher for MacosIdeLauncher {
     fn detect(&self) -> Vec<DetectedIde> {
-        let applications = detected_applications();
-        let mut detected: Vec<DetectedIde> = IDE_SPECS
-            .iter()
-            .filter_map(|spec| {
-                let launch = if let Some(executable) = ide_cli(spec) {
-                    LaunchTarget::Cli(executable)
-                } else {
-                    let bundle = applications
-                        .iter()
-                        .find(|(found, _)| *found == spec.id)
-                        .map(|(_, path)| path.clone())?;
-                    LaunchTarget::Application(bundle)
-                };
-                Some(DetectedIde {
-                    id: spec.id,
-                    display_name: spec.display_name,
-                    launch,
-                })
-            })
-            .collect();
-        detected.sort_by_key(|ide| spec_for(ide.id).map_or(u8::MAX, |spec| spec.rank));
-        detected
+        detect_ides(ide_cli, detected_applications)
     }
 
     fn launch(&self, ide: &DetectedIde, path: &Path) -> Result<(), PlatformError> {
@@ -896,6 +930,11 @@ mod tests {
         assert!(wait_and_check(&mut failure, "/bin/sh").is_err());
     }
 
+    /// Every known IDE id, the scan's `wanted` set when nothing resolved on `PATH`.
+    fn every_id() -> Vec<&'static str> {
+        IDE_SPECS.iter().map(|spec| spec.id).collect()
+    }
+
     /// A versioned bundle name is matched by the scan itself, with no Spotlight
     /// index involved.
     #[test]
@@ -906,7 +945,7 @@ mod tests {
         fs::create_dir(root.path().join("Unrelated.app")).unwrap();
 
         let mut found = Vec::new();
-        application_bundles_in(root.path(), APPLICATION_SCAN_DEPTH, &mut found);
+        application_bundles_in(root.path(), APPLICATION_SCAN_DEPTH, &every_id(), &mut found);
         assert_eq!(found, vec![("phpstorm", application)]);
     }
 
@@ -917,8 +956,69 @@ mod tests {
         fs::create_dir_all(&application).unwrap();
 
         let mut found = Vec::new();
-        application_bundles_in(root.path(), APPLICATION_SCAN_DEPTH, &mut found);
+        application_bundles_in(root.path(), APPLICATION_SCAN_DEPTH, &every_id(), &mut found);
         assert_eq!(found, vec![("phpstorm", application)]);
+    }
+
+    /// A bundle for an IDE the CLI pass already resolved is skipped.
+    #[test]
+    fn bundles_outside_the_wanted_set_are_ignored() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("PhpStorm.app")).unwrap();
+        let zed = root.path().join("Zed.app");
+        fs::create_dir(&zed).unwrap();
+
+        let mut found = Vec::new();
+        application_bundles_in(root.path(), APPLICATION_SCAN_DEPTH, &["zed"], &mut found);
+        assert_eq!(found, vec![("zed", zed)]);
+    }
+
+    /// The whole point of the two-pass split: when `PATH` covers every editor the
+    /// application roots are never touched.
+    #[test]
+    fn detection_skips_the_bundle_scan_when_every_editor_resolves_via_cli() {
+        let scanned = std::cell::Cell::new(false);
+        let detected = detect_ides(
+            |spec| Some(PathBuf::from(format!("/usr/local/bin/{}", spec.id))),
+            |_| {
+                scanned.set(true);
+                Vec::new()
+            },
+        );
+
+        assert!(!scanned.get(), "the bundle scan must not run");
+        let mut ranked: Vec<&IdeSpec> = IDE_SPECS.iter().collect();
+        ranked.sort_by_key(|spec| spec.rank);
+        let ids: Vec<&str> = detected.iter().map(|ide| ide.id).collect();
+        assert_eq!(ids, ranked.iter().map(|spec| spec.id).collect::<Vec<_>>());
+        assert!(detected
+            .iter()
+            .all(|ide| matches!(ide.launch, LaunchTarget::Cli(_))));
+    }
+
+    #[test]
+    fn detection_scans_only_for_editors_missing_from_path() {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let detected = detect_ides(
+            |spec| (spec.id == "zed").then(|| PathBuf::from("/usr/local/bin/zed")),
+            |wanted| {
+                asked.borrow_mut().extend_from_slice(wanted);
+                vec![("phpstorm", PathBuf::from("/Applications/PhpStorm.app"))]
+            },
+        );
+
+        assert!(!asked.borrow().contains(&"zed"));
+        assert_eq!(asked.borrow().len(), IDE_SPECS.len() - 1);
+        let ids: Vec<&str> = detected.iter().map(|ide| ide.id).collect();
+        assert_eq!(ids, vec!["phpstorm", "zed"]);
+        assert!(matches!(
+            detected.first().map(|ide| &ide.launch),
+            Some(LaunchTarget::Application(_))
+        ));
+        assert!(matches!(
+            detected.get(1).map(|ide| &ide.launch),
+            Some(LaunchTarget::Cli(_))
+        ));
     }
 
     /// nix-darwin fills `~/Applications/Nix Apps` with symlinks, so the scan has
@@ -937,7 +1037,7 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         let mut found = Vec::new();
-        application_bundles_in(&root, APPLICATION_SCAN_DEPTH, &mut found);
+        application_bundles_in(&root, APPLICATION_SCAN_DEPTH, &every_id(), &mut found);
         assert_eq!(found, vec![("zed", link)]);
     }
 

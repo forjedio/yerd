@@ -98,14 +98,6 @@ pub fn spec_for(id: &str) -> Option<&'static IdeSpec> {
     IDE_SPECS.iter().find(|spec| spec.id == id)
 }
 
-/// Return whether a macOS application result is inside an approved search root.
-#[must_use]
-pub fn mac_application_path_allowed(candidate: &Path, roots: &[PathBuf]) -> bool {
-    roots
-        .iter()
-        .any(|root| !root.as_os_str().is_empty() && candidate.starts_with(root))
-}
-
 /// Return extra macOS CLI directories used when the GUI has no shell `PATH`.
 #[must_use]
 pub fn ide_cli_candidates_macos(home: Option<&Path>) -> Vec<PathBuf> {
@@ -204,6 +196,9 @@ fn mac_app_suffix_matches(suffix: &str) -> bool {
             Some(_) => false,
         };
     }
+    if words.next().is_none() && mac_preview_label_matches(first) {
+        return true;
+    }
     let Some(label) = suffix.strip_prefix("- ") else {
         return false;
     };
@@ -211,7 +206,9 @@ fn mac_app_suffix_matches(suffix: &str) -> bool {
 }
 
 /// Return whether a macOS application bundle name identifies the selected IDE.
-/// Versioned and preview bundle names may add a suffix after the known name.
+/// Versioned and preview bundle names may add a suffix after the known name:
+/// `PhpStorm 2025.1`, `PhpStorm 2025.1 EAP`, `Visual Studio Code - Insiders`,
+/// and the bare-label form Zed ships its preview channel under, `Zed Preview`.
 #[must_use]
 pub fn mac_app_name_matches(id: &str, name: &str) -> bool {
     let name = name.trim();
@@ -425,43 +422,26 @@ mod tests {
 
     #[test]
     fn mac_app_names_match_versioned_and_preview_bundles() {
-        assert!(mac_app_name_matches("phpstorm", "PhpStorm 2025.1"));
-        assert!(mac_app_name_matches(
-            "vscode",
-            "Visual Studio Code - Insiders"
-        ));
-        assert!(mac_app_name_matches("phpstorm", "PhpStorm 2025.1 EAP"));
-        assert!(!mac_app_name_matches("vscode", "Codecs"));
-        assert!(!mac_app_name_matches(
-            "vscode",
-            "Visual Studio Code - Backup"
-        ));
-    }
-
-    #[test]
-    fn mac_application_paths_are_restricted_to_known_roots() {
-        let roots = vec![
-            PathBuf::from("/Applications"),
-            PathBuf::from("/Users/test/Applications"),
-            PathBuf::from("/Users/test/Library/Application Support/JetBrains/Toolbox/apps"),
-        ];
         let cases = [
-            ("/Applications/PhpStorm.app", true),
-            ("/Users/test/Applications/Visual Studio Code.app", true),
-            (
-                "/Users/test/Library/Application Support/JetBrains/Toolbox/apps/PhpStorm/ch-0/PhpStorm.app",
-                true,
-            ),
-            ("/Users/test/Downloads/PhpStorm.app", false),
-            ("/Volumes/Backup/Visual Studio Code.app", false),
-            ("/Applications-old/PhpStorm.app", false),
+            ("phpstorm", "PhpStorm 2025.1", true),
+            ("phpstorm", "PhpStorm 2025.1 EAP", true),
+            ("vscode", "Visual Studio Code - Insiders", true),
+            ("zed", "Zed Preview", true),
+            ("zed", "Zed Nightly", true),
+            ("cursor", "Cursor Nightly", true),
+            ("vscode", "Codecs", false),
+            ("vscode", "Visual Studio Code - Backup", false),
+            ("zed", "Zed Backup", false),
+            ("zed", "Zed Preview Copy", false),
+            ("zed", "Zed Old Preview", false),
+            ("cursor", "Cursor 2 Backup", false),
         ];
 
-        for (candidate, expected) in cases {
+        for (id, name, expected) in cases {
             assert_eq!(
-                mac_application_path_allowed(candidate.as_ref(), &roots),
+                mac_app_name_matches(id, name),
                 expected,
-                "unexpected allowlist result for {candidate}"
+                "unexpected match result for {name}"
             );
         }
     }

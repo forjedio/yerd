@@ -17,8 +17,7 @@ mod common;
 
 use yerd_platform::{
     pure::ide_spec::{
-        ide_cli_candidates_macos, mac_app_name_matches, mac_application_locations,
-        mac_application_path_allowed, IDE_SPECS,
+        ide_cli_candidates_macos, mac_app_name_matches, mac_application_locations, IDE_SPECS,
     },
     ActiveIdeLauncher, ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTrustStore,
     IdeLauncher, Paths, PlatformError, PortBinder, ResolverInstaller, TrustStore,
@@ -50,12 +49,6 @@ fn ide_launcher_smoke_returns_known_unique_rank_sorted_ides() {
 #[test]
 fn mac_ide_path_helpers_keep_discovery_deterministic() {
     let home = tempfile::tempdir().expect("temporary home");
-    let roots = vec![home.path().join("Applications")];
-    let installed = roots[0].join("PhpStorm.app");
-    let outside = home.path().join("Downloads/PhpStorm.app");
-    assert!(mac_application_path_allowed(&installed, &roots));
-    assert!(!mac_application_path_allowed(&outside, &roots));
-
     let candidates = ide_cli_candidates_macos(Some(home.path()));
     assert!(candidates.contains(
         &home

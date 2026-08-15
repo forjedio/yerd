@@ -296,6 +296,66 @@ describe("SiteDetailsSidebar", () => {
     expect(openInIde).toHaveBeenCalledWith("blog", "zed");
   });
 
+  it("drops the previous site's override while the next site's preferences load", async () => {
+    getInstalledIdes.mockResolvedValue([
+      { id: "phpstorm", label: "PhpStorm" },
+      { id: "zed", label: "Zed" },
+    ]);
+    getSiteIdeOverrides.mockResolvedValue({ blog: "zed" });
+    const wrapper = mountSidebar();
+    await flushPromises();
+    expect((wrapper.get('[aria-label="Site IDE"]').element as HTMLSelectElement).value).toBe("zed");
+
+    let release: (overrides: Record<string, string>) => void = () => {};
+    getSiteIdeOverrides.mockReturnValue(
+      new Promise<Record<string, string>>((resolve) => {
+        release = resolve;
+      }),
+    );
+    await wrapper.setProps({ site: site({ name: "shop", document_root: "/srv/shop" }) });
+
+    expect((wrapper.get('[aria-label="Site IDE"]').element as HTMLSelectElement).value).toBe(
+      "default",
+    );
+    const editor = wrapper.findAll("button").find((button) => button.text() === "PhpStorm");
+    if (!editor) throw new Error("Editor button not rendered");
+    await editor.trigger("click");
+    expect(openInIde).toHaveBeenCalledWith("shop", "phpstorm");
+
+    release({ shop: "zed" });
+    await flushPromises();
+    expect((wrapper.get('[aria-label="Site IDE"]').element as HTMLSelectElement).value).toBe("zed");
+  });
+
+  it("does not roll a failed override write back onto another site", async () => {
+    getInstalledIdes.mockResolvedValue([
+      { id: "phpstorm", label: "PhpStorm" },
+      { id: "zed", label: "Zed" },
+    ]);
+    getSiteIdeOverrides.mockResolvedValue({ blog: "zed" });
+    const wrapper = mountSidebar();
+    await flushPromises();
+
+    let fail: (error: unknown) => void = () => {};
+    setSiteIdeOverride.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        fail = reject;
+      }),
+    );
+    await wrapper.get('[aria-label="Site IDE"]').setValue("phpstorm");
+
+    getSiteIdeOverrides.mockResolvedValue({});
+    await wrapper.setProps({ site: site({ name: "shop", document_root: "/srv/shop" }) });
+    await flushPromises();
+
+    fail(new Error("write failed"));
+    await flushPromises();
+
+    expect((wrapper.get('[aria-label="Site IDE"]').element as HTMLSelectElement).value).toBe(
+      "default",
+    );
+  });
+
   it("hides the editor controls on a platform with no host launcher", async () => {
     hostPlatform.value = "windows";
     getInstalledIdes.mockResolvedValue([{ id: "zed", label: "Zed" }]);

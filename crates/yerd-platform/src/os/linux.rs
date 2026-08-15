@@ -242,8 +242,16 @@ fn application_dirs() -> Vec<PathBuf> {
 
 /// `fs::metadata` rather than `entry.file_type()`: Flatpak and Nix export their
 /// desktop entries as symlinks, and the unfollowed type would skip every one.
-fn desktop_entries_in(directory: &Path, depth: u8, matches: &mut Vec<(&'static str, PathBuf)>) {
-    if matches.len() == IDE_SPECS.len() {
+///
+/// `wanted` is the set of IDE ids still unresolved by the `PATH` lookup; only
+/// those are matched, and the walk stops as soon as all of them are found.
+fn desktop_entries_in(
+    directory: &Path,
+    depth: u8,
+    wanted: &[&'static str],
+    matches: &mut Vec<(&'static str, PathBuf)>,
+) {
+    if matches.len() == wanted.len() {
         return;
     }
     let Ok(entries) = fs::read_dir(directory) else {
@@ -265,7 +273,8 @@ fn desktop_entries_in(directory: &Path, depth: u8, matches: &mut Vec<(&'static s
                 .and_then(|name| name.to_str())
                 .unwrap_or_default();
             for spec in IDE_SPECS {
-                if matches.iter().any(|(found, _)| *found == spec.id) {
+                if !wanted.contains(&spec.id) || matches.iter().any(|(found, _)| *found == spec.id)
+                {
                     continue;
                 }
                 if desktop_entry_matches(spec.id, file_name, &contents) {
@@ -274,19 +283,19 @@ fn desktop_entries_in(directory: &Path, depth: u8, matches: &mut Vec<(&'static s
                 }
             }
         } else if metadata.is_dir() && depth > 0 {
-            desktop_entries_in(&path, depth - 1, matches);
+            desktop_entries_in(&path, depth - 1, wanted, matches);
         }
-        if matches.len() == IDE_SPECS.len() {
+        if matches.len() == wanted.len() {
             return;
         }
     }
 }
 
-fn desktop_entries_for_ides() -> Vec<(&'static str, PathBuf)> {
+fn desktop_entries_for_ides(wanted: &[&'static str]) -> Vec<(&'static str, PathBuf)> {
     let mut matches = Vec::new();
     for directory in application_dirs() {
-        desktop_entries_in(&directory, 1, &mut matches);
-        if matches.len() == IDE_SPECS.len() {
+        desktop_entries_in(&directory, 1, wanted, &mut matches);
+        if matches.len() == wanted.len() {
             break;
         }
     }
@@ -360,30 +369,56 @@ impl SystemOpener for LinuxSystemOpener {
     }
 }
 
+/// Two-pass detection: resolve every spec's CLI target first, then hand only the
+/// ids that are still unresolved to `scan`. When `PATH` already covers every
+/// installed editor, `scan` is never called and detection reads no desktop entry
+/// at all. Both halves are parameters so a test can drive them without an
+/// installed IDE or a mutated environment.
+fn detect_ides<C, S>(cli: C, scan: S) -> Vec<DetectedIde>
+where
+    C: Fn(&IdeSpec) -> Option<PathBuf>,
+    S: FnOnce(&[&'static str]) -> Vec<(&'static str, PathBuf)>,
+{
+    let cli_targets: Vec<Option<PathBuf>> = IDE_SPECS.iter().map(&cli).collect();
+    let unresolved: Vec<&'static str> = IDE_SPECS
+        .iter()
+        .zip(&cli_targets)
+        .filter(|(_, target)| target.is_none())
+        .map(|(spec, _)| spec.id)
+        .collect();
+    let desktop_entries = if unresolved.is_empty() {
+        Vec::new()
+    } else {
+        scan(&unresolved)
+    };
+
+    let mut detected: Vec<DetectedIde> = IDE_SPECS
+        .iter()
+        .zip(cli_targets)
+        .filter_map(|(spec, target)| {
+            let launch = if let Some(executable) = target {
+                LaunchTarget::Cli(executable)
+            } else {
+                let entry = desktop_entries
+                    .iter()
+                    .find(|(found, _)| *found == spec.id)
+                    .map(|(_, path)| path.clone())?;
+                LaunchTarget::Application(entry)
+            };
+            Some(DetectedIde {
+                id: spec.id,
+                display_name: spec.display_name,
+                launch,
+            })
+        })
+        .collect();
+    detected.sort_by_key(|ide| spec_for(ide.id).map_or(u8::MAX, |spec| spec.rank));
+    detected
+}
+
 impl IdeLauncher for LinuxIdeLauncher {
     fn detect(&self) -> Vec<DetectedIde> {
-        let desktop_entries = desktop_entries_for_ides();
-        let mut detected: Vec<DetectedIde> = IDE_SPECS
-            .iter()
-            .filter_map(|spec| {
-                let launch = if let Some(executable) = ide_executable(spec) {
-                    LaunchTarget::Cli(executable)
-                } else {
-                    let entry = desktop_entries
-                        .iter()
-                        .find(|(found, _)| *found == spec.id)
-                        .map(|(_, path)| path.clone())?;
-                    LaunchTarget::Application(entry)
-                };
-                Some(DetectedIde {
-                    id: spec.id,
-                    display_name: spec.display_name,
-                    launch,
-                })
-            })
-            .collect();
-        detected.sort_by_key(|ide| spec_for(ide.id).map_or(u8::MAX, |spec| spec.rank));
-        detected
+        detect_ides(ide_executable, desktop_entries_for_ides)
     }
 
     fn launch(&self, ide: &DetectedIde, path: &Path) -> Result<(), PlatformError> {
@@ -860,6 +895,11 @@ mod tests {
         );
     }
 
+    /// Every known IDE id, the scan's `wanted` set when nothing resolved on `PATH`.
+    fn every_id() -> Vec<&'static str> {
+        IDE_SPECS.iter().map(|spec| spec.id).collect()
+    }
+
     #[test]
     fn desktop_entry_scan_finds_nested_application_entries() {
         let directory = tempfile::tempdir().unwrap();
@@ -873,8 +913,80 @@ mod tests {
         .unwrap();
 
         let mut matches = Vec::new();
-        desktop_entries_in(directory.path(), 1, &mut matches);
+        desktop_entries_in(directory.path(), 1, &every_id(), &mut matches);
         assert_eq!(matches, vec![("zed", entry)]);
+    }
+
+    /// An entry for an IDE the CLI pass already resolved is skipped.
+    #[test]
+    fn desktop_entries_outside_the_wanted_set_are_ignored() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("dev.zed.Zed.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Zed\nExec=zeditor %U\n",
+        )
+        .unwrap();
+        let phpstorm = directory.path().join("phpstorm.desktop");
+        fs::write(
+            &phpstorm,
+            "[Desktop Entry]\nType=Application\nName=PhpStorm\nExec=phpstorm %f\n",
+        )
+        .unwrap();
+
+        let mut matches = Vec::new();
+        desktop_entries_in(directory.path(), 0, &["phpstorm"], &mut matches);
+        assert_eq!(matches, vec![("phpstorm", phpstorm)]);
+    }
+
+    /// The whole point of the two-pass split: when `PATH` covers every editor no
+    /// desktop entry is read at all.
+    #[test]
+    fn detection_skips_the_desktop_scan_when_every_editor_resolves_via_cli() {
+        let scanned = std::cell::Cell::new(false);
+        let detected = detect_ides(
+            |spec| Some(PathBuf::from(format!("/usr/bin/{}", spec.id))),
+            |_| {
+                scanned.set(true);
+                Vec::new()
+            },
+        );
+
+        assert!(!scanned.get(), "the desktop-entry scan must not run");
+        let mut ranked: Vec<&IdeSpec> = IDE_SPECS.iter().collect();
+        ranked.sort_by_key(|spec| spec.rank);
+        let ids: Vec<&str> = detected.iter().map(|ide| ide.id).collect();
+        assert_eq!(ids, ranked.iter().map(|spec| spec.id).collect::<Vec<_>>());
+        assert!(detected
+            .iter()
+            .all(|ide| matches!(ide.launch, LaunchTarget::Cli(_))));
+    }
+
+    #[test]
+    fn detection_scans_only_for_editors_missing_from_path() {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let detected = detect_ides(
+            |spec| (spec.id == "zed").then(|| PathBuf::from("/usr/bin/zeditor")),
+            |wanted| {
+                asked.borrow_mut().extend_from_slice(wanted);
+                vec![(
+                    "phpstorm",
+                    PathBuf::from("/usr/share/applications/phpstorm.desktop"),
+                )]
+            },
+        );
+
+        assert!(!asked.borrow().contains(&"zed"));
+        assert_eq!(asked.borrow().len(), IDE_SPECS.len() - 1);
+        let ids: Vec<&str> = detected.iter().map(|ide| ide.id).collect();
+        assert_eq!(ids, vec!["phpstorm", "zed"]);
+        assert!(matches!(
+            detected.first().map(|ide| &ide.launch),
+            Some(LaunchTarget::Application(_))
+        ));
+        assert!(matches!(
+            detected.get(1).map(|ide| &ide.launch),
+            Some(LaunchTarget::Cli(_))
+        ));
     }
 
     /// Flatpak and Nix expose desktop entries as symlinks into their own store,
@@ -897,7 +1009,7 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         let mut matches = Vec::new();
-        desktop_entries_in(&applications, 0, &mut matches);
+        desktop_entries_in(&applications, 0, &every_id(), &mut matches);
         assert_eq!(matches, vec![("zed", link)]);
     }
 

@@ -218,14 +218,21 @@ async function loadEditorPreferences(siteName: string): Promise<void> {
   }
 }
 
+/** Store this site's override, showing it optimistically. The rollback on
+ *  failure is guarded by the same request id (and the site now in view) as
+ *  `loadEditorPreferences`: a write that rejects after the user has moved on
+ *  must not stamp the old site's value onto the new one. */
 async function changeIde(site: SiteEntry, value: string): Promise<void> {
+  const requestId = editorPreferenceRequestId;
   const previous = siteIdeOverride.value;
   const next = value === "default" ? null : value;
   siteIdeOverride.value = next;
   try {
     await setSiteIdeOverride(site.name, next);
   } catch (error) {
-    siteIdeOverride.value = previous;
+    if (requestId === editorPreferenceRequestId && props.site?.name === site.name) {
+      siteIdeOverride.value = previous;
+    }
     toast.error("Couldn't change the editor", (error as IpcError).message);
   }
 }
@@ -338,14 +345,19 @@ watch(
 // left showing, and refetches the WordPress admin list for the site now in view.
 // The fetch isn't gated on `wp_auto_login` being on: the picker has to be
 // populated by the time the toggle is switched on, not after.
+//
+// The editor preference is invalidated (request id bumped) and cleared in the
+// same tick, before any await: leaving the previous site's values in place would
+// let the Editor button open the new site's folder in the old site's editor for
+// as long as the two host calls take to resolve.
 watch(
   [() => props.open, () => props.site?.name],
   () => {
     activeTab.value = "general";
-    if (!props.open || !props.site) {
-      editorPreferenceRequestId += 1;
-      return;
-    }
+    editorPreferenceRequestId += 1;
+    globalIde.value = null;
+    siteIdeOverride.value = null;
+    if (!props.open || !props.site) return;
     void loadIdes();
     void loadEditorPreferences(props.site.name);
     if (!props.open || !props.site?.is_wordpress) return;

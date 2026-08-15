@@ -18,7 +18,7 @@
 //! Everything is host-side and threads failures through [`GuiError`].
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -197,16 +197,52 @@ fn load_settings() -> GuiSettings {
         .unwrap_or_default()
 }
 
+/// The scratch file [`write_settings_atomic`] serializes into. Deliberately a
+/// sibling of the target so the final `rename` stays inside one filesystem, and
+/// process-scoped so two Yerd processes writing at once can't share one temp.
+fn temp_settings_path(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(std::ffi::OsString::from)
+        .unwrap_or_else(|| std::ffi::OsString::from("gui-settings.json"));
+    name.push(format!(".{}.tmp", std::process::id()));
+    path.with_file_name(name)
+}
+
+/// Write the settings to `path` atomically: serialize into a sibling temp file,
+/// then rename it over the target. A crash (or a full disk) mid-write must never
+/// leave a truncated `gui-settings.json` behind, because [`load_settings`]
+/// swallows a parse error and hands back defaults - silently wiping autostart,
+/// tray, title bar, onboarding, and editor preferences. The temp file is removed
+/// on any failure so a failed write leaves no litter.
+fn write_settings_atomic(path: &Path, s: &GuiSettings) -> Result<(), GuiError> {
+    let json = serde_json::to_vec_pretty(s)
+        .map_err(|e| GuiError::internal(format!("serialize settings: {e}")))?;
+    let temp = temp_settings_path(path);
+    if let Err(e) = std::fs::write(&temp, &json) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(GuiError::internal(format!(
+            "cannot write {}: {e}",
+            temp.display()
+        )));
+    }
+    if let Err(e) = std::fs::rename(&temp, path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(GuiError::internal(format!(
+            "cannot write {}: {e}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 fn save_settings(s: &GuiSettings) -> Result<(), GuiError> {
     let path = settings_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| GuiError::internal(format!("cannot create {}: {e}", parent.display())))?;
     }
-    let json = serde_json::to_vec_pretty(s)
-        .map_err(|e| GuiError::internal(format!("serialize settings: {e}")))?;
-    std::fs::write(&path, json)
-        .map_err(|e| GuiError::internal(format!("cannot write {}: {e}", path.display())))
+    write_settings_atomic(&path, s)
 }
 
 /// Read the persisted "start minimized" preference (used by `main`'s setup).
@@ -1558,8 +1594,9 @@ pub(crate) fn prune_site_ide_overrides(known: &[String]) {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        daemon_self_repair_busy, decide, prune_site_overrides, reg_action, reg_plan, Decision,
-        GuiSettings, RegAction, StartPhase, TitleBarStyle, DAEMON_SELF_REPAIR_BUSY,
+        daemon_self_repair_busy, decide, prune_site_overrides, reg_action, reg_plan,
+        temp_settings_path, write_settings_atomic, Decision, GuiSettings, RegAction, StartPhase,
+        TitleBarStyle, DAEMON_SELF_REPAIR_BUSY,
     };
     use crate::tray::TrayIconVariant;
     use semver::Version;
@@ -1650,6 +1687,50 @@ mod tests {
             let kept: Vec<&str> = overrides.keys().map(String::as_str).collect();
             assert_eq!(kept, case.kept);
         }
+    }
+
+    #[test]
+    fn settings_write_round_trips_and_leaves_no_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui-settings.json");
+        let mut overrides = BTreeMap::new();
+        overrides.insert("blog".to_owned(), "zed".to_owned());
+        let settings = GuiSettings {
+            gui_maximized: true,
+            preferred_ide: Some("phpstorm".to_owned()),
+            site_ide_overrides: overrides,
+            ..GuiSettings::default()
+        };
+
+        write_settings_atomic(&path, &settings).expect("atomic write succeeds");
+
+        let raw = std::fs::read(&path).unwrap();
+        let loaded: GuiSettings = serde_json::from_slice(&raw).expect("settings deserialize");
+        assert!(loaded.gui_maximized);
+        assert_eq!(loaded.preferred_ide.as_deref(), Some("phpstorm"));
+        assert_eq!(
+            loaded.site_ide_overrides.get("blog").map(String::as_str),
+            Some("zed")
+        );
+        assert!(!temp_settings_path(&path).exists());
+    }
+
+    /// A directory squatting on the temp path makes the scratch write fail, which
+    /// is the observable stand-in for a crash or a full disk: the previously
+    /// stored settings must survive untouched rather than be truncated.
+    #[test]
+    fn a_failed_write_leaves_the_previous_settings_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui-settings.json");
+        std::fs::write(&path, br#"{"gui_maximized":true,"preferred_ide":"zed"}"#).unwrap();
+        std::fs::create_dir(temp_settings_path(&path)).unwrap();
+
+        assert!(write_settings_atomic(&path, &GuiSettings::default()).is_err());
+
+        let raw = std::fs::read(&path).unwrap();
+        let loaded: GuiSettings = serde_json::from_slice(&raw).expect("settings deserialize");
+        assert!(loaded.gui_maximized);
+        assert_eq!(loaded.preferred_ide.as_deref(), Some("zed"));
     }
 
     #[test]
