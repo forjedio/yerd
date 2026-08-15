@@ -59,6 +59,7 @@ let pendingMaximized: boolean | null = null;
 let maximizedPersistenceInFlight = false;
 let maximizedPersistenceRetry: number | null = null;
 let maximizedRefreshId = 0;
+let maximizedRefreshTimer: number | null = null;
 
 // Close mirrors the native red button: main.rs intercepts CloseRequested and
 // hides to tray rather than quitting, so this is the same close-to-tray gesture.
@@ -133,6 +134,21 @@ function refreshMaximized(): void {
     .catch(() => {});
 }
 
+/**
+ * Collapse a resize gesture's event storm into a single state read. GTK/WebKit
+ * and Windows emit resize events continuously through a live edge-drag, and
+ * every `refreshMaximized` is an IPC round trip. Only the WM-driven path is
+ * debounced: a control click or titlebar double-click still refreshes at once.
+ */
+function scheduleMaximizedRefresh(): void {
+  if (disposed) return;
+  if (maximizedRefreshTimer !== null) window.clearTimeout(maximizedRefreshTimer);
+  maximizedRefreshTimer = window.setTimeout(() => {
+    maximizedRefreshTimer = null;
+    refreshMaximized();
+  }, 150);
+}
+
 async function toggleMaximize(): Promise<void> {
   await win.toggleMaximize();
   refreshMaximized();
@@ -164,7 +180,7 @@ onMounted(() => {
     })
     .catch(() => {});
   win
-    .onResized(() => refreshMaximized())
+    .onResized(() => scheduleMaximizedRefresh())
     .then((unlisten) => {
       if (disposed) {
         unlisten();
@@ -180,6 +196,10 @@ onUnmounted(() => {
   if (maximizedPersistenceRetry !== null) {
     window.clearTimeout(maximizedPersistenceRetry);
     maximizedPersistenceRetry = null;
+  }
+  if (maximizedRefreshTimer !== null) {
+    window.clearTimeout(maximizedRefreshTimer);
+    maximizedRefreshTimer = null;
   }
   unlistenFocus?.();
   unlistenResize?.();
