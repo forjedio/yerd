@@ -28,6 +28,44 @@ pub fn wrapper_file_name(shim: &str) -> String {
     format!("{shim}.cmd")
 }
 
+/// Ownership marker embedded in a forwarding wrapper (see [`forward_wrapper_body`]).
+const FORWARD_MARKER: &str = "yerd-forward-shim";
+
+/// The `.cmd` forwarding wrapper body that invokes a real foreign executable
+/// `target` (Node's `node.exe`/`npm.cmd`/`npx.cmd`, Bun's `bun.exe`), optionally
+/// prefixing `prefix_args` before the caller's arguments and propagating the exit
+/// code. Unlike [`wrapper_body`], which re-enters `yerd.exe` under `__shim`, this
+/// calls the tool's own binary directly.
+///
+/// `call` (not a bare invocation) is deliberate: it returns control to the
+/// wrapper even when `target` is itself a batch file (`npm.cmd`/`npx.cmd`), so
+/// `exit /b %ERRORLEVEL%` still runs and the child's code propagates. CRLF line
+/// endings match [`wrapper_body`] (`cmd.exe` mishandles bare-LF batch files).
+#[must_use]
+pub fn forward_wrapper_body(target: &Path, prefix_args: &[&str]) -> String {
+    let exe = target.display();
+    let mut lead = String::new();
+    for arg in prefix_args {
+        lead.push_str(arg);
+        lead.push(' ');
+    }
+    format!(
+        "@echo off\r\n@rem {FORWARD_MARKER}\r\ncall \"{exe}\" {lead}%*\r\nexit /b %ERRORLEVEL%\r\n"
+    )
+}
+
+/// Whether `content` is a Yerd-written forwarding wrapper (its `@rem` marker
+/// line). A hand-written `node.cmd` is vanishingly unlikely to carry this exact
+/// marker, so pruning gated on it never deletes a file Yerd didn't create. This
+/// is distinct from [`is_yerd_wrapper`]: forwarding wrappers carry no `__shim`
+/// line, so the two ownership probes never overlap.
+#[must_use]
+pub fn is_yerd_forward_wrapper(content: &str) -> bool {
+    content
+        .lines()
+        .any(|line| line.trim() == format!("@rem {FORWARD_MARKER}"))
+}
+
 /// Whether `content` is a Yerd-written `.cmd` wrapper. The `" __shim "`
 /// invocation line is the ownership marker: a hand-written `php.cmd` is
 /// vanishingly unlikely to contain a quoted-exe `__shim` dispatch line ending in
@@ -94,5 +132,50 @@ mod tests {
         assert!(!is_yerd_wrapper(""));
         assert!(!is_yerd_wrapper("__shim php"));
         assert!(!is_yerd_wrapper("echo __shim is a great tool"));
+    }
+
+    #[test]
+    fn forward_wrapper_body_is_exact_crlf_shape() {
+        let target = PathBuf::from(
+            r"C:\Users\me\AppData\Local\yerd\tools\node\node-v24.17.0-win-x64\node.exe",
+        );
+        let body = forward_wrapper_body(&target, &[]);
+        assert_eq!(
+            body,
+            "@echo off\r\n@rem yerd-forward-shim\r\ncall \"C:\\Users\\me\\AppData\\Local\\yerd\\tools\\node\\node-v24.17.0-win-x64\\node.exe\" %*\r\nexit /b %ERRORLEVEL%\r\n"
+        );
+        assert!(is_yerd_forward_wrapper(&body));
+    }
+
+    #[test]
+    fn forward_wrapper_body_prefixes_args() {
+        let target = PathBuf::from(r"C:\bin\bun.exe");
+        let body = forward_wrapper_body(&target, &["x"]);
+        assert!(body.contains("call \"C:\\bin\\bun.exe\" x %*"));
+        assert!(is_yerd_forward_wrapper(&body));
+    }
+
+    #[test]
+    fn forward_wrapper_handles_spaces_in_target_path() {
+        let target = PathBuf::from(r"C:\Program Files\yerd\tools\node\npm.cmd");
+        let body = forward_wrapper_body(&target, &[]);
+        assert!(body.contains("call \"C:\\Program Files\\yerd\\tools\\node\\npm.cmd\" %*"));
+    }
+
+    #[test]
+    fn forward_and_multicall_ownership_probes_dont_overlap() {
+        let multicall = wrapper_body(Path::new(r"C:\bin\yerd.exe"), "composer");
+        let forward = forward_wrapper_body(Path::new(r"C:\bin\node.exe"), &[]);
+        assert!(is_yerd_wrapper(&multicall) && !is_yerd_forward_wrapper(&multicall));
+        assert!(is_yerd_forward_wrapper(&forward) && !is_yerd_wrapper(&forward));
+    }
+
+    #[test]
+    fn is_yerd_forward_wrapper_rejects_foreign_content() {
+        assert!(!is_yerd_forward_wrapper(
+            "@echo off\r\ncall \"C:\\node\\node.exe\" %*\r\n"
+        ));
+        assert!(!is_yerd_forward_wrapper(""));
+        assert!(!is_yerd_forward_wrapper("@rem yerd-forward-shim is neat"));
     }
 }

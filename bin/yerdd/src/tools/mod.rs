@@ -293,12 +293,52 @@ pub fn reconcile_tool_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), 
     Ok(())
 }
 
-/// Reconcile `{data}/bin` tool shims against what's installed (Windows). Only
-/// the yerd-multicall tools get `.cmd` wrappers here - `composer`, `laravel`,
-/// `wp` - since Node/Bun expose real foreign binaries whose Windows install
-/// pipeline isn't wired yet (tracked TODO). Prunes by wrapper-content ownership
-/// (never a user's own `composer.cmd`). Callers hold the shared `shim_reconcile`
-/// mutex (this writes the same dir as `php_install::reconcile_shims`).
+/// A Windows forwarding shim: a `{data}/bin/<name>.cmd` wrapper that `call`s a
+/// real foreign executable `target` (Node's `node.exe`/`npm.cmd`/`npx.cmd`,
+/// Bun's `bun.exe`), optionally injecting `prefix_args` (e.g. `bunx` → `bun x`).
+/// The Windows analogue of a Unix `(name, symlink_target)` pair.
+#[cfg(windows)]
+pub(crate) struct ForwardShim {
+    pub name: String,
+    pub target: PathBuf,
+    pub prefix_args: &'static [&'static str],
+}
+
+/// Atomically write the forwarding `.cmd` wrapper for `shim` into `bin` (temp +
+/// rename, mirroring `php_install::place_wrapper`). Idempotent: an unchanged
+/// wrapper is left untouched (antivirus-friendly).
+#[cfg(windows)]
+fn place_forward_shim(bin: &Path, shim: &ForwardShim) -> Result<(), ToolError> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use yerd_platform::pure::win_shim;
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let body = win_shim::forward_wrapper_body(&shim.target, shim.prefix_args);
+    let file = win_shim::wrapper_file_name(&shim.name);
+    let path = bin.join(&file);
+    if std::fs::read_to_string(&path).is_ok_and(|existing| existing == body) {
+        return Ok(());
+    }
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = bin.join(format!(".{file}.tmp-{}-{seq}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    std::fs::write(&tmp, body.as_bytes())
+        .map_err(|e| ToolError::Io(format!("{}: {e}", tmp.display())))?;
+    std::fs::rename(&tmp, &path).map_err(|e| ToolError::Io(format!("{}: {e}", path.display())))?;
+    Ok(())
+}
+
+/// Reconcile `{data}/bin` tool shims against what's installed (Windows).
+///
+/// Two wrapper flavours share the dir: the yerd-multicall tools (`composer`,
+/// `laravel`, `wp`) get `__shim` wrappers re-entering `yerd.exe`
+/// (`php_install::place_wrapper`); Node/Bun expose real foreign binaries, so
+/// their commands (`node`/`npm`/`npx`, `bun`/`bunx`) get forwarding wrappers that
+/// `call` those binaries directly. Pruning is per-flavour and by wrapper-content
+/// ownership - the `__shim` marker for multicall, the `@rem yerd-forward-shim`
+/// marker for forwarding - so a user's own `composer.cmd`/`node.cmd` is never
+/// deleted. Callers hold the shared `shim_reconcile` mutex (this writes the same
+/// dir as `php_install::reconcile_shims`).
 #[cfg(windows)]
 pub fn reconcile_tool_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), ToolError> {
     use yerd_platform::pure::win_shim;
@@ -307,20 +347,39 @@ pub fn reconcile_tool_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), 
     std::fs::create_dir_all(&bin).map_err(|e| ToolError::Io(format!("{}: {e}", bin.display())))?;
 
     for &tool in &Tool::ALL {
-        if matches!(tool, Tool::Node | Tool::Bun) {
-            continue;
-        }
         let installed = installed_version(dirs, tool).is_some();
-        for &name in tool.exposed_bins() {
-            let path = bin.join(win_shim::wrapper_file_name(name));
+        if matches!(tool, Tool::Node | Tool::Bun) {
             if installed {
-                crate::php_install::place_wrapper(&bin, yerd_bin, name)
-                    .map_err(|e| ToolError::Io(e.to_string()))?;
+                let links = if tool == Tool::Node {
+                    node::shim_links(dirs)
+                } else {
+                    bun::shim_links(dirs)
+                };
+                for shim in &links {
+                    place_forward_shim(&bin, shim)?;
+                }
             } else {
-                let owned =
-                    std::fs::read_to_string(&path).is_ok_and(|c| win_shim::is_yerd_wrapper(&c));
-                if owned {
-                    let _ = std::fs::remove_file(&path);
+                for &name in tool.exposed_bins() {
+                    let path = bin.join(win_shim::wrapper_file_name(name));
+                    let owned = std::fs::read_to_string(&path)
+                        .is_ok_and(|c| win_shim::is_yerd_forward_wrapper(&c));
+                    if owned {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                }
+            }
+        } else {
+            for &name in tool.exposed_bins() {
+                let path = bin.join(win_shim::wrapper_file_name(name));
+                if installed {
+                    crate::php_install::place_wrapper(&bin, yerd_bin, name)
+                        .map_err(|e| ToolError::Io(e.to_string()))?;
+                } else {
+                    let owned =
+                        std::fs::read_to_string(&path).is_ok_and(|c| win_shim::is_yerd_wrapper(&c));
+                    if owned {
+                        let _ = std::fs::remove_file(&path);
+                    }
                 }
             }
         }
@@ -371,7 +430,7 @@ pub(crate) fn verify_sha256(bytes: &[u8], want_sha: &str, label: &str) -> Result
 /// The single child **directory** of `dir` (Node/Bun archives wrap their payload
 /// in one top-level dir whose name encodes the version). Errors unless exactly
 /// one directory entry exists - never reconstructed from a version string.
-#[cfg(any(unix, test))]
+#[cfg(any(unix, windows, test))]
 pub(crate) fn extract_root_dir(dir: &Path) -> Result<PathBuf, ToolError> {
     let mut found: Option<PathBuf> = None;
     let entries =
@@ -659,7 +718,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn reconcile_writes_tool_cmd_wrappers_prunes_owned_and_skips_node_bun() {
+    fn reconcile_writes_multicall_and_forward_wrappers_and_prunes_owned() {
         use yerd_platform::pure::win_shim;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -673,27 +732,88 @@ mod tests {
         std::fs::create_dir_all(&composer_dir).unwrap();
         std::fs::write(composer_dir.join(VERSION_MARKER), "2.10.1").unwrap();
 
-        let node_dir = tool_dir(&dirs, Tool::Node);
-        std::fs::create_dir_all(&node_dir).unwrap();
-        std::fs::write(node_dir.join(VERSION_MARKER), "v24.17.0").unwrap();
+        let node_root = tool_dir(&dirs, Tool::Node).join("node-v24.17.0-win-x64");
+        std::fs::create_dir_all(&node_root).unwrap();
+        std::fs::write(node_root.join("node.exe"), b"n").unwrap();
+        std::fs::write(node_root.join("npm.cmd"), b"m").unwrap();
+        std::fs::write(node_root.join("npx.cmd"), b"x").unwrap();
+        std::fs::write(tool_dir(&dirs, Tool::Node).join(VERSION_MARKER), "v24.17.0").unwrap();
+
+        let bun_root = tool_dir(&dirs, Tool::Bun).join("bun-windows-x64");
+        std::fs::create_dir_all(&bun_root).unwrap();
+        std::fs::write(bun_root.join("bun.exe"), b"b").unwrap();
+        std::fs::write(tool_dir(&dirs, Tool::Bun).join(VERSION_MARKER), "v1.3.14").unwrap();
 
         std::fs::write(bin.join("wp.cmd"), win_shim::wrapper_body(&yerd_bin, "wp")).unwrap();
+        std::fs::write(
+            bin.join("bunx.cmd"),
+            win_shim::forward_wrapper_body(&bun_root.join("bun.exe"), &["x"]),
+        )
+        .unwrap();
         std::fs::write(bin.join("composer.bat"), b"echo foreign").unwrap();
+        std::fs::write(bin.join("node.cmd"), b"echo foreign node").unwrap();
 
         reconcile_tool_shims(&dirs, &yerd_bin).unwrap();
 
         let composer_cmd = std::fs::read_to_string(bin.join("composer.cmd")).unwrap();
         assert!(composer_cmd.contains("__shim composer %*"));
+
+        let node_cmd = std::fs::read_to_string(bin.join("node.cmd")).unwrap();
+        assert!(win_shim::is_yerd_forward_wrapper(&node_cmd));
+        assert!(node_cmd.contains("node.exe"));
+        assert!(std::fs::read_to_string(bin.join("npm.cmd"))
+            .unwrap()
+            .contains("npm.cmd"));
+        assert!(std::fs::read_to_string(bin.join("npx.cmd"))
+            .unwrap()
+            .contains("npx.cmd"));
+
+        let bun_wrapper = std::fs::read_to_string(bin.join("bun.cmd")).unwrap();
+        assert!(win_shim::is_yerd_forward_wrapper(&bun_wrapper));
+        let bunx_body = std::fs::read_to_string(bin.join("bunx.cmd")).unwrap();
+        assert!(bunx_body.contains("bun.exe") && bunx_body.contains(" x %*"));
+
         assert!(
             !bin.join("wp.cmd").exists(),
-            "uninstalled tool's owned wrapper pruned"
+            "uninstalled multicall tool's owned wrapper pruned"
         );
         assert!(
-            !bin.join("node.cmd").exists(),
-            "Node is skipped on Windows (no wrapper)"
+            bin.join("composer.bat").exists(),
+            "foreign multicall-style file untouched"
         );
-        assert!(!bin.join("npm.cmd").exists());
-        assert!(bin.join("composer.bat").exists(), "foreign file untouched");
+    }
+
+    /// A forwarding wrapper for an uninstalled Node/Bun command is pruned when
+    /// yerd owns it, but a user's own `node.cmd` (no marker) is left alone.
+    #[cfg(windows)]
+    #[test]
+    fn reconcile_prunes_owned_forward_wrappers_but_not_foreign() {
+        use yerd_platform::pure::win_shim;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let yerd_bin = tmp.path().join("yerd.exe");
+        std::fs::write(&yerd_bin, b"exe").unwrap();
+        let bin = bin_dir(&dirs);
+        std::fs::create_dir_all(&bin).unwrap();
+
+        std::fs::write(
+            bin.join("node.cmd"),
+            win_shim::forward_wrapper_body(std::path::Path::new(r"C:\old\node.exe"), &[]),
+        )
+        .unwrap();
+        std::fs::write(bin.join("npm.cmd"), b"@echo my own npm\r\n").unwrap();
+
+        reconcile_tool_shims(&dirs, &yerd_bin).unwrap();
+
+        assert!(
+            !bin.join("node.cmd").exists(),
+            "owned forward wrapper for uninstalled Node pruned"
+        );
+        assert!(
+            bin.join("npm.cmd").exists(),
+            "user's own npm.cmd left untouched"
+        );
     }
 
     #[test]

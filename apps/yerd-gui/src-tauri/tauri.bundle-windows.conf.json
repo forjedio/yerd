@@ -7,7 +7,10 @@
       "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
       "nsis": {
         "installMode": "currentUser",
-        "installerHooks": "nsis/hooks.nsh"
+        "installerHooks": "nsis/hooks.nsh",
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "icons/nsis-header.bmp",
+        "sidebarImage": "icons/nsis-sidebar.bmp"
       }
       // SIGNING SEAM (dormant - early access ships UNSIGNED, decision #5). To sign
       // later, add a "signCommand" here (Tauri bundle.windows.signCommand) or a

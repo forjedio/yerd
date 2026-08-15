@@ -148,8 +148,8 @@ pub fn render_my_bootstrap_sql() -> &'static str {
 /// so the line never duplicates or accumulates.
 #[must_use]
 pub fn render_postgresql_conf(port: u16, datadir: &Path, preload_libraries: &[&str]) -> String {
-    let hba = quote_pg_string(&datadir.join("pg_hba.conf").display().to_string());
-    let ident = quote_pg_string(&datadir.join("pg_ident.conf").display().to_string());
+    let hba = quote_pg_string(&pg_conf_path(&datadir.join("pg_hba.conf")));
+    let ident = quote_pg_string(&pg_conf_path(&datadir.join("pg_ident.conf")));
     let preload = render_preload_line(preload_libraries);
     format!(
         "# Managed by Yerd — do not edit by hand.\n\
@@ -179,6 +179,15 @@ fn render_preload_line(libraries: &[&str]) -> String {
 /// quotes by doubling them (the form Postgres' config parser expects).
 fn quote_pg_string(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
+}
+
+/// Render a filesystem path for a `postgresql.conf` value. Postgres' config
+/// parser treats a backslash as an escape inside quoted strings, so on Windows a
+/// path like `C:\Users\richa\...` would have its separators swallowed
+/// (`C:Usersricha...`) and cease to be absolute. Postgres accepts forward slashes
+/// on Windows, so normalise to them; on Unix this is a no-op.
+fn pg_conf_path(p: &Path) -> String {
+    p.display().to_string().replace('\\', "/")
 }
 
 #[cfg(test)]
@@ -325,11 +334,19 @@ mod tests {
         assert!(conf.contains("logging_collector = off"));
         assert!(conf.contains(&format!(
             "hba_file = '{}'",
-            datadir.join("pg_hba.conf").display()
+            datadir
+                .join("pg_hba.conf")
+                .display()
+                .to_string()
+                .replace('\\', "/")
         )));
         assert!(conf.contains(&format!(
             "ident_file = '{}'",
-            datadir.join("pg_ident.conf").display()
+            datadir
+                .join("pg_ident.conf")
+                .display()
+                .to_string()
+                .replace('\\', "/")
         )));
     }
 
@@ -343,6 +360,7 @@ mod tests {
                 .join("pg_hba.conf")
                 .display()
                 .to_string()
+                .replace('\\', "/")
                 .replace('\'', "''")
         );
         assert!(

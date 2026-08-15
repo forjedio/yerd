@@ -15,7 +15,7 @@ use serde::Deserialize;
 use yerd_php::{current_os_arch, is_safe_member, Arch, Downloader, Os};
 use yerd_platform::PlatformDirs;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use super::{extract_root_dir, tool_dir};
 use super::{sha_for_asset, stage_and_swap, verify_sha256, Tool, ToolError};
 
@@ -27,17 +27,25 @@ struct LatestRelease {
     tag_name: String,
 }
 
-/// The platform token Bun uses in artifact names for the host, e.g.
-/// `darwin-aarch64`. `None` if Bun publishes no build for this OS/arch.
-fn host_platform() -> Option<&'static str> {
-    let (os, arch) = current_os_arch().ok()?;
+/// The platform token Bun uses in artifact names for `(os, arch)`, e.g.
+/// `darwin-aarch64` or `windows-x64`. `None` if Bun publishes no build for that
+/// pair - notably there is no `windows-aarch64` Bun build.
+fn platform_token(os: Os, arch: Arch) -> Option<&'static str> {
     Some(match (os, arch) {
         (Os::Macos, Arch::Aarch64) => "darwin-aarch64",
         (Os::Macos, Arch::X86_64) => "darwin-x64",
         (Os::Linux, Arch::Aarch64) => "linux-aarch64",
         (Os::Linux, Arch::X86_64) => "linux-x64",
-        (Os::Windows, _) => return None,
+        (Os::Windows, Arch::X86_64) => "windows-x64",
+        (Os::Windows, Arch::Aarch64) => return None,
     })
+}
+
+/// The platform token for the running host. `None` if Bun publishes no build
+/// for this OS/arch.
+fn host_platform() -> Option<&'static str> {
+    let (os, arch) = current_os_arch().ok()?;
+    platform_token(os, arch)
 }
 
 /// Display version from a `bun-v1.3.14` tag → `v1.3.14`.
@@ -96,6 +104,30 @@ pub(crate) fn shim_links(dirs: &PlatformDirs) -> Vec<(String, PathBuf)> {
     vec![
         ("bun".to_owned(), root.join("bun")),
         ("bunx".to_owned(), bin.join("bun")),
+    ]
+}
+
+/// Forwarding shims for an installed Bun on Windows: `bun`→`bun.exe`, and
+/// `bunx`→`bun.exe x` (a `.cmd` cannot set argv0, so `bunx` is synthesized as
+/// `bun x` rather than via Bun's argv0 dispatch as on Unix). Empty if the install
+/// root can't be resolved.
+#[cfg(windows)]
+pub(crate) fn shim_links(dirs: &PlatformDirs) -> Vec<super::ForwardShim> {
+    let Ok(root) = extract_root_dir(&tool_dir(dirs, Tool::Bun)) else {
+        return Vec::new();
+    };
+    let bun = root.join("bun.exe");
+    vec![
+        super::ForwardShim {
+            name: "bun".to_owned(),
+            target: bun.clone(),
+            prefix_args: &[],
+        },
+        super::ForwardShim {
+            name: "bunx".to_owned(),
+            target: bun,
+            prefix_args: &["x"],
+        },
     ]
 }
 
@@ -161,18 +193,36 @@ mod tests {
         assert_eq!(display_version("weird"), "weird");
     }
 
-    #[cfg(not(target_os = "windows"))]
     #[test]
     fn host_platform_known() {
         assert!(host_platform().is_some());
     }
 
-    /// Bun publishes no build Yerd installs for Windows yet (Phase 5), so the
-    /// host token is deliberately `None` there.
-    #[cfg(target_os = "windows")]
     #[test]
-    fn host_platform_none_on_windows() {
-        assert!(host_platform().is_none());
+    fn platform_token_covers_supported_hosts() {
+        let cases = [
+            (Os::Macos, Arch::Aarch64, "darwin-aarch64"),
+            (Os::Macos, Arch::X86_64, "darwin-x64"),
+            (Os::Linux, Arch::Aarch64, "linux-aarch64"),
+            (Os::Linux, Arch::X86_64, "linux-x64"),
+            (Os::Windows, Arch::X86_64, "windows-x64"),
+        ];
+        for (os, arch, want) in cases {
+            assert_eq!(platform_token(os, arch), Some(want), "{os:?}/{arch:?}");
+        }
+    }
+
+    /// Bun ships no `windows-aarch64` build, so that arm alone is `None`.
+    #[test]
+    fn platform_token_none_for_windows_arm() {
+        assert_eq!(platform_token(Os::Windows, Arch::Aarch64), None);
+    }
+
+    /// Bun's asset is a `.zip` on every platform; the token is what varies.
+    #[test]
+    fn windows_asset_name_uses_zip() {
+        let plat = platform_token(Os::Windows, Arch::X86_64).unwrap();
+        assert_eq!(format!("bun-{plat}.zip"), "bun-windows-x64.zip");
     }
 
     #[test]
