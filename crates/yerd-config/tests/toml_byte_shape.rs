@@ -14,6 +14,17 @@ use std::collections::BTreeSet;
 use yerd_config::{Config, ServiceInstance, SiteOverride};
 use yerd_core::{PhpVersion, RouteRule, Site, Tld};
 
+/// An extension path this host accepts. `validate_ext_path` is host-relative
+/// (the path names a file on the machine the daemon runs on), so a hard-coded
+/// Unix path fails validation on Windows and vice versa.
+fn host_ext_path(stem: &str) -> String {
+    if cfg!(windows) {
+        format!("C:\\php\\ext\\{stem}.dll")
+    } else {
+        format!("/a/{stem}.so")
+    }
+}
+
 fn populated() -> Config {
     let mut c = Config::default();
     c.tld = Tld::new("test").unwrap();
@@ -476,7 +487,7 @@ fn populated_version_settings_and_directives_emit_between_settings_and_extension
         v83,
         vec![yerd_config::ExtEntry {
             name: "xdebug".to_string(),
-            path: "/a/xdebug.so".to_string(),
+            path: host_ext_path("xdebug"),
             zend: true,
         }],
     );
@@ -524,7 +535,7 @@ fn populated_pool_emits_between_directives_and_extensions() {
         v84,
         vec![yerd_config::ExtEntry {
             name: "xdebug".to_string(),
-            path: "/a/xdebug.so".to_string(),
+            path: host_ext_path("xdebug"),
             zend: true,
         }],
     );

@@ -12,6 +12,27 @@ vi.mock("@/ipc/client", () => ({
   pickExtensionFile,
 }));
 
+// The modal's placeholders and success toast follow the host OS, so the
+// platform singleton is mocked with a settable value rather than left unloaded.
+const hostPlatform = vi.hoisted(() => ({ value: "macos" }));
+vi.mock("@/composables/usePlatform", async () => {
+  const { computed, ref } = await import("vue");
+  const platform = ref(hostPlatform.value);
+  return {
+    loadPlatform: () => Promise.resolve(),
+    usePlatform: () => {
+      platform.value = hostPlatform.value;
+      return {
+        platform,
+        isMac: computed(() => platform.value === "macos"),
+        isLinux: computed(() => platform.value === "linux"),
+        isWindows: computed(() => platform.value === "windows"),
+        supportsPathInstall: computed(() => true),
+      };
+    },
+  };
+});
+
 const SO = "/opt/homebrew/lib/php/pecl/20250925/scrypt.so";
 
 function mountModal() {
@@ -29,6 +50,22 @@ describe("AddExtensionModal", () => {
   beforeEach(() => {
     addPhpExtension.mockReset();
     pickExtensionFile.mockReset();
+    hostPlatform.value = "macos";
+  });
+
+  // The field asks the user to type a real path, so a macOS-shaped `.so`
+  // example on Windows is actively misleading.
+  it("shows an OS-appropriate extension path and suffix", () => {
+    const unix = mountModal();
+    expect((unix.find("#ext-path").element as HTMLInputElement).placeholder).toBe(SO);
+    expect((unix.find("#ext-name").element as HTMLInputElement).placeholder).toContain(".so");
+
+    hostPlatform.value = "windows";
+    const win = mountModal();
+    const path = (win.find("#ext-path").element as HTMLInputElement).placeholder;
+    expect(path).toBe("C:\\php\\ext\\php_scrypt.dll");
+    expect(path).not.toContain("/opt/homebrew");
+    expect((win.find("#ext-name").element as HTMLInputElement).placeholder).toContain(".dll");
   });
 
   it("fills the path from the native picker", async () => {

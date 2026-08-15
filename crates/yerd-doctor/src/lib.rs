@@ -162,6 +162,18 @@ fn trust_findings(report: &StatusReport) -> Vec<Diagnosis> {
     out
 }
 
+/// Title for [`DiagnosisCode::FpmPoolFailed`]. The code's serialised form stays
+/// `fpm_pool_failed` on every OS (a wire contract); only this human-readable
+/// title follows the host, since Windows serves through `php-cgi` and has no
+/// FPM pool to fail.
+fn php_runtime_failed_title() -> &'static str {
+    if cfg!(windows) {
+        "PHP FastCGI process failed"
+    } else {
+        "PHP-FPM pool failed"
+    }
+}
+
 /// The command that installs the OS resolver redirect. Windows raises UAC from
 /// the helper itself (no `sudo`); Unix runs the elevation under `sudo`.
 #[cfg(windows)]
@@ -232,8 +244,12 @@ fn php_state_findings(report: &StatusReport) -> Vec<Diagnosis> {
         if pool.state == PoolRunState::Failed {
             out.push(fail(
                 DiagnosisCode::FpmPoolFailed,
-                "PHP-FPM pool failed",
-                format!("The PHP {} FPM pool is not running.", pool.version),
+                php_runtime_failed_title(),
+                format!(
+                    "The PHP {} {} is not running.",
+                    pool.version,
+                    yerd_core::php_vocab::POOL
+                ),
                 Some(format!(
                     "fixed automatically by `yerd doctor fix`, or restart with `yerd use {}`",
                     pool.version
@@ -1191,6 +1207,40 @@ mod tests {
         );
         #[cfg(not(windows))]
         assert!(remedy.contains("sudo"), "{remedy}");
+    }
+
+    /// The failed-runtime finding names what this host actually runs. The
+    /// `fpm_pool_failed` code is a wire contract and stays put either way;
+    /// only the title and detail follow the OS.
+    #[test]
+    fn failed_pool_finding_wording_is_os_appropriate() {
+        let mut r = healthy();
+        r.php[0].state = PoolRunState::Failed;
+        let ds = diagnose(&r, None, None, &[]);
+        let finding = ds
+            .iter()
+            .find(|d| d.code == DiagnosisCode::FpmPoolFailed)
+            .expect("failed pool warns");
+        #[cfg(not(windows))]
+        {
+            assert!(finding.title.contains("FPM pool"), "{}", finding.title);
+            assert!(finding.detail.contains("FPM pool"), "{}", finding.detail);
+        }
+        #[cfg(windows)]
+        {
+            assert!(
+                finding.title.contains("FastCGI process"),
+                "{}",
+                finding.title
+            );
+            assert!(
+                finding.detail.contains("FastCGI process"),
+                "{}",
+                finding.detail
+            );
+            assert!(!finding.title.contains("FPM"), "{}", finding.title);
+            assert!(!finding.detail.contains("FPM"), "{}", finding.detail);
+        }
     }
 
     #[test]

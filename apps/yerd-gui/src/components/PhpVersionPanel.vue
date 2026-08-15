@@ -227,7 +227,7 @@ const dirNameInput = useTemplateRef<{ focus: () => void }>("dirNameInput");
 // name (from an extension's menu) doesn't greet the user with a red error.
 const dirProblem = computed(() => {
   if (!dirName.value && !dirValue.value) return null;
-  const nameProblem = directiveNameProblem(dirName.value);
+  const nameProblem = directiveNameProblem(dirName.value, isWindows.value);
   if (nameProblem) return nameProblem;
   return dirValue.value === "" ? null : directiveValueProblem(dirValue.value);
 });
@@ -236,7 +236,7 @@ async function addDirective(): Promise<void> {
   if (isBusy.value) return;
   const name = dirName.value.trim();
   const value = dirValue.value.trim();
-  if (directiveNameProblem(name) || directiveValueProblem(value)) {
+  if (directiveNameProblem(name, isWindows.value) || directiveValueProblem(value)) {
     toast.error("Invalid directive", dirProblem.value ?? "check the name and value");
     return;
   }

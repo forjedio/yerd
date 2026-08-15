@@ -82,7 +82,14 @@ pub enum Command {
         #[command(subcommand)]
         target: InstallTarget,
     },
-    /// Restart a component's process (currently: a PHP FPM pool).
+    #[cfg_attr(
+        not(windows),
+        doc = "Restart a component's process (currently: a PHP FPM pool)."
+    )]
+    #[cfg_attr(
+        windows,
+        doc = "Restart a component's process (currently: a PHP `FastCGI` process)."
+    )]
     Restart {
         /// What to restart.
         #[command(subcommand)]
@@ -728,28 +735,59 @@ pub enum MailAction {
 /// Action of `yerd doctor`.
 #[derive(clap::Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DoctorAction {
-    /// Attempt safe, unprivileged repairs (e.g. restart a crashed FPM pool).
+    #[cfg_attr(
+        not(windows),
+        doc = "Attempt safe, unprivileged repairs (e.g. restart a crashed FPM pool)."
+    )]
+    #[cfg_attr(
+        windows,
+        doc = "Attempt safe, unprivileged repairs (e.g. restart a crashed PHP `FastCGI` process)."
+    )]
     Fix,
 }
 
 /// Action of `yerd php`.
 #[derive(clap::Subcommand, Debug, Clone)]
 pub enum PhpAction {
-    /// Manage custom PHP extensions (`.so`) loaded in both web (FPM) and CLI.
+    #[cfg_attr(
+        not(windows),
+        doc = "Manage custom PHP extensions (`.so`) loaded in both web (FPM) and CLI."
+    )]
+    #[cfg_attr(
+        windows,
+        doc = "Manage custom PHP extensions (`.dll`) loaded in both web (php-cgi) and CLI."
+    )]
     Ext {
         /// The extension action.
         #[command(subcommand)]
         action: PhpExtAction,
     },
-    /// Manage free-form per-version ini directives (e.g. `xdebug.mode`),
-    /// applied to that version's web (FPM) pool and CLI.
+    #[cfg_attr(
+        not(windows),
+        doc = "Manage free-form per-version ini directives (e.g. `xdebug.mode`),",
+        doc = "applied to that version's web (FPM) pool and CLI."
+    )]
+    #[cfg_attr(
+        windows,
+        doc = "Manage free-form per-version ini directives (e.g. `xdebug.mode`),",
+        doc = "applied to that version's web (php-cgi) process and CLI."
+    )]
     Ini {
         /// The ini directive action.
         #[command(subcommand)]
         action: PhpIniAction,
     },
-    /// Manage per-version FPM pool settings (worker ceiling), applied to that
-    /// version's web (FPM) pool only.
+    #[cfg_attr(
+        not(windows),
+        doc = "Manage per-version FPM pool settings (worker ceiling), applied to that",
+        doc = "version's web (FPM) pool only."
+    )]
+    #[cfg_attr(
+        windows,
+        doc = "Manage per-version FPM pool settings (worker ceiling). On Windows `set`",
+        doc = "and `unset` are refused (php-cgi has no worker pool); `list` still shows",
+        doc = "per-version overrides."
+    )]
     Pool {
         /// The pool setting action.
         #[command(subcommand)]
@@ -760,10 +798,19 @@ pub enum PhpAction {
 /// Action of `yerd php pool`.
 #[derive(clap::Subcommand, Debug, Clone)]
 pub enum PhpPoolAction {
-    /// Set an FPM pool setting for one installed PHP version. The only
-    /// setting is `max_children`, the ceiling on concurrent PHP workers,
-    /// accepted between 1 and 1024 (default 16). The pool is on-demand, so a
-    /// higher ceiling costs nothing while idle.
+    #[cfg_attr(
+        not(windows),
+        doc = "Set an FPM pool setting for one installed PHP version. The only",
+        doc = "setting is `max_children`, the ceiling on concurrent PHP workers,",
+        doc = "accepted between 1 and 1024 (default 16). The pool is on-demand, so a",
+        doc = "higher ceiling costs nothing while idle."
+    )]
+    #[cfg_attr(
+        windows,
+        doc = "Set an FPM pool setting for one installed PHP version. Refused on",
+        doc = "Windows: php-cgi has no worker pool, so one request per PHP version is",
+        doc = "served at a time and there is nothing to size."
+    )]
     Set {
         /// PHP version, e.g. `8.3`.
         version: String,
@@ -772,8 +819,16 @@ pub enum PhpPoolAction {
         /// Setting value, e.g. `32`.
         value: String,
     },
-    /// Reset an FPM pool setting for one installed PHP version to its
-    /// built-in default.
+    #[cfg_attr(
+        not(windows),
+        doc = "Reset an FPM pool setting for one installed PHP version to its",
+        doc = "built-in default."
+    )]
+    #[cfg_attr(
+        windows,
+        doc = "Reset an FPM pool setting for one installed PHP version. Refused on",
+        doc = "Windows: php-cgi has no worker pool."
+    )]
     Unset {
         /// PHP version, e.g. `8.3`.
         version: String,
@@ -812,19 +867,36 @@ pub enum PhpIniAction {
 /// Action of `yerd php ext`.
 #[derive(clap::Subcommand, Debug, Clone)]
 pub enum PhpExtAction {
-    /// Register a custom extension for a PHP version. The `.so` is load-probed
-    /// against that version before it is saved.
+    #[cfg_attr(
+        not(windows),
+        doc = "Register a custom extension for a PHP version. The `.so` is load-probed",
+        doc = "against that version before it is saved."
+    )]
+    #[cfg_attr(
+        windows,
+        doc = "Register a custom extension for a PHP version. The `.dll` is load-probed",
+        doc = "against that version before it is saved."
+    )]
     Add {
         /// PHP version, e.g. `8.5`.
         version: String,
-        /// Absolute path to the `.so`.
+        #[cfg_attr(not(windows), doc = "Absolute path to the `.so`.")]
+        #[cfg_attr(windows, doc = "Absolute path to the `.dll`.")]
         path: PathBuf,
         /// Load as a Zend extension (e.g. xdebug / opcache style) rather than a
         /// plain extension.
         #[arg(long)]
         zend: bool,
-        /// Name used to display and remove the extension; defaults to the `.so`
-        /// basename.
+        #[cfg_attr(
+            not(windows),
+            doc = "Name used to display and remove the extension; defaults to the `.so`",
+            doc = "basename."
+        )]
+        #[cfg_attr(
+            windows,
+            doc = "Name used to display and remove the extension; defaults to the `.dll`",
+            doc = "basename."
+        )]
         #[arg(long)]
         name: Option<String>,
     },
@@ -872,9 +944,23 @@ pub enum UnsetTarget {
 /// Target of `yerd restart`.
 #[derive(clap::Subcommand, Debug, Clone)]
 pub enum RestartTarget {
-    /// Restart a PHP FPM pool. Omit the version to restart every running pool.
+    #[cfg_attr(
+        not(windows),
+        doc = "Restart a PHP FPM pool. Omit the version to restart every running pool."
+    )]
+    #[cfg_attr(
+        windows,
+        doc = "Restart a PHP `FastCGI` process. Omit the version to restart every running process."
+    )]
     Php {
-        /// PHP version, e.g. `8.5`; omit to restart all running pools.
+        #[cfg_attr(
+            not(windows),
+            doc = "PHP version, e.g. `8.5`; omit to restart all running pools."
+        )]
+        #[cfg_attr(
+            windows,
+            doc = "PHP version, e.g. `8.5`; omit to restart all running processes."
+        )]
         version: Option<String>,
     },
     /// Restart the daemon itself (briefly interrupts all sites + this command).

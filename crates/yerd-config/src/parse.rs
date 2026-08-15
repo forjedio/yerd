@@ -2630,12 +2630,27 @@ target = \"../../etc/passwd\"\n";
         assert_eq!(c.dumps, crate::DumpsSection::default());
     }
 
+    /// Extension paths are validated against the *host's* rules (a path names a
+    /// file on this machine), so the fixture must be one this host accepts.
+    /// TOML needs the Windows separators escaped.
+    fn host_ext_path(stem: &str) -> String {
+        if cfg!(windows) {
+            format!("C:\\php\\ext\\{stem}.dll")
+        } else {
+            format!("/opt/php/pecl/{stem}.so")
+        }
+    }
+
     #[test]
     fn php_extensions_round_trip_and_default_name() {
-        let s = "version = 10\n[php]\ndefault = \"8.3\"\n\
-                 [[php.extensions.\"8.5\"]]\n\
-                 path = \"/opt/php/pecl/scrypt.so\"\nzend = false\n";
-        let c = Config::from_toml(s).unwrap();
+        let path = host_ext_path("scrypt");
+        let s = format!(
+            "version = 10\n[php]\ndefault = \"8.3\"\n\
+             [[php.extensions.\"8.5\"]]\n\
+             path = \"{}\"\nzend = false\n",
+            path.replace('\\', "\\\\")
+        );
+        let c = Config::from_toml(&s).unwrap();
         let v = c
             .php
             .extensions
@@ -2643,7 +2658,7 @@ target = \"../../etc/passwd\"\n";
             .unwrap();
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].name, "scrypt");
-        assert_eq!(v[0].path, "/opt/php/pecl/scrypt.so");
+        assert_eq!(v[0].path, path);
         assert!(!v[0].zend);
     }
 
@@ -2802,12 +2817,12 @@ target = \"../../etc/passwd\"\n";
             vec![
                 crate::ExtEntry {
                     name: "dup".to_string(),
-                    path: "/a/one.so".to_string(),
+                    path: host_ext_path("one"),
                     zend: false,
                 },
                 crate::ExtEntry {
                     name: "dup".to_string(),
-                    path: "/a/two.so".to_string(),
+                    path: host_ext_path("two"),
                     zend: false,
                 },
             ],

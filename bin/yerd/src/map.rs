@@ -2821,13 +2821,21 @@ mod tests {
         );
     }
 
+    /// The client-side validation is host-relative (an extension path names a
+    /// file on this machine), so the fixture has to be a path this host would
+    /// actually accept.
     #[test]
     fn php_ext_add_maps_and_defaults_name() {
+        let ext_path = if cfg!(windows) {
+            "C:\\php\\ext\\php_scrypt.dll"
+        } else {
+            "/opt/php/pecl/scrypt.so"
+        };
         let req = to_request(&Command::Php {
             action: crate::cli::PhpAction::Ext {
                 action: crate::cli::PhpExtAction::Add {
                     version: "8.5".into(),
-                    path: "/opt/php/pecl/scrypt.so".into(),
+                    path: ext_path.into(),
                     zend: false,
                     name: None,
                 },
@@ -2838,7 +2846,7 @@ mod tests {
             req,
             Request::AddPhpExtension {
                 version: PhpVersion::new(8, 5),
-                path: "/opt/php/pecl/scrypt.so".to_string(),
+                path: ext_path.to_string(),
                 name: None,
                 zend: false,
             }

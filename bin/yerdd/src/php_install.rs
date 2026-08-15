@@ -387,7 +387,7 @@ async fn stage(
         BinaryKind::Fpm,
         staging,
         progress,
-        "FPM",
+        yerd_core::php_vocab::POOL_SHORT,
     )
     .await?;
     write_markers(staging, &artifact.full_version, artifact.revision)

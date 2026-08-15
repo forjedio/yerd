@@ -6,6 +6,27 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 
+// The runtime column header and the pool/process wording follow the host OS,
+// so the platform singleton is mocked with a settable value.
+const hostPlatform = vi.hoisted(() => ({ value: "linux" }));
+vi.mock("@/composables/usePlatform", async () => {
+  const { computed, ref } = await import("vue");
+  const platform = ref(hostPlatform.value);
+  return {
+    loadPlatform: () => Promise.resolve(),
+    usePlatform: () => {
+      platform.value = hostPlatform.value;
+      return {
+        platform,
+        isMac: computed(() => platform.value === "macos"),
+        isLinux: computed(() => platform.value === "linux"),
+        isWindows: computed(() => platform.value === "windows"),
+        supportsPathInstall: computed(() => true),
+      };
+    },
+  };
+});
+
 import PhpView from "./PhpView.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { resetResourceCache } from "@/composables/useResource";
@@ -269,5 +290,27 @@ describe("PhpView per-version configuration", () => {
     const wrapper = await mountView();
 
     expect(wrapper.text()).not.toContain("Per-version configuration");
+  });
+});
+
+// Windows serves through php-cgi and has no FPM pool, so a screen labelled
+// "FPM" there names something the machine does not run.
+describe("PhpView runtime vocabulary", () => {
+  afterEach(() => {
+    hostPlatform.value = "linux";
+  });
+
+  it("labels the runtime column and copy for the host OS", async () => {
+    stubIpc({});
+    const unix = await mountView();
+    expect(unix.findAll("th").map((t) => t.text())).toContain("FPM");
+    expect(unix.text()).toContain("FPM pools");
+
+    hostPlatform.value = "windows";
+    stubIpc({});
+    const win = await mountView();
+    expect(win.findAll("th").map((t) => t.text())).toContain("php-cgi");
+    expect(win.text()).toContain("FastCGI processes");
+    expect(win.text()).not.toContain("FPM");
   });
 });

@@ -17,6 +17,7 @@ pub mod php_directives;
 pub mod php_extensions;
 pub mod php_pool;
 pub mod php_settings;
+pub mod php_vocab;
 mod proxy;
 mod route_rule;
 mod router;

@@ -989,7 +989,7 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
                     Ok(_) => yerd_ipc::FixResult {
                         code: yerd_ipc::DiagnosisCode::FpmPoolFailed,
                         ok: true,
-                        message: format!("restarted PHP {v} FPM pool"),
+                        message: format!("restarted PHP {v} {}", yerd_core::php_vocab::POOL),
                     },
                     Err(e) => yerd_ipc::FixResult {
                         code: yerd_ipc::DiagnosisCode::FpmPoolFailed,
@@ -4655,7 +4655,15 @@ Subject: Captured\r\n\r\nhi\r\n";
             Response::Error {
                 code: ErrorCode::InvalidPath,
                 message,
-            } => assert!(message.contains("yerd php pool"), "got: {message}"),
+            } => {
+                #[cfg(not(windows))]
+                assert!(message.contains("yerd php pool"), "got: {message}");
+                #[cfg(windows)]
+                {
+                    assert!(!message.contains("yerd php pool"), "got: {message}");
+                    assert!(message.contains("no worker pool"), "got: {message}");
+                }
+            }
             other => panic!("expected InvalidPath, got {other:?}"),
         }
         assert!(state.config.lock().await.php.directives.is_empty());

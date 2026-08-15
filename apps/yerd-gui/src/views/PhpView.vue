@@ -70,9 +70,16 @@ import {
   TEXT_SETTINGS,
 } from "@/lib/phpSettings";
 import { isLegacyVersion } from "@/lib/phpVersion";
+import { phpVocab } from "@/lib/phpVocab";
+import { usePlatform } from "@/composables/usePlatform";
 import { humaniseBytes, poolStateLabel, poolStateTone } from "@/lib/utils";
 
 const toast = useToast();
+
+// No `loadPlatform()` call: the always-mounted SideNav loads the platform
+// singleton, and the composable guards re-entry with its own promise.
+const { isWindows } = usePlatform();
+const vocab = computed(() => phpVocab(isWindows.value));
 const { report, refresh } = useDaemon();
 const operations = useOperations();
 
@@ -160,7 +167,7 @@ async function saveSettings(): Promise<void> {
     const payload: Record<string, string> = { ...settingsForm.value };
     const r = await setPhpSettings(payload);
     applySettings(r.settings);
-    toast.success("PHP settings updated", "Pools restart to apply the changes.");
+    toast.success("PHP settings updated", `${vocab.value.pools} restart to apply the changes.`);
     await reloadPhp({ force: true });
   } catch (e) {
     toast.error("Couldn't update PHP settings", (e as IpcError).message);
@@ -324,16 +331,16 @@ async function doRestart(v: PhpVersion): Promise<void> {
 
 async function doRestartAll(): Promise<void> {
   if (!anyRunning.value) {
-    toast.info("No running pools to restart");
+    toast.info(`No running ${vocab.value.pools} to restart`);
     return;
   }
   busy.value = "restart:all";
   try {
     await restartAllPhp();
-    toast.success("Restarted all running pools");
+    toast.success(`Restarted all running ${vocab.value.pools}`);
     await refresh();
   } catch (e) {
-    toast.error("Couldn't restart pools", (e as IpcError).message);
+    toast.error(`Couldn't restart ${vocab.value.pools}`, (e as IpcError).message);
   } finally {
     busy.value = null;
   }
@@ -558,7 +565,7 @@ onUnmounted(
         <thead>
           <tr class="border-b text-left text-xs uppercase text-muted-foreground">
             <th class="py-2 pr-4 font-medium">Version</th>
-            <th class="py-2 pr-4 font-medium">FPM</th>
+            <th class="py-2 pr-4 font-medium">{{ vocab.poolShort }}</th>
             <th class="py-2 pr-4 font-medium">Patch</th>
             <th class="py-2 pr-4 font-medium">Memory</th>
             <th class="py-2 pr-4 font-medium">Update</th>
@@ -655,7 +662,7 @@ onUnmounted(
           <CardTitle>Default settings</CardTitle>
           <CardDescription>
             Applied to every installed PHP version. Leave a field blank to use
-            PHP's built-in default. Saving restarts the running pools.
+            PHP's built-in default. Saving restarts the running {{ vocab.pools }}.
           </CardDescription>
         </CardHeader>
 
@@ -721,9 +728,9 @@ onUnmounted(
           <CardTitle>Per-version configuration</CardTitle>
           <CardDescription>
             Configure a single PHP version: override the defaults above, load
-            extra extensions (.so files, into both the web and CLI runtimes),
-            and add custom ini directives. Saving restarts only that version's
-            pool.
+            extra extensions ({{ vocab.extSuffix }} files, into both the web and
+            CLI runtimes), and add custom ini directives. Saving restarts only
+            that version's {{ vocab.pool }}.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -919,7 +926,7 @@ onUnmounted(
     <Modal v-model:open="uninstallOpen" title="Uninstall PHP version">
       <p class="text-sm text-muted-foreground">
         Remove <strong class="font-mono text-foreground">PHP {{ uninstallTarget }}</strong>
-        and its files? This stops its pool. Sites using it, or removing your last
+        and its files? This stops its {{ vocab.pool }}. Sites using it, or removing your last
         version, will be blocked.
       </p>
       <template #footer="{ close }">

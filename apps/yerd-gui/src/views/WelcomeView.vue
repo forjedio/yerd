@@ -24,6 +24,7 @@ import { useDaemonStart } from "@/composables/useDaemonStart";
 import { MIN_PORT, MAX_PORT, useFallbackPorts } from "@/composables/useFallbackPorts";
 import { useOnboarding } from "@/composables/useOnboarding";
 import { loadPlatform, usePlatform } from "@/composables/usePlatform";
+import { phpVocab } from "@/lib/phpVocab";
 import { useToast } from "@/composables/useToast";
 import {
   availablePhp,
@@ -276,7 +277,8 @@ async function doInstallPhp(): Promise<void> {
 // this installs onto PATH, so it's still useful there. On Windows the CLI copy
 // plus the shim dir are added to the user PATH. Optional and recommended; it
 // never blocks "Next". ──
-const { supportsPathInstall } = usePlatform();
+const { supportsPathInstall, isWindows } = usePlatform();
+const vocab = computed(() => phpVocab(isWindows.value));
 const cli = ref<CliPathStatus | null>(null);
 const cliBusy = ref(false);
 
@@ -409,7 +411,7 @@ function onBack(): void {
             <h2 class="font-display text-base font-normal tracking-wide">Install the Yerd daemon</h2>
             <p class="text-sm text-muted-foreground">
               <code>yerdd</code> is a small background service that supervises
-              PHP-FPM, serves your <code>.test</code> sites over HTTP/HTTPS,
+              {{ vocab.runtime }}, serves your <code>.test</code> sites over HTTP/HTTPS,
               answers DNS, and runs databases. It runs unprivileged - this app is
               just a client and never runs as root.
             </p>

@@ -1,7 +1,8 @@
 //! Pure validation for user-registered custom PHP extensions.
 //!
-//! Yerd lets users register native extension `.so` files that load into both a
-//! PHP version's FPM pool (`-d [zend_]extension=<path>`) and its CLI ini
+//! Yerd lets users register native extension files - `.so` on Unix, `.dll` on
+//! Windows - that load into both a
+//! PHP version's pool (`-d [zend_]extension=<path>`) and its CLI ini
 //! (`[zend_]extension = "<path>"`). The path flows into an FPM command-line
 //! argument and into a double-quoted ini value, so [`validate_ext_path`] is the
 //! **injection boundary**: it runs when an extension is registered (CLI client +
@@ -47,7 +48,8 @@ pub fn validate_ext_name(name: &str) -> Result<(), ExtError> {
     Ok(())
 }
 
-/// Validate an extension path. Must be an absolute path to a `.so`, free of the
+/// Validate an extension path. Must be an absolute path to a host-appropriate
+/// dynamic library, free of the
 /// characters that could break out of the double-quoted ini value or corrupt the
 /// `-d` argument: control characters, NUL, newline, the double-quote, and `$`.
 /// (`$` is rejected because PHP interpolates `${VAR}` inside a double-quoted ini
@@ -55,6 +57,14 @@ pub fn validate_ext_name(name: &str) -> Result<(), ExtError> {
 /// would not catch a path the rendered ini later mangles.) Spaces are allowed
 /// (the ini value is quoted and the `-d` value is a single argv element), so a
 /// path under a spaced directory still validates.
+///
+/// Both the "absolute" and the suffix rule are **host-relative**, because an
+/// extension path only ever names a file on the machine the daemon runs on.
+/// Unix wants `/usr/lib/php/xdebug.so`; Windows wants `C:\php\ext\php_xdebug.dll`
+/// (or a UNC path), which [`Path::is_absolute`] accepts and a leading-`/` test
+/// would reject with the nonsensical "path must be absolute". The suffix comes
+/// from [`crate::php_vocab::EXT_SUFFIX`], and is matched case-insensitively on
+/// Windows only, where the filesystem itself is.
 ///
 /// # Errors
 /// [`ExtError::Path`] with the specific [`PathErrorReason`].
@@ -66,10 +76,10 @@ pub fn validate_ext_path(path: &str) -> Result<(), ExtError> {
     if path.len() > MAX_PATH_LEN {
         return err(PathErrorReason::TooLong);
     }
-    if !path.starts_with('/') {
+    if !Path::new(path).is_absolute() {
         return err(PathErrorReason::NotAbsolute);
     }
-    if Path::new(path).extension().and_then(|e| e.to_str()) != Some("so") {
+    if !has_host_ext_suffix(path) {
         return err(PathErrorReason::NotSharedObject);
     }
     if path
@@ -86,9 +96,9 @@ pub fn validate_ext_path(path: &str) -> Result<(), ExtError> {
 ///
 /// # Errors
 /// The first failing of [`validate_ext_path`] / [`validate_ext_name`]. Path is
-/// checked first: when a name is auto-derived from a non-`.so` path it inherits
-/// the extension (e.g. `scrypt.dylib`) and would fail the name charset, masking
-/// the clearer "must end in .so" reason.
+/// checked first: when a name is auto-derived from a path with the wrong suffix
+/// it inherits the extension (e.g. `scrypt.dylib`) and would fail the name
+/// charset, masking the clearer "must end in .so" / ".dll" reason.
 pub fn validate_entry(name: &str, path: &str, zend: bool) -> Result<(), ExtError> {
     let _ = zend;
     validate_ext_path(path)?;
@@ -96,18 +106,56 @@ pub fn validate_entry(name: &str, path: &str, zend: bool) -> Result<(), ExtError
     Ok(())
 }
 
-/// Derive a default name from a `.so` path: the file stem (basename minus the
-/// `.so` suffix). Returns `None` when the path has no usable file name. The
+/// The bare host extension suffix (no leading dot), as
+/// [`crate::php_vocab::EXT_SUFFIX`] spells it for prose.
+fn host_ext() -> &'static str {
+    crate::php_vocab::EXT_SUFFIX.trim_start_matches('.')
+}
+
+/// Whether `path`'s final component carries the host's dynamic-library suffix.
+/// Case-insensitive on Windows, where the filesystem is; exact elsewhere.
+fn has_host_ext_suffix(path: &str) -> bool {
+    let Some(ext) = Path::new(path).extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    if cfg!(windows) {
+        ext.eq_ignore_ascii_case(host_ext())
+    } else {
+        ext == host_ext()
+    }
+}
+
+/// Derive a default name from an extension path: the file stem (basename minus
+/// the host suffix, e.g. `.so` or `.dll`). Returns `None` when the path has no
+/// usable file name. The
 /// result is not guaranteed to satisfy [`validate_ext_name`] (a stem may contain
 /// dots or other characters), so callers still validate it.
 #[must_use]
 pub fn default_name_from_path(path: &str) -> Option<String> {
-    let stem = Path::new(path).file_name()?.to_str()?;
-    let stem = stem.strip_suffix(".so").unwrap_or(stem);
+    let file = Path::new(path).file_name()?.to_str()?;
+    let stem = strip_host_suffix(file);
     if stem.is_empty() {
         return None;
     }
     Some(stem.to_owned())
+}
+
+/// Strip the host's dynamic-library suffix from a file name, case-insensitively
+/// on Windows. Returns `file` unchanged when the suffix is absent. Indexes
+/// through `get` rather than `split_at` so a name ending in a multi-byte
+/// character cannot panic on a non-char-boundary split.
+fn strip_host_suffix(file: &str) -> &str {
+    let suffix = crate::php_vocab::EXT_SUFFIX;
+    if !cfg!(windows) {
+        return file.strip_suffix(suffix).unwrap_or(file);
+    }
+    let Some(cut) = file.len().checked_sub(suffix.len()) else {
+        return file;
+    };
+    match (file.get(..cut), file.get(cut..)) {
+        (Some(head), Some(tail)) if tail.eq_ignore_ascii_case(suffix) => head,
+        _ => file,
+    }
 }
 
 /// Failure to validate a custom extension.
@@ -159,9 +207,11 @@ pub enum PathErrorReason {
     Empty,
     /// Longer than the accepted maximum.
     TooLong,
-    /// Not an absolute path (no leading `/`).
+    /// Not an absolute path for this host (`/...` on Unix; a drive or UNC
+    /// prefix on Windows).
     NotAbsolute,
-    /// Does not end in `.so`.
+    /// Does not carry the host's dynamic-library suffix (`.so`, or `.dll` on
+    /// Windows).
     NotSharedObject,
     /// Contained a control character, NUL, newline, or a double-quote.
     IllegalCharacter,
@@ -173,7 +223,13 @@ impl fmt::Display for PathErrorReason {
             Self::Empty => "path must not be empty",
             Self::TooLong => "path is too long",
             Self::NotAbsolute => "path must be absolute",
-            Self::NotSharedObject => "path must end in .so",
+            Self::NotSharedObject => {
+                if cfg!(windows) {
+                    "path must end in .dll"
+                } else {
+                    "path must end in .so"
+                }
+            }
             Self::IllegalCharacter => "path contains an illegal character",
         };
         f.write_str(msg)
@@ -190,14 +246,86 @@ impl fmt::Display for PathErrorReason {
 mod tests {
     use super::*;
 
+    /// An absolute path this host accepts, so the shared assertions below do
+    /// not have to be written twice. Unix wants a leading slash and `.so`;
+    /// Windows wants a drive prefix and `.dll`.
+    fn host_path(stem: &str) -> String {
+        host_path_with_suffix(stem, crate::php_vocab::EXT_SUFFIX)
+    }
+
+    /// [`host_path`] with an explicit suffix, for the wrong-suffix rejections:
+    /// the path must still be *absolute* for this host, or the suffix check is
+    /// never reached.
+    fn host_path_with_suffix(stem: &str, suffix: &str) -> String {
+        if cfg!(windows) {
+            format!("C:\\php\\ext\\{stem}{suffix}")
+        } else {
+            format!("/a/{stem}{suffix}")
+        }
+    }
+
     #[test]
     fn valid_name_and_path_pass() {
         validate_ext_name("scrypt").unwrap();
         validate_ext_name("my_ext-2").unwrap();
+        validate_ext_path(&host_path("scrypt")).unwrap();
+        validate_entry("scrypt", &host_path("scrypt"), false).unwrap();
+        validate_entry("xdebug", &host_path("xdebug"), true).unwrap();
+    }
+
+    /// A spaced directory is legal on both hosts (the ini value is quoted and
+    /// the `-d` value is one argv element).
+    #[test]
+    fn spaced_directory_is_accepted() {
+        let path = if cfg!(windows) {
+            "C:\\space dir\\x.dll"
+        } else {
+            "/space dir/x.so"
+        };
+        validate_ext_path(path).unwrap();
+    }
+
+    /// Both rules follow the host, so a path valid on one is rejected on the
+    /// other. Before this was host-aware, a Windows user typing a real
+    /// `C:\php\ext\php_xdebug.dll` was told "path must be absolute".
+    #[cfg(windows)]
+    #[test]
+    fn windows_accepts_drive_and_unc_dll_paths() {
+        validate_ext_path("C:\\php\\ext\\php_xdebug.dll").unwrap();
+        validate_ext_path("\\\\server\\share\\php_xdebug.dll").unwrap();
+        validate_ext_path("C:\\php\\ext\\PHP_XDEBUG.DLL")
+            .expect("NTFS is case-insensitive, so the suffix match must be too");
+        assert!(matches!(
+            validate_ext_path("/opt/homebrew/lib/scrypt.so"),
+            Err(ExtError::Path {
+                reason: PathErrorReason::NotAbsolute
+            })
+        ));
+        assert!(matches!(
+            validate_ext_path("C:\\php\\ext\\scrypt.so"),
+            Err(ExtError::Path {
+                reason: PathErrorReason::NotSharedObject
+            })
+        ));
+    }
+
+    /// See [`windows_accepts_drive_and_unc_dll_paths`]: the mirror case.
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_accepts_only_rooted_so_paths() {
         validate_ext_path("/opt/homebrew/lib/php/pecl/20250925/scrypt.so").unwrap();
-        validate_ext_path("/space dir/x.so").unwrap();
-        validate_entry("scrypt", "/a/scrypt.so", false).unwrap();
-        validate_entry("xdebug", "/a/xdebug.so", true).unwrap();
+        assert!(matches!(
+            validate_ext_path("C:\\php\\ext\\php_xdebug.dll"),
+            Err(ExtError::Path {
+                reason: PathErrorReason::NotAbsolute
+            })
+        ));
+        assert!(matches!(
+            validate_ext_path("/a/x.dll"),
+            Err(ExtError::Path {
+                reason: PathErrorReason::NotSharedObject
+            })
+        ));
     }
 
     #[test]
@@ -237,29 +365,22 @@ mod tests {
             })
         ));
         assert!(matches!(
-            validate_ext_path("/a/x.dylib"),
+            validate_ext_path(&host_path_with_suffix("x", ".dylib")),
             Err(ExtError::Path {
                 reason: PathErrorReason::NotSharedObject
             })
         ));
-        assert!(matches!(
-            validate_ext_path("/a/\"evil\".so"),
-            Err(ExtError::Path {
-                reason: PathErrorReason::IllegalCharacter
-            })
-        ));
-        assert!(matches!(
-            validate_ext_path("/a/new\nline.so"),
-            Err(ExtError::Path {
-                reason: PathErrorReason::IllegalCharacter
-            })
-        ));
-        assert!(matches!(
-            validate_ext_path("/a/${HOME}/x.so"),
-            Err(ExtError::Path {
-                reason: PathErrorReason::IllegalCharacter
-            })
-        ));
+        for stem in ["\"evil\"", "new\nline", "${HOME}"] {
+            assert!(
+                matches!(
+                    validate_ext_path(&host_path(stem)),
+                    Err(ExtError::Path {
+                        reason: PathErrorReason::IllegalCharacter
+                    })
+                ),
+                "{stem}"
+            );
+        }
         assert!(matches!(
             validate_ext_path(""),
             Err(ExtError::Path {
@@ -271,11 +392,32 @@ mod tests {
     #[test]
     fn default_name_derivation() {
         assert_eq!(
-            default_name_from_path("/a/b/scrypt.so").as_deref(),
+            default_name_from_path(&host_path("scrypt")).as_deref(),
             Some("scrypt")
         );
-        assert_eq!(default_name_from_path("/a/b/x.so").as_deref(), Some("x"));
+        assert_eq!(
+            default_name_from_path(&host_path("x")).as_deref(),
+            Some("x")
+        );
         assert_eq!(default_name_from_path("/").as_deref(), None);
+        // A foreign suffix is kept, so the derived name fails the name charset
+        // with the clearer "wrong suffix" reason rather than a silent truncation.
+        assert_eq!(
+            default_name_from_path(&host_path_with_suffix("scrypt", ".dylib")).as_deref(),
+            Some("scrypt.dylib")
+        );
+    }
+
+    /// The derived name must not keep a shouty suffix on a case-insensitive
+    /// filesystem: `PHP_XDEBUG.DLL` registers as `PHP_XDEBUG`, not
+    /// `PHP_XDEBUG.DLL` (which would fail the name charset).
+    #[cfg(windows)]
+    #[test]
+    fn default_name_strips_a_windows_suffix_case_insensitively() {
+        assert_eq!(
+            default_name_from_path("C:\\php\\ext\\PHP_XDEBUG.DLL").as_deref(),
+            Some("PHP_XDEBUG")
+        );
     }
 
     #[test]

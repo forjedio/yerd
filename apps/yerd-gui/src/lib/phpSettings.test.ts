@@ -47,37 +47,48 @@ describe("overrideCount", () => {
 describe("directiveNameProblem", () => {
   it("accepts real extension directive names", () => {
     for (const name of ["xdebug.mode", "opcache.enable", "zend.assertions", "_x"]) {
-      expect(directiveNameProblem(name)).toBeNull();
+      expect(directiveNameProblem(name, false)).toBeNull();
     }
   });
 
   it("flags allowlisted settings and reserved names", () => {
-    expect(directiveNameProblem("memory_limit")).toMatch(/settings form/);
-    expect(directiveNameProblem("extension")).toMatch(/extensions/);
-    expect(directiveNameProblem("openssl.cafile")).toMatch(/CA bundle/);
+    expect(directiveNameProblem("memory_limit", false)).toMatch(/settings form/);
+    expect(directiveNameProblem("extension", false)).toMatch(/extensions/);
+    expect(directiveNameProblem("openssl.cafile", false)).toMatch(/CA bundle/);
   });
 
   it("treats Object.prototype member names as ordinary directives, not inherited hints", () => {
     for (const name of ["constructor", "toString", "valueOf", "hasOwnProperty"]) {
-      expect(directiveNameProblem(name)).toBeNull();
+      expect(directiveNameProblem(name, false)).toBeNull();
     }
   });
 
   it("flags malformed names", () => {
     for (const name of ["", "1st", ".dot", "has space", "semi;colon"]) {
-      expect(directiveNameProblem(name)).not.toBeNull();
+      expect(directiveNameProblem(name, false)).not.toBeNull();
     }
   });
 
   it("flags FPM pool settings, which are not ini directives", () => {
     for (const name of ["pm.max_children", "pm.start_servers", "pm.max_requests"]) {
-      expect(directiveNameProblem(name)).toMatch(/FPM pool/);
+      expect(directiveNameProblem(name, false)).toMatch(/FPM pool field above/);
+    }
+  });
+
+  // Windows has no pool field to point at, and the daemon refuses pool sizing
+  // there, so the hint must not send the user looking for a control. Keep this
+  // in step with `php_directives::reserved`'s own Windows arm.
+  it("gives a Windows-appropriate pm. hint", () => {
+    for (const name of ["pm.max_children", "pm.start_servers"]) {
+      const hint = directiveNameProblem(name, true) ?? "";
+      expect(hint).toMatch(/no worker pool/);
+      expect(hint).not.toMatch(/field above/);
     }
   });
 
   it("does not flag names that merely start with pm", () => {
     for (const name of ["pm", "pmx", "pm_max_children"]) {
-      expect(directiveNameProblem(name)).toBeNull();
+      expect(directiveNameProblem(name, false)).toBeNull();
     }
   });
 });
