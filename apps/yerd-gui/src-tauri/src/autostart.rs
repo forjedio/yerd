@@ -189,17 +189,41 @@ fn settings_path() -> Result<PathBuf, GuiError> {
     Ok(dirs.config.join("gui-settings.json"))
 }
 
+/// Serializes every read-modify-write of `gui-settings.json` within this
+/// process. The temp file [`write_settings_atomic`] uses is only process-scoped,
+/// so without this two threads writing at once would share one scratch path and
+/// interleave into it; holding it across load-mutate-save additionally stops two
+/// updates to different fields from losing one another. Not reentrant: code that
+/// already holds it must use [`save_settings_at`], never [`save_settings`].
+static SETTINGS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take [`SETTINGS_LOCK`], ignoring poisoning: the guarded data is `()`, so a
+/// panicking writer leaves nothing in memory to be inconsistent.
+fn lock_settings() -> std::sync::MutexGuard<'static, ()> {
+    SETTINGS_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Read settings from an explicit path, falling back to defaults for a missing,
+/// unreadable, or unparseable file.
+fn read_settings_at(path: &Path) -> GuiSettings {
+    std::fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
 fn load_settings() -> GuiSettings {
     settings_path()
         .ok()
-        .and_then(|p| std::fs::read(p).ok())
-        .and_then(|b| serde_json::from_slice(&b).ok())
+        .map(|p| read_settings_at(&p))
         .unwrap_or_default()
 }
 
 /// The scratch file [`write_settings_atomic`] serializes into. Deliberately a
 /// sibling of the target so the final `rename` stays inside one filesystem, and
 /// process-scoped so two Yerd processes writing at once can't share one temp.
+/// Writers *inside* one process share this path, so they are serialized by
+/// [`SETTINGS_LOCK`] instead.
 fn temp_settings_path(path: &Path) -> PathBuf {
     let mut name = path
         .file_name()
@@ -236,13 +260,50 @@ fn write_settings_atomic(path: &Path, s: &GuiSettings) -> Result<(), GuiError> {
     Ok(())
 }
 
-fn save_settings(s: &GuiSettings) -> Result<(), GuiError> {
-    let path = settings_path()?;
+/// Create the parent directory if needed and write `s` to `path` atomically.
+/// Assumes [`SETTINGS_LOCK`] is already held by the caller.
+fn save_settings_at(path: &Path, s: &GuiSettings) -> Result<(), GuiError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| GuiError::internal(format!("cannot create {}: {e}", parent.display())))?;
     }
-    write_settings_atomic(&path, s)
+    write_settings_atomic(path, s)
+}
+
+fn save_settings(s: &GuiSettings) -> Result<(), GuiError> {
+    let path = settings_path()?;
+    let _guard = lock_settings();
+    save_settings_at(&path, s)
+}
+
+/// Read-modify-write the settings file under [`SETTINGS_LOCK`], skipping the
+/// write when `mutate` reports it changed nothing.
+fn update_settings_if_at(
+    path: &Path,
+    mutate: impl FnOnce(&mut GuiSettings) -> bool,
+) -> Result<(), GuiError> {
+    let _guard = lock_settings();
+    let mut s = read_settings_at(path);
+    if !mutate(&mut s) {
+        return Ok(());
+    }
+    save_settings_at(path, &s)
+}
+
+/// [`update_settings`] for a `mutate` that may decide no write is warranted.
+fn update_settings_if(mutate: impl FnOnce(&mut GuiSettings) -> bool) -> Result<(), GuiError> {
+    let path = settings_path()?;
+    update_settings_if_at(&path, mutate)
+}
+
+/// Apply `mutate` to the stored settings and persist the result, holding
+/// [`SETTINGS_LOCK`] across the whole load-mutate-save so a concurrent update to
+/// another field can't be lost. `mutate` must not itself touch the settings file.
+fn update_settings(mutate: impl FnOnce(&mut GuiSettings)) -> Result<(), GuiError> {
+    update_settings_if(|s| {
+        mutate(s);
+        true
+    })
 }
 
 /// Read the persisted "start minimized" preference (used by `main`'s setup).
@@ -338,9 +399,7 @@ pub fn setup_state() -> SetupState {
 /// Mark the first-run welcome journey complete (persisted in `gui-settings.json`).
 #[tauri::command]
 pub fn mark_onboarded() -> Result<(), GuiError> {
-    let mut s = load_settings();
-    s.onboarding_complete = true;
-    save_settings(&s)
+    update_settings(|s| s.onboarding_complete = true)
 }
 
 // ── command helpers ──────────────────────────────────────────────────────────
@@ -1459,9 +1518,7 @@ pub fn get_autostart(app: tauri::AppHandle) -> Result<AutostartState, GuiError> 
 #[tauri::command]
 pub fn set_autostart_daemon(on: bool, nudge: bool) -> Result<(), GuiError> {
     daemon_set_login(on, nudge)?;
-    let mut s = load_settings();
-    s.daemon_autostart = on;
-    save_settings(&s)
+    update_settings(|s| s.daemon_autostart = on)
 }
 
 #[tauri::command]
@@ -1482,17 +1539,13 @@ pub fn set_autostart_gui(app: tauri::AppHandle, on: bool, nudge: bool) -> Result
 
 #[tauri::command]
 pub fn set_gui_minimized(on: bool) -> Result<(), GuiError> {
-    let mut s = load_settings();
-    s.gui_minimized = on;
-    save_settings(&s)
+    update_settings(|s| s.gui_minimized = on)
 }
 
 /// Persist the main GUI window's native maximize state.
 #[tauri::command]
 pub fn set_gui_maximized(maximized: bool) -> Result<(), GuiError> {
-    let mut s = load_settings();
-    s.gui_maximized = maximized;
-    save_settings(&s)
+    update_settings(|s| s.gui_maximized = maximized)
 }
 
 /// Current tray icon variant, for the Settings screen.
@@ -1507,9 +1560,7 @@ pub fn set_tray_icon_variant(
     app: tauri::AppHandle,
     variant: TrayIconVariant,
 ) -> Result<(), GuiError> {
-    let mut s = load_settings();
-    s.tray_icon_variant = variant;
-    save_settings(&s)?;
+    update_settings(|s| s.tray_icon_variant = variant)?;
     crate::tray::set_cached_variant(variant);
     crate::tray::spawn_refresh(app);
     Ok(())
@@ -1526,9 +1577,7 @@ pub fn get_title_bar_style() -> TitleBarStyle {
 /// trigger here - each open window picks up the change via its own broadcast.
 #[tauri::command]
 pub fn set_title_bar_style(style: TitleBarStyle) -> Result<(), GuiError> {
-    let mut s = load_settings();
-    s.title_bar_style = style;
-    save_settings(&s)
+    update_settings(|s| s.title_bar_style = style)
 }
 
 /// Current global preferred editor, for the Settings screen. `None` means
@@ -1541,9 +1590,7 @@ pub fn get_preferred_ide() -> Option<String> {
 /// Persist the chosen global preferred editor; `None` restores auto-detect.
 #[tauri::command]
 pub fn set_preferred_ide(ide: Option<String>) -> Result<(), GuiError> {
-    let mut s = load_settings();
-    s.preferred_ide = ide;
-    save_settings(&s)
+    update_settings(|s| s.preferred_ide = ide)
 }
 
 /// Every stored per-site editor override, keyed by site name.
@@ -1557,16 +1604,14 @@ pub fn get_site_ide_overrides() -> BTreeMap<String, String> {
 /// editor-open commands, which already hold an authoritative site list.
 #[tauri::command]
 pub fn set_site_ide_override(site: String, ide: Option<String>) -> Result<(), GuiError> {
-    let mut s = load_settings();
-    match ide {
+    update_settings(|s| match ide {
         Some(ide) => {
             s.site_ide_overrides.insert(site, ide);
         }
         None => {
             s.site_ide_overrides.remove(&site);
         }
-    }
-    save_settings(&s)
+    })
 }
 
 /// Drop overrides for sites absent from `known`, reporting whether the map
@@ -1584,19 +1629,16 @@ pub(crate) fn prune_site_overrides(
 /// removed. Cosmetic housekeeping: a failed write is not worth failing the
 /// editor launch the caller is in the middle of.
 pub(crate) fn prune_site_ide_overrides(known: &[String]) {
-    let mut s = load_settings();
-    if prune_site_overrides(&mut s.site_ide_overrides, known) {
-        let _ = save_settings(&s);
-    }
+    let _ = update_settings_if(|s| prune_site_overrides(&mut s.site_ide_overrides, known));
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        daemon_self_repair_busy, decide, prune_site_overrides, reg_action, reg_plan,
-        temp_settings_path, write_settings_atomic, Decision, GuiSettings, RegAction, StartPhase,
-        TitleBarStyle, DAEMON_SELF_REPAIR_BUSY,
+        daemon_self_repair_busy, decide, prune_site_overrides, read_settings_at, reg_action,
+        reg_plan, temp_settings_path, update_settings_if_at, write_settings_atomic, Decision,
+        GuiSettings, RegAction, StartPhase, TitleBarStyle, DAEMON_SELF_REPAIR_BUSY,
     };
     use crate::tray::TrayIconVariant;
     use semver::Version;
@@ -1731,6 +1773,58 @@ mod tests {
         let loaded: GuiSettings = serde_json::from_slice(&raw).expect("settings deserialize");
         assert!(loaded.gui_maximized);
         assert_eq!(loaded.preferred_ide.as_deref(), Some("zed"));
+    }
+
+    /// Two writers in one process share a single process-scoped temp path, so
+    /// unserialized they interleave their scratch writes and their
+    /// load-mutate-save cycles drop each other's changes.
+    /// `update_settings_if_at` is the path-injectable form of the helper every
+    /// settings command now goes through, and takes the same `SETTINGS_LOCK`,
+    /// so surviving keys here are evidence for the real commands too.
+    #[test]
+    fn concurrent_updates_keep_every_change_and_leave_a_parseable_file() {
+        const ROUNDS: usize = 50;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui-settings.json");
+
+        std::thread::scope(|scope| {
+            for (prefix, maximizes) in [("a", true), ("b", false)] {
+                let path = &path;
+                scope.spawn(move || {
+                    for i in 0..ROUNDS {
+                        update_settings_if_at(path, |s| {
+                            s.site_ide_overrides
+                                .insert(format!("{prefix}{i}"), "zed".to_owned());
+                            if maximizes {
+                                s.gui_maximized = true;
+                            } else {
+                                s.preferred_ide = Some("phpstorm".to_owned());
+                            }
+                            true
+                        })
+                        .unwrap();
+                    }
+                });
+            }
+        });
+
+        let loaded = read_settings_at(&path);
+        assert_eq!(loaded.site_ide_overrides.len(), ROUNDS * 2);
+        assert!(loaded.gui_maximized);
+        assert_eq!(loaded.preferred_ide.as_deref(), Some("phpstorm"));
+        assert!(!temp_settings_path(&path).exists());
+    }
+
+    /// A `mutate` that reports no change must not rewrite the file - the
+    /// `prune_site_ide_overrides` housekeeping path depends on it.
+    #[test]
+    fn an_unchanged_update_skips_the_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui-settings.json");
+
+        update_settings_if_at(&path, |_| false).expect("no-op update succeeds");
+
+        assert!(!path.exists());
     }
 
     #[test]
