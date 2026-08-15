@@ -31,6 +31,39 @@ describe("rescanIdes", () => {
     await expect(rescanIdes()).resolves.toBe(0);
   });
 
+  it("waits for the newer scan when the superseded one resolves first", async () => {
+    getInstalledIdes.mockResolvedValueOnce([ide("vscode"), ide("phpstorm")]);
+    let releaseSecond!: (v: IdeOption[]) => void;
+    getInstalledIdes.mockReturnValueOnce(
+      new Promise<IdeOption[]>((resolve) => {
+        releaseSecond = resolve;
+      }),
+    );
+
+    const first = rescanIdes();
+    const second = rescanIdes();
+
+    releaseSecond([ide("zed")]);
+    await expect(first).resolves.toBe(1);
+    await expect(second).resolves.toBe(1);
+    expect(useIdes().installedIdes.value.map((i) => i.id)).toEqual(["zed"]);
+  });
+
+  it("falls back to the cache when a reset supersedes an in-flight scan", async () => {
+    let release!: (v: IdeOption[]) => void;
+    getInstalledIdes.mockReturnValueOnce(
+      new Promise<IdeOption[]>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const scan = rescanIdes();
+
+    resetIdes();
+    release([ide("vscode")]);
+
+    await expect(scan).resolves.toBe(0);
+  });
+
   it("reports the newer result when a later scan supersedes it", async () => {
     let releaseFirst!: (v: IdeOption[]) => void;
     getInstalledIdes.mockReturnValueOnce(

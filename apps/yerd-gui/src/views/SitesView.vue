@@ -16,6 +16,7 @@ import {
   Plus,
   Rocket,
   Search,
+  SearchX,
   ShieldAlert,
 } from "lucide-vue-next";
 
@@ -426,6 +427,10 @@ const visibleSections = computed(() =>
 // match" copy as the flat view instead of a blank pane.
 const groupedNoMatch = computed(() => searching.value && visibleSections.value.length === 0);
 
+/** Shared by the flat and grouped listings, which each render their own
+ *  filter-miss state but must word it identically. */
+const filterMissTitle = computed(() => `No sites match “${siteFilter.value}”`);
+
 /** A section renders expanded when searching (to reveal matches) or when not
  *  remembered-collapsed. */
 function sectionExpanded(sec: GroupSection): boolean {
@@ -759,15 +764,18 @@ async function shareSitePublicly(s: Site): Promise<void> {
               @toggle-secure="toggleSecure"
             />
           </div>
-          <p
+          <EmptyState
             v-else-if="siteFilter"
-            class="py-12 text-center text-sm text-muted-foreground"
-          >
-            No sites match “{{ siteFilter }}”.
-          </p>
-          <p v-else class="py-12 text-center text-sm text-muted-foreground">
-            Your parked folders have no child directories yet.
-          </p>
+            :icon="SearchX"
+            :title="filterMissTitle"
+            description="Every domain a site serves is searched, including added domains and wildcards. Try a shorter fragment, or clear the filter."
+          />
+          <EmptyState
+            v-else
+            :icon="FolderOpen"
+            title="No sites yet"
+            description="Your parked folders have no child directories. Add a project inside one, or link a single project directory."
+          />
         </template>
 
         <!-- Grouped listing: collapsible sections + trailing Unallocated. -->
@@ -858,12 +866,12 @@ async function shareSitePublicly(s: Site): Promise<void> {
               </div>
             </section>
           </div>
-          <p
+          <EmptyState
             v-if="groupedNoMatch"
-            class="py-12 text-center text-sm text-muted-foreground"
-          >
-            No sites match “{{ siteFilter }}”.
-          </p>
+            :icon="SearchX"
+            :title="filterMissTitle"
+            description="Every domain a site serves is searched, including added domains and wildcards. Try a shorter fragment, or clear the filter."
+          />
         </template>
 
         <!-- Parked folders (demoted: the management surface, below the sites) -->

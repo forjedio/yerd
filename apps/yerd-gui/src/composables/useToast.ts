@@ -14,12 +14,12 @@ export interface Toast {
 const toasts = ref<Toast[]>([]);
 let nextId = 1;
 
-/** `ttlMs` overrides the per-kind default, for a confirmation that shouldn't
+/** Raise a toast that auto-dismisses: errors linger, success and info clear
+ *  sooner. `ttlMs` overrides that default, for a confirmation that shouldn't
  *  outstay its welcome (an idempotent action the user may repeat). */
 function push(kind: ToastKind, title: string, detail?: string, ttlMs?: number): number {
   const id = nextId++;
   toasts.value = [...toasts.value, { id, kind, title, detail }];
-  // Errors linger; success/info auto-dismiss.
   const ttl = ttlMs ?? (kind === "error" ? 8000 : 4000);
   setTimeout(() => dismiss(id), ttl);
   return id;
