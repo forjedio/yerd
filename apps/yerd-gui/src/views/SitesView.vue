@@ -40,6 +40,7 @@ import Modal from "@/components/ui/Modal.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { sitesIntent } from "@/lib/shortcuts/sitesIntent";
+import { matchesSiteFilter } from "@/lib/siteFilter";
 import { slugifySiteName } from "@/lib/siteName";
 import { useSitesGroupState } from "@/lib/sitesGroupState";
 import { useDaemon } from "@/composables/useDaemon";
@@ -374,12 +375,13 @@ const folderRows = computed(() =>
   })),
 );
 
-// Live, case-insensitive filter on the full `<name>.<tld>` domain, sorted
-// alphabetically by name so the list is stable and scannable.
+// Live, case-insensitive filter across every domain a site serves - its apex
+// plus any added domains, subdomains and wildcards - sorted alphabetically by
+// name so the list is stable and scannable.
 const filteredSites = computed(() => {
-  const q = siteFilter.value.trim().toLowerCase();
+  const q = siteFilter.value.trim();
   const list = q
-    ? sites.value.filter((s) => `${s.name}.${tld.value}`.toLowerCase().includes(q))
+    ? sites.value.filter((s) => matchesSiteFilter(s, tld.value, q))
     : [...sites.value];
   return list.sort((a, b) => a.name.localeCompare(b.name));
 });
@@ -450,6 +452,7 @@ async function changeWpAutoLogin(
   site: SiteEntry,
   enabled: boolean,
   user: string | null,
+  options?: { silent?: boolean },
 ): Promise<void> {
   if (enabled === (site.wp_auto_login ?? false) && (user ?? "") === (site.wp_auto_login_user ?? "")) {
     return;
@@ -457,11 +460,13 @@ async function changeWpAutoLogin(
   rowBusy.value = `edit:${site.name}`;
   try {
     await setWordpressAutoLogin(site.name, enabled, user);
-    toast.success(
-      enabled
-        ? `Auto-login enabled for ${site.name}`
-        : `Auto-login disabled for ${site.name}`,
-    );
+    if (!options?.silent) {
+      toast.success(
+        enabled
+          ? `Auto-login enabled for ${site.name}`
+          : `Auto-login disabled for ${site.name}`,
+      );
+    }
     await load({ force: true });
   } catch (e) {
     toast.error("Couldn't change auto-login", (e as IpcError).message);

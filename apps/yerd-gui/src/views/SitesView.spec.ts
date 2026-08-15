@@ -117,7 +117,7 @@ describe("SitesView WordPress auto-login controls", () => {
     expect(labels).toEqual(["Earliest admin (default)", "beta-editor"]);
   });
 
-  it("shows the loading placeholder as selected instead of a blank control, even when a prior admin was already configured", async () => {
+  it("withholds the picker until the admin list arrives, then selects the configured admin", async () => {
     const alpha = wpSite("alpha", { wp_auto_login_user: "editor" });
     const pending = deferred<unknown>();
     invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
@@ -132,13 +132,9 @@ describe("SitesView WordPress auto-login controls", () => {
     const wrapper = await mountSites();
     await openEditFor(wrapper, alpha);
 
-    const select = wrapper.find<HTMLSelectElement>("#site-wp-admin-user");
-    // The select's bound value must match the "Loading users…" placeholder's
-    // value (""), not the site's already-configured "editor" - a bound value
-    // with no matching <option> renders as a blank control, not the intended
-    // loading text.
-    expect(select.element.value).toBe("");
-    expect(select.element.selectedOptions[0]?.textContent).toBe("Loading users…");
+    // Rendering the picker against an unloaded list would show the site's
+    // configured "editor" with no matching <option> - a blank control.
+    expect(wrapper.find("#site-wp-admin-user").exists()).toBe(false);
 
     pending.resolve(usersEnvelope(["editor"]));
     await flushPromises();
@@ -146,7 +142,7 @@ describe("SitesView WordPress auto-login controls", () => {
     expect(settled.element.value).toBe("editor");
   });
 
-  it("shows an error state without touching the picker options when the fetch fails", async () => {
+  it("locks auto-login and hides the picker when the fetch fails", async () => {
     const alpha = wpSite("alpha");
     invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
       if (cmd === "list_sites") return Promise.resolve({ type: "sites", sites: [alpha] });
@@ -156,15 +152,19 @@ describe("SitesView WordPress auto-login controls", () => {
       if (cmd === "wordpress_admin_users" && args?.site === "alpha") {
         return Promise.reject(new Error("boom"));
       }
+      if (cmd === "set_wordpress_auto_login") return Promise.resolve({ type: "ok" });
       return Promise.reject(new Error(`unexpected invoke ${cmd}`));
     });
 
     const wrapper = await mountSites();
     await openEditFor(wrapper, alpha);
+    await flushPromises();
 
-    const select = wrapper.find("#site-wp-admin-user");
-    expect(select.attributes("disabled")).toBeDefined();
-    const labels = select.findAll("option").map((o) => o.text());
-    expect(labels).toEqual(["Error: boom"]);
+    expect(wrapper.find("#site-wp-admin-user").exists()).toBe(false);
+    expect(invokeMock).toHaveBeenCalledWith("set_wordpress_auto_login", {
+      name: "alpha",
+      enabled: false,
+      user: null,
+    });
   });
 });

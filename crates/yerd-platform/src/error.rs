@@ -180,17 +180,9 @@ pub enum ResolverErrorReason {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum TerminalErrorReason {
-    /// The temporary macOS launcher could not be created.
-    #[error("could not create launcher: {0}")]
-    CreateLauncher(#[source] std::io::Error),
-
-    /// The temporary macOS launcher could not be written or configured.
-    #[error("could not prepare launcher: {0}")]
-    PrepareLauncher(#[source] std::io::Error),
-
-    /// The temporary macOS launcher could not be opened.
-    #[error("could not open launcher: {0}")]
-    OpenLauncher(#[source] std::io::Error),
+    /// The macOS terminal application could not be launched.
+    #[error("could not open terminal: {0}")]
+    OpenTerminal(#[source] std::io::Error),
 
     /// No supported terminal emulator could be launched.
     #[error("no supported terminal emulator was found")]
@@ -503,9 +495,7 @@ mod tests {
             install_hint: Some("y"),
         };
         for reason in [
-            TerminalErrorReason::CreateLauncher(std::io::Error::from(std::io::ErrorKind::Other)),
-            TerminalErrorReason::PrepareLauncher(std::io::Error::from(std::io::ErrorKind::Other)),
-            TerminalErrorReason::OpenLauncher(std::io::Error::from(std::io::ErrorKind::Other)),
+            TerminalErrorReason::OpenTerminal(std::io::Error::from(std::io::ErrorKind::Other)),
             TerminalErrorReason::NoSupportedTerminal,
         ] {
             let _ = PlatformError::Terminal { reason };

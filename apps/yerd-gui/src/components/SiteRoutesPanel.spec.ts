@@ -68,7 +68,7 @@ describe("SiteRoutesPanel", () => {
 
   it("shows an empty state when the site has no rules", async () => {
     const wrapper = await mountPanel();
-    expect(wrapper.text()).toContain("No routing rules for this site.");
+    expect(wrapper.text()).toContain("No custom routing rules for this site.");
   });
 
   it("adds a rule, clears the inputs, and refetches", async () => {

@@ -4,6 +4,7 @@ import { computed, ref, watch } from "vue";
 
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
+import InfoBanner from "@/components/ui/InfoBanner.vue";
 import Input from "@/components/ui/Input.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { useToast } from "@/composables/useToast";
@@ -128,13 +129,10 @@ function removeDisabled(d: string): boolean {
 
 <template>
   <div class="space-y-4">
-    <p
-      v-if="site.apex_shadowed_by"
-      class="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
-    >
+    <InfoBanner v-if="site.apex_shadowed_by" variant="warning">
       {{ site.name }}.{{ tld }} is currently served by "{{ site.apex_shadowed_by }}". Give this
       site a different primary domain to route it separately.
-    </p>
+    </InfoBanner>
 
     <ul class="space-y-1.5">
       <li
@@ -190,19 +188,21 @@ function removeDisabled(d: string): boolean {
           <Plus v-else class="size-4" /> Add
         </Button>
       </div>
-      <p v-if="shapeError" class="mt-1 text-xs text-destructive">{{ shapeError }}</p>
-      <p v-else-if="tldHint" class="mt-1 text-xs text-amber-600 dark:text-amber-500">
+      <InfoBanner v-if="shapeError" variant="destructive" class="mt-4">
+        {{ shapeError }}
+      </InfoBanner>
+      <InfoBanner v-else-if="tldHint" variant="warning" class="mt-4">
         {{ tldHint }}
-      </p>
-      <p v-else class="mt-1 text-xs text-muted-foreground">
+      </InfoBanner>
+      <InfoBanner v-else class="mt-4">
         An exact domain (<code class="font-mono">api.{{ site.name }}.{{ tld }}</code>) or a
         single-label wildcard (<code class="font-mono">*.{{ site.name }}.{{ tld }}</code>).
-      </p>
+      </InfoBanner>
     </div>
 
-    <p v-if="site.is_wordpress" class="text-xs text-muted-foreground">
+    <InfoBanner v-if="site.is_wordpress">
       This is a WordPress site — changing the primary also updates its site URL.
-    </p>
+    </InfoBanner>
 
     <div class="flex justify-end border-t pt-4">
       <Button

@@ -30,7 +30,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Wry};
 
 use yerd_core::PhpVersion;
-use yerd_ipc::{Request, Response};
+use yerd_ipc::{PhpPoolStatus, Request, Response};
 
 use crate::ipc::{exchange, exchange_timeout};
 
@@ -224,6 +224,17 @@ pub(crate) fn spawn_tray_poller(app: AppHandle) {
     });
 }
 
+/// The installed versions the "Default PHP:" block may offer, newest-last in
+/// daemon order. Legacy (< 8.2) versions are dropped: the daemon refuses them as
+/// the global default (`LegacyRestricted`), so listing one would only ever
+/// produce an error toast on click. They stay installable and usable per-site.
+fn default_php_choices(php: &[PhpPoolStatus]) -> Vec<String> {
+    php.iter()
+        .filter(|p| !p.version.is_legacy())
+        .map(|p| p.version.to_string())
+        .collect()
+}
+
 /// Fetch daemon status into a snapshot, plus the cached (network-free) update
 /// target. An unreachable daemon yields the "stopped" snapshot.
 async fn fetch_state() -> TrayState {
@@ -242,7 +253,7 @@ async fn fetch_state() -> TrayState {
     TrayState {
         running: true,
         default_php: Some(report.default_php.to_string()),
-        installed: report.php.iter().map(|p| p.version.to_string()).collect(),
+        installed: default_php_choices(&report.php),
         http: Some(report.http.bound),
         https: Some(report.https.bound),
         update_target,
@@ -959,7 +970,32 @@ async fn wait_until_restarted(prev: Option<u64>) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{icons, menu_icon, recolor_opaque, y_glyph_rgba, TrayIconVariant};
+    use super::{default_php_choices, icons, menu_icon, recolor_opaque, y_glyph_rgba};
+    use super::{PhpPoolStatus, PhpVersion, TrayIconVariant};
+    use yerd_ipc::PoolRunState;
+
+    fn pool(major: u8, minor: u8) -> PhpPoolStatus {
+        PhpPoolStatus {
+            version: PhpVersion::new(major, minor),
+            installed_patch: None,
+            state: PoolRunState::Stopped,
+            pid: None,
+            listen: None,
+            rss_bytes: None,
+            update_available: None,
+        }
+    }
+
+    #[test]
+    fn default_php_choices_drops_legacy_versions() {
+        let pools = [pool(7, 4), pool(8, 1), pool(8, 2), pool(8, 4)];
+        assert_eq!(default_php_choices(&pools), vec!["8.2", "8.4"]);
+    }
+
+    #[test]
+    fn default_php_choices_is_empty_when_only_legacy_is_installed() {
+        assert!(default_php_choices(&[pool(7, 4), pool(8, 0)]).is_empty());
+    }
 
     #[test]
     fn menu_icon_light_leaves_pixels_unchanged() {

@@ -47,6 +47,11 @@ vi.mock("@/ipc/client", () => ({
   IpcError: class IpcError extends Error {},
 }));
 
+const toastError = vi.fn();
+vi.mock("@/composables/useToast", () => ({
+  useToast: () => ({ success: vi.fn(), error: toastError }),
+}));
+
 const hostPlatform = ref("linux");
 vi.mock("@/composables/usePlatform", () => ({
   loadPlatform: () => Promise.resolve(),
@@ -475,9 +480,7 @@ describe("SiteDetailsSidebar", () => {
     await saveWebRoot.trigger("click");
     expect(wrapper.emitted("changeWebRoot")).toEqual([[site(), "public"]]);
 
-    const frontController = wrapper.get('[aria-label="Route through front controller"]');
-    await frontController.trigger("click");
-    expect(wrapper.emitted("toggleFrontController")).toEqual([[site(), false]]);
+    expect(wrapper.find('[aria-label="Route through front controller"]').exists()).toBe(false);
 
     const https = wrapper.get('[aria-label="HTTPS"]');
     await https.trigger("click");
@@ -519,6 +522,25 @@ describe("SiteDetailsSidebar", () => {
     await wrapper.get('[aria-label="Remove route /api"]').trigger("click");
     await flushPromises();
     expect(removeRouteRule).toHaveBeenCalledWith("blog", "/api");
+  });
+
+  it("toggles the front controller from the Routing tab", async () => {
+    const wrapper = mountSidebar();
+
+    await openTab(wrapper, "Routing");
+    await flushPromises();
+
+    await wrapper.get('[aria-label="Route through front controller"]').trigger("click");
+    expect(wrapper.emitted("toggleFrontController")).toEqual([[site(), false]]);
+  });
+
+  it("hides the front-controller switch for a WordPress site", async () => {
+    const wrapper = mountSidebar(wpSite({ uses_front_controller: true }));
+
+    await openTab(wrapper, "Routing");
+    await flushPromises();
+
+    expect(wrapper.find('[aria-label="Route through front controller"]').exists()).toBe(false);
   });
 
   it("returns to the General tab when reopened", async () => {
@@ -583,7 +605,78 @@ describe("SiteDetailsSidebar WordPress controls", () => {
   beforeEach(() => {
     openInBrowser.mockReset();
     mintWordPressLoginToken.mockReset();
+    toastError.mockReset();
     wordpressAdminUsers.mockReset().mockResolvedValue([]);
+  });
+
+  it("turns auto-login back off and toasts when the admin users can't be read", async () => {
+    wordpressAdminUsers.mockRejectedValue(new Error("wp-cli exploded"));
+    const on = wpSite({ wp_auto_login: true });
+    const wrapper = mountSidebar(on);
+    await flushPromises();
+
+    expect(toastError).toHaveBeenCalledWith(
+      "Couldn't load WordPress admin users",
+      "wp-cli exploded",
+    );
+    expect(wrapper.emitted("changeWpAutoLogin")).toEqual([[on, false, null, { silent: true }]]);
+    expect(wrapper.find('[aria-label="Sign in as"]').exists()).toBe(false);
+  });
+
+  it("reads no admin users at all while auto-login is off", async () => {
+    wordpressAdminUsers.mockRejectedValue(new Error("wp-cli exploded"));
+    const wrapper = mountSidebar(wpSite({ wp_auto_login: false }));
+    await flushPromises();
+
+    expect(wordpressAdminUsers).not.toHaveBeenCalled();
+    expect(toastError).not.toHaveBeenCalled();
+    expect(wrapper.emitted("changeWpAutoLogin")).toBeUndefined();
+  });
+
+  it("writes nothing when the fetch the switch triggers fails", async () => {
+    wordpressAdminUsers.mockRejectedValue(new Error("still broken"));
+    const wrapper = mountSidebar(wpSite({ wp_auto_login: false }));
+    await flushPromises();
+
+    await wrapper.get('[aria-label="WordPress Auto Admin Login"]').trigger("click");
+    await flushPromises();
+
+    // One click, one toast: no "enabled" write to undo, so no success toasts.
+    expect(wordpressAdminUsers).toHaveBeenCalledOnce();
+    expect(toastError).toHaveBeenCalledOnce();
+    expect(wrapper.emitted("changeWpAutoLogin")).toBeUndefined();
+  });
+
+  it("writes the change once a retried fetch succeeds", async () => {
+    wordpressAdminUsers.mockRejectedValueOnce(new Error("transient"));
+    const off = wpSite({ wp_auto_login: false });
+    const wrapper = mountSidebar(off);
+    await flushPromises();
+
+    await wrapper.get('[aria-label="WordPress Auto Admin Login"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.emitted("changeWpAutoLogin")).toBeUndefined();
+
+    wordpressAdminUsers.mockResolvedValue([{ login: "editor", display_name: "Editor" }]);
+    await wrapper.get('[aria-label="WordPress Auto Admin Login"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.emitted("changeWpAutoLogin")).toEqual([[off, true, null]]);
+  });
+
+  it("shows the user picker only once the admin list has loaded", async () => {
+    const wrapper = mountSidebar(wpSite({ wp_auto_login: true }));
+    expect(wrapper.find('[aria-label="Sign in as"]').exists()).toBe(false);
+
+    await flushPromises();
+    expect(wrapper.find('[aria-label="Sign in as"]').exists()).toBe(true);
+  });
+
+  it("hides the controls that don't apply to WordPress", async () => {
+    const wrapper = mountSidebar(wpSite());
+
+    expect(wrapper.findAll("button").some((b) => b.text().includes("Dumps"))).toBe(false);
+    expect(wrapper.find('[aria-label="Site web root"]').exists()).toBe(false);
   });
 
   it("opens the plain WP Admin link when auto-login is off", async () => {

@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { Plus, Trash2 } from "lucide-vue-next";
+import { Plus, Route, Trash2 } from "lucide-vue-next";
 import { computed, ref, watch } from "vue";
 
 import Button from "@/components/ui/Button.vue";
+import EmptyState from "@/components/ui/EmptyState.vue";
+import InfoBanner from "@/components/ui/InfoBanner.vue";
 import Input from "@/components/ui/Input.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { useToast } from "@/composables/useToast";
@@ -148,10 +150,10 @@ function remove(prefix: string): void {
       </li>
     </ul>
 
-    <p v-else class="text-sm text-muted-foreground">No routing rules for this site.</p>
+    <EmptyState v-else :icon="Route" title="No custom routing rules for this site." />
 
     <div>
-      <label for="add-route-prefix" class="text-sm font-medium">Add a rule</label>
+      <label for="add-route-prefix" class="text-sm font-medium">Add a custom rule</label>
       <div class="mt-2 flex gap-2">
         <Input
           id="add-route-prefix"
@@ -174,18 +176,20 @@ function remove(prefix: string): void {
           <Plus v-else class="size-4" /> Add
         </Button>
       </div>
-      <p v-if="prefixError" class="mt-1 text-xs text-destructive">{{ prefixError }}</p>
-      <p v-else class="mt-1 text-xs text-muted-foreground">
+      <InfoBanner v-if="prefixError" variant="destructive" class="mt-4">
+        {{ prefixError }}
+      </InfoBanner>
+      <InfoBanner v-else class="mt-4">
         Requests under the prefix that match no real file are handled by the target, a path
         relative to this site's web root. A <code class="font-mono">.php</code> target runs as a
         nested front controller; anything else is served as a static file.
-      </p>
+      </InfoBanner>
     </div>
 
-    <p class="border-t pt-4 text-xs text-muted-foreground">
+    <InfoBanner>
       A site whose web root holds an <code class="font-mono">index.html</code> and no
       <code class="font-mono">index.php</code> already routes deep links to it automatically, with
       no rule needed.
-    </p>
+    </InfoBanner>
   </div>
 </template>
