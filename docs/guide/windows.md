@@ -47,8 +47,20 @@ These are tracked and slated for hardening after early access:
   short-lived console window at logon (cosmetic).
 - **ACL hardening is a tracked TODO.** The CA key and runtime directory are not
   yet locked down with restrictive ACLs.
-- **One concurrent PHP request per version.** Windows uses `php-cgi` (a worker
-  pool is post-MVP), so heavy parallel requests to the same PHP version serialize.
+- **One concurrent PHP request per version.** Windows uses `php-cgi`, which has
+  no worker pool (a pool is post-MVP), so parallel requests to the same PHP
+  version are served one at a time. Two consequences worth knowing:
+  - The **FPM pool size** setting is hidden on Windows, and `yerd php pool set`
+    is refused there - there is no pool to size.
+  - A request that makes a **loopback HTTP call back into a site on the same PHP
+    version blocks until it times out**, because the one worker is the caller.
+    WordPress's `wp-cron` loopback and an app calling its own API are the usual
+    ways to hit this. Workarounds: put the caller and callee on different PHP
+    versions, or disable the loopback (for WordPress, set
+    `DISABLE_WP_CRON` and run `wp cron event run` from a terminal instead).
+- **"Open in editor" and "Open folder" are not wired.** The IDE launcher and
+  system-opener adapters still resolve to the unsupported stub on Windows, so
+  those buttons return an error rather than opening anything.
 - **Self-update replaces the installed app** via the silent installer
   (`/S /UPDATE`): the running executables are renamed aside, the installer runs,
   and the app + daemon restart on the new version. Your data, CA, DNS rule, and

@@ -501,6 +501,7 @@ export type ErrorCode =
   | "port_in_use"
   | "extension_load_failed"
   | "legacy_restricted"
+  | "unsupported"
   | "internal";
 
 /** One whole-host reverse proxy (`{name}.{tld}` → `target`). Reply element of a

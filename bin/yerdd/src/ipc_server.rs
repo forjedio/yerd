@@ -599,7 +599,10 @@ fn path_needs_setup(state: &DaemonState) -> Option<bool> {
             Some(false)
         } else {
             let shim = crate::php_install::shim_dir(&state.dirs);
-            let current = yerd_platform::user_path().unwrap_or_default();
+            // Read-only probe. An unreadable PATH is "can't tell" (`None`), so
+            // the doctor stays quiet rather than nagging on a bad read; an
+            // absent one is a real empty PATH, which does need setup.
+            let current = yerd_platform::user_path().ok()?.unwrap_or_default();
             shim.to_str()
                 .map(|s| win_path_env::upsert_entries(&current, &[s]).is_some())
         }
@@ -2287,6 +2290,27 @@ async fn set_php_directives(
 /// order and `php_settings_mutate` discipline; only the affected version's
 /// pool restarts. Values are stored canonically (`"032"` persists as `"32"`),
 /// matching [`set_php_version_settings`].
+/// Windows has no FPM and `php-cgi` has no worker pool (`PHP_FCGI_CHILDREN` is
+/// fork-based), so there is nothing a pool size could change. Refusing is the
+/// honest answer: accepting the value would persist a setting that silently does
+/// nothing while the client reported success. `async` only to match the Unix
+/// signature at the single call site.
+#[cfg(windows)]
+#[allow(clippy::unused_async)]
+async fn set_php_pool_settings(
+    _version: yerd_core::PhpVersion,
+    _settings: std::collections::BTreeMap<String, String>,
+    _state: &DaemonState,
+) -> Response {
+    Response::Error {
+        code: ErrorCode::Unsupported,
+        message: "PHP pool sizing is not available on Windows: php-cgi has no worker pool, \
+                  so one request per PHP version is served at a time"
+            .to_owned(),
+    }
+}
+
+#[cfg(not(windows))]
 async fn set_php_pool_settings(
     version: yerd_core::PhpVersion,
     settings: std::collections::BTreeMap<String, String>,
@@ -4507,6 +4531,9 @@ Subject: Captured\r\n\r\nhi\r\n";
         .await
     }
 
+    /// Windows refuses pool sizing outright (see `set_php_pool_settings`), so the
+    /// persistence/validation behaviour this asserts is Unix-only.
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn set_php_pool_settings_persists_validates_and_removes() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4588,6 +4615,30 @@ Subject: Captured\r\n\r\nhi\r\n";
             }
             other => panic!("expected PhpVersions, got {other:?}"),
         }
+    }
+
+    /// Windows must *refuse* pool sizing rather than accept a value php-cgi
+    /// cannot honour: it has no worker pool, so a stored `max_children` would
+    /// change nothing while the client reported success.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn set_php_pool_settings_is_refused_on_windows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let v83 = PhpVersion::new(8, 3);
+        fake_install(&state.dirs, v83);
+
+        assert!(matches!(
+            set_pool(&state, v83, "max_children", "32").await,
+            Response::Error {
+                code: ErrorCode::Unsupported,
+                ..
+            }
+        ));
+        assert!(
+            state.config.lock().await.php.pool.is_empty(),
+            "a refused request must not persist anything"
+        );
     }
 
     /// The `pm.` prefix is now reserved out of the free-form directives path,

@@ -649,6 +649,9 @@ mod tests {
                 },
             },
         };
+        // Windows refuses pool sizing outright (php-cgi has no worker pool), so
+        // the round-trip below is Unix-only; there the refusal is what's asserted.
+        #[cfg(not(windows))]
         match send(&dirs, &pool_set).await {
             Response::PhpVersions { pool, .. } => {
                 assert_eq!(
@@ -660,6 +663,14 @@ mod tests {
             }
             other => panic!("expected PhpVersions, got {other:?}"),
         }
+        #[cfg(windows)]
+        assert!(matches!(
+            send(&dirs, &pool_set).await,
+            Response::Error {
+                code: yerd_ipc::ErrorCode::Unsupported,
+                ..
+            }
+        ));
 
         let per_version_ini =
             std::fs::read_to_string(dirs.data.join("php-cli-8.3.ini")).expect("per-version ini");
@@ -679,8 +690,15 @@ mod tests {
             "{on_disk}"
         );
         assert!(on_disk.contains("[php.directives.\"8.3\"]"), "{on_disk}");
+        #[cfg(not(windows))]
         assert!(on_disk.contains("[php.pool.\"8.3\"]"), "{on_disk}");
+        #[cfg(windows)]
+        assert!(
+            !on_disk.contains("[php.pool."),
+            "a refused pool request must persist nothing: {on_disk}"
+        );
 
+        #[cfg(not(windows))]
         let pool_unset = Command::Php {
             action: yerd::cli::PhpAction::Pool {
                 action: yerd::cli::PhpPoolAction::Unset {
@@ -689,6 +707,7 @@ mod tests {
                 },
             },
         };
+        #[cfg(not(windows))]
         match send(&dirs, &pool_unset).await {
             Response::PhpVersions { pool, .. } => {
                 assert!(!pool.contains_key(&v83));

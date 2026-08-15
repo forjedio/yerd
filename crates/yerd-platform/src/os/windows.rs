@@ -634,30 +634,54 @@ fn hkcu_env_label() -> PathBuf {
     PathBuf::from(r"HKCU\Environment")
 }
 
-/// The current user's `HKCU\Environment\Path` value as a plain string, or `None`
-/// when the value (or the `Environment` key) is absent. Read-only, unprivileged.
-/// Consumed by the CLI's PATH management and the daemon's shim-dir-on-PATH doctor
-/// probe (so `winreg` stays a single-crate dependency).
-#[must_use]
-pub fn user_path() -> Option<String> {
-    user_path_raw().map(|(value, _)| value)
+/// The current user's `HKCU\Environment\Path` value as a plain string.
+/// Read-only, unprivileged. Consumed by the CLI's PATH management and the
+/// daemon's shim-dir-on-PATH doctor probe (so `winreg` stays a single-crate
+/// dependency).
+///
+/// # Errors
+///
+/// `Ok(None)` is an absent value (or absent `Environment` key); [`Err`] is a
+/// failed read. Callers writing an edited value back **must** distinguish them -
+/// see [`user_path_raw`].
+pub fn user_path() -> Result<Option<String>, PlatformError> {
+    user_path_raw().map(|opt| opt.map(|(value, _)| value))
 }
 
 /// Read `HKCU\Environment\Path` as `(value, is_expand)`, where `is_expand` is
 /// whether it is stored as `REG_EXPAND_SZ` (the conventional type, which must be
-/// preserved on write so `%VAR%` references keep expanding). `None` when absent.
-fn user_path_raw() -> Option<(String, bool)> {
+/// preserved on write so `%VAR%` references keep expanding).
+///
+/// `Ok(None)` means the value is genuinely **absent** (a fresh profile), for
+/// which an empty PATH is the correct basis of an edit. `Err` means the read
+/// itself failed - a different thing entirely, and one a caller that writes a
+/// derived value back must not treat as "empty", or an unreadable-but-present
+/// PATH gets replaced by whatever was derived from nothing. Keeping the two
+/// apart is the whole point of the `Result<Option<_>>`.
+fn user_path_raw() -> Result<Option<(String, bool)>, PlatformError> {
     use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, REG_EXPAND_SZ};
     use winreg::types::FromRegValue;
     use winreg::RegKey;
 
-    let env = RegKey::predef(HKEY_CURRENT_USER)
+    let io_err = |source: std::io::Error| PlatformError::Io {
+        path: hkcu_env_label(),
+        source,
+    };
+    let env = match RegKey::predef(HKEY_CURRENT_USER)
         .open_subkey_with_flags(HKCU_ENVIRONMENT, KEY_READ)
-        .ok()?;
-    let raw = env.get_raw_value("Path").ok()?;
+    {
+        Ok(key) => key,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io_err(e)),
+    };
+    let raw = match env.get_raw_value("Path") {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io_err(e)),
+    };
     let is_expand = raw.vtype == REG_EXPAND_SZ;
-    let value = String::from_reg_value(&raw).ok()?;
-    Some((value, is_expand))
+    let value = String::from_reg_value(&raw).map_err(io_err)?;
+    Ok(Some((value, is_expand)))
 }
 
 /// Write `HKCU\Environment\Path`, preserving the existing value type
@@ -671,7 +695,10 @@ pub fn set_user_path(value: &str) -> Result<(), PlatformError> {
     use winreg::enums::{HKEY_CURRENT_USER, KEY_WRITE, REG_EXPAND_SZ, REG_SZ};
     use winreg::{RegKey, RegValue};
 
-    let expand = user_path_raw().map_or(true, |(_, is_expand)| is_expand);
+    let expand = match user_path_raw()? {
+        Some((_, is_expand)) => is_expand,
+        None => true,
+    };
     let env = RegKey::predef(HKEY_CURRENT_USER)
         .open_subkey_with_flags(HKCU_ENVIRONMENT, KEY_WRITE)
         .map_err(|source| PlatformError::Io {

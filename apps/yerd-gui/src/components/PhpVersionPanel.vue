@@ -29,6 +29,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { usePlatform } from "@/composables/usePlatform";
 import { useToast } from "@/composables/useToast";
 import {
   IpcError,
@@ -169,6 +170,11 @@ async function saveSettings(): Promise<void> {
 // ── FPM pool sizing ──
 // Same pristine/seed discipline as the settings grid: an empty field means the
 // built-in default, and server refreshes only reseed while the field is clean.
+//
+// Hidden on Windows: there is no FPM there, and php-cgi has no worker pool to
+// size (the daemon refuses the request with `unsupported`), so showing the
+// control would offer a setting that cannot take effect.
+const { isWindows } = usePlatform();
 const poolMaxChildren = ref("");
 const poolSeeded = ref("");
 
@@ -410,8 +416,9 @@ function discard(): void {
       </TooltipProvider>
 
       <!-- FPM pool sizing. Web (FPM) only: these are pool-block settings, so
-           they never reach this version's CLI ini. -->
-      <div class="mt-5 border-t border-border pt-4">
+           they never reach this version's CLI ini. Windows has no FPM pool at
+           all - see `isWindows` above. -->
+      <div v-if="!isWindows" class="mt-5 border-t border-border pt-4">
         <TooltipProvider :delay-duration="0">
           <div class="flex items-center gap-1">
             <label class="text-xs font-medium" :for="`pool-${version}-max-children`">

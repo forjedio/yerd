@@ -627,6 +627,14 @@ pub enum ErrorCode {
     /// provoke it and, lacking the variant, will surface it as an
     /// `IpcError::Decode` rather than a typed error.
     LegacyRestricted,
+    /// The request names a capability this host OS does not have, so the daemon
+    /// refuses it rather than accepting a setting it would silently ignore.
+    /// Currently: PHP pool sizing on Windows, where `php-cgi` has no worker pool
+    /// (`PHP_FCGI_CHILDREN` is fork-based and unsupported there). Reachable from
+    /// the pre-existing `SetPhpPoolSettings` request, so a client that predates
+    /// this variant will surface it as an `IpcError::Decode` rather than a typed
+    /// error - the same trade-off [`Self::LegacyRestricted`] documents.
+    Unsupported,
     /// Catch-all for daemon-side failures that don't fit a typed code.
     /// Expand this enum rather than overloading `Internal`.
     Internal,
@@ -705,6 +713,7 @@ mod variant_name_pinning {
             ErrorCode::InstanceAlreadyExists => {}
             ErrorCode::LanNotReady => {}
             ErrorCode::LegacyRestricted => {}
+            ErrorCode::Unsupported => {}
             ErrorCode::Internal => {}
         }
     }
@@ -1002,6 +1011,7 @@ mod variant_name_pinning {
             ErrorCode::InstanceAlreadyExists,
             ErrorCode::LanNotReady,
             ErrorCode::LegacyRestricted,
+            ErrorCode::Unsupported,
             ErrorCode::Internal,
         ] {
             pin_code(c);

@@ -1003,6 +1003,7 @@ fn response_error_each_code_byte_shape() {
         (ErrorCode::PortInUse, "port_in_use"),
         (ErrorCode::ExtensionLoadFailed, "extension_load_failed"),
         (ErrorCode::LegacyRestricted, "legacy_restricted"),
+        (ErrorCode::Unsupported, "unsupported"),
         (ErrorCode::Internal, "internal"),
     ] {
         let r = Response::Error {
@@ -1395,6 +1396,7 @@ fn error_code_each_variant_byte_shape() {
         ),
         (ErrorCode::LanNotReady, r#""lan_not_ready""#),
         (ErrorCode::LegacyRestricted, r#""legacy_restricted""#),
+        (ErrorCode::Unsupported, r#""unsupported""#),
         (ErrorCode::Internal, r#""internal""#),
     ];
     for (code, expected) in cases {

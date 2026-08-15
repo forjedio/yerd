@@ -1019,11 +1019,15 @@ mod windows_impl {
         }
     }
 
-    /// A 16-byte advisory result-file token as 32 lowercase hex chars.
+    /// A 32-lowercase-hex-char advisory result-file token.
     ///
     /// Not security-critical: the helper's `create_new` refuses a pre-planted
-    /// file, so this only needs to be collision-free. Derived from OS entropy via
-    /// `RandomState` (no new dependency) mixed with a high-resolution timestamp.
+    /// file, so this only needs to be collision-free. Derived from `RandomState`
+    /// (OS-seeded, no new dependency) mixed with a high-resolution timestamp.
+    /// The two halves come from successive `RandomState::new()` values, which
+    /// share one process-wide seed plus a counter - so this is 32 hex chars of
+    /// collision resistance, not 128 bits of independent entropy. Uniqueness is
+    /// all the protocol asks of it.
     fn generate_result_token() -> String {
         use std::collections::hash_map::RandomState;
         use std::fmt::Write as _;

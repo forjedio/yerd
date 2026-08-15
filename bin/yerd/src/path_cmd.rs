@@ -583,7 +583,13 @@ mod windows {
     fn upsert_path() -> Result<bool, String> {
         let entries = path_entries();
         let refs: Vec<&str> = entries.iter().filter_map(|p| p.to_str()).collect();
-        let current = yerd_platform::user_path().unwrap_or_default();
+        // A read failure must abort, never fall back to an empty PATH: the edit
+        // below is written back wholesale, so treating "couldn't read" as "no
+        // entries" would replace the user's real PATH with just Yerd's dirs.
+        // An absent value (`Ok(None)`) genuinely is an empty starting point.
+        let current = yerd_platform::user_path()
+            .map_err(|e| format!("cannot read your PATH, refusing to modify it: {e}"))?
+            .unwrap_or_default();
         let changed = if let Some(updated) = win_path_env::upsert_entries(&current, &refs) {
             yerd_platform::set_user_path(&updated).map_err(|e| e.to_string())?;
             true
@@ -600,7 +606,7 @@ mod windows {
     pub fn remove_from_path() -> Vec<PathBuf> {
         let entries = path_entries();
         let refs: Vec<&str> = entries.iter().filter_map(|p| p.to_str()).collect();
-        let Some(current) = yerd_platform::user_path() else {
+        let Ok(Some(current)) = yerd_platform::user_path() else {
             return Vec::new();
         };
         let Some(updated) = win_path_env::remove_entries(&current, &refs) else {

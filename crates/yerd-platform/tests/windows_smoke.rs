@@ -1,7 +1,8 @@
 //! Windows smoke test: the real impls (`WindowsPaths`, `WindowsPortBinder`,
-//! `WindowsPortRedirector`, `WindowsTrustStore`) resolve/bind/probe over their
-//! public API, while the traits still aliased to the `unsupported` stub
-//! (resolver, terminal) return `Unsupported`. The trust probes here are
+//! `WindowsPortRedirector`, `WindowsTrustStore`, `WindowsResolverInstaller`,
+//! `WindowsTerminalLauncher`) resolve/bind/probe over their public API, while
+//! the traits still aliased to the `unsupported` stub (IDE launcher, system
+//! opener) return `Unsupported`. The trust probes here are
 //! read-only against the real `CurrentUser` Root store (no confirmation dialog);
 //! the hermetic `Memory`-store add/find/delete round-trip lives as a unit test
 //! in `os::windows`.
