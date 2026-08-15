@@ -369,8 +369,11 @@ where
         let ini_defines = cfg.ini_defines.clone();
         let user_extensions = cfg.user_extensions.clone();
         let listen = cfg.listen.clone();
+        #[cfg(windows)]
+        let error_log = cfg.error_log.clone();
         let cmd_builder = || {
-            build_cmd(
+            #[cfg_attr(not(windows), allow(unused_mut))]
+            let mut cmd = build_cmd(
                 &binary,
                 &cfg.config_path,
                 &listen,
@@ -378,7 +381,10 @@ where
                 extension.as_deref(),
                 &ini_defines,
                 &user_extensions,
-            )
+            );
+            #[cfg(windows)]
+            attach_child_log(&mut cmd, &error_log);
+            cmd
         };
 
         let initial_state = PoolState::Stopped;
@@ -801,6 +807,58 @@ async fn wait_after_kill<Ch: ChildHandle>(
 /// stops php-cgi from exiting after N requests (the supervisor would count that
 /// as a crash), and `PHP_FCGI_CHILDREN` is cleared (fork-based, unsupported on
 /// Windows).
+/// Point php-cgi's stdio at the pool's instance log.
+///
+/// Unix needs no equivalent: FPM opens `error_log` itself, from the pool config
+/// [`fpm_conf::render_fpm_conf`] renders. Windows has no FPM, so without this
+/// the child's stdio is inherited from a daemon that usually has no console and
+/// PHP's startup diagnostics - a `.dll` that won't load, a malformed ini - are
+/// discarded, leaving a crash loop with no recorded cause.
+///
+/// **Both streams are captured, and stdout is the one that matters.** Verified
+/// against the bundled 8.5 build: a bad `-d extension=` writes its
+/// "Unable to load dynamic library" warning to *stdout*, not stderr, and
+/// `display_errors=stderr` does not move it. Capturing stdout is safe precisely
+/// because this is `FastCGI` mode: responses travel over the `-b` socket, so
+/// nothing but these diagnostics is ever written there. stderr is captured too,
+/// since a hard failure below the PHP layer can still land on it.
+///
+/// Best-effort by design: a log that cannot be opened must not stop the pool
+/// from starting, so the failure is warned about and the child runs without
+/// capture. Appends, so restarts accumulate rather than truncating the evidence.
+#[cfg(windows)]
+fn attach_child_log(cmd: &mut StdCommand, error_log: &std::path::Path) {
+    let file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(error_log)
+    {
+        Ok(file) => file,
+        Err(source) => {
+            tracing::warn!(
+                path = %error_log.display(),
+                error = %source,
+                "could not open the pool log; php-cgi output will not be captured"
+            );
+            return;
+        }
+    };
+    match file.try_clone() {
+        Ok(dup) => {
+            cmd.stdout(std::process::Stdio::from(file));
+            cmd.stderr(std::process::Stdio::from(dup));
+        }
+        Err(source) => {
+            tracing::warn!(
+                path = %error_log.display(),
+                error = %source,
+                "could not duplicate the pool log handle; capturing php-cgi stdout only"
+            );
+            cmd.stdout(std::process::Stdio::from(file));
+        }
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn build_cmd(
     binary: &std::path::Path,

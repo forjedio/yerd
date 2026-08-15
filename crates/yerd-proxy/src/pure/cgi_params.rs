@@ -76,6 +76,13 @@ pub fn build_params(
 ) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut out: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(16 + headers.len());
 
+    // PHP cannot open a Windows verbatim (`\\?\`) path: it answers
+    // "No input file specified." Roots reach us straight from the config, which
+    // may hold a canonicalised verbatim path written by an older build, so
+    // normalise here - the last point before the path leaves for PHP - rather
+    // than relying on every writer having got it right. No-op off Windows.
+    let document_root = &yerd_core::path_norm::strip_verbatim(document_root);
+
     let (path, query) = split_path_query(path_and_query);
     let (script_filename, script_name) = match script_rel {
         Some(rel) => (
@@ -290,6 +297,37 @@ mod tests {
         assert!(
             !script_name.contains(&b'\\'),
             "SCRIPT_NAME must not contain backslashes"
+        );
+    }
+
+    /// A verbatim (`\\?\`) document root - what `fs::canonicalize` returns on
+    /// Windows, and what older builds persisted into `yerd.toml` - is stripped
+    /// before it reaches PHP. Verified against a real `php-cgi.exe` 8.5: the
+    /// verbatim form answers `404 No input file specified.` while the plain form
+    /// serves the script, so this normalisation is what makes an existing
+    /// Windows config work without rewriting it.
+    #[cfg(windows)]
+    #[test]
+    fn windows_verbatim_document_root_is_stripped_before_php_sees_it() {
+        let root = PathBuf::from(r"\\?\C:\sites\shop");
+        let pairs = build_params(
+            "GET",
+            "/",
+            &make_headers("shop.test"),
+            &root,
+            None,
+            false,
+            "127.0.0.1:1".parse().unwrap(),
+            "127.0.0.1:80".parse().unwrap(),
+            None,
+        );
+        assert_eq!(
+            lookup(&pairs, b"SCRIPT_FILENAME"),
+            Some(r"C:\sites\shop\index.php".as_bytes())
+        );
+        assert_eq!(
+            lookup(&pairs, b"DOCUMENT_ROOT"),
+            Some(r"C:\sites\shop".as_bytes())
         );
     }
 

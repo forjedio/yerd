@@ -12,6 +12,7 @@ mod domain;
 mod error;
 mod host;
 mod net;
+pub mod path_norm;
 mod php;
 pub mod php_directives;
 pub mod php_extensions;

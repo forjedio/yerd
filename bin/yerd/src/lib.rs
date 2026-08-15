@@ -810,7 +810,9 @@ fn canonicalize_unpark(req: yerd_ipc::Request) -> yerd_ipc::Request {
     if let yerd_ipc::Request::Unpark { path } = &req {
         if let Ok(canon) = std::fs::canonicalize(path) {
             return yerd_ipc::Request::Unpark {
-                path: canon.to_string_lossy().into_owned(),
+                path: yerd_core::path_norm::strip_verbatim(&canon)
+                    .to_string_lossy()
+                    .into_owned(),
             };
         }
     }
@@ -832,9 +834,11 @@ fn canonicalize_db_paths(req: yerd_ipc::Request) -> Result<yerd_ipc::Request, Cl
             name,
             path,
         } => {
-            let path = std::fs::canonicalize(&path).map_err(|e| {
-                ClientError::Usage(format!("cannot read backup file {}: {e}", path.display()))
-            })?;
+            let path = std::fs::canonicalize(&path)
+                .map(|p| yerd_core::path_norm::strip_verbatim(&p))
+                .map_err(|e| {
+                    ClientError::Usage(format!("cannot read backup file {}: {e}", path.display()))
+                })?;
             Ok(Request::RestoreDatabase {
                 service,
                 name,
@@ -862,9 +866,11 @@ fn canonicalize_park_path(req: yerd_ipc::Request) -> Result<yerd_ipc::Request, C
     match req {
         Request::Park { path } => {
             let abs = absolutise(&path)?;
-            let canon = std::fs::canonicalize(&abs).map_err(|e| {
-                ClientError::Usage(format!("cannot resolve {}: {e}", path.display()))
-            })?;
+            let canon = std::fs::canonicalize(&abs)
+                .map(|p| yerd_core::path_norm::strip_verbatim(&p))
+                .map_err(|e| {
+                    ClientError::Usage(format!("cannot resolve {}: {e}", path.display()))
+                })?;
             Ok(Request::Park { path: canon })
         }
         other => Ok(other),
@@ -1042,8 +1048,12 @@ mod tests {
         let Request::Unpark { path } = out else {
             panic!("expected Unpark");
         };
-        let canon = std::fs::canonicalize(&nested).unwrap();
+        let canon = yerd_core::path_norm::strip_verbatim(&std::fs::canonicalize(&nested).unwrap());
         assert_eq!(path, canon.to_string_lossy());
+        assert!(
+            !path.starts_with(r"\\?\"),
+            "an unpark path must not be verbatim, or it won't match the stored one: {path}"
+        );
     }
 
     #[test]
@@ -1077,7 +1087,10 @@ mod tests {
         let Request::Park { path } = out else {
             panic!("expected Park");
         };
-        assert_eq!(path, std::fs::canonicalize(".").unwrap());
+        assert_eq!(
+            path,
+            yerd_core::path_norm::strip_verbatim(&std::fs::canonicalize(".").unwrap())
+        );
     }
 
     #[test]
@@ -1090,7 +1103,16 @@ mod tests {
         let Request::Park { path } = out else {
             panic!("expected Park");
         };
-        assert_eq!(path, std::fs::canonicalize(tmp.path()).unwrap());
+        assert_eq!(
+            path,
+            yerd_core::path_norm::strip_verbatim(&std::fs::canonicalize(tmp.path()).unwrap())
+        );
+        // A verbatim root is what PHP answers "No input file specified." to, so
+        // it must never be what gets persisted.
+        assert!(
+            !path.to_string_lossy().starts_with(r"\\?\"),
+            "a parked path must never be stored verbatim"
+        );
     }
 
     #[test]
@@ -1133,7 +1155,10 @@ mod tests {
         };
         assert_eq!(service, "mysql");
         assert_eq!(name, "app");
-        assert_eq!(path, std::fs::canonicalize(&file).unwrap());
+        assert_eq!(
+            path,
+            yerd_core::path_norm::strip_verbatim(&std::fs::canonicalize(&file).unwrap())
+        );
     }
 
     #[test]

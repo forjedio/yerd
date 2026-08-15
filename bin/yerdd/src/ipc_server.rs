@@ -2999,7 +2999,7 @@ fn resolve_web_root_within(doc_root: &Path, input: &str) -> Result<String, Respo
 /// ready-made `InvalidPath` error response.
 #[cfg_attr(windows, allow(clippy::result_large_err))]
 fn canonicalize_dir(path: &Path) -> Result<PathBuf, Response> {
-    match std::fs::canonicalize(path) {
+    match std::fs::canonicalize(path).map(|p| yerd_core::path_norm::strip_verbatim(&p)) {
         Ok(p) if p.is_dir() => Ok(p),
         Ok(p) => Err(invalid_path(format!("not a directory: {}", p.display()))),
         Err(e) => Err(invalid_path(format!(

@@ -363,9 +363,20 @@ mod tests {
         }
 
         let on_disk = std::fs::read_to_string(&cfg_path).expect("config written");
-        let canonical = std::fs::canonicalize(&sites_root).unwrap();
+        // The persisted root is the normalised form, not raw `canonicalize`
+        // output: on Windows that is verbatim (`\\?\C:\...`), which PHP cannot
+        // open, so a verbatim path in the config means broken sites.
+        let canonical =
+            yerd_core::path_norm::strip_verbatim(&std::fs::canonicalize(&sites_root).unwrap());
         let canonical_str = canonical.to_string_lossy().into_owned();
-        assert!(on_disk.contains(&canonical_str));
+        assert!(
+            on_disk.contains(&canonical_str),
+            "expected {canonical_str} in: {on_disk}"
+        );
+        assert!(
+            !on_disk.contains(r"\\\\?\\"),
+            "no persisted path may be verbatim: {on_disk}"
+        );
 
         match send(
             &dirs,

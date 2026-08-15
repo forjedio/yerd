@@ -143,6 +143,11 @@ struct Candidate {
 /// former. `pub` for the same testability reason as [`SiteScope`].
 #[must_use]
 pub fn site_scope(dirs: &PlatformDirs, cwd: &Path) -> ScopeResolution {
+    // Matching is string containment, so both sides must spell a path the same
+    // way. Callers hand us raw `fs::canonicalize` output, which on Windows is
+    // verbatim (`\\?\C:\...`) while the site roots below are normalised - so
+    // normalise here rather than trusting every caller to have done it.
+    let cwd = &yerd_core::path_norm::strip_verbatim(cwd);
     let Ok(candidates) = candidates(dirs) else {
         return ScopeResolution::NoScope {
             daemon_unavailable: true,
@@ -194,8 +199,12 @@ fn candidates(dirs: &PlatformDirs) -> Result<Vec<Candidate>, DaemonUnavailable> 
     Ok(sites
         .iter()
         .filter_map(|entry| {
-            let document_root = std::fs::canonicalize(entry.site.document_root()).ok()?;
-            let served_root = std::fs::canonicalize(entry.site.served_root()).ok();
+            let document_root = std::fs::canonicalize(entry.site.document_root())
+                .map(|p| yerd_core::path_norm::strip_verbatim(&p))
+                .ok()?;
+            let served_root = std::fs::canonicalize(entry.site.served_root())
+                .map(|p| yerd_core::path_norm::strip_verbatim(&p))
+                .ok();
             Some(Candidate {
                 name: entry.site.name().to_owned(),
                 document_root,

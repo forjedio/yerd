@@ -174,7 +174,9 @@ mod tests {
             ScopeResolution::Scoped(scope) => {
                 assert_eq!(
                     scope.served_root,
-                    Some(std::fs::canonicalize(&scoped_dir).unwrap())
+                    Some(yerd_core::path_norm::strip_verbatim(
+                        &std::fs::canonicalize(&scoped_dir).unwrap()
+                    ))
                 );
                 #[cfg(unix)]
                 assert!(scope.php_bin.ends_with("php-8.3/bin/php"));
@@ -212,7 +214,9 @@ mod tests {
             ScopeResolution::Scoped(scope) => {
                 assert_eq!(
                     scope.served_root,
-                    Some(std::fs::canonicalize(sub_dir.join("public")).unwrap())
+                    Some(yerd_core::path_norm::strip_verbatim(
+                        &std::fs::canonicalize(sub_dir.join("public")).unwrap()
+                    ))
                 );
             }
             other => panic!("expected Scoped, got {other:?}"),
