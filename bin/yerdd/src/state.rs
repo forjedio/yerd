@@ -189,10 +189,10 @@ pub struct DaemonState {
     pub reserved_names: Mutex<HashSet<String>>,
     /// WordPress core-version availability cache (the WordPress wizard's
     /// version dropdown): the last successful `meta/wordpress-versions.json`
-    /// fetch, plus when it happened so a request can decide whether to
-    /// re-fetch. `None` until the first successful fetch; served (no
-    /// network) when still fresh, or as a stale fallback when a re-fetch
-    /// fails. See [`crate::wordpress_versions`].
+    /// fetch, plus the instant it stops being fresh so a request can decide
+    /// whether to re-fetch. `None` until the first successful fetch; served (no
+    /// network) while that deadline is in the future, or as a stale fallback
+    /// when a re-fetch fails. See [`crate::wordpress_versions`].
     pub wordpress_versions: RwLock<Option<(Instant, Vec<yerd_ipc::WordPressVersionInfo>)>>,
     /// One-click `WordPress` admin login token store, shared with `yerd-proxy`
     /// via the [`yerd_proxy::LoginTokenConsumer`] trait. See

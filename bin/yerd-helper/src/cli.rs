@@ -174,7 +174,13 @@ where
 /// the bare `--skip-priv-check`, and (Windows) `--result-token` **with its
 /// value** in both `--flag value` and `--flag=value` forms. A naive equality
 /// filter would leave the stray hex value and trip `WireDrift`.
+///
+/// The loop stays a `while let` rather than a `for`: the Windows arm pulls a
+/// second item off `iter` to drop `--result-token`'s value, which a `for` can't
+/// do. Off-Windows that arm is compiled out, so the lint has to be silenced
+/// there rather than the loop rewritten.
 #[cfg(debug_assertions)]
+#[cfg_attr(not(windows), allow(clippy::while_let_on_iterator))]
 fn filter_transport_flags<I: Iterator<Item = OsString>>(tail: I) -> Vec<OsString> {
     let mut filtered = Vec::new();
     let mut iter = tail;
