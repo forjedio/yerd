@@ -3,14 +3,15 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { Copy, Minus, Plus, Square, X } from "lucide-vue-next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import logoUrl from "@/assets/logo.svg";
-import { hostPlatform, setGuiMaximized } from "@/ipc/client";
+import { hostPlatform, setGuiMaximized, toggleWindowZoom } from "@/ipc/client";
 import { useTitleBarStyle } from "@/lib/titleBarStyle";
 import { supportsReliableMaximizedState } from "@/lib/windowState";
 
 // The window is decorationless (see tauri.conf.json) so we draw our own
 // titlebar. It's a `data-tauri-drag-region`, giving native click-drag-to-move
-// and double-click-to-zoom for free; the controls below opt out by being their
-// own (non-drag) elements.
+// for free; the controls below opt out by being their own (non-drag) elements.
+// Double-click-to-zoom is handled here rather than by the drag region - see
+// `toggleMaximize`.
 //
 // `title` lets a secondary window (the Mails viewer) reuse this bar with its own
 // caption; the optional `actions` slot draws window-scoped buttons on the right
@@ -149,9 +150,54 @@ function scheduleMaximizedRefresh(): void {
   }, 150);
 }
 
+/**
+ * Zoom/restore the window. macOS goes through `toggle_window_zoom`: our windows
+ * are decorationless, and for those Tauri's `toggleMaximize` animates the frame
+ * with redraw suppressed - the window appears to slide to the screen corner at
+ * its old size, then snap to full size when the animation ends. The command
+ * runs the same animation with the window actually drawn.
+ *
+ * That command schedules the animation and returns, so there is no settled
+ * frame to read afterwards - the macOS branch leaves the state refresh to
+ * `onResized`'s debounce rather than sampling a frame mid-flight.
+ */
 async function toggleMaximize(): Promise<void> {
-  await win.toggleMaximize();
+  try {
+    if (platform.value === "macos") {
+      await toggleWindowZoom();
+      return;
+    }
+    await win.toggleMaximize();
+  } catch {
+    return;
+  }
   refreshMaximized();
+}
+
+/**
+ * Keep the titlebar the single owner of double-click-to-zoom. Tauri's
+ * drag-region script listens on `document` and runs its own
+ * `internal_toggle_maximize` for a titlebar double click: on macOS that is the
+ * animated path `toggleMaximize` exists to avoid, and on every host it is a
+ * second toggle racing this one. Stopping the second press and release before
+ * they reach that listener leaves `onTitleBarDoubleClick` in sole control.
+ */
+function stopNativeZoomGesture(event: MouseEvent): void {
+  if (event.detail === 2) event.stopPropagation();
+}
+
+/** The clickable elements a double click must not zoom through. Mirrors the set
+ *  Tauri's drag-region script treats as blocking a drag. */
+const INTERACTIVE_SELECTOR =
+  "a, button, input, select, textarea, label, summary, [contenteditable=true]";
+
+/** Double-clicking the bar zooms, including the gaps around the controls, but a
+ *  double click *on* a control (a traffic light, a slotted action) belongs to
+ *  that control alone. */
+function onTitleBarDoubleClick(event: MouseEvent): void {
+  const target = event.target;
+  if (target instanceof Element && target.closest(INTERACTIVE_SELECTOR)) return;
+  void toggleMaximize();
 }
 
 // macOS-only: real traffic lights drop to a flat gray while the window is
@@ -256,7 +302,9 @@ function controlButtonClass(kind: ControlKind): string {
   <header
     data-tauri-drag-region
     class="relative flex h-8 w-full shrink-0 items-center border-b bg-muted px-3 text-foreground dark:bg-card"
-    @dblclick="toggleMaximize"
+    @mousedown="stopNativeZoomGesture"
+    @mouseup="stopNativeZoomGesture"
+    @dblclick="onTitleBarDoubleClick"
   >
     <!-- macOS: traffic lights (close / minimize / zoom). Colored while the
          window is focused, flat gray otherwise; glyphs revealed on hover. -->

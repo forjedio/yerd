@@ -83,7 +83,7 @@ block2           = "0.6"
 # (`DispatchQueue::main().exec_async`) so the login-launch probe is authoritative
 # — `run_on_main_thread` would run inline on the main thread and lose the race.
 dispatch2        = "0.3"
-objc2-app-kit    = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder", "NSGraphics", "objc2-core-foundation"] }
+objc2-app-kit    = { version = "0.3", features = ["NSAnimation", "NSApplication", "NSImage", "NSResponder", "NSGraphics", "NSScreen", "NSWindow", "objc2-core-foundation"] }
 objc2-foundation = { version = "0.3", features = ["NSData", "NSString", "NSError", "objc2-core-foundation"] }
 # In-process user-domain CA trust (mac_trust.rs). Versions track what
 # yerd-platform already resolves, so no duplicate compiles. `core-foundation`
