@@ -270,6 +270,13 @@ fn save_settings_at(path: &Path, s: &GuiSettings) -> Result<(), GuiError> {
     write_settings_atomic(path, s)
 }
 
+/// Save a caller-mutated `GuiSettings` under [`SETTINGS_LOCK`]. Prefer
+/// [`update_settings`], which also holds the lock across the preceding read.
+/// This exists for the multi-step macOS registration flows, which mutate across
+/// several conditional branches before saving. (Those are the only callers, so
+/// it is dead code on other targets - silenced rather than `#[cfg]`-gated so it
+/// keeps type-checking on Linux.)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn save_settings(s: &GuiSettings) -> Result<(), GuiError> {
     let path = settings_path()?;
     let _guard = lock_settings();
