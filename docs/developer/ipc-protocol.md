@@ -182,6 +182,9 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `SetServicePort { service, port }` | `{"type":"set_service_port","service":"redis","port":6380}` |
 | `SetServiceOverrides { service, overrides }` | `{"type":"set_service_overrides","service":"mysql","overrides":{"max_connections":"500","sql_mode":""}}` (free-form engine config directives, merged into the instance; `""` removes a key; takes effect on the next start/restart, nothing is restarted implicitly) |
 | `ServiceOverrides { service }` | `{"type":"service_overrides","service":"mysql"}` (replies `ServiceOverrides { overrides }`) |
+| `AddRouteRule { site, prefix, target }` | `{"type":"add_route_rule","site":"portal","prefix":"/api","target":"api/index.php"}` (target is relative to the served root; never absolute, never containing `..`) |
+| `RemoveRouteRule { site, prefix }` | `{"type":"remove_route_rule","site":"portal","prefix":"/api"}` |
+| `ListRoutes` | `{"type":"list_routes"}` (replies `Routes { rules }`) |
 | `ServiceLogs { service, lines }` | `{"type":"service_logs","service":"redis","lines":100}` |
 | `ListDatabases { service }` | `{"type":"list_databases","service":"mysql"}` |
 | `CreateDatabase` / `DropDatabase` | `{"type":"create_database","service":"mysql","name":"app"}` (and `drop_database`) |
@@ -249,7 +252,7 @@ pub enum Response {
     Error { code: ErrorCode, message: String },
     Parked { paths: Vec<String> },
     Info { dns_addr, tld, ca_path, ca_fingerprint, http_port, https_port },
-    PhpVersions { installed, default, updates, settings },
+    PhpVersions { installed, default, updates, settings, version_settings, directives, pool },
     AvailablePhp { available, installed, legacy },
     PhpExtensions { by_version },                  // version → [PhpExtInfo{name,path,zend,present}]
     Status { report: Box<StatusReport> },         // boxed: large payload
@@ -258,6 +261,7 @@ pub enum Response {
     Services { services: Vec<ServiceStatus> },
     AvailableServices { services: Vec<ServiceAvailability> },
     ServiceOverrides { overrides: BTreeMap<String, String> },  // name → value, in name order
+    Routes { rules: Vec<RouteRuleEntry> },        // every site's path-prefix routing rules
     ServiceLogs { lines: Vec<String> },
     Databases { databases: Vec<DatabaseSummary> },
     Mails { mails: Vec<MailSummary> },
@@ -320,6 +324,14 @@ no-`PROTOCOL_VERSION`-bump pattern as `web_subpath`.
 The proxy feature adds four mutators - `AddProxy { name, url }`, `RemoveProxy { name }`, `AddProxyRule { site, prefix, url }`, `RemoveProxyRule { site, prefix }` (all reply with the generic `Ok`) - and one query, `ListProxies`. Because a whole-host proxy is **not** a `Site`, it can't ride `Response::Sites`/`SiteEntry`; `ListProxies` gets a dedicated `Response::Proxies { proxies: Vec<ProxyEntry>, rules: Vec<ProxyRuleEntry> }` instead, where `ProxyEntry { name, target, secure, primary_domain, domains }` and `ProxyRuleEntry { site, prefix, target }` are built from plain `String`/`bool`/`Option<String>`/`Vec<String>`, so they satisfy the `PartialEq` that `Response` derives (see above: `Response` is `PartialEq` only, never `Eq`). New variants are additive by serde tag, so existing pins are byte-identical and no `PROTOCOL_VERSION` bump is needed. `url` stays a `String` on the wire; the daemon parses and validates it (returning a typed error) rather than the client.
 
 `ProxyEntry` later gained `primary_domain: Option<String>` and `domains: Vec<String>` (FQDNs) so a proxy can carry the extra domains, subdomains and wildcards [`yerd domain`](../reference/cli/domains) now gives it. Both use `#[serde(default, skip_serializing_if = ...)]` and are populated only for a **customised** proxy, so an uncustomised one serialises to the original three-field byte shape and an older client decodes it unchanged - the same additive, no-`PROTOCOL_VERSION`-bump pattern as `web_subpath` and `supports_overrides`. A proxy the router never inserted (one name-shadowed by a site) reports both as empty rather than the shadowing site's domains.
+:::
+
+::: info Routing rules are a separate surface from proxy rules
+Per-site [routing rules](../reference/cli/routes) add three variants - `AddRouteRule { site, prefix, target }` and `RemoveRouteRule { site, prefix }` (both reply with the generic `Ok`) plus the `ListRoutes` query, which gets its own `Response::Routes { rules: Vec<RouteRuleEntry> }`.
+
+`RouteRuleEntry { site, prefix, target }` is field-identical to `ProxyRuleEntry` and is deliberately **not** the same struct: `yerd-ipc` is a byte-pinned contract, so coupling two features' wire evolution to one type would make either one hard to change. The semantic difference is what the `target` is - a proxy rule's target is an HTTP upstream URL, a routing rule's target is a path relative to the site's *served root* (a nested `api/index.php`, or `index.html` for an SPA). The daemon validates it as a safe relative path; an absolute path or one containing `..` is refused.
+
+All three variants are additive by serde tag, so existing pins are byte-identical and no `PROTOCOL_VERSION` bump was needed.
 :::
 
 ### ErrorCode

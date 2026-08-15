@@ -43,15 +43,20 @@ apps/yerd-gui/
 └── src/                    Vue FRONTEND
     ├── main.ts             createApp + router; initTheme(); initDesktopChrome()
     ├── App.vue             AppShell + Toaster; shared daemon poller; first-run daemon start
-    ├── router.ts           hash router: /overview (default) /general /php /sites /tooling /services /dumps /mail /doctor /about (+ /dumps-window, /mails-viewer standalone routes)
+    ├── router.ts           hash router: /overview (default) /general /php /sites /tooling /services /proxies /dumps /integrations /mail /doctor /about (+ /dumps-window, /mails-viewer standalone routes)
     ├── ipc/
     │   ├── types.ts        TypeScript mirror of the yerd-ipc wire JSON
     │   ├── client.ts       typed wrappers around invoke() + IpcError
     │   └── client.test.ts  command-mapping + error-categorisation tests
-    ├── composables/        useDaemon (singleton poller), usePoll, useToast
-    ├── components/         AppShell, SideNav, NavLink, TitleBar, StatusPill, ComingSoon, EnvironmentCard, ManageDomainsModal, ui/ (incl. AsyncState, EmptyState)
-    ├── views/              OverviewView, GeneralView, PhpView, SitesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView, AboutView
-    └── lib/                utils (cn, humanisers), theme, desktop chrome, domainValidation (client-side domain-shape checks)
+    ├── composables/        useDaemon (singleton poller), usePoll, useToast, useIdes
+    ├── components/         AppShell, SideNav, NavLink, TitleBar, StatusPill, ComingSoon, EnvironmentCard,
+    │                       SiteCard, SiteDetailsSidebar (+ SiteDomainsPanel / SiteRoutesPanel),
+    │                       PhpVersionPanel, ServiceOverridesModal, ui/ (incl. AsyncState, EmptyState, InfoBanner)
+    ├── views/              OverviewView, GeneralView, PhpView, SitesView, ProxiesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView, AboutView
+    └── lib/                utils (cn, humanisers), theme, desktop chrome, domainValidation,
+                            siteFilter (match a query against every domain a site answers),
+                            ideChoice (resolve "auto"/"system"/an id to a label), wpAdmin,
+                            phpSettings (client-side pool/setting shape checks), windowState
 ```
 
 ## The Rust bridge (`src-tauri`)
@@ -426,7 +431,10 @@ export type Response =
 `ipc/client.ts` wraps each Tauri command in a typed function and narrows the
 `Response` for callers - including the domain mutators
 `addDomain` / `removeDomain` / `setPrimaryDomain` / `resetDomains` that back
-`ManageDomainsModal.vue`. A low-level `call` normalises every rejection into an
+`SiteDomainsPanel.vue`, the routing mutators `addRouteRule` / `removeRouteRule` /
+`listRoutes` behind `SiteRoutesPanel.vue`, `setPhpPoolSettings` behind
+`PhpVersionPanel.vue`, and `serviceOverrides` / `setServiceOverride` behind
+`ServiceOverridesModal.vue`. A low-level `call` normalises every rejection into an
 `IpcError`, and `ensureOk` defensively throws if a `type:"error"` ever slips
 through:
 
@@ -452,6 +460,29 @@ The client also exposes host helpers that are **Tauri plugins, not daemon IPC**:
 and `elevate` (the `elevate` command above), typed to the
 `ElevateTarget = "trust" | "resolver" | "ports"` union.
 
+A second group of host-only commands backs the **editor and terminal** launchers
+in the site details sidebar, implemented over
+[`yerd-platform`](./crates/yerd-platform)'s `IdeLauncher` / `SystemOpener` /
+`TerminalLauncher` seams rather than any daemon request:
+
+| Wrapper | Command | Purpose |
+| --- | --- | --- |
+| `getInstalledIdes` | `get_installed_ides` | rank-sorted detected editors (id + display label) |
+| `openInIde` | `open_in_ide` | open a site's folder in the editor with this id |
+| `openInSystemDefault` | `open_in_default` | open it with the desktop's default handler |
+| `openInTerminal` | `open_terminal` | open a terminal with that directory as its cwd |
+| `getPreferredIde` / `setPreferredIde` | `get_preferred_ide` / `set_preferred_ide` | the app-wide preference (`null` = auto-detect) |
+| `getSiteIdeOverrides` / `setSiteIdeOverride` | `get_site_ide_overrides` / `set_site_ide_override` | per-site overrides of that preference |
+
+`open_in_ide` / `open_in_default` take a **site name**, not a path: the host
+resolves the directory from the daemon's site list, so no absolute path is
+handed back and forth across the webview boundary. The editor preference and the
+per-site overrides persist host-side in `gui-settings.json`, alongside the tray
+icon variant and title-bar style. Preferences are stored as **raw ids**, so an id
+this host can't currently see (an uninstalled editor, or one set on another
+machine) survives untouched and simply renders as auto-detect - `lib/ideChoice.ts`
+does that resolution.
+
 ### Composables
 
 | Composable | Role |
@@ -460,6 +491,7 @@ and `elevate` (the `elevate` command above), typed to the
 | `useDaemonStart` | **Singleton** "start the daemon, wait for it to connect, diagnose on failure" flow shared by onboarding step 1, `DaemonDownHero`, and Doctor. `phase` (click-driven, fed by the Rust `daemon-start-phase` event) and `backgroundBusy` (fed by macOS's launch-time self-repair thread's `daemon-self-repair` event, see above) both OR into `starting`/`activeLabel` so every consumer's button reflects either kind of in-flight work - but `start()`'s own re-entrancy guard reads `phase` alone, so a same-tick self-repair no-op can never suppress `App.vue`'s automatic start. |
 | `usePoll` | Generic mount-scoped poller. Never overlaps in-flight calls, **pauses while the document is hidden** (background tab / tray), refreshes on becoming visible, and clears its timer on unmount. Default cadence 4s; callers should not go below ~3s for `status`. |
 | `useToast` | Module-level toast store rendered by the single `<Toaster>` in `App.vue`. Errors linger (8s), success/info auto-dismiss (4s). |
+| `useIdes` | **Singleton** cache of the host's detected editors, in rank order. Detection is a filesystem scan, so it runs once per session (`loadIdes`) and every editor picker reads the same list rather than re-probing on open; `rescanIdes` backs the Settings **Rescan** button. Each run carries a monotonic generation token and publishes only while it is still the newest, so a slow initial load can never overwrite a rescan the user triggered after it. |
 
 Both pollers gate on `document.visibilityState === "hidden"` to avoid hammering
 the daemon when the window is hidden to the tray - a real cost, since each

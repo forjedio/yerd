@@ -7,14 +7,20 @@ backup / restore). It is the services counterpart to [`yerd-php`](./yerd-php) an
 is structured the same way - every *decision* is pure and unit-testable; every
 byte of I/O sits behind the [`yerd-supervise`](./yerd-supervise) trait seams.
 
-The four engines it models:
+The config-backed engines it models:
 
-| Service | `id` | Display name | Kind | Default port | Server binary |
-|---|---|---|---|---|---|
-| Redis | `redis` | `Redis (Valkey)` | Cache | 6379 | `valkey-server` |
-| MySQL | `mysql` | `MySQL` | Database | 3306 | `mysqld` |
-| MariaDB | `mariadb` | `MariaDB` | Database | 3306 | `mariadbd` |
-| PostgreSQL | `postgres` | `PostgreSQL` | Database | 5432 | `postgres` |
+| Service | `id` | Display name | Kind | Default port | Server binary | Overrides |
+|---|---|---|---|---|---|---|
+| Redis | `redis` | `Redis (Valkey)` | Cache | 6379 | `valkey-server` | `RedisConf` |
+| MySQL | `mysql` | `MySQL` | Database | 3306 | `mysqld` | `MyCnf` |
+| MariaDB | `mariadb` | `MariaDB` | Database | 3306 | `mariadbd` | `MyCnf` |
+| PostgreSQL | `postgres` | `PostgreSQL` | Database | 5432 | `postgres` | `PostgresConf` |
+
+Two further types are supervised the same way but have **no config file**:
+Meilisearch (`meilisearch`, `Search`) and Laravel Reverb (`reverb:<site>`,
+`AppServer` - one instance per linked Laravel site, running against that site's
+PHP rather than a downloaded binary). Both are argv/env driven, so both accept
+no [configuration overrides](#configuration-overrides).
 
 ::: info Redis is served by Valkey
 The "Redis" slot is filled by **Valkey** - the BSD-licensed fork - because Redis
@@ -44,6 +50,7 @@ src/
 ├── config_render.rs  # pure config rendering (redis.conf / my.cnf / postgresql.conf)
 ├── release.rs        # pure artifact resolution from the hosted listing
 ├── version.rs        # version labels + on-disk path layout; discover_installed
+├── port.rs           # candidate_ports - free-port selection for a new instance
 ├── health.rs         # readiness probes (Redis PING, MySQL/Postgres handshake)
 ├── manager.rs        # ServiceManager - the I/O driver that runs the state machine
 └── error.rs          # ServiceError
@@ -119,6 +126,50 @@ here):
 - **`render_postgresql_conf`** - `listen_addresses = '127.0.0.1'` and
   **`unix_socket_directories = ''`** (Postgres uses TCP loopback only; the macOS
   `sun_path` limit rules out a socket here), with hba/ident pinned to the datadir.
+
+`render_include_lines(dialect, confd_dir)` renders the include line(s) the
+manager appends to each rendered config so the engine reads the
+[override sidecars](#configuration-overrides) *after* Yerd's own settings. Each
+dialect gets its native form: `!includedir` for `MyCnf` and `include_dir` for
+`PostgresConf` (both read a directory in name order), while `RedisConf` has no
+directory form at all, so both files are named explicitly with `50-local` last -
+the order is what carries the precedence.
+
+::: warning `!includedir` has no quoting syntax
+Unlike an option *value*, MySQL's `!includedir` directive cannot be quoted, so
+the path is emitted raw. A real `mysqld` parses a spaced macOS state path
+(`~/Library/Application Support/yerd/...`) that way, which is what makes this
+safe; the other two dialects quote exactly as their values do. There are table
+tests pinning all three against a spaced path.
+:::
+
+## Configuration overrides
+
+An override-capable engine gets a `conf.d/` directory beside its rendered
+config, holding two files:
+
+| File | Written by | Rewritten? |
+|---|---|---|
+| `10-yerd.<ext>` | Yerd, from `[services.<id>.overrides]` | every start |
+| `50-local.<ext>` | the user | **never** - created once from a stub |
+
+`Service::override_capability() -> Option<OverrideDialect>` is the capability
+descriptor, and its one body delegates to
+[`yerd_core::service_directives::dialect_for`](./yerd-core#service-directives),
+which the CLI and `yerd-config` also call - so no service type can declare a
+capability that disagrees with theirs. `Some` reads as "accepts overrides", and
+the dialect determines the line form, the file extension, and the include
+directive alike. It surfaces on the wire as
+[`ServiceStatus::supports_overrides`](../ipc-protocol#status-doctor-payloads).
+
+Every override-capable engine sets `capture_output_to_log: true` in its launch
+plan, including the ones that log to their own file via rendered config. An
+invalid directive is reported while the option file is *still being parsed* -
+before `mysqld` opens its configured `log-error`, or Valkey its `logfile` - so
+without capture that complaint would land on the daemon's inherited stderr and
+reach no file at all. The manager and the engine then both append to the same
+path, so neither truncates the other's lines. A test asserts the invariant
+directly: `override_capable_engines_capture_output_to_the_instance_log`.
 
 ## `release.rs` - artifact resolution (pure)
 

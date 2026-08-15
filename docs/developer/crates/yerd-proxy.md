@@ -25,9 +25,13 @@ crates/yerd-proxy/src/
 ├── pure/            # synchronous, runtime-free, I/O-free helpers
 │   ├── mod.rs
 │   ├── cgi_params.rs   # build the CGI/1.1 param list for FastCGI
+│   ├── cgi_head.rs     # incremental CGI response-head parsing (streaming)
 │   ├── fcgi_codec.rs   # FastCGI record framing (encode/decode)
+│   ├── query.rs        # login-token query-string helpers (one-click WP admin)
+│   ├── route_rules.rs  # longest-prefix match of a site's routing rules
 │   ├── try_files.rs    # static-file/directory-index candidate resolution + MIME map
-│   └── redirect.rs     # HTTP → HTTPS redirect URI builder
+│   ├── unbound.rs      # resolver-off localhost access (header / switch URL / cookie / picker)
+│   └── redirect.rs     # HTTP → HTTPS upgrade + trailing-slash directory Location
 └── forward/         # async per-backend forwarding I/O
     ├── mod.rs          # BoxBody + body helpers
     ├── static_file.rs  # serve a real static file, or a directory's index.html/.htm
@@ -103,7 +107,7 @@ The `document_root` parameter is the directory actually served, which is the sit
 
 Beyond the script vars, `build_params` emits the standard CGI/1.1 set (`GATEWAY_INTERFACE`, `SERVER_PROTOCOL`, `REQUEST_METHOD`, `QUERY_STRING`, `DOCUMENT_ROOT`, `REMOTE_ADDR`/`REMOTE_PORT`, `SERVER_ADDR`/`SERVER_PORT`, `SERVER_SOFTWARE = yerd`). `HTTPS=on` is added only when the request arrived on the TLS listener. `Host` is surfaced as both `SERVER_NAME` and `HTTP_HOST`; `Content-Type` and `Content-Length` are emitted un-prefixed (FPM expects them that way). Every other header is translated to the generic `HTTP_*` form (uppercased, `-` → `_`), with `Host`/`Content-Type`/`Content-Length` explicitly skipped so they are not double-emitted.
 
-### `redirect` - HTTP → HTTPS upgrade URI
+### `redirect` - HTTP → HTTPS upgrade URI {#redirect}
 
 `build_redirect_uri(host, path_and_query, https_port)` constructs the `Location` for the permanent redirect used when a secure site is hit on the plain-HTTP listener:
 
@@ -113,6 +117,14 @@ pub fn build_redirect_uri(host: &str, path_and_query: &str, https_port: u16) -> 
 
 It strips any inbound port from `host` (handling both `host:80` and bracketed IPv6 `[::1]:80`), lowercases the host, defaults an empty path to `/`, and appends `:port` only when the HTTPS port is not 443. The `strip_port` helper is careful about IPv6: a bracketed literal keeps everything up to and including the `]`, and a plain host is only split when it contains exactly one colon (so an unbracketed IPv6 address is left intact). All of this is exercised by a table test (`build_table`) covering `app.test:80`, `[::1]:80`, `[2001:db8::1]:80`, and the 443-vs-8443 port cases.
 
+The module also builds the **trailing-slash directory** `Location`:
+
+```rust
+pub fn directory_redirect_location(path_and_query: &str) -> String  // "/sub?x=1" -> "/sub/?x=1"
+```
+
+This one is deliberately **path-relative**, so it is scheme- and host-agnostic and works behind either listener. An empty input degrades to `/`, and a path that already ends in `/` is returned unchanged, so the caller can never build a redirect loop. See [the directory redirect](#the-trailing-slash-directory-redirect) for when it fires.
+
 ### `try_files` - static-file resolution {#try_files-static-file-resolution}
 
 `try_files` decides, purely, whether a request *could* be a static file and what its safe relative path and MIME type would be. It does no I/O - the [`static_file`](#static_file-serving-real-files) forwarder does the actual stat/read.
@@ -121,6 +133,32 @@ It strips any inbound port from `host` (handling both `host:80` and bracketed IP
 - **`directory_candidate(path)`** is `static_candidate`'s counterpart for directory-index resolution: it maps a *directory-style* URL path (trailing slash, or the bare root `/`) to a safe relative directory `PathBuf`, or `None` for anything else. Same percent-decoding and traversal rules as `static_candidate` - the two intentionally partition every URL shape between them (a path never satisfies both).
 - **`is_php_source(path)`** flags PHP source extensions (`php`, `phtml`, `php3`/`php4`/`php5`/`php7`, `phps`, `pht`) so they are *never* served as static bytes - they fall through to FastCGI.
 - **`content_type_for(path)`** maps a file extension to a `Content-Type` for the response (a small MIME table, defaulting to `application/octet-stream`).
+
+### `route_rules` - matching a site's routing rules
+
+The mirror of `yerd_core::match_rule` for [`RouteRule`](./yerd-core#route-rule), which resolves to a local file rather than an HTTP upstream:
+
+```rust
+pub fn match_route<'a>(rules: &'a [RouteRule], path: &str) -> Option<&'a RouteRule>
+```
+
+Longest-prefix wins, and ties cannot occur because duplicate prefixes per site are rejected when the rule is added. Callers pass the raw, case-sensitive, percent-encoded `uri.path()` with **no** normalization, exactly as `match_rule` does: an under-match (an encoded path failing to match) is acceptable for a dev tool, and the matcher never over-matches.
+
+Matching is the whole of the pure half. Whether the matched target is a PHP script or a static document is derived at the dispatch site from `try_files::is_php_source`, so this module needs to know neither.
+
+### `cgi_head` - incremental response-head parsing {#cgi_head-incremental-response-head-parsing}
+
+PHP-FPM delivers a response as a stream of STDOUT records whose leading bytes are a CGI header block ending at a blank line. `cgi_head` is what lets the forwarder start the body **before** the request finishes:
+
+```rust
+pub struct HeadAccumulator { /* private buffer */ }
+pub enum HeadFeed { Pending, Complete(Head), TooLarge }
+pub struct Head { pub status: StatusCode, pub headers: Vec<(String, String)>, pub body_remainder: Vec<u8> }
+```
+
+The forwarder feeds STDOUT records in as they arrive and starts streaming the moment `HeadFeed::Complete` comes back, so nothing waits for `END_REQUEST`. Buffering until the terminator is found is what makes a record boundary falling *inside* a `\r\n\r\n` harmless: each feed resumes its scan three bytes back into what was already buffered, so the split point never matters. `Status:` is parsed out of the header list into `Head::status` (defaulting to 200 when absent), and any body bytes that arrived in the same feed come back as `body_remainder`.
+
+`HeadFeed::TooLarge` fires past a 64 KiB cap - generous next to nginx's default `fastcgi_buffer_size` of 4-8 KiB, so a head that long is a runaway backend rather than a real response.
 
 ## The `Backend` enum
 
@@ -330,29 +368,56 @@ A `NotFound` result here means no index file exists (or `index.php` won) and the
 `script_file::resolve_script` extends `cgi_params`'s "everything to `index.php`" front-controller policy with the `try_files $uri $uri/index.php` half of the classic WordPress/nginx policy: a real, more specific script wins over the site root's `index.php` when one exists.
 
 ```rust
+pub enum ScriptResolution {
+    Script(PathBuf),      // a real, on-disk script to execute, relative to served_root
+    DirectoryRedirect,    // a real directory requested without its trailing slash
+    Fallback,             // nothing matched - the site root's index.php
+}
+
 pub async fn resolve_script(
     uri_path: &str,
     served_root: &Path,
     allowed_root: &Path,
-) -> Option<PathBuf>
+    symlink_protection: bool,
+) -> ScriptResolution
 ```
 
 - Only called at all when `BackendResolver::allows_direct_script_execution(site)` returns `true` (see [`resolve_script_if_allowed`](#per-request-dispatch), which skips the filesystem check entirely otherwise) - a Laravel or plain-PHP site never reaches this function.
-- Checks, in order: an exact non-directory match (`/wp-login.php` → `wp-login.php`), then - for a directory-style request - that directory's own index (`/wp-admin/` → `wp-admin/index.php`).
+- Checks, in order: an exact non-directory match (`/wp-login.php` → `wp-login.php`), then that same path as a **directory missing its trailing slash** (`/sub` → `DirectoryRedirect`), then - for a directory-style request - that directory's own index (`/wp-admin/` → `wp-admin/index.php`).
 - Unlike `static_file`, this applies to **every HTTP method**, not just GET/HEAD - a real script like `wp-login.php` handles POST too. It never reads or serves file *content*, only decides which path FastCGI should be told to execute.
-- Same canonicalise-and-check-containment discipline as `static_file`: a symlinked script that resolves outside `allowed_root` (`document_root`) is treated as not found (falls back to the root `index.php` policy) rather than handed to FastCGI.
-- `None` (fall back to the site root's `index.php`, today's behavior for every framework with only one front controller) whenever there's no real, on-disk, non-directory `.php` file at the resolved path.
+- Same canonicalise-and-check-containment discipline as `static_file`: a symlinked script that resolves outside `allowed_root` (`document_root`) is treated as not found (falls back to the root `index.php` policy) rather than handed to FastCGI. `is_existing_directory` mirrors that containment match, so the two share symlink semantics exactly.
+- `Fallback` (the site root's `index.php`, the behaviour for every framework with only one front controller) whenever there's no real, on-disk, non-directory `.php` file and no real directory at the resolved path.
+
+#### The trailing-slash directory redirect {#the-trailing-slash-directory-redirect}
+
+`DirectoryRedirect` answers `301` to the slashed form, built by [`redirect::directory_redirect_location`](#redirect) and sent with `Cache-Control: no-store`. This matches Apache's `DirectorySlash` and nginx's `try_files $uri $uri/`.
+
+Two scoping rules make it safe:
+
+- **Direct mode only.** It rides the existing `allows_direct_script_execution` gate. A front-controller site treats `/foo` as a framework route, so redirecting there would break it.
+- **GET/HEAD only**, to avoid surprising POST semantics.
+
+The redirect fires whether or not the directory holds an `index.php`, so a static-only `/assets` redirects to `/assets/`, where `try_serve_index` serves its `index.html`. Without it, `GET /sub` on a legacy multi-directory PHP app fell through to the *root* `index.php`; if that script redirects into the subdirectory, the browser looped until it gave up. The one-click WordPress login token is consumed only once a request is definitely forwarded to FastCGI, so it survives this 301 and still works on the slashed follow-up.
 
 ### `fcgi` - the PHP-FPM forwarder
 
-`fcgi::forward` drives the full FastCGI exchange against PHP-FPM:
+`fcgi::forward` drives the full FastCGI exchange against PHP-FPM. The socket is **split**, so the request is written on one half while the response is read on the other:
 
 1. **Connect.** `open_backend` opens a `UnixStream` for `PhpFpm { socket }` (Unix only - non-Unix returns `ErrorKind::Unsupported`) or a `TcpStream` for `PhpFpmTcp { addr }`. The two are unified behind a `BackendStream` enum that implements `AsyncRead`/`AsyncWrite`. (`FrankenPhp` reaching this path is a `#[cold]` "dispatch bug" error.)
 2. **BEGIN_REQUEST** with `FCGI_RESPONDER`, `keep_conn = false`, `request_id = 1`.
 3. **PARAMS** from `build_params`, chunked at `FCGI_MAX_PAYLOAD`, followed by a zero-length PARAMS terminator. The prelude is flushed before the body is drained.
-4. **STDIN.** The request body is streamed frame-by-frame, chunked at `FCGI_MAX_PAYLOAD`, then a zero-length STDIN terminator. HTTP trailers are dropped (FastCGI cannot represent them).
-5. **Read STDOUT/STDERR** until `END_REQUEST`. Each record's content and padding are read with `read_exact`; a `request_id != 1` yields `FcgiError::UnexpectedRequestId`. Any non-empty STDERR is logged at warn ("FPM stderr").
-6. **Synthesise the response.** `parse_cgi_response` splits the CGI header block at the first `\r\n\r\n` or `\n\n`, translates `Status: NNN [Reason]` into the HTTP status (defaulting to `200 OK`), and copies the rest as the body. Headers that fail `HeaderName`/`HeaderValue` validation are silently skipped.
+4. **STDIN.** The request body is streamed frame-by-frame, chunked at `FCGI_MAX_PAYLOAD`, then a zero-length STDIN terminator. HTTP trailers are dropped (FastCGI cannot represent them). The write task deliberately outlives the response read: PHP may answer before it has read STDIN, and abandoning a part-read request body makes hyper close the client's read side under an upload still in flight.
+5. **Head.** STDOUT records are fed to [`cgi_head::HeadAccumulator`](#cgi_head-incremental-response-head-parsing) until it reports `Complete`. A `request_id != 1` yields `FcgiError::UnexpectedRequestId`; any non-empty STDERR is logged at warn ("FPM stderr").
+6. **Stream the body.** The head goes out immediately and every subsequent STDOUT record is relayed to the client one at a time over a channel body, so an SSE stream or a Livewire `wire:stream` reaches the browser as PHP flushes it. A `Content-Length` PHP set itself passes through verbatim; without one, hyper frames the body as chunked.
+
+::: warning Streaming moves the error boundary
+A failure *before* the head is on the wire still returns a `ProxyError` and gets the usual clean 5xx. A failure *after* it cannot change the status any more, so the forwarder aborts the connection instead.
+:::
+
+Two details fall out of streaming:
+
+- **Bodyless responses are drained, not streamed.** For a HEAD, or a `1xx`/`204`/`304`, hyper drops the body the instant the head is encoded - which on the streaming path is indistinguishable from the client hanging up, and would kill the PHP script mid-run. `drain_to_end_request` reads to `END_REQUEST` discarding STDOUT instead, so PHP still runs to completion. `restore_head_content_length` then gives a HEAD the `Content-Length` the same GET would have carried (RFC 9110 §9.3.2), unless the drain passed `MAX_DISCARDED_BYTES` and the total is no longer known.
+- **`X-Accel-Buffering` is consumed, not forwarded.** It is an nginx directive with no meaning to a client, and Yerd never buffers a stream in the first place. A PHP-set `Transfer-Encoding` is dropped for the same reason: it would pre-empt hyper's own framing.
 
 `upgrade_not_supported()` is the `501` response for upgrade attempts on a FastCGI backend.
 

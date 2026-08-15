@@ -1,8 +1,9 @@
 # Services
 
 Yerd installs and supervises local database, cache, and search engines as native,
-per-user processes - no Docker. Each engine is identified by a short `id`:
-`redis`, `mysql`, `mariadb`, `postgres`, or `meilisearch`. The [Services & Databases
+per-user processes - no Docker. Each service is identified by a short `id`:
+`redis`, `mysql`, `mariadb`, `postgres`, `meilisearch`, or - per site -
+`reverb:<site>` (see [Instances](#instances)). The [Services & Databases
 guide](../../guide/services) covers the model in depth; this page is the command
 reference. For creating and managing the databases *inside* a SQL engine, see
 [Databases](./db).
@@ -133,6 +134,42 @@ and warns about reserved or malformed lines. See
 [Service configuration overrides](../../guide/services#service-configuration-overrides)
 for the two-file model, and the [Configuration
 Reference](../configuration#services-id) for how overrides are stored.
+
+## Instances
+
+The commands above address a service by its **wire id**. For an engine that only
+ever has one instance, the id is just the type (`mysql`, `redis`). Per-site types
+- Laravel Reverb today - can have one instance per site, and their ids carry the
+site: `reverb:blog`.
+
+| Command | Description | Example |
+| --- | --- | --- |
+| `yerd service add --type <TYPE> [--site <SITE>] [--port <PORT>] [--version <VERSION>] [--autostart on\|off]` | Add a new instance of a service type. | `yerd service add --type reverb --site blog` |
+| `yerd service remove <SVC> [--purge]` | Remove a per-site instance. Add `--purge` to delete its stored state too. | `yerd service remove reverb:blog` |
+| `yerd service set-autostart <SVC> on\|off` | Set whether the instance starts with Yerd. | `yerd service set-autostart redis off` |
+| `yerd service set-site <SVC> <SITE>` | Re-link a per-site instance to a different site. | `yerd service set-site reverb:blog shop` |
+
+```sh
+yerd service add --type reverb --site blog     # reverb:blog, on the next free port
+yerd service add --type postgres --version 17  # an engine instance, explicit version
+yerd service set-autostart reverb:blog on
+yerd service set-site reverb:blog shop         # becomes reverb:shop
+yerd service remove reverb:blog --purge
+```
+
+- `--type` is a type id (`redis`, `mysql`, `mariadb`, `postgres`, `meilisearch`,
+  `reverb`), not a wire id.
+- `--site` is **required** for a per-site type, and must name a **linked Laravel**
+  site (one with an `artisan` file). The instance runs against that site's PHP and
+  document root, which is why `--version` doesn't apply to it.
+- `--version` is required for a versioned type - `add` installs that version as
+  part of the call.
+- `--port` defaults to the next free loopback port at or above the type's default.
+  An explicit port already reserved by another instance is refused.
+- `--autostart` defaults per type: engines start with Yerd, per-site app servers
+  do not.
+- `remove` is for per-site instances. Removing an engine's *installed version* is
+  [`yerd service uninstall`](#installing-versioning).
 
 ## See also
 

@@ -360,6 +360,12 @@ The served path shows up in `yerd sites` (the `SERVED` column, `/` meaning the p
 A request that resolves to a real file under the served root (a stylesheet, image, `favicon.ico`, compiled JS, …) is returned straight from disk by the proxy, with a guessed `Content-Type` - it never touches PHP. A directory request (including the site root) falls back to `index.html` or `index.htm` from that directory when there's no `index.php` there, so a plain static site (no PHP at all) works with no extra configuration. Everything else is handed to the framework's front controller (`index.php`). PHP source files are never served as static bytes. A symlink is allowed to point anywhere inside the site's project directory - so Laravel's `public/storage -> ../storage/app/public` link works with no extra setup - but a symlink that escapes the project directory entirely is refused with an explicit `403 Forbidden` naming the requested path, rather than being silently handed to PHP.
 :::
 
+::: info Directory requests get a trailing-slash redirect
+On a site running in **direct** mode - front controller off, where named `.php` files are executable by URL - a `GET /sub` naming a real directory answers `301` to `/sub/`, exactly as Apache's `DirectorySlash` and nginx's `try_files $uri $uri/` do. The slashed form is then resolved normally: `sub/index.php` if it has one, otherwise `sub/index.html`. This is what makes a legacy multi-directory PHP app work - without it, `/sub` fell through to the *root* `index.php`, and an app whose root script redirects into the subdirectory looped until the browser gave up.
+
+Front-controller sites are deliberately unaffected: there, `/sub` is a framework route, not a directory. The redirect is also limited to `GET` and `HEAD`, so a `POST` is never redirected.
+:::
+
 ### Overriding the served path
 
 When detection guesses wrong, or you have an unconventional layout, set the served directory explicitly:

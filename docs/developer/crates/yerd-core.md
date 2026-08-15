@@ -51,38 +51,59 @@ from `lib.rs`:
 
 ```rust
 pub mod detect;
+mod domain;
 mod error;
 mod host;
+mod net;
 mod php;
+pub mod php_directives;
+pub mod php_extensions;
+pub mod php_pool;
 pub mod php_settings;
+mod proxy;
+mod route_rule;
 mod router;
+pub mod service_directives;
 mod site;
 mod tld;
 
 pub use detect::{detect, Detection, ProjectSignals};
-pub use domain::{choose_primary, effective_domains, Domain, DomainErrorReason};
-pub use error::{CoreError, PhpVersionErrorReason, SiteNameErrorReason, TldErrorReason};
-pub use php::PhpVersion;
+pub use domain::{choose_primary, effective_domains, Domain};
+pub use error::{CoreError, PhpVersionErrorReason, SiteNameErrorReason, TldErrorReason, /* … */};
+pub use net::is_lan_source;
+pub use php::{PhpVersion, FIRST_SUPPORTED_MINOR};
+pub use php_directives::{DirectiveError, DirectiveNameErrorReason};
+pub use php_extensions::{ExtError, NameErrorReason, PathErrorReason};
+pub use php_pool::{PoolNameErrorReason, PoolSettingError, PoolValueErrorReason};
 pub use php_settings::{PhpSettingError, ValueErrorReason};
-pub use router::{RouterConfig, SiteRouter};
-pub use site::{Site, SiteKind};
+pub use proxy::{match_rule, validate_proxy_name, ProxyRule, ProxySite, UpstreamTarget};
+pub use route_rule::RouteRule;
+pub use router::{Route, RouterConfig, SiteRouter};
+pub use site::{normalize_site_name, slugify_site_name, Site, SiteKind};
 pub use tld::Tld;
 ```
 
-| Module          | Visibility    | Responsibility                                            |
-| --------------- | ------------- | --------------------------------------------------------- |
-| `error`         | re-exported   | `CoreError` + the typed `*Reason` sub-enums               |
-| `php`           | re-exported   | `PhpVersion` `(major, minor)` value type                  |
-| `site`          | re-exported   | `Site` / `SiteKind`                                       |
-| `tld`           | re-exported   | `Tld` validated DNS-suffix newtype                        |
-| `domain`        | re-exported   | `Domain` sub-part + `effective_domains` / `choose_primary` algebra |
-| `router`        | re-exported   | `RouterConfig` + `SiteRouter` (the resolve algorithm)     |
-| `php_settings`  | `pub mod`     | managed PHP ini directives + value validation             |
-| `detect`        | `pub mod`     | pure web-root detection (`ProjectSignals` → `Detection`)  |
-| `host`          | `pub(crate)`  | `Host:` header normalisation, consumed only by `resolve`  |
+| Module               | Visibility    | Responsibility                                            |
+| -------------------- | ------------- | --------------------------------------------------------- |
+| `error`              | re-exported   | `CoreError` + the typed `*Reason` sub-enums               |
+| `php`                | re-exported   | `PhpVersion` `(major, minor)` value type                  |
+| `site`               | re-exported   | `Site` / `SiteKind` + name normalisation/slugification    |
+| `tld`                | re-exported   | `Tld` validated DNS-suffix newtype                        |
+| `domain`             | re-exported   | `Domain` sub-part + `effective_domains` / `choose_primary` algebra |
+| `proxy`              | re-exported   | whole-host proxies + path-prefix rules (`match_rule`)     |
+| `route_rule`         | re-exported   | `RouteRule` - a path prefix resolved to a file inside the site |
+| `router`             | re-exported   | `RouterConfig` + `SiteRouter` (the resolve algorithm)     |
+| `net`                | re-exported   | `is_lan_source` - whether a peer address is LAN, not loopback |
+| `php_settings`       | `pub mod`     | managed PHP ini directives + value validation             |
+| `php_directives`     | `pub mod`     | free-form per-version ini directives (shape checks + reserved names) |
+| `php_extensions`     | `pub mod`     | custom `.so` extension registry validation                |
+| `php_pool`           | `pub mod`     | FPM pool-block settings (`max_children`) + the built-in default |
+| `service_directives` | `pub mod`     | free-form service config overrides: dialects, rendering, `scan_local` |
+| `detect`             | `pub mod`     | pure web-root detection (`ProjectSignals` → `Detection`)  |
+| `host`               | `pub(crate)`  | `Host:` header normalisation, consumed only by `resolve`  |
 
-`php_settings` is a `pub mod` (callers reach functions as
-`yerd_core::php_settings::validate_value(...)`); `host` is deliberately
+The `pub mod`s are reached through their path (`yerd_core::php_settings::validate_value(...)`)
+with only their error types re-exported at the root; `host` is deliberately
 crate-private - only `SiteRouter::resolve` consumes it.
 
 ## `PhpVersion`
@@ -325,6 +346,129 @@ Injection attempts - embedded newlines, `;`, `#`, `]`, `=`, or over-length
 input - are all rejected here. Downstream renderers re-validate, but this is the
 first and primary gate.
 :::
+
+## `php_pool` - FPM pool-block settings
+
+FPM's pool knobs (`pm`, `pm.max_children`, …) are **not** ini directives: they
+sit in the pool block of the generated config, not behind `php_value[…]`.
+Setting one through the free-form directives path would render
+`php_value[pm.max_children]`, which FPM refuses with `ERROR: Unable to set
+php_value` on every worker spawn - so `php_directives::reserved` denies the whole
+`pm.` prefix and points here.
+
+```rust
+pub const DEFAULT_MAX_CHILDREN: u32 = 16;
+
+pub fn validate_name(name: &str) -> Result<(), PoolSettingError>;   // allowlist of one
+pub fn validate_value(value: &str) -> Result<u32, PoolSettingError>; // 1..=1024
+pub fn override_max_children(settings: Option<&BTreeMap<String, String>>) -> Option<u32>;
+```
+
+Yerd exposes exactly one knob, `max_children`, so `validate_name` is an
+allowlist of one rather than a shape check - pool settings are a typed surface,
+not free-form ini. `validate_value` accepts a plain run of ASCII digits
+(surrounding whitespace trimmed) inside `1..=1024`; a leading sign or a decimal
+point is rejected rather than coerced.
+
+`DEFAULT_MAX_CHILDREN` is the single source of truth for the default:
+[`yerd-php`](./yerd-php)'s `PoolConfig::dev_defaults` renders it and the CLI
+prints it as `(default)`, so the two cannot drift. `override_max_children`
+returns `None` both when a version has no override *and* when its stored value
+no longer validates, which is what makes a bad hand-edit of `[php.pool]` degrade
+to the default instead of breaking the pool.
+
+## `route_rule` - path prefix to a local file {#route-rule}
+
+A `RouteRule` maps a URI path prefix to a target **under the site's served
+root**: `api/index.php` for a nested front controller, `index.html` for SPA
+history-API routing. It is the local-file sibling of `ProxyRule`, which forwards
+to an HTTP upstream instead.
+
+```rust
+pub struct RouteRule { /* private: prefix + target */ }
+
+impl RouteRule {
+    pub fn new(prefix: &str, target: &str) -> Result<Self, CoreError>;
+    #[must_use] pub fn prefix(&self) -> &str;
+    #[must_use] pub fn target(&self) -> &str;
+    #[must_use] pub fn matches_path(&self, path: &str) -> bool;
+}
+```
+
+`new` validates the prefix as absolute, free of control characters, spaces, `?`
+and `#` (none of which can appear in a `uri.path()`) and of any `..` component,
+then normalises a trailing slash away (`/api/` → `/api`; root stays `/`). The
+target is validated as a **safe relative path** - non-empty, no control
+characters, and no root, drive prefix, or `..` component - so it can only ever
+resolve to a descendant of the served root. Containment is re-checked against
+the real filesystem at request time; this is the first line of defence, not the
+only one.
+
+Matching is boundary-correct (`/api` matches `/api` and `/api/user` but never
+`/apix`), and longest-prefix-wins is applied by the caller -
+[`yerd-proxy`](./yerd-proxy)'s `pure::route_rules::match_route`, the mirror of
+this crate's `match_rule` for proxy rules.
+
+::: info Why the prefix checks are duplicated
+`RouteRule::new` deliberately repeats `ProxyRule::new`'s prefix validation
+rather than sharing a helper: both are shipped types, and a shared helper would
+mean either one's rules could not move without the other's. Each keeps its own
+table tests, which is what catches drift.
+:::
+
+## `service_directives` - free-form service config overrides {#service-directives}
+
+Yerd regenerates a config-backed service's own config file on every start, so a
+hand edit there is clobbered. Instead, overrides are rendered into a sidecar
+(`conf.d/10-yerd.<ext>`) that the generated config includes *after* its own
+settings. Those overrides are not typed - Yerd cannot know every directive of
+every engine - so what this module guarantees is narrower and more important:
+**an override can never corrupt a generated config file**.
+
+```rust
+pub enum OverrideDialect { MyCnf, PostgresConf, RedisConf }
+
+pub fn dialect_for(type_id: &str) -> Option<OverrideDialect>;   // None = accepts no overrides
+pub const fn file_ext(dialect: OverrideDialect) -> &'static str;
+pub fn reserved(dialect: OverrideDialect, name: &str) -> Option<&'static str>;  // hint if denied
+pub fn validate_name(name: &str) -> Result<(), OverrideError>;
+pub fn validate_value(dialect: OverrideDialect, value: &str) -> Result<(), OverrideError>;
+pub fn render_managed(dialect: OverrideDialect, overrides: &BTreeMap<String, String>) -> String;
+pub fn render_local_stub(dialect: OverrideDialect) -> String;
+pub fn scan_local(dialect: OverrideDialect, content: &str) -> Vec<LocalOverrideIssue>;
+```
+
+`OverrideDialect` is the **whole capability descriptor**: the line form, the
+sidecar file extension, and the engine's native include directive (rendered by
+[`yerd-services`](./yerd-services)'s `config_render::render_include_lines`) are
+all total functions of it, so they cannot disagree. `dialect_for` is therefore
+the single source of truth for "does this service accept overrides at all" - it
+backs `Service::override_capability`, the CLI's client-side check, and
+`yerd-ipc`'s `ServiceStatus::supports_overrides`. Meilisearch and Reverb are
+argv/env driven and map to `None`.
+
+Validation is the **injection boundary**, and it runs four times: when an
+override is set (CLI and daemon), when the config is loaded from disk
+(`yerd-config`, leniently - a bad entry is dropped rather than failing the
+load), and defensively again at render time. Names are ≤ 128 bytes and start
+with a letter or `_`; values are ≤ 512 bytes (twice `php_directives`' cap, since
+a real `sql_mode` list runs long) with no control characters, `;`, or `#`, and -
+outside PostgreSQL, whose values are quoted - no quote characters either, since
+an unbalanced quote aborts the whole config load.
+
+`reserved` is the per-dialect denylist for directives Yerd manages through typed
+paths (the port, data directory, socket, pid file, logging, the MySQL/MariaDB
+bootstrap `init-file`, the loopback binding, and the engines' own `include`
+directives). It returns the *hint* naming the right command, not just a bool.
+Matching folds case in every dialect and additionally folds `-`/`_` for the
+MySQL family, so `Bind_Address` is refused just as `bind-address` is.
+
+`scan_local` is the read-only counterpart: it parses the hand-edit file
+(`conf.d/50-local.<ext>`, which Yerd creates once via `render_local_stub` and
+never rewrites) and returns one `LocalOverrideIssue` per line that names a
+reserved directive or parses as no directive at all. [`yerd-doctor`](./yerd-doctor)
+turns each into a `ServiceOverrideInvalid` warning; the remedy is the user's own
+editor, since rewriting the file would undo their work.
 
 ## `detect`
 

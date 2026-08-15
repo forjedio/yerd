@@ -122,6 +122,10 @@ pub struct NssOutcome {
 pub enum NssFailure { CertutilMissing, CertutilExit(i32), DbMissing }
 ```
 
+On **macOS** the same path runs for Firefox, which keeps its own NSS store there too; Chromium-family browsers on macOS read the system keychain instead, so they need nothing extra.
+
+`certutil` itself is resolved to an **absolute path**, once, by `resolve_certutil`: the per-OS candidate list (`pure::nss::certutil_candidates_linux` / `_macos`) is probed first, and only then `certutil` under each `$PATH` directory. The candidate list wins because a service manager hands the daemon a stripped `PATH` - a launchd `LaunchAgent` gets `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, which never contains the Homebrew or MacPorts prefixes where macOS's `certutil` actually lives, so a `$PATH`-only lookup silently reported the tool as missing. (`/usr/bin` is deliberately absent from the macOS list: macOS ships `certtool` there, never `certutil`.) It mirrors the `/usr/bin/id` / `/bin/ps` precedent elsewhere in this crate. The existence probe is injected, so the walk is unit-tested against the real candidate lists on any host without touching the filesystem.
+
 The caller decides whether to surface the degraded outcome. See [HTTPS & Certificates](../../guide/https) for the user-facing story.
 
 ### `ResolverInstaller`
@@ -216,6 +220,23 @@ pub trait SystemOpener {
 Opens a directory with the desktop's default handler - the fallback when no editor is detected or the user picks "System default". Candidate ordering per desktop lives in the table-tested `pure/opener_spec.rs`.
 
 Both traits ship public fakes (`FakeIdeLauncher`, `FakeSystemOpener`), following `FakeLanIpProvider`: each records its calls and takes an optional forced error, so callers can test the seam without touching the host.
+
+### `TerminalLauncher`
+
+```rust
+pub trait TerminalLauncher {
+    fn open_terminal(&self, path: &Path) -> Result<(), PlatformError>;
+}
+```
+
+Opens a terminal with `path` as its working directory - what the site details sidebar's **Terminal** button drives. macOS is one line (`/usr/bin/open -a Terminal <path>`); Linux is where the work is, and its decision half lives in the table-tested `pure/terminal_spec.rs`.
+
+`TERMINAL_SPECS` pairs each terminal we know how to launch with the flags that set its working directory (`gnome-terminal --working-directory`, `konsole --workdir`, `kitty --directory`, `wezterm start --cwd`, …). Two matching rules matter:
+
+- **Lookups match the program's file name, not the whole string.** KDE stores `TerminalApplication` in `kdeglobals` as either a bare name (`konsole`) or an absolute path (`/usr/bin/konsole`), and both must resolve to the same flags or the terminal opens in the wrong directory.
+- **A trailing `.wrapper` is stripped first.** Debian's `x-terminal-emulator` alternative points at `gnome-terminal.wrapper`, which forwards its arguments to `gnome-terminal` and so takes the same flags.
+
+`x-terminal-emulator` itself is deliberately absent from the table: it is an alternatives symlink rather than a terminal, so it carries no flags of its own. The Linux impl probes it separately and resolves the link before looking flags up. An unrecognised program returns `None`, and the caller falls back to the spawned child inheriting the current directory.
 
 ## OS implementations and the `Active*` aliases
 

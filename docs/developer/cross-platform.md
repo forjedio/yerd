@@ -236,12 +236,15 @@ The macOS probe is deliberately strict about the port: a bare `nameserver 127.0.
 | Anchor dirs scanned | `/usr/local/share/ca-certificates`, `/etc/pki/ca-trust/source/anchors`, `/etc/ca-certificates/trust-source/anchors` | n/a | - |
 | `install` / `uninstall` | `NeedsHelper` (`install-ca` / `uninstall-ca`) | `NeedsHelper` (same tags) | `Unsupported` |
 | `is_present_system` probe | hash each anchor `.crt` DER, match fingerprint (`pem_match`) | enumerate Keychain certs via `security-framework`, SHA-256 the DER | `Unsupported` |
-| Firefox/NSS install | degraded `NssOutcome` (`certutil_missing: false`) - wiring planned | degraded `NssOutcome` (`certutil_missing: true`) - wiring planned | `Unsupported` |
+| Browser/NSS install | `nss_exec::real_install` - `~/.pki/nssdb` (Chromium-family) + every Firefox profile, incl. Snap/Flatpak | `nss_exec::real_install` - Firefox profiles only (Chromium-family reads the keychain) | `Unsupported` |
+| `certutil` lookup | `/usr/bin/certutil`, then `$PATH` | Homebrew (linked + keg-only `nss`) and MacPorts prefixes, then `$PATH` | n/a |
 
 The fingerprint is a `CaFingerprint` newtype wrapping a 32-byte SHA-256 digest, with a strict lowercase-hex wire form (`to_hex` / `from_hex`). The presence probe is a *presence* check, not a trust-policy check.
 
-::: info Firefox/NSS is partially landed
-Both OS impls currently return a degraded `NssOutcome` reporting zero profiles attempted; the actual `certutil` invocation is a planned follow-up that lands when the daemon and helper drive it end to end. The `pure::firefox` `profiles.ini` parser already exists.
+::: info Both OS impls drive `certutil` for real
+`install_firefox_nss` / `uninstall_firefox_nss` / `browser_ca_trust` all delegate to `nss_exec`, which discovers the per-user NSS databases, runs `certutil` against each, and aggregates the results into an `NssOutcome`. Path derivation and the argv are pure (`pure::nss`, `pure::firefox`'s `profiles.ini` parser); only the discover→run→aggregate orchestration touches the host, and it does so behind injected seams so it is unit-tested in-memory.
+
+`certutil` is resolved to an absolute path from a per-OS candidate list **before** `$PATH`, because a service manager hands the daemon a stripped environment. A missing tool stays a first-class degraded outcome (`certutil_missing` / `BrowserCaTrust::ToolMissing`), never an error.
 :::
 
 ### Autostart

@@ -37,11 +37,12 @@ The exceptions are the two passthrough commands. Anything after [`coverage`](./c
 | [Sites](./sites) | `sites`, `park`, `unpark`, `link`, `unlink`, `root` |
 | [Domains](./domains) | `domain list`, `domain add`, `domain remove`, `domain primary`, `domain reset` |
 | [Proxies](./proxies) | `proxy add`, `proxy remove`, `proxy list` |
+| [Routing rules](./routes) | `route add`, `route remove`, `route list` |
 | [HTTPS](./https) | `secure`, `unsecure` |
-| [PHP](./php) | `use`, `install php`, `uninstall php`, `update php`, `restart php`, `list php`, `list parked`, `set php`, `unset php`, `php ext add`/`remove`/`list`, [`coverage`](./coverage) |
+| [PHP](./php) | `use`, `install php`, `uninstall php`, `update php`, `restart php`, `list php`, `list parked`, `set php`, `unset php`, `php ext add`/`remove`/`list`, `php ini set`/`unset`/`list`, `php pool set`/`unset`/`list`, [`coverage`](./coverage) |
 | [Exec and Which](./exec) | `exec php`, `exec composer`, `which php` |
 | [Tooling](./tooling) | `tools`, `install tool`, `uninstall tool`, `path install`, `path uninstall`, `path print` |
-| [Services](./services) | `services`, `service available`, `service install`, `service change-version`, `service uninstall`, `service start`, `service stop`, `service restart`, `service set-port`, `service logs` |
+| [Services](./services) | `services`, `service available`, `service install`, `service change-version`, `service uninstall`, `service start`, `service stop`, `service restart`, `service set-port`, `service set`, `service unset`, `service overrides`, `service logs`, `service add`, `service remove`, `service set-autostart`, `service set-site` |
 | [Databases](./db) | `db list`, `db create`, `db drop`, `db backup`, `db restore` |
 | [Mail](./mail) | `mail list`, `mail show`, `mail clear` |
 | [LAN sharing](./lan) | `lan enable`, `lan disable`, `lan status`, `remote-setup` |
