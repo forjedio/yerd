@@ -103,8 +103,8 @@ The daemon's modules (`src/lib.rs` re-exports each as `pub mod`):
 | `backend_resolver` | `DaemonBackendResolver` - routes a `Site` to a live FPM pool. |
 | `detect_cache` | `DetectCache` - memoises web-root detection per project, keyed on a freshness stamp. |
 | `fs_watch` | Debounced filesystem watcher that re-scans parked roots as projects appear/change. |
-| `mutate` | Pure, I/O-free config-mutation logic (`Park`/`Link`/`SetPhp`/… plus the four domain mutations). |
-| `site_domains` | Infallible, collision-resolving router builder (`build`) plus `collisions`, which reports the losing side of each domain clash (surfaced as `StatusReport.shadows`). |
+| `mutate` | Pure, I/O-free config-mutation logic (`Park`/`Link`/`SetPhp`/… plus the four domain mutations, the proxy and routing rules, and the per-version PHP pool settings). |
+| `site_domains` | Infallible, collision-resolving router builder (`build`) plus `collisions`, which reports the losing side of each domain clash (surfaced as `StatusReport.shadows`). Resolves domains for whole-host proxies as well as sites - every site is considered before any proxy. |
 | `php_install` | Download + unpack prebuilt PHP builds; `reqwest` downloader. |
 | `php_updates` | PHP update poller + cache (notify-only). |
 | `self_update` | Yerd self-update poller: fetches the GitHub Releases API, decides via the pure `yerd-update` crate, and persists a snapshot (`checked_at` + decision) both to disk and in `DaemonState` (notify-only). |
@@ -117,6 +117,13 @@ The daemon's modules (`src/lib.rs` re-exports each as `pub mod`):
 | `wordpress_url_sync` | Keeps a `WordPress` site's own `siteurl`/`home` options in sync with its HTTP/HTTPS toggle. |
 | `wordpress_users` | Lists a `WordPress` site's administrator accounts (`wp user list`) for the login-as-user picker. |
 | `wordpress_versions` | Cached `WordPress` core-version list for the create-site wizard's version dropdown. |
+| `services` | Service-instance lifecycle over IPC: add/remove/start/stop/restart, port and autostart changes, and the free-form [configuration overrides](../crates/yerd-services#configuration-overrides) (`SetServiceOverrides` / `ServiceOverrides`). |
+| `service_install` | Download + unpack prebuilt service builds per engine and version. |
+| `db_admin` | SQL database administration (`ListDatabases`, `CreateDatabase`, `DropDatabase`, backup/restore). |
+| `jobs` | The background-job registry behind `JobStarted` / `JobStatus` (site creation, streamed installs). |
+| `lan_setup` | The one-time LAN remote-device bootstrap endpoint (serves the public CA + installer script). |
+| `laravel_detect` | Narrow marker-file check for whether a site is a Laravel app (`artisan`), gating per-site Reverb instances. |
+| `ansi` | ANSI stripping for captured subprocess output. |
 | `secure_fs` | Filesystem hardening (`0o700` dirs, `0o600` secrets). |
 | `signals` | Unified shutdown future (SIGTERM + Ctrl-C). |
 | `single_instance` | `InstanceLock` - exclusive `flock` so only one daemon runs. |

@@ -29,28 +29,38 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 
 | Key         | TOML type            | Meaning                                                            | Default        |
 | ----------- | -------------------- | ----------------------------------------------------------------- | -------------- |
-| `version`   | integer              | On-disk schema version. **Mandatory**; written as `18` by this release. | `n/a (required)` |
+| `version`   | integer              | On-disk schema version. **Mandatory**; written as `23` by this release. | `n/a (required)` |
 | `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
 | `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
+| `update_channel` | string          | Self-update channel: `"stable"` or `"edge"`.                      | `"stable"`     |
 | `symlink_protection` | boolean     | Refuse to serve assets/scripts reached via a symlink resolving outside a site's document root. | `true` |
 | `mcp_enabled` | boolean            | Serve Yerd's tools to local AI agents over MCP (`yerd mcp`).       | `false`        |
+| `lan_enabled` | boolean            | Expose `.test` sites to other devices on the LAN ([`yerd lan`](cli/lan)). | `false`   |
+| `lan_setup_port` | integer (u16)   | Port for the LAN remote-device bootstrap endpoint.                 | `7073`         |
 | `ports`     | table                | HTTP / HTTPS listen ports.                                        | `80` / `443`   |
-| `php`       | table                | PHP defaults and global ini settings.                             | see below      |
+| `php`       | table                | PHP defaults, global ini settings, per-version overrides and pool settings. | see below |
 | `parked`    | table                | Parked directory paths.                                           | empty          |
 | `linked`    | array of tables      | Explicitly linked sites.                                          | empty          |
 | `overrides` | array of tables      | Per-site overrides for **parked** sites.                          | empty          |
 | `services`  | table                | Per-service `[services.<id>]` tables; every installed engine auto-starts on boot. | empty          |
 | `mail`      | table                | Built-in mail-capture SMTP server.                                | on / `2525`    |
 | `dumps`     | table                | Laravel ▸ Dumps telemetry settings.                               | off / `2304`   |
-| `domains`   | table                | Per-site domain sets (primary, aliases, subdomains, wildcards).   | empty          |
+| `tunnel`    | table                | Cloudflare Named Tunnel persistence.                              | empty          |
+| `groups`    | table                | User-defined site groups and per-site membership.                 | empty          |
+| `domains`   | table                | Per-site and per-proxy domain sets (primary, aliases, subdomains, wildcards). | empty |
+| `proxies`   | array of tables      | Whole-host reverse proxies (`reverb.test` → an upstream URL).      | empty          |
+| `proxy_rules` | table              | Per-site path-prefix reverse-proxy rules.                         | empty          |
+| `route_rules` | table              | Per-site path-prefix routing rules (prefix → a file inside the site). | empty       |
 
 ::: warning Unknown keys are rejected
-The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, `[mail]`, `[dumps]`, `[dumps.features]`, `[domains]`, a `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` entry, `[proxy_rules]`, a `[[proxies]]` entry, a `[services.<id>]` table, a `[[linked]]` entry, an `[[overrides]]` entry, or a `[[php.extensions.<version>]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
+The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, `[mail]`, `[dumps]`, `[dumps.features]`, `[domains]`, a `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` / `[domains.proxy.<name>]` entry, `[proxy_rules]`, `[route_rules]`, a `[[proxies]]` entry, a `[services.<id>]` table, a `[[linked]]` entry, an `[[overrides]]` entry, or a `[[php.extensions.<version>]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
+
+The free-form maps are the exception, because their keys *are* the data. `[services.<id>.overrides]` (like `[php.directives."<version>"]`) takes arbitrary directive names, so `deny_unknown_fields` does not apply *inside* it - the keys are shape-checked instead, and a bad one is dropped rather than failing the load. It still applies to the enclosing `[services.<id>]` table.
 :::
 
 ### `version`
 
-The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `18`, and Yerd always writes `version = 18`. Older `version = 1` through `version = 17` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `23`, and Yerd always writes `version = 23`. Older `version = 1` through `version = 22` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
 
 ### `tld`
 
@@ -117,6 +127,7 @@ PHP defaults applied across sites.
 | `settings`         | table     | Global PHP ini directives applied to every installed version's FPM pool. | empty   |
 | `version_settings` | table     | Sparse per-version overrides of `settings`, keyed by PHP version. | empty   |
 | `directives`       | table     | Free-form per-version ini directives, keyed by PHP version.  | empty   |
+| `pool`             | table     | Per-version FPM pool settings, keyed by PHP version.         | empty   |
 | `extensions`       | table     | Custom `.so` extensions to load, keyed by PHP version.       | empty   |
 
 `default` is a `MAJOR.MINOR` version string validated by `yerd-core`'s `PhpVersion`; an out-of-range minor or a non-numeric value is rejected. See [PHP Versions](../guide/php-versions).
@@ -159,23 +170,35 @@ only letters, digits, `.`, `_`, `-`; values follow the same injection rules as
 Directives Yerd manages through typed paths are reserved: the eight allowlisted
 settings, `extension` / `zend_extension`, and `openssl.cafile` / `curl.cainfo`.
 
+`[php.pool."<version>"]` (schema v20) holds **FPM pool settings** for that
+version's worker pool. The only key is `max_children`, the ceiling on
+concurrent PHP workers, accepted between `1` and `1024` and defaulting to `16`
+when absent. These are pool-block settings rather than ini directives, so they
+apply to the FPM pool only and never reach the version's CLI `php.ini`. The
+pool runs `ondemand`, so a higher ceiling costs nothing while idle. Because
+`pm.*` names are reserved out of `[php.directives]`, this is the only place a
+pool setting can be set.
+
 ```toml
 [php.version_settings."8.3"]
 memory_limit = "1G"
 
 [php.directives."8.3"]
 "xdebug.mode" = "debug"
+
+[php.pool."8.3"]
+max_children = "32"
 ```
 
-::: tip These two tables load leniently
+::: tip These three tables load leniently
 Unlike `[php.settings]`, a hand-edited invalid or reserved entry in
-`version_settings` / `directives` never fails the load - it is silently
+`version_settings` / `directives` / `pool` never fails the load - it is silently
 dropped while valid siblings survive, so a bad edit can't stop the daemon.
 Setting values through the CLI/GUI still validates strictly. A malformed
 *version key* (e.g. `"eight"`) is still a hard error.
 :::
 
-Manage these with [`yerd set php --only <version>` and `yerd php ini`](cli/php#custom-ini-directives) or the desktop app's **Per-version configuration** card.
+Manage these with [`yerd set php --only <version>`, `yerd php ini`, and `yerd php pool`](cli/php#custom-ini-directives) or the desktop app's **Per-version configuration** card.
 
 `[php.extensions]` maps a **PHP version string** to an array of custom extensions to load into both that version's FPM pool and its CLI. It is written as an array-of-tables per version and omitted entirely when empty. Because a native `.so` is ABI-bound to a PHP minor, an entry only applies to the version it is keyed under.
 
@@ -280,11 +303,12 @@ Installed services, one table per engine, keyed by its `id`
 (`mysql`, `mariadb`, `postgres`, `redis`, or `meilisearch`). An unknown service id fails
 validation (`UnknownService`). See [Services & Databases](../guide/services).
 
-| Key       | TOML type      | Meaning                                            | Default |
-| --------- | -------------- | -------------------------------------------------- | ------- |
-| `version` | string         | Installed version this engine is pinned to.        | unset   |
-| `port`    | integer (u16)  | Loopback port the engine listens on.               | unset   |
-| `enabled` | boolean        | Record of the last start/stop intent (status only). | `true`  |
+| Key         | TOML type      | Meaning                                            | Default |
+| ----------- | -------------- | -------------------------------------------------- | ------- |
+| `version`   | string         | Installed version this engine is pinned to.        | unset   |
+| `port`      | integer (u16)  | Loopback port the engine listens on.               | unset   |
+| `enabled`   | boolean        | Record of the last start/stop intent (status only). | `true`  |
+| `overrides` | table          | Free-form engine config directives (see below).    | empty   |
 
 `version` and `port` are omitted from the wire when unset; `enabled` always carries a value.
 
@@ -305,6 +329,54 @@ enabled = true
 ```
 
 You normally manage these through the [`yerd service`](../reference/cli/services) commands rather than by hand.
+
+`[services.<id>.overrides]` (schema v22) is a string-to-string map of **free-form
+directives for the engine's own config file**. On every start Yerd renders them
+into that service's `conf.d/10-yerd.<ext>` sidecar, which the Yerd-owned config
+includes *after* its own settings - so an override wins over Yerd's default for
+the same directive. Empty by default, and omitted from the file entirely when
+empty. Setting one never restarts anything: it reaches the engine on the next
+start/restart, exactly like `port`.
+
+Only the config-backed engines accept overrides - `mysql`, `mariadb`,
+`postgres`, and `redis`. Meilisearch and Reverb are argv/env driven, so they have
+no config file to override and keep none.
+
+Names must start with a letter or `_` and use only letters, digits, `.`, `_`,
+`-`. Values are ≤ 512 bytes with no control characters, `;`, or `#` (and, outside
+PostgreSQL, no quote characters - an unbalanced quote aborts the whole config
+load). Validation is **shape only**: whether the engine accepts a directive is
+the engine's business. Directives Yerd manages through typed paths are reserved -
+the port, the data directory, the socket, the pid file, logging, the
+MySQL/MariaDB bootstrap `init-file`, the loopback binding, and the engines' own
+`include` directives. Matching is case-insensitive in every dialect, and the
+MySQL family also folds `-` and `_`, so `Bind_Address` is refused just as
+`bind-address` is.
+
+```toml
+[services.mysql.overrides]
+max_allowed_packet = "256M"
+max_connections = "500"
+sql_mode = "STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE"
+
+[services.redis.overrides]
+maxmemory = "256mb"
+maxmemory-policy = "allkeys-lru"
+```
+
+::: tip This table loads leniently
+Like `[php.directives]`, a hand-edited invalid or reserved entry here never fails
+the load - it is silently dropped while its valid siblings survive, so a bad edit
+can't stop the daemon. An overrides table under a service that accepts none
+(`meilisearch`, `reverb:<site>`) is inert rather than fatal. Setting a value
+through the CLI or desktop app still validates strictly, and refuses a reserved
+directive with a hint naming the command that manages it.
+:::
+
+Manage these with [`yerd service set` / `unset` / `overrides`](cli/services#configuration)
+or the desktop app's **Override settings** dialog. Hand edits that must survive
+untouched belong in the service's own `conf.d/50-local.<ext>` file rather than
+here - see [Service configuration overrides](../guide/services#service-configuration-overrides).
 
 ### `[mail]`
 
@@ -392,14 +464,15 @@ api = "Blog"
 
 ### `[domains]`
 
-Per-site domain customization: the primary (canonical) domain plus any additional aliases, subdomains, and wildcards a site answers for. **Empty by default** - the whole `[domains]` table is omitted until you customise a site with [`yerd domain`](./cli/domains). An uncustomised site answers only its default apex `<name>.<tld>`; subdomains do **not** resolve implicitly.
+Domain customization for a site **or a whole-host proxy**: the primary (canonical) domain plus any additional aliases, subdomains, and wildcards it answers for. **Empty by default** - the whole `[domains]` table is omitted until you customise something with [`yerd domain`](./cli/domains). An uncustomised site or proxy answers only its default apex `<name>.<tld>`; subdomains do **not** resolve implicitly.
 
-The table is split by site class, mirroring `[[overrides]]`:
+The table is split by claimant class, the first two mirroring `[[overrides]]`:
 
 | Key                | TOML type                 | Meaning                                                         |
 | ------------------ | ------------------------- | --------------------------------------------------------------- |
 | `[domains.linked]` | table (`name → delta`)    | Deltas for **linked** sites, keyed by site name.                |
 | `[domains.parked]` | table (`docroot → delta`) | Deltas for **parked** sites, keyed by byte-exact document-root. |
+| `[domains.proxy]`  | table (`name → delta`)    | Deltas for **whole-host proxies**, keyed by proxy name.         |
 
 Keying linked by name and parked by document-root matches `[[overrides]]`, so routing survives a directory rename and a parked site keeps its domains without a config record of its own.
 
@@ -434,7 +507,7 @@ Order is preserved on round-trip.
 
 | Field    | TOML type | Meaning                                                         |
 | -------- | --------- | --------------------------------------------------------------- |
-| `name`   | string    | The proxy's DNS label; it answers on `<name>.<tld>`.            |
+| `name`   | string    | One or more dot-separated DNS labels (`reverb`, `api.account`). `<name>.<tld>` is its **default** domain; [`[domains.proxy]`](#domains) can add more and, once another exact domain exists, replace or suppress the default. |
 | `target` | string    | The upstream URL, `http://host:port` or `https://host:port`.    |
 | `secure` | bool      | Whether the proxy is served over HTTPS (toggled by `yerd secure`). |
 
@@ -473,9 +546,56 @@ pointing at a `.<tld>` host). Collisions with parked sites and the
 loopback-on-own-port loop guard are enforced by the daemon, which alone knows
 the actively bound ports and sees parked sites on disk.
 
+### `[route_rules]`
+
+Per-site path-prefix **routing** rules (schema v21) - URIs under a prefix that
+match no real file are handled by a target *inside the site*. **Empty by
+default** (the whole table is omitted) until you add a rule. Split by site class
+exactly like `[proxy_rules]` and `[domains]`: linked rules key by site name,
+parked rules by byte-exact document-root, so routing survives a directory
+rename.
+
+| Key                    | TOML type                       | Meaning                                       |
+| ---------------------- | ------------------------------- | --------------------------------------------- |
+| `[route_rules.linked]` | table (`name → array of rules`) | Rules for **linked** sites, keyed by name.    |
+| `[route_rules.parked]` | table (`docroot → array`)       | Rules for **parked** sites, keyed by docroot. |
+
+Each rule is a `{ prefix, target }` table, where `target` is a path **relative to
+the site's served root**. Removing a site's last rule drops its key entirely, so
+the file round-trips byte-identically.
+
+```toml
+# A legacy portal with a nested Yii/CodeIgniter API at /api
+[[route_rules.linked.portal]]
+prefix = "/api"
+target = "api/index.php"
+
+# A JavaScript SPA: history-API deep links serve the app shell
+[[route_rules.linked.dashboard]]
+prefix = "/"
+target = "index.html"
+```
+
+A rule applies only when the request matched no real file - exactly nginx's
+`try_files $uri $uri/ <target>`. A `.php` target runs as a nested front
+controller and accepts every HTTP method; anything else is served as a static
+document and answers only `GET`/`HEAD`. The `target` is validated as a **safe
+relative path** at load, so a hand-edited absolute path or one containing `..` is
+a hard parse error rather than a silent security hole.
+
+::: warning Not the same as `[proxy_rules]`
+A proxy rule forwards to a separate running HTTP service; a routing rule resolves
+to a file inside the site's own tree. When a site has both on the same prefix,
+the proxy rule wins - it intercepts before PHP resolution runs at all.
+:::
+
+Manage these with [`yerd route`](cli/routes), or the **Routing** tab of the
+desktop app's site details sidebar. A site whose web root holds an `index.html`
+and no `index.php` gets SPA routing automatically, with no rule stored here.
+
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `18`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `23`.
 
 When the daemon loads a file, it routes on the version it finds:
 
@@ -504,6 +624,11 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v15 → v16`** is a bare version bump: v16 only **added** the optional `[php.version_settings]` table (per-version overrides of the global PHP settings), which defaults to empty when absent.
 - **`v16 → v17`** is a bare version bump: v17 only **added** the top-level `mcp_enabled` scalar (defaults to `false` when absent).
 - **`v17 → v18`** is a bare version bump: v18 only **added** the optional `[php.directives]` table (free-form per-version ini directives), which defaults to empty when absent.
+- **`v18 → v19`** is a bare version bump: v19 only **added** the top-level `lan_enabled` and `lan_setup_port` scalars (LAN exposure and its remote-setup port), which default to `false` / `7073` when absent.
+- **`v19 → v20`** is a bare version bump: v20 only **added** the optional `[php.pool]` table (per-version FPM pool settings), which defaults to empty when absent.
+- **`v20 → v21`** is a bare version bump: v21 only **added** the optional `[route_rules]` table (per-site path-prefix routing rules), which defaults to empty when absent.
+- **`v21 → v22`** is a bare version bump: v22 only **added** the optional `[services.<id>.overrides]` sub-table (free-form engine config directives), which defaults to empty when absent.
+- **`v22 → v23`** is a bare version bump: v23 only **added** the optional `[domains.proxy]` table (routable-domain deltas for whole-host proxies), which defaults to empty when absent.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 
@@ -527,11 +652,11 @@ Yerd does not `fsync` the file or its parent directory after a save. For a devel
 
 ## A complete annotated example
 
-This is a valid `yerd.toml` covering the core fields (see the sections above for the newer optional tables - `update_channel`, `[tunnel]`, `[groups]`, `[php.extensions]`, `[domains]`, `[[proxies]]`, `[proxy_rules]`, `wp_auto_login` - omitted here for brevity):
+This is a valid `yerd.toml` covering the core fields (see the sections above for the newer optional tables - `update_channel`, `[tunnel]`, `[groups]`, `[php.extensions]`, `[php.pool]`, `[domains]`, `[[proxies]]`, `[proxy_rules]`, `[route_rules]`, `[services.<id>.overrides]`, `wp_auto_login` - omitted here for brevity):
 
 ```toml
-# Schema version - mandatory, always written as 18 by this release.
-version = 18
+# Schema version - mandatory, always written as 23 by this release.
+version = 23
 
 # TLD served by the resolver; sites resolve as <name>.test
 tld = "test"

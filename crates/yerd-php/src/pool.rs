@@ -90,7 +90,10 @@ impl PoolConfig {
     /// Build a sane local-development pool config.
     ///
     /// - `pm = OnDemand`
-    /// - `max_children = 16` (accommodates Laravel + Vite + several tabs).
+    /// - `max_children = 16` (accommodates Laravel + Vite + several tabs),
+    ///   single-sourced from [`yerd_core::php_pool::DEFAULT_MAX_CHILDREN`] so
+    ///   the rendered default and the one the CLI displays cannot drift. A
+    ///   per-version override is applied later, in `PhpManager::ensure`.
     /// - Pid + log under `dirs.state`, config under `dirs.config`.
     /// - All basenames embed `version` AND `instance_id` so concurrent
     ///   Yerd daemons on the same host don't clobber each other.
@@ -121,7 +124,7 @@ impl PoolConfig {
             error_log: dirs.state.join(format!("fpm-{version}-{instance_id}.log")),
             config_path,
             pm: ProcessManagerMode::OnDemand,
-            max_children: 16,
+            max_children: yerd_core::php_pool::DEFAULT_MAX_CHILDREN,
             ini: Vec::new(),
             directives: Vec::new(),
             extension: None,

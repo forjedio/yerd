@@ -133,6 +133,7 @@ When nothing is wrong:
 | `ResolverBackupSaved` | `Ok` | Installing the resolver replaced a pre-existing `/etc/resolver/<tld>` (e.g. a Valet/Herd leftover); a timestamped backup was saved. `sudo yerd unelevate resolver` restores it automatically. | _(none)_ |
 | `NoSites` | `Ok` | No sites configured yet. | `yerd park <dir>` or `yerd link <name> <dir>` |
 | `DomainShadowed` | `Warn` | Two sites claim the same domain, so one was dropped from routing. Which site wins can depend on directory scan order, so it may change on restart (usually the result of a hand-edited config). | Make each site's domains unique with `yerd domain remove` or `yerd domain primary` |
+| `ServiceOverrideInvalid` | `Warn` | A line in a service's hand-edited `conf.d/50-local.<ext>` file names a directive Yerd manages itself, or reads as no directive at all. One finding per bad line, naming the file and line number. | Edit the file (Yerd never rewrites it), then `yerd service restart <SVC>` |
 | `AllGood` | `Ok` | Nothing else is wrong. | _(none)_ |
 
 ::: tip No false alarms

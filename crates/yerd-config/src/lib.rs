@@ -91,8 +91,20 @@ pub use schema::{
 /// directives; it defaults (empty) when absent, so v17→v18 is a bare bump.
 /// v19 added the top-level `lan_enabled` and `lan_setup_port` scalars
 /// ([`Config::lan_enabled`], [`Config::lan_setup_port`]) for LAN exposure (both
-/// default when absent), also a bare bump.
+/// default when absent), also a bare bump. v20 added the optional
+/// `[php.pool]` table ([`PhpSection::pool`]) for per-version FPM pool
+/// settings; it defaults (empty) when absent, so v19→v20 is a bare bump too.
+/// v21 added the optional `[route_rules]` table ([`Config::route_rules`])
+/// holding per-site path-prefix routing rules (prefix → a local target under
+/// the served root); it defaults (empty) when absent, so v20→v21 is a bare bump.
+/// v22 added the optional `[services.<id>.overrides]` table
+/// ([`ServiceInstance::overrides`]) holding free-form configuration overrides
+/// for a config-backed engine; it defaults (empty) when absent, so v21→v22 is a
+/// bare bump too.
+/// v23 added the optional `[domains.proxy]` table ([`Config::domains`]) for
+/// whole-host proxy domain deltas; it defaults (empty) when absent, so v22→v23
+/// is a bare bump too.
 ///
 /// The per-version detail, including how to hand-edit a file back down for an
 /// older binary, lives in `docs/developer/config-schema-history.md`.
-pub const CURRENT_VERSION: u32 = 19;
+pub const CURRENT_VERSION: u32 = 23;

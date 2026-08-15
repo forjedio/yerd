@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
 
 use http::header::{
-    ACCEPT, CACHE_CONTROL, CONTENT_TYPE, COOKIE, HOST, LOCATION, SERVER, SET_COOKIE,
+    ACCEPT, ALLOW, CACHE_CONTROL, CONTENT_TYPE, COOKIE, HOST, LOCATION, SERVER, SET_COOKIE,
 };
 use http::{HeaderValue, Method, StatusCode};
 use hyper::body::Incoming;
@@ -16,7 +16,7 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio_rustls::TlsAcceptor;
-use yerd_core::{match_rule, Route, Site, SiteKind, SiteRouter, UpstreamTarget};
+use yerd_core::{match_rule, Route, RouteRule, Site, SiteKind, SiteRouter, UpstreamTarget};
 
 use crate::backend::Backend;
 use crate::client_tls::ProxyClientTls;
@@ -27,7 +27,9 @@ use crate::forward::{
 };
 use crate::pure::cgi_params;
 use crate::pure::query;
-use crate::pure::redirect::build_redirect_uri;
+use crate::pure::redirect::{build_redirect_uri, directory_redirect_location};
+use crate::pure::route_rules::match_route;
+use crate::pure::try_files::is_php_source;
 use crate::pure::unbound::{self, PickerSite};
 use crate::tls::build_server_config;
 use crate::traits::{BackendResolver, CertStore, LoginTokenConsumer};
@@ -379,12 +381,13 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
 
     let https = matches!(listener, Listener::Https);
 
-    let (site, unbound, matched) = match resolve_request(&router, &req, &host).await? {
+    let (site, unbound, matched, route) = match resolve_request(&router, &req, &host).await? {
         Routed::Site {
             site,
             unbound,
             matched,
-        } => (site, unbound, matched),
+            route,
+        } => (site, unbound, matched, route),
         Routed::Proxy {
             forward,
             secure,
@@ -460,6 +463,7 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
                 login_prepend_script.as_deref(),
                 &served_root,
                 &allowed_root,
+                route.as_ref(),
                 server_addr,
                 peer_addr,
                 https,
@@ -477,11 +481,14 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
 ///
 /// The one-click `WordPress` login token is consumed here via
 /// [`consume_login_token_if_present`] - only ever on `/wp-admin`, only when a
-/// token is both present and valid for *this* site. This runs strictly after
-/// [`dispatch`]'s HTTP->HTTPS redirect check, so a secure site's token is
-/// never burned by the 301 itself. On success the token is stripped from the
-/// forwarded URI (never reaching PHP or logging) and `auto_prepend_file` plus
-/// the resolved target user are added for this one request only.
+/// token is both present and valid for *this* site, and only once every
+/// earlier answer (HTTP->HTTPS `301` in [`dispatch`], static file, symlink
+/// `403`, trailing-slash `301`) has been ruled out. A redirect must never
+/// burn the token: its `Location` keeps the query intact, so the token
+/// survives to the followed request and is consumed there. On success the
+/// token is stripped from the forwarded URI (never reaching PHP or logging)
+/// and `auto_prepend_file` plus the resolved target user are added for this
+/// one request only.
 #[allow(clippy::too_many_arguments)]
 async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
     mut req: Request<Incoming>,
@@ -492,20 +499,12 @@ async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
     login_prepend_script: Option<&std::path::Path>,
     served_root: &std::path::Path,
     allowed_root: &std::path::Path,
+    route: Option<&RouteRule>,
     server_addr: SocketAddr,
     peer_addr: SocketAddr,
     https: bool,
     symlink_protection: bool,
 ) -> Result<Response<BoxBody>, ProxyError> {
-    let login_target_user = consume_login_token_if_present(&mut req, site.name(), login_tokens);
-    let auto_login = match (&login_target_user, login_prepend_script) {
-        (Some(target_user), Some(prepend_script)) => Some(cgi_params::AutoLoginParams {
-            prepend_script,
-            target_user: target_user.as_str(),
-        }),
-        _ => None,
-    };
-
     let outcome = static_file::try_serve(
         req.method(),
         req.uri().path(),
@@ -528,7 +527,7 @@ async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
     if let Some(resp) = resolve_static_outcome(outcome) {
         return Ok(resp);
     }
-    let script_rel = resolve_script_if_allowed(
+    let resolution = resolve_script_if_allowed(
         resolver,
         site,
         req.uri().path(),
@@ -537,6 +536,30 @@ async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
         symlink_protection,
     )
     .await;
+    let script_rel = match resolution {
+        script_file::ScriptResolution::Script(rel) => Some(rel),
+        script_file::ScriptResolution::DirectoryRedirect
+            if *req.method() == Method::GET || *req.method() == Method::HEAD =>
+        {
+            return trailing_slash_redirect(&req);
+        }
+        script_file::ScriptResolution::DirectoryRedirect
+        | script_file::ScriptResolution::Fallback => {
+            match apply_route(&req, route, served_root, allowed_root, symlink_protection).await {
+                RouteOutcome::Respond(resp) => return Ok(resp),
+                RouteOutcome::Script(rel) => Some(rel),
+                RouteOutcome::Fallback => None,
+            }
+        }
+    };
+    let login_target_user = consume_login_token_if_present(&mut req, site.name(), login_tokens);
+    let auto_login = match (&login_target_user, login_prepend_script) {
+        (Some(target_user), Some(prepend_script)) => Some(cgi_params::AutoLoginParams {
+            prepend_script,
+            target_user: target_user.as_str(),
+        }),
+        _ => None,
+    };
     fcgi::forward(
         req,
         backend,
@@ -555,10 +578,126 @@ fn path_and_query_or_root(uri: &http::Uri) -> &str {
         .map_or("/", http::uri::PathAndQuery::as_str)
 }
 
+/// What applying a routing rule (or the automatic SPA default) decided.
+enum RouteOutcome {
+    /// Answer with this response and forward nothing.
+    Respond(Response<BoxBody>),
+    /// Execute this script, relative to `served_root`.
+    Script(std::path::PathBuf),
+    /// Nothing applied; fall back to the site root's `index.php`, exactly as
+    /// before the rule existed.
+    Fallback,
+}
+
+/// Apply the routing rule already matched in [`resolve_request`], or - when no
+/// rule matched - the automatic SPA default.
+///
+/// Reached only once every real-file answer has been ruled out (static file,
+/// directory index, real script in direct mode, trailing-slash `301`), which is
+/// what makes "a real file wins" true without checking for one here. Note that
+/// precedence only holds for GET/HEAD, the sole methods yerd serves static
+/// content for, so a `POST` to a real non-PHP file under a rule prefix is
+/// handled by the rule target.
+///
+/// An unusable target is logged and degraded to [`RouteOutcome::Fallback`]
+/// rather than surfaced as an error, so the site behaves exactly as it did
+/// before the rule was added. The one exception is a **static** target that
+/// escapes `allowed_root` with symlink protection on: that answers `403`, the
+/// same as any other escaping static path, rather than quietly serving the
+/// site's front controller in its place.
+async fn apply_route(
+    req: &Request<Incoming>,
+    route: Option<&RouteRule>,
+    served_root: &std::path::Path,
+    allowed_root: &std::path::Path,
+    symlink_protection: bool,
+) -> RouteOutcome {
+    let Some(rule) = route else {
+        let outcome = static_file::try_serve_index(
+            req.method(),
+            "/",
+            served_root,
+            allowed_root,
+            symlink_protection,
+        )
+        .await;
+        return match resolve_static_outcome(outcome) {
+            Some(resp) => RouteOutcome::Respond(resp),
+            None => RouteOutcome::Fallback,
+        };
+    };
+
+    let target = std::path::Path::new(rule.target());
+
+    if is_php_source(target) {
+        let resolved =
+            script_file::resolve_rule_target(served_root, allowed_root, target, symlink_protection)
+                .await;
+        let Some(rel) = resolved else {
+            warn_unusable_target(rule, req.uri().path());
+            return RouteOutcome::Fallback;
+        };
+        return RouteOutcome::Script(rel);
+    }
+
+    if *req.method() != Method::GET && *req.method() != Method::HEAD {
+        return RouteOutcome::Respond(method_not_allowed_response());
+    }
+
+    let outcome = static_file::serve_target_file(
+        req.method(),
+        req.uri().path(),
+        served_root,
+        allowed_root,
+        target,
+        symlink_protection,
+    )
+    .await;
+    let Some(resp) = resolve_static_outcome(outcome) else {
+        warn_unusable_target(rule, req.uri().path());
+        return RouteOutcome::Fallback;
+    };
+    RouteOutcome::Respond(resp)
+}
+
+/// Log a configured routing rule whose target could not be used, so a typo or a
+/// since-deleted file is visible in the daemon log rather than silently
+/// behaving as if the rule were absent.
+fn warn_unusable_target(rule: &RouteRule, requested_path: &str) {
+    tracing::warn!(
+        target: "yerd_proxy::route_rule",
+        prefix = %rule.prefix(),
+        rule_target = %rule.target(),
+        requested_path = %requested_path,
+        "routing rule target is missing, is not a regular file, or escapes the site root; \
+    falling back to the site root's index.php",
+    );
+}
+
+/// `405` for a non-GET/HEAD request matching a **static** routing target, the
+/// same answer nginx gives for a static file. A PHP target takes every method,
+/// which is the point of a nested front controller.
+fn method_not_allowed_response() -> Response<BoxBody> {
+    Response::builder()
+        .status(StatusCode::METHOD_NOT_ALLOWED)
+        .header(SERVER, server_header())
+        .header(ALLOW, "GET, HEAD")
+        .header(CACHE_CONTROL, "no-store")
+        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(bytes_body(
+            b"405 Method Not Allowed\n\nThis path is served by a static routing rule target, \
+which only answers GET and HEAD.\n",
+        ))
+        .unwrap_or_else(|_| Response::new(empty_body()))
+}
+
 /// [`script_file::resolve_script`], gated by
-/// [`BackendResolver::allows_direct_script_execution`] - `None` (fall back to
-/// the site root's `index.php`) for any site the resolver hasn't opted in,
-/// without touching the filesystem to find out.
+/// [`BackendResolver::allows_direct_script_execution`] -
+/// [`script_file::ScriptResolution::Fallback`] (send the request to the site
+/// root's `index.php`) for any site the resolver hasn't opted in, without
+/// touching the filesystem to find out. Front-controller sites route `/foo`
+/// themselves, so they must get neither direct execution nor the
+/// trailing-slash redirect.
 async fn resolve_script_if_allowed<R: BackendResolver>(
     resolver: &R,
     site: &yerd_core::Site,
@@ -566,18 +705,20 @@ async fn resolve_script_if_allowed<R: BackendResolver>(
     served_root: &std::path::Path,
     allowed_root: &std::path::Path,
     symlink_protection: bool,
-) -> Option<std::path::PathBuf> {
+) -> script_file::ScriptResolution {
     if !resolver.allows_direct_script_execution(site).await {
-        return None;
+        return script_file::ScriptResolution::Fallback;
     }
     script_file::resolve_script(uri_path, served_root, allowed_root, symlink_protection).await
 }
 
 /// One-click `WordPress` login: only ever considered on `/wp-admin`, only
 /// ever acted on when a token is both present and valid for `site_name`.
-/// Consuming happens here - the caller must only call this strictly after the
-/// HTTP->HTTPS redirect check, so a secure site's token is never burned by
-/// the 301 itself. On success, strips the token from `req`'s URI (so it never
+/// Consuming happens here - the caller must only call this once the request
+/// is definitely being forwarded to FastCGI, strictly after the HTTP->HTTPS
+/// redirect check and every other early answer (static file, symlink `403`,
+/// trailing-slash `301`), so no redirect or non-PHP response ever burns the
+/// token. On success, strips the token from `req`'s URI (so it never
 /// reaches PHP or request logging) and returns `Some(target_user)` (`""` = no
 /// preference); the caller decides what "success" means for its own request
 /// (adding `auto_prepend_file`/`YERD_LOGIN_USER`).
@@ -628,12 +769,39 @@ fn https_redirect(
         .uri()
         .path_and_query()
         .map_or("/", http::uri::PathAndQuery::as_str);
-    let loc = build_redirect_uri(host, pq, port);
+    moved_permanently(&build_redirect_uri(host, pq, port))
+}
+
+/// `301` to the trailing-slash form of this request's path, for a path that
+/// names a real directory on disk (`/sub` -> `/sub/`). What Apache's
+/// `DirectorySlash` and nginx's `try_files $uri $uri/` do, and what legacy
+/// multi-directory PHP apps rely on: without it a subdirectory request
+/// silently executes the *root* `index.php`, so an app whose front page
+/// redirects into a subdirectory loops forever.
+///
+/// Sent with `Cache-Control: no-store`, deliberately diverging from
+/// Apache/nginx: a bare `301` is cached by browsers indefinitely, and on a
+/// dev box the answer stops being true the moment the directory is deleted
+/// or the site is switched to front-controller mode - Yerd has no way to
+/// evict it afterwards. The `Location` may also carry a one-shot login
+/// token, which has no business in a disk cache.
+fn trailing_slash_redirect(req: &Request<Incoming>) -> Result<Response<BoxBody>, ProxyError> {
+    let mut resp = moved_permanently(&directory_redirect_location(path_and_query_or_root(
+        req.uri(),
+    )))?;
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+/// A bodyless `301` to `location`. Shared by both redirect kinds so they can't
+/// drift in status or `Location` handling.
+fn moved_permanently(location: &str) -> Result<Response<BoxBody>, ProxyError> {
     Response::builder()
         .status(StatusCode::MOVED_PERMANENTLY)
         .header(
             LOCATION,
-            HeaderValue::from_str(&loc).map_err(|_| ProxyError::BackendProtocol {
+            HeaderValue::from_str(location).map_err(|_| ProxyError::BackendProtocol {
                 source: std::io::Error::other("invalid redirect URI"),
             })?,
         )
@@ -657,11 +825,15 @@ struct ProxyTarget {
 /// (404 / 303 switch / picker) to return as-is.
 enum Routed {
     /// A PHP site to forward to. `unbound` skips the HTTP→HTTPS redirect;
-    /// `matched` is `Some` when a path-prefix rule intercepts this request.
+    /// `matched` is `Some` when a path-prefix *proxy* rule intercepts this
+    /// request (forwarding to an upstream, bypassing PHP entirely); `route` is
+    /// `Some` when a path-prefix *routing* rule matched, which is applied far
+    /// later, in `serve_php_fpm`, only once no real file has answered.
     Site {
         site: Site,
         unbound: bool,
         matched: Option<ProxyTarget>,
+        route: Option<RouteRule>,
     },
     /// A whole-host reverse proxy to forward to.
     Proxy {
@@ -693,10 +865,12 @@ async fn resolve_request(
                     tld: guard.config().tld().to_owned(),
                 }
             });
+            let route = match_route(guard.route_rules_for(site.name()), req.uri().path()).cloned();
             return Ok(Routed::Site {
                 site,
                 unbound: false,
                 matched,
+                route,
             });
         }
         Some(Route::Proxy(proxy)) => {
@@ -735,10 +909,12 @@ async fn resolve_request(
                     tld: guard.config().tld().to_owned(),
                 }
             });
+            let route = match_route(guard.route_rules_for(site.name()), req.uri().path()).cloned();
             Ok(Routed::Site {
                 site,
                 unbound: true,
                 matched,
+                route,
             })
         }
         UnboundDecision::Switch { name, location } => {

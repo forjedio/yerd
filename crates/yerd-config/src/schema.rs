@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use yerd_core::{Domain, PhpVersion, ProxyRule, ProxySite, Site, Tld};
+use yerd_core::{Domain, PhpVersion, ProxyRule, ProxySite, RouteRule, Site, Tld};
 
 /// Top-level on-disk config.
 ///
@@ -97,6 +97,9 @@ pub struct Config {
     /// Per-site path-prefix reverse-proxy rules (`app.test/app` → upstream),
     /// split by site class. Empty by default.
     pub proxy_rules: ProxyRulesSection,
+    /// Per-site path-prefix routing rules (`app.test/api` → `api/index.php`),
+    /// split by site class. Empty by default.
+    pub route_rules: RouteRulesSection,
 }
 
 impl Default for Config {
@@ -123,6 +126,7 @@ impl Default for Config {
             domains: DomainsSection::default(),
             proxies: Vec::new(),
             proxy_rules: ProxyRulesSection::default(),
+            route_rules: RouteRulesSection::default(),
         }
     }
 }
@@ -157,6 +161,38 @@ impl ProxyRulesSection {
     }
 }
 
+/// Per-site path-prefix routing rules (see [`Config::route_rules`]).
+///
+/// Keyed exactly like [`ProxyRulesSection`]: **linked** rules by site name,
+/// **parked** rules by document-root string (byte-exact, never canonicalised -
+/// see [`SiteOverride`]). A site with no rules has no entry, so an uncustomised
+/// config omits the whole section. The daemon applies these onto
+/// [`yerd_core::SiteRouter`] at build time.
+///
+/// Distinct from [`ProxyRulesSection`]: a proxy rule forwards to an HTTP
+/// upstream, a routing rule resolves to a file under the site's served root.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RouteRulesSection {
+    /// Linked-site rules, keyed by site name. `BTreeMap` for stable order.
+    pub linked: BTreeMap<String, Vec<RouteRule>>,
+    /// Parked-site rules, keyed by document-root string. `BTreeMap` for stable
+    /// order.
+    pub parked: BTreeMap<String, Vec<RouteRule>>,
+}
+
+impl RouteRulesSection {
+    /// True when neither side holds any non-empty rule list - matching the
+    /// serialiser, which prunes empty-vector entries, so a section whose only
+    /// entries are empty rule lists round-trips as absent.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.linked
+            .values()
+            .chain(self.parked.values())
+            .all(Vec::is_empty)
+    }
+}
+
 /// Per-site routable-domain customisations (see [`Config::domains`]).
 ///
 /// A site answers only its **effective** domain set, computed as
@@ -169,7 +205,8 @@ impl ProxyRulesSection {
 /// are name-stable so they key by site name (like [`Config::linked`]); **parked**
 /// sites are directory-derived so they key by document-root string (like
 /// [`Config::overrides`]), which survives a directory rename without
-/// misattributing a routing set.
+/// misattributing a routing set. Whole-host proxies are name-stable and
+/// config-resident, so they key by proxy name like linked sites.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DomainsSection {
     /// Linked-site deltas, keyed by site name. `BTreeMap` for stable order.
@@ -177,14 +214,18 @@ pub struct DomainsSection {
     /// Parked-site deltas, keyed by document-root string (byte-exact, never
     /// canonicalised - see [`SiteOverride`]). `BTreeMap` for stable order.
     pub parked: BTreeMap<String, DomainDelta>,
+    /// Whole-host proxy deltas, keyed by proxy name (name-stable, like
+    /// [`DomainsSection::linked`]). `BTreeMap` for stable order.
+    pub proxy: BTreeMap<String, DomainDelta>,
 }
 
 impl DomainsSection {
-    /// True when there are no linked and no parked deltas, letting the serialiser
-    /// omit the `[domains]` table so a default config stays byte-stable.
+    /// True when there are no linked, parked, and proxy deltas, letting the
+    /// serialiser omit the `[domains]` table so a default config stays
+    /// byte-stable.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.linked.is_empty() && self.parked.is_empty()
+        self.linked.is_empty() && self.parked.is_empty() && self.proxy.is_empty()
     }
 }
 
@@ -463,6 +504,15 @@ pub struct PhpSection {
     /// dropped leniently at load time. Empty by default, so
     /// `[php.directives.*]` tables are omitted from a default config.
     pub directives: BTreeMap<PhpVersion, BTreeMap<String, String>>,
+    /// Per-version FPM pool settings (currently only `"max_children"`),
+    /// applied to that version's FPM pool but never to its CLI ini, since
+    /// these are pool-block settings rather than ini directives. Validated by
+    /// [`yerd_core::php_pool`]; the `pm.` prefix is reserved out of
+    /// [`Self::directives`] so the two paths cannot collide. Entries are
+    /// validated leniently at load time: an invalid or unknown entry is
+    /// dropped rather than failing the load. Empty by default, so
+    /// `[php.pool.*]` tables are omitted from a default config.
+    pub pool: BTreeMap<PhpVersion, BTreeMap<String, String>>,
 }
 
 /// One registered custom PHP extension (see [`PhpSection::extensions`]).
@@ -489,6 +539,7 @@ impl Default for PhpSection {
             extensions: BTreeMap::new(),
             version_settings: BTreeMap::new(),
             directives: BTreeMap::new(),
+            pool: BTreeMap::new(),
         }
     }
 }
@@ -598,6 +649,13 @@ pub struct ServiceInstance {
     /// (see `yerdd::services::auto_start_installed`): single-instance engines
     /// default `true`, per-site app servers default `false`.
     pub enabled: bool,
+    /// Free-form service configuration overrides, rendered into the engine's
+    /// sidecar `conf.d/10-yerd.<ext>` on every start. Shape-validated by
+    /// `yerd_core::service_directives`: strictly at set time in the daemon,
+    /// leniently here at load (a bad or reserved entry is dropped rather than
+    /// failing the whole config). Empty for a service that accepts no
+    /// overrides.
+    pub overrides: BTreeMap<String, String>,
 }
 
 impl Default for ServiceInstance {
@@ -607,6 +665,7 @@ impl Default for ServiceInstance {
             port: None,
             site: None,
             enabled: true,
+            overrides: BTreeMap::new(),
         }
     }
 }
@@ -683,6 +742,7 @@ mod tests {
         assert!(inst.enabled);
         assert_eq!(inst.version, None);
         assert_eq!(inst.port, None);
+        assert!(inst.overrides.is_empty());
     }
 
     #[test]

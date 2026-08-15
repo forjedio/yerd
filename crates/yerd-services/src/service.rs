@@ -17,6 +17,7 @@ use std::ffi::OsString;
 use std::process::Command as StdCommand;
 use std::sync::Arc;
 
+use yerd_core::service_directives::{self, OverrideDialect};
 use yerd_supervise::supervisor::{StopProtocol, SupervisorPolicy};
 
 use crate::config_render;
@@ -144,8 +145,15 @@ pub struct LaunchPlan {
     /// group applied yet.
     pub command: StdCommand,
     /// Whether the manager should redirect the child's stdout/stderr into the
-    /// log file. True for engines that log to their stdio (Postgres, Reverb);
-    /// false for engines that write their own logfile via rendered config.
+    /// log file. True for every supervised engine: those that log to their
+    /// stdio throughout (Postgres, Reverb), and those that only use it until
+    /// their own logging is configured (`MySQL`/`MariaDB`, Valkey). The latter
+    /// abort during option-file parsing *before* opening their configured
+    /// destination, so without capture their complaint about a bad override
+    /// would land on the daemon's inherited stderr and reach no file at all.
+    ///
+    /// The manager and the engine then both append to the same path, so neither
+    /// truncates the other's lines; a tail can interleave the two.
     pub capture_output_to_log: bool,
 }
 
@@ -314,6 +322,22 @@ pub trait ServiceDefinition: Send + Sync + 'static {
         None
     }
 
+    /// The option-file dialect this type accepts free-form configuration
+    /// overrides in, or `None` for a type that accepts none (Meilisearch and
+    /// Reverb are argv/env driven).
+    ///
+    /// The dialect is the whole capability descriptor: the sidecar line form
+    /// ([`yerd_core::service_directives::render_managed`]), the sidecar file
+    /// extension ([`yerd_core::service_directives::file_ext`]) and the native
+    /// include directive ([`config_render::render_include_lines`]) are all
+    /// functions of it, so `Some` reads as "accepts overrides". The one body
+    /// delegates to [`yerd_core::service_directives::dialect_for`], which the
+    /// CLI and `yerd-config` also call, so no type can declare a capability
+    /// that disagrees with theirs.
+    fn override_capability(&self) -> Option<OverrideDialect> {
+        service_directives::dialect_for(self.id())
+    }
+
     /// Whether this type opens a Unix socket beside its TCP port (MySQL/MariaDB).
     fn uses_unix_socket(&self) -> bool {
         false
@@ -444,12 +468,16 @@ impl ServiceDefinition for Redis {
     ) -> Option<String> {
         Some(config_render::render_redis_conf(port, datadir, log_path))
     }
+    /// Valkey takes its config file as a bare argument, and reports a config
+    /// error (an unbalanced quote aborts the whole load) on stderr before it
+    /// opens the `logfile` the rendered config names - so the plan captures
+    /// output into the same file the engine then appends to.
     fn plan_launch(&self, ctx: &LaunchContext<'_>) -> Result<LaunchPlan, ServiceError> {
         let mut command = base_command(ctx);
         command.arg(ctx.config_path);
         Ok(LaunchPlan {
             command,
-            capture_output_to_log: false,
+            capture_output_to_log: true,
         })
     }
 }
@@ -859,14 +887,19 @@ fn base_command(ctx: &LaunchContext<'_>) -> StdCommand {
     cmd
 }
 
-/// The shared MySQL/MariaDB launch plan: `--defaults-file=<config>`, self-logging
-/// via the rendered `my.cnf`, group SIGTERM to stop.
+/// The shared MySQL/MariaDB launch plan: `--defaults-file=<config>`, group
+/// SIGTERM to stop, output captured into the instance log.
+///
+/// The rendered `my.cnf` points `log-error` at that same file, so once the
+/// server is up it is logging there itself. Capture covers the window before
+/// that: `mysqld` aborts on an unknown or malformed option while still parsing
+/// the option file, and prints that to stderr only.
 fn my_family_plan(ctx: &LaunchContext<'_>) -> LaunchPlan {
     let mut command = base_command(ctx);
     command.arg(format!("--defaults-file={}", ctx.config_path.display()));
     LaunchPlan {
         command,
-        capture_output_to_log: false,
+        capture_output_to_log: true,
     }
 }
 
@@ -1118,8 +1151,33 @@ mod tests {
         assert_eq!(plan.command.get_program(), program.as_os_str());
         let args: Vec<_> = plan.command.get_args().collect();
         assert_eq!(args, vec![config.as_os_str()]);
-        assert!(!plan.capture_output_to_log);
+        assert!(plan.capture_output_to_log);
         assert_eq!(Redis.stop_protocol(), StopProtocol::GroupTerm);
+    }
+
+    /// Every override-capable engine must capture its stdio: an invalid
+    /// directive is reported while the option file is still being parsed, so
+    /// the instance log is the only place a start failure can be attributed
+    /// from.
+    #[test]
+    fn override_capable_engines_capture_output_to_the_instance_log() {
+        let ctx = LaunchContext {
+            port: 3306,
+            program: std::path::Path::new("/b/server"),
+            config_path: std::path::Path::new("/c/service.conf"),
+            datadir: std::path::Path::new("/d"),
+            log_path: std::path::Path::new("/l/service.log"),
+            geo_env: &[],
+            cwd: None,
+        };
+        for id in ["redis", "mysql", "mariadb", "postgres"] {
+            let def = reg().get(id).unwrap();
+            assert!(def.override_capability().is_some(), "{id} capability");
+            assert!(
+                def.plan_launch(&ctx).unwrap().capture_output_to_log,
+                "{id} must capture output"
+            );
+        }
     }
 
     #[test]
@@ -1273,5 +1331,47 @@ mod tests {
         assert!(MySql.graceful_stop_plan(install, datadir).is_none());
         assert!(MariaDb.graceful_stop_plan(install, datadir).is_none());
         assert!(Redis.graceful_stop_plan(install, datadir).is_none());
+    }
+
+    /// The capability must track "has a config file" exactly: an engine with no
+    /// rendered config has nowhere to include a sidecar from, and one with a
+    /// config that declared no capability would silently drop the user's
+    /// overrides.
+    #[test]
+    fn override_capability_is_some_exactly_for_the_config_backed_types() {
+        let capable = ["redis", "mysql", "mariadb", "postgres"];
+        let datadir = std::path::Path::new("/d");
+        let socket = std::path::Path::new("/s/x.sock");
+        let log = std::path::Path::new("/l/x.log");
+        let init = std::path::Path::new("/i/x-init.sql");
+        for d in reg().iter() {
+            let want = capable.contains(&d.id());
+            assert_eq!(d.override_capability().is_some(), want, "{}", d.id());
+            assert_eq!(
+                d.render_config(6543, datadir, socket, log, init, &[])
+                    .is_some(),
+                want,
+                "{}",
+                d.id()
+            );
+        }
+    }
+
+    #[test]
+    fn override_capability_reports_each_engine_dialect() {
+        let cases = [
+            ("mysql", OverrideDialect::MyCnf),
+            ("mariadb", OverrideDialect::MyCnf),
+            ("postgres", OverrideDialect::PostgresConf),
+            ("redis", OverrideDialect::RedisConf),
+        ];
+        for (id, dialect) in cases {
+            assert_eq!(
+                reg().get(id).unwrap().override_capability(),
+                Some(dialect),
+                "{id}"
+            );
+        }
+        assert!(reg().get("reverb").unwrap().override_capability().is_none());
     }
 }

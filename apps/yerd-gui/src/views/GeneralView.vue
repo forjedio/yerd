@@ -15,6 +15,7 @@ import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { MIN_PORT, MAX_PORT, useFallbackPorts } from "@/composables/useFallbackPorts";
+import { loadIdes, rescanIdes, useIdes } from "@/composables/useIdes";
 import { loadPlatform, usePlatform } from "@/composables/usePlatform";
 import { useToast } from "@/composables/useToast";
 import {
@@ -22,6 +23,7 @@ import {
   daemonInfo,
   dumpsStatus,
   getAutostart,
+  getPreferredIde,
   getTrayIconVariant,
   installCliToPath,
   IpcError,
@@ -31,10 +33,12 @@ import {
   setAutostartGui,
   setAutostartGuiMinimized,
   setMcpEnabled,
+  setPreferredIde,
   setSymlinkProtection,
   setTrayIconVariant,
 } from "@/ipc/client";
 import type { AutostartState, CliPathStatus, TitleBarStyle, TrayIconVariant } from "@/ipc/types";
+import { SYSTEM_LABEL } from "@/lib/ideChoice";
 import { useTheme, type ThemePref } from "@/lib/theme";
 import { useTitleBarStyle } from "@/lib/titleBarStyle";
 
@@ -49,6 +53,7 @@ const autostart = ref<AutostartState | null>(null);
 // as a background login item registered via SMAppService; see below) and
 // whether the bundled `yerd` CLI on-PATH card is shown.
 const { isMac, supportsPathInstall } = usePlatform();
+const { installedIdes } = useIdes();
 const cli = ref<CliPathStatus | null>(null);
 
 const themeOptions = [
@@ -111,6 +116,66 @@ async function setTrayIconVariantPref(variant: TrayIconVariant): Promise<void> {
   }
 }
 
+// ── preferred editor ──
+// The stored preference: "auto", "system", or an editor id. Kept raw so an id
+// this host can't see (uninstalled, or set on another machine) survives untouched.
+const preferredIde = ref("auto");
+
+const preferredIdeOptions = computed(() => [
+  { value: "auto", label: "Auto-detect" },
+  ...installedIdes.value.map((ide) => ({ value: ide.id, label: ide.label })),
+  { value: "system", label: SYSTEM_LABEL },
+]);
+
+// A native <select> renders blank when its value matches no option, so an
+// unresolvable stored id shows as Auto-detect without rewriting the preference.
+const preferredIdeSelection = computed(() =>
+  preferredIdeOptions.value.some((o) => o.value === preferredIde.value)
+    ? preferredIde.value
+    : "auto",
+);
+
+async function loadPreferredIde(): Promise<void> {
+  try {
+    preferredIde.value = (await getPreferredIde()) ?? "auto";
+  } catch (e) {
+    toast.error("Couldn't load the preferred editor", (e as IpcError).message);
+  }
+}
+
+async function setPreferredIdePref(next: string): Promise<void> {
+  const previous = preferredIde.value;
+  preferredIde.value = next;
+  try {
+    await setPreferredIde(next === "auto" ? null : next);
+  } catch (e) {
+    preferredIde.value = previous;
+    toast.error("Couldn't change the preferred editor", (e as IpcError).message);
+  }
+}
+
+/** A rescan usually changes nothing visible (the picker already lists what was
+ *  found), so it confirms itself with a count. Kept brief: it's an idempotent
+ *  action the user may click a few times while installing an editor, and a
+ *  stack of identical toasts would be worse than none. */
+const RESCAN_TOAST_MS = 1500;
+
+async function rescanEditors(): Promise<void> {
+  busy.value = "ide:rescan";
+  try {
+    const found = await rescanIdes();
+    toast.success(
+      found === 0 ? "No editors found" : `Found ${found} editor${found === 1 ? "" : "s"}`,
+      undefined,
+      RESCAN_TOAST_MS,
+    );
+  } catch (e) {
+    toast.error("Couldn't detect installed editors", (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+}
+
 // ── CLI on PATH (macOS + Linux) + Login-Items approval ──
 async function loadCli(): Promise<void> {
   try {
@@ -149,6 +214,8 @@ onMounted(() => {
   void loadPlatform();
   loadCli();
   void loadTrayIconVariant();
+  void loadIdes();
+  void loadPreferredIde();
   if (running.value) {
     void loadApplicationPorts();
   }
@@ -870,6 +937,35 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
               aria-label="Title bar"
               @update:model-value="setTitleBarStylePref"
             />
+          </div>
+
+          <!-- Same macOS-or-Linux predicate as the PATH install: host editor
+               launching has no Windows adapter either. -->
+          <div v-if="supportsPathInstall" class="flex items-center justify-between gap-4">
+            <div>
+              <p class="text-sm font-medium">Preferred editor</p>
+              <p class="text-xs text-muted-foreground">
+                Opened by the site's editor button. Individual sites can override it.
+              </p>
+            </div>
+            <div class="flex items-center gap-2">
+              <Select
+                :model-value="preferredIdeSelection"
+                :options="preferredIdeOptions"
+                aria-label="Preferred editor"
+                @update:model-value="setPreferredIdePref"
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                :disabled="busy === 'ide:rescan'"
+                title="Look for installed editors again"
+                @click="rescanEditors"
+              >
+                <Spinner v-if="busy === 'ide:rescan'" class="size-4" />
+                Rescan
+              </Button>
+            </div>
           </div>
         </CardContent>
       </Card>

@@ -1,0 +1,20 @@
+<!--
+  The mdbin brand mark, as published at https://mdbin.app/favicon.svg.
+  The "md" is traced to outlines rather than set in JetBrains Mono, so it
+  renders identically here without shipping the webfont. Same mark in light
+  and dark, by their design - don't recolour it to match our theme.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" width="36" height="36" role="img" aria-label="mdbin">
+  <defs>
+    <linearGradient id="mdbin-tile" x1="0.90957602" y1="0.21321178" x2="0.09042398" y2="0.78678822">
+      <stop offset="0" stop-color="#E8455C"/>
+      <stop offset="1" stop-color="#9E1628"/>
+    </linearGradient>
+  </defs>
+  <rect width="36" height="36" rx="8" fill="url(#mdbin-tile)"/>
+  <g fill="#FFFFFF">
+    <path transform="translate(2.02 24.0) scale(0.022 -0.022)" d="M38 0V550H161V465H163Q166 507 191.0 533.5Q216 560 255 560Q291 560 317.5 534.5Q344 509 352 468Q355 510 381.0 535.0Q407 560 446 560Q495 560 528.5 521.0Q562 482 562 420V0H433V403Q433 451 395 451Q359 451 359 403V0H241V403Q241 451 205 451Q167 451 167 403V0Z"/>
+    <path transform="translate(14.01 24.0) scale(0.022 -0.022)" d="M238 -10Q159 -10 109.5 48.5Q60 107 60 205V345Q60 443 109.5 501.5Q159 560 238 560Q293 560 331.5 532.5Q370 505 388 454L384 580V730H534V0H389V99Q371 47 332.0 18.5Q293 -10 238 -10ZM296 120Q339 120 361.5 144.5Q384 169 384 215V335Q384 381 361.5 405.5Q339 430 296 430Q255 430 232.5 407.0Q210 384 210 340V210Q210 167 232.5 143.5Q255 120 296 120Z"/>
+  </g>
+  <rect x="28.35" y="7.2" width="5.7" height="19" fill="#6E0B18"/>
+</svg>

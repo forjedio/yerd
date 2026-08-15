@@ -1,8 +1,9 @@
 # Services
 
 Yerd installs and supervises local database, cache, and search engines as native,
-per-user processes - no Docker. Each engine is identified by a short `id`:
-`redis`, `mysql`, `mariadb`, `postgres`, or `meilisearch`. The [Services & Databases
+per-user processes - no Docker. Each service is identified by a short `id`:
+`redis`, `mysql`, `mariadb`, `postgres`, `meilisearch`, or - per site -
+`reverb:<site>` (see [Instances](#instances)). The [Services & Databases
 guide](../../guide/services) covers the model in depth; this page is the command
 reference. For creating and managing the databases *inside* a SQL engine, see
 [Databases](./db).
@@ -75,6 +76,9 @@ yerd service restart postgres
 | Command | Description | Example |
 | --- | --- | --- |
 | `yerd service set-port <SVC> <PORT>` | Set the loopback port the service listens on. Applies on the next start/restart. | `yerd service set-port redis 6380` |
+| `yerd service set <SVC> <KEY> <VALUE>` | Set a free-form config directive for the engine. Applies on the next start/restart. | `yerd service set mysql max_allowed_packet 256M` |
+| `yerd service unset <SVC> <KEY>` | Remove a directive Yerd is overriding, so the engine's own default applies again. | `yerd service unset mysql max_allowed_packet` |
+| `yerd service overrides <SVC>` | List the directives currently set for a service (`no overrides` when there are none). | `yerd service overrides mysql` |
 | `yerd service logs <SVC> [--lines <N>]` | Print the tail of the service's log. `--lines` defaults to 100. | `yerd service logs mysql --lines 200` |
 
 ```sh
@@ -85,6 +89,87 @@ yerd service logs mysql --lines 50
 
 Default ports: Redis `6379`, MySQL / MariaDB `3306` (they share the port, so only
 one can be enabled on it at a time), PostgreSQL `5432`, Meilisearch `7700`.
+
+### Configuration overrides
+
+`set` / `unset` / `overrides` manage free-form directives for the engine's *own*
+config file - the way `yerd php ini` does for a PHP version. Yerd renders them
+into a sidecar the engine reads after Yerd's own settings, so an override wins:
+
+```sh
+yerd service set mysql max_allowed_packet 256M
+yerd service set mysql sql_mode STRICT_TRANS_TABLES,NO_ZERO_DATE
+yerd service overrides mysql
+#   max_allowed_packet = 256M
+#   sql_mode = STRICT_TRANS_TABLES,NO_ZERO_DATE
+yerd service unset mysql sql_mode
+yerd service restart mysql           # overrides apply on the next start
+```
+
+Supported by the config-backed engines only: `mysql`, `mariadb`, `postgres`, and
+`redis`. Meilisearch and Reverb are argv/env driven, so they answer
+`does not support configuration overrides`.
+
+Names and values are **shape-validated** client-side before connecting (and again
+by the daemon), but not semantically: whether the engine accepts a directive is
+the engine's business, and a bad one surfaces when the service next starts.
+Directives Yerd manages through typed paths are refused with a pointer to the
+right command - the port (use `yerd service set-port`), the data directory, the
+socket, the pid file, logging (read it with `yerd service logs`), the
+MySQL/MariaDB bootstrap `init-file`, the loopback binding, and the engines' own
+`include` directives. The check folds case in every dialect, and `-`/`_` for
+MySQL/MariaDB, so `Bind_Address` is refused just as `bind-address` is.
+
+::: warning Restart to apply
+Like `set-port`, setting an override never restarts anything. Run
+`yerd service restart <SVC>` when you're ready for it to take effect. If the
+engine then refuses to start, the error carries the tail of its own log plus the
+path to the hand-edit file - see the
+[Services & Databases guide](../../guide/services#getting-a-directive-wrong).
+:::
+
+Hand edits that Yerd must never touch go in the service's `conf.d/50-local.<ext>`
+file instead, which is created once and never rewritten. `yerd doctor` scans it
+and warns about reserved or malformed lines. See
+[Service configuration overrides](../../guide/services#service-configuration-overrides)
+for the two-file model, and the [Configuration
+Reference](../configuration#services-id) for how overrides are stored.
+
+## Instances
+
+The commands above address a service by its **wire id**. For an engine that only
+ever has one instance, the id is just the type (`mysql`, `redis`). Per-site types
+- Laravel Reverb today - can have one instance per site, and their ids carry the
+site: `reverb:blog`.
+
+| Command | Description | Example |
+| --- | --- | --- |
+| `yerd service add --type <TYPE> [--site <SITE>] [--port <PORT>] [--version <VERSION>] [--autostart on\|off]` | Add a new instance of a service type. | `yerd service add --type reverb --site blog` |
+| `yerd service remove <SVC> [--purge]` | Remove a per-site instance. Add `--purge` to delete its stored state too. | `yerd service remove reverb:blog` |
+| `yerd service set-autostart <SVC> on\|off` | Set whether the instance starts with Yerd. | `yerd service set-autostart redis off` |
+| `yerd service set-site <SVC> <SITE>` | Re-link a per-site instance to a different site. | `yerd service set-site reverb:blog shop` |
+
+```sh
+yerd service add --type reverb --site blog     # reverb:blog, on the next free port
+yerd service add --type postgres --version 17  # an engine instance, explicit version
+yerd service set-autostart reverb:blog on
+yerd service set-site reverb:blog shop         # becomes reverb:shop
+yerd service remove reverb:blog --purge
+```
+
+- `--type` is a type id (`redis`, `mysql`, `mariadb`, `postgres`, `meilisearch`,
+  `reverb`), not a wire id.
+- `--site` is **required** for a per-site type, and must name a **linked Laravel**
+  site (one with an `artisan` file). The instance runs against that site's PHP and
+  document root, which is why `--version` doesn't apply to it.
+- `--version` is required for a versioned type - `add` installs that version as
+  part of the call.
+- `--port` defaults to the next free loopback port at or above the type's default.
+  An explicit port already reserved by another instance is refused.
+- `--autostart` defaults per type: engines start with Yerd, per-site app servers
+  do not.
+- `remove` is for per-site instances. Removing an engine's *installed version* is
+  [`yerd service uninstall`](#installing-versioning).
 
 ## See also
 

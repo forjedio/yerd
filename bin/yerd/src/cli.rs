@@ -202,8 +202,8 @@ pub enum Command {
         /// named `.php` directly.
         state: OnOff,
     },
-    /// Manage a site's routable domains (add/remove domains, subdomains and
-    /// wildcards, and change the primary domain).
+    /// Manage a site's or whole-host proxy's routable domains (add/remove
+    /// domains, subdomains and wildcards, and change the primary domain).
     Domain {
         /// What to do.
         #[command(subcommand)]
@@ -215,6 +215,14 @@ pub enum Command {
         /// What to do.
         #[command(subcommand)]
         action: ProxyAction,
+    },
+    /// Manage a site's routing rules: URIs under a path prefix that match no
+    /// real file are handled by a target inside the site (`/api` →
+    /// `api/index.php`, or `/` → `index.html` for a JavaScript SPA).
+    Route {
+        /// What to do.
+        #[command(subcommand)]
+        action: RouteAction,
     },
     /// Grant yerd OS-level privileges (run via `sudo` on macOS/Linux). No
     /// subcommand = all. On Windows no `sudo`/admin is needed and only `trust`
@@ -254,6 +262,47 @@ pub enum Command {
         )]
         args: Vec<std::ffi::OsString>,
     },
+    /// Run a tool under the PHP version pinned to a site - the one its web
+    /// requests use - instead of the global default. The site is the one
+    /// containing the current directory, or `--site <name>`; outside any site,
+    /// the global default is used. Everything after the tool is passed
+    /// straight through, so `--site`/`--json` must come *before* it (e.g.
+    /// `yerd exec --site blog php -v`). The bare `php` and `composer` shims are
+    /// unaffected and still use the global default. `-h`/`--help` go to the
+    /// tool, so use `yerd help exec` for this command's own help. Local -
+    /// execs PHP directly. (Unix only.)
+    // `disable_help_flag` because clap otherwise matches `-h`/`--help` before
+    // `trailing_var_arg` starts collecting, so `yerd exec composer --help`
+    // would print yerd's help instead of Composer's.
+    #[command(disable_help_flag = true)]
+    Exec {
+        /// Run under this site's pinned version instead of the current
+        /// directory's. Unlike the cwd lookup this never falls back: an
+        /// unknown name is an error.
+        #[arg(long, value_name = "NAME")]
+        site: Option<String>,
+        /// Which tool to run.
+        tool: ExecTool,
+        /// Arguments forwarded verbatim to the tool, e.g. `artisan test`.
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            num_args = 0..,
+            value_name = "ARGS"
+        )]
+        args: Vec<std::ffi::OsString>,
+    },
+    /// Print the absolute path of the binary `yerd exec` would use, resolved
+    /// the same way (current directory's site, or `--site <name>`). With
+    /// `--json`, reports the version and which site it came from too. Local -
+    /// does not run anything. (Unix only.)
+    Which {
+        /// Which tool to report.
+        tool: WhichTool,
+        /// Report the binary for this site instead of the current directory's.
+        #[arg(long, value_name = "NAME")]
+        site: Option<String>,
+    },
     /// Serve Yerd's tools to AI agents over MCP on stdin/stdout. Not meant to be
     /// run by hand: an agent spawns it. Register it once, e.g.
     /// `claude mcp add --scope user yerd -- yerd mcp`. Tools are served only
@@ -281,6 +330,24 @@ pub enum LanAction {
     /// Show LAN exposure state: configured vs effective, the LAN IP, and the
     /// next privileged step if any.
     Status,
+}
+
+/// A tool `yerd exec` can run under a site's pinned PHP version.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecTool {
+    /// The PHP CLI itself.
+    Php,
+    /// The bundled Composer phar, run under that PHP.
+    Composer,
+}
+
+/// A tool `yerd which` can report the path of. Deliberately separate from
+/// [`ExecTool`] so `yerd which composer` - which would have to mean the phar,
+/// not a binary - is rejected at parse time rather than silently answered.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhichTool {
+    /// The PHP CLI binary.
+    Php,
 }
 
 /// A binary on/off toggle argument (e.g. `yerd front-controller <name> on`).
@@ -318,7 +385,8 @@ pub enum ProxyAction {
     /// (`yerd proxy add reverb http://localhost:8080`); three attach a path rule
     /// to an existing site (`yerd proxy add myapp /app http://127.0.0.1:8080`).
     Add {
-        /// A proxy name (whole-host) or a site name (path rule).
+        /// A proxy name, which may be dotted (`api.account`), or a site name
+        /// (path rule).
         first: String,
         /// The upstream URL (whole-host), or the path prefix (path rule).
         second: String,
@@ -329,13 +397,47 @@ pub enum ProxyAction {
     /// (`yerd proxy remove reverb`); two remove a site's path rule
     /// (`yerd proxy remove myapp /app`).
     Remove {
-        /// A whole-host proxy name, or a site name (with a path prefix).
+        /// A whole-host proxy name, possibly dotted, or a site name (with a
+        /// path prefix).
         target: String,
         /// The path prefix, when removing a site's path rule.
         prefix: Option<String>,
     },
     /// List whole-host proxies and per-site path rules.
     List,
+}
+
+/// Action of `yerd route`.
+///
+/// Distinct from [`ProxyAction`]: a proxy rule forwards to a running HTTP
+/// service, a routing rule resolves to a file inside the site's own web root.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum RouteAction {
+    /// Add a routing rule. Requests under `prefix` that match no real file are
+    /// handled by `target`, a path relative to the site's web root. A `.php`
+    /// target runs as a nested front controller; anything else is served as a
+    /// static file.
+    Add {
+        /// Site name.
+        site: String,
+        /// Path prefix, e.g. `/api` (or `/` to catch everything).
+        prefix: String,
+        /// Target relative to the site's web root, e.g. `api/index.php`.
+        target: String,
+    },
+    /// Remove a routing rule from a site by its path prefix.
+    Remove {
+        /// Site name.
+        site: String,
+        /// Path prefix to remove.
+        prefix: String,
+    },
+    /// List routing rules. A site whose web root holds an `index.html` and no
+    /// `index.php` already gets SPA routing automatically, with no rule.
+    List {
+        /// Site name; omit to list every site's rules.
+        site: Option<String>,
+    },
 }
 
 /// Action of `yerd domain`.
@@ -347,32 +449,34 @@ pub enum DomainAction {
         /// Site name; omit to list every site's domains.
         site: Option<String>,
     },
-    /// Add a domain to a site: an exact host (`api.myapp.test`) or a single-label
-    /// wildcard (`*.myapp.test`).
+    /// Add a domain to a site or whole-host proxy: an exact host
+    /// (`api.myapp.test`) or a single-label wildcard (`*.myapp.test`).
     Add {
-        /// Site name.
+        /// Site or proxy name.
         site: String,
         /// Full domain FQDN under the configured TLD.
         domain: String,
     },
-    /// Remove a domain from a site. A site must keep at least one exact domain.
+    /// Remove a domain from a site or whole-host proxy. At least one exact
+    /// domain must remain.
     Remove {
-        /// Site name.
+        /// Site or proxy name.
         site: String,
         /// Full domain FQDN to remove.
         domain: String,
     },
-    /// Set a site's primary (canonical) domain. Must be an exact domain; it is
-    /// added to the site if not already present.
+    /// Set a site's or whole-host proxy's primary (canonical) domain. Must be an
+    /// exact domain; it is added if not already present.
     Primary {
-        /// Site name.
+        /// Site or proxy name.
         site: String,
         /// Full domain FQDN to make primary.
         domain: String,
     },
-    /// Reset a site's domains to the default (its `{name}.{tld}` apex only).
+    /// Reset a site's or whole-host proxy's domains to the default (its
+    /// `{name}.{tld}` apex only).
     Reset {
-        /// Site name.
+        /// Site or proxy name.
         site: String,
     },
 }
@@ -428,6 +532,31 @@ pub enum ServiceAction {
         service: String,
         /// Loopback port.
         port: u16,
+    },
+    /// Set a service configuration override (applies on the next restart).
+    ///
+    /// Only the name and value shape are checked; whether the engine accepts
+    /// the setting is the engine's business. Not every service supports
+    /// overrides.
+    Set {
+        /// Service id.
+        service: String,
+        /// Directive name, e.g. `max_connections`.
+        key: String,
+        /// Directive value, e.g. `500`.
+        value: String,
+    },
+    /// Remove a service configuration override (applies on the next restart).
+    Unset {
+        /// Service id.
+        service: String,
+        /// Directive name to remove.
+        key: String,
+    },
+    /// Show a service's stored configuration overrides.
+    Overrides {
+        /// Service id.
+        service: String,
     },
     /// Show the last lines of a service's log.
     Logs {
@@ -619,6 +748,41 @@ pub enum PhpAction {
         #[command(subcommand)]
         action: PhpIniAction,
     },
+    /// Manage per-version FPM pool settings (worker ceiling), applied to that
+    /// version's web (FPM) pool only.
+    Pool {
+        /// The pool setting action.
+        #[command(subcommand)]
+        action: PhpPoolAction,
+    },
+}
+
+/// Action of `yerd php pool`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum PhpPoolAction {
+    /// Set an FPM pool setting for one installed PHP version. The only
+    /// setting is `max_children`, the ceiling on concurrent PHP workers,
+    /// accepted between 1 and 1024 (default 16). The pool is on-demand, so a
+    /// higher ceiling costs nothing while idle.
+    Set {
+        /// PHP version, e.g. `8.3`.
+        version: String,
+        /// Setting name: `max_children`.
+        name: String,
+        /// Setting value, e.g. `32`.
+        value: String,
+    },
+    /// Reset an FPM pool setting for one installed PHP version to its
+    /// built-in default.
+    Unset {
+        /// PHP version, e.g. `8.3`.
+        version: String,
+        /// Setting name: `max_children`.
+        name: String,
+    },
+    /// List per-version settings overrides, custom ini directives, and pool
+    /// settings.
+    List,
 }
 
 /// Action of `yerd php ini`.
@@ -795,4 +959,85 @@ pub enum ElevateTarget {
     /// only; on Linux this reuses the `ports` setcap grant). Run after
     /// `yerd lan enable`.
     Lan,
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).unwrap()
+    }
+
+    /// `yerd exec php -v` must work without a `--` separator: the flags after
+    /// the tool belong to the tool, not to yerd.
+    #[test]
+    fn exec_captures_hyphenated_tool_args() {
+        let cli = parse(&["yerd", "exec", "php", "-v"]);
+        let Command::Exec { site, tool, args } = cli.command else {
+            panic!("expected Exec");
+        };
+        assert_eq!(site, None);
+        assert_eq!(tool, ExecTool::Php);
+        assert_eq!(args, vec!["-v"]);
+    }
+
+    #[test]
+    fn exec_takes_site_before_the_tool() {
+        let cli = parse(&["yerd", "exec", "--site", "blog", "composer", "install"]);
+        let Command::Exec { site, tool, args } = cli.command else {
+            panic!("expected Exec");
+        };
+        assert_eq!(site.as_deref(), Some("blog"));
+        assert_eq!(tool, ExecTool::Composer);
+        assert_eq!(args, vec!["install"]);
+    }
+
+    /// A `--json` *after* the tool is the tool's own flag - it must be
+    /// forwarded, not consumed by yerd's global one.
+    #[test]
+    fn exec_forwards_a_trailing_json_flag_to_the_tool() {
+        let cli = parse(&["yerd", "exec", "composer", "show", "--json"]);
+        assert!(!cli.json, "--json after the tool belongs to the tool");
+        let Command::Exec { args, .. } = cli.command else {
+            panic!("expected Exec");
+        };
+        assert_eq!(args, vec!["show", "--json"]);
+    }
+
+    #[test]
+    fn exec_takes_yerds_json_flag_before_the_tool() {
+        let cli = parse(&["yerd", "--json", "exec", "php", "-v"]);
+        assert!(cli.json);
+    }
+
+    #[test]
+    fn which_parses_php_with_an_optional_site() {
+        let cli = parse(&["yerd", "which", "php"]);
+        let Command::Which { tool, site } = cli.command else {
+            panic!("expected Which");
+        };
+        assert_eq!(tool, WhichTool::Php);
+        assert_eq!(site, None);
+
+        let cli = parse(&["yerd", "which", "php", "--site", "blog"]);
+        let Command::Which { site, .. } = cli.command else {
+            panic!("expected Which");
+        };
+        assert_eq!(site.as_deref(), Some("blog"));
+    }
+
+    /// `which` only knows how to report a binary, and Composer is a phar - so
+    /// it must be rejected at parse time rather than answered misleadingly.
+    #[test]
+    fn which_rejects_composer() {
+        assert!(Cli::try_parse_from(["yerd", "which", "composer"]).is_err());
+    }
+
+    #[test]
+    fn exec_rejects_an_unknown_tool() {
+        assert!(Cli::try_parse_from(["yerd", "exec", "artisan"]).is_err());
+    }
 }

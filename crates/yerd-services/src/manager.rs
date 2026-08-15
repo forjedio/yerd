@@ -19,6 +19,7 @@ use std::process::Command as StdCommand;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use yerd_core::service_directives;
 use yerd_platform::{ActivePortBinder, PlatformDirs, PlatformError, PortBinder};
 use yerd_supervise::supervisor::{
     transition, Action, Elapsed, ErrorTag, Event, KillSignal, PoolState, StopProtocol,
@@ -26,6 +27,7 @@ use yerd_supervise::supervisor::{
 };
 use yerd_supervise::{ChildHandle, Clock, ExitReason, Listen, ProcessSpawner, SpawnFailureReason};
 
+use crate::config_render;
 use crate::error::ServiceError;
 use crate::health::ReadinessProbe;
 use crate::service::{LaunchContext, ReadinessKind, ServiceDefinition};
@@ -134,7 +136,11 @@ where
     /// `program_override`/`cwd` are `None`. For a per-site app server,
     /// `program_override` is the site's PHP CLI binary, `cwd` its document root,
     /// and `version` is `None`.
-    #[allow(clippy::too_many_lines)]
+    ///
+    /// `overrides` are the instance's stored configuration overrides, rendered
+    /// to the sidecar file on every start (see [`write_service_config`]); pass an
+    /// empty map for a type that accepts none.
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     pub async fn ensure(
         &mut self,
         def: Arc<dyn ServiceDefinition>,
@@ -143,6 +149,7 @@ where
         port: u16,
         program_override: Option<PathBuf>,
         cwd: Option<PathBuf>,
+        overrides: BTreeMap<String, String>,
     ) -> Result<Listen, ServiceError> {
         if let Some(listen) = self.running_listen(wire_id)? {
             return Ok(listen);
@@ -213,13 +220,14 @@ where
             if let Some(rendered) =
                 def.render_config(port, datadir, &socket, &log_path, &init_file, &preload)
             {
-                std::fs::write(&config_path, rendered.as_bytes()).map_err(|source| {
-                    ServiceError::ConfigWrite {
-                        path: config_path.clone(),
-                        service: wire_id.to_owned(),
-                        source,
-                    }
-                })?;
+                write_service_config(
+                    def.as_ref(),
+                    wire_id,
+                    &self.dirs,
+                    &config_path,
+                    &rendered,
+                    &overrides,
+                )?;
             }
         } else if let Some(parent) = log_path.parent() {
             std::fs::create_dir_all(parent).map_err(|source| ServiceError::ConfigWrite {
@@ -390,6 +398,7 @@ where
     }
 
     /// Restart the instance: stop it cleanly, then ensure again.
+    #[allow(clippy::too_many_arguments)]
     pub async fn restart(
         &mut self,
         def: Arc<dyn ServiceDefinition>,
@@ -398,10 +407,19 @@ where
         port: u16,
         program_override: Option<PathBuf>,
         cwd: Option<PathBuf>,
+        overrides: BTreeMap<String, String>,
     ) -> Result<Listen, ServiceError> {
         let _ = self.stop(wire_id).await;
-        self.ensure(def, wire_id, version, port, program_override, cwd)
-            .await
+        self.ensure(
+            def,
+            wire_id,
+            version,
+            port,
+            program_override,
+            cwd,
+            overrides,
+        )
+        .await
     }
 
     /// Stop the instance `wire_id`. No-op if there is none.
@@ -888,6 +906,64 @@ where
             })
         }
     }
+}
+
+/// Write a service's Yerd-owned config plus, for an override-capable type, its
+/// two sidecar files in `conf.d/`.
+///
+/// The managed file is rewritten on every start even when `overrides` is empty,
+/// so an override the user removed disappears from the engine's view. The local
+/// file is written only when it is missing: it is the user's, so a hand edit
+/// survives every restart, and recreating it when deleted keeps Redis' explicit
+/// `include` from naming a file that isn't there. The include line(s) go last in
+/// the main config, so the sidecars are read after Yerd's own settings and win.
+fn write_service_config(
+    def: &dyn ServiceDefinition,
+    wire_id: &str,
+    dirs: &PlatformDirs,
+    config_path: &std::path::Path,
+    rendered: &str,
+    overrides: &BTreeMap<String, String>,
+) -> Result<(), ServiceError> {
+    let mut body = rendered.to_owned();
+    if let Some(dialect) = def.override_capability() {
+        let confd = version::confd_dir(dirs, def.id());
+        std::fs::create_dir_all(&confd).map_err(|source| ServiceError::ConfigWrite {
+            path: confd.clone(),
+            service: wire_id.to_owned(),
+            source,
+        })?;
+
+        let ext = service_directives::file_ext(dialect);
+        let managed = version::managed_override_path(dirs, def.id(), ext);
+        let managed_body = service_directives::render_managed(dialect, overrides);
+        std::fs::write(&managed, managed_body.as_bytes()).map_err(|source| {
+            ServiceError::ConfigWrite {
+                path: managed.clone(),
+                service: wire_id.to_owned(),
+                source,
+            }
+        })?;
+
+        let local = version::local_override_path(dirs, def.id(), ext);
+        if !local.exists() {
+            let stub = service_directives::render_local_stub(dialect);
+            std::fs::write(&local, stub.as_bytes()).map_err(|source| {
+                ServiceError::ConfigWrite {
+                    path: local.clone(),
+                    service: wire_id.to_owned(),
+                    source,
+                }
+            })?;
+        }
+
+        body.push_str(&config_render::render_include_lines(dialect, &confd));
+    }
+    std::fs::write(config_path, body.as_bytes()).map_err(|source| ServiceError::ConfigWrite {
+        path: config_path.to_path_buf(),
+        service: wire_id.to_owned(),
+        source,
+    })
 }
 
 /// Open the log file and attach it to the command's stdout+stderr. Used by the
@@ -1513,6 +1589,118 @@ mod tests {
         std::fs::create_dir_all(&lib).unwrap();
         std::fs::write(lib.join("postgis.so"), b"").unwrap();
         assert!(!timescaledb_present(tmp.path()));
+    }
+
+    /// Write the mysql config into a prepared `state/services/mysql/` and hand
+    /// back the main config, managed and local paths.
+    fn write_mysql_config(
+        dirs: &PlatformDirs,
+        rendered: &str,
+        overrides: &BTreeMap<String, String>,
+    ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let config_path = version::config_path(dirs, "mysql");
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        write_service_config(
+            &crate::service::MySql,
+            "mysql",
+            dirs,
+            &config_path,
+            rendered,
+            overrides,
+        )
+        .unwrap();
+        (
+            config_path,
+            version::managed_override_path(dirs, "mysql", "cnf"),
+            version::local_override_path(dirs, "mysql", "cnf"),
+        )
+    }
+
+    #[test]
+    fn write_service_config_appends_the_include_line_and_seeds_the_sidecars() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let mut overrides = BTreeMap::new();
+        overrides.insert("max_connections".to_owned(), "500".to_owned());
+
+        let (config_path, managed, local) =
+            write_mysql_config(&dirs, "[mysqld]\nport = 3306\n", &overrides);
+
+        let confd = version::confd_dir(&dirs, "mysql");
+        let main = std::fs::read_to_string(&config_path).unwrap();
+        assert!(main.starts_with("[mysqld]\nport = 3306\n"));
+        assert!(
+            main.ends_with(&format!("!includedir {}\n", confd.display())),
+            "got: {main}"
+        );
+        assert!(std::fs::read_to_string(&managed)
+            .unwrap()
+            .contains("max_connections = 500"));
+        assert_eq!(
+            std::fs::read_to_string(&local).unwrap(),
+            service_directives::render_local_stub(service_directives::OverrideDialect::MyCnf)
+        );
+    }
+
+    /// A removed override must disappear from the engine's view, so the managed
+    /// file is rewritten from the map on every start.
+    #[test]
+    fn write_service_config_replaces_the_managed_file_on_every_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let mut overrides = BTreeMap::new();
+        overrides.insert("max_connections".to_owned(), "500".to_owned());
+
+        let (_, managed, _) = write_mysql_config(&dirs, "[mysqld]\n", &overrides);
+        assert!(std::fs::read_to_string(&managed)
+            .unwrap()
+            .contains("max_connections"));
+
+        write_mysql_config(&dirs, "[mysqld]\n", &BTreeMap::new());
+        assert!(!std::fs::read_to_string(&managed)
+            .unwrap()
+            .contains("max_connections"));
+    }
+
+    /// `50-local` is the user's file: created once, then left alone.
+    #[test]
+    fn write_service_config_never_rewrites_the_local_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+
+        let (_, _, local) = write_mysql_config(&dirs, "[mysqld]\n", &BTreeMap::new());
+        std::fs::write(&local, b"[mysqld]\nmax_connections = 145\n").unwrap();
+
+        write_mysql_config(&dirs, "[mysqld]\n", &BTreeMap::new());
+        assert_eq!(
+            std::fs::read_to_string(&local).unwrap(),
+            "[mysqld]\nmax_connections = 145\n"
+        );
+    }
+
+    #[test]
+    fn write_service_config_writes_only_the_body_without_a_capability() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let config_path = version::config_path(&dirs, "meilisearch");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let mut overrides = BTreeMap::new();
+        overrides.insert("max_connections".to_owned(), "500".to_owned());
+        write_service_config(
+            &crate::service::Meilisearch,
+            "meilisearch",
+            &dirs,
+            &config_path,
+            "body\n",
+            &overrides,
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), "body\n");
+        assert!(!version::confd_dir(&dirs, "meilisearch").exists());
     }
 
     #[test]

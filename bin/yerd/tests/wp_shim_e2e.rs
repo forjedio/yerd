@@ -16,7 +16,7 @@ mod tests {
 
     use tokio::sync::watch;
 
-    use yerd::wp_shim::{site_scope, ScopeResolution};
+    use yerd::site_scope::{site_scope, ScopeResolution};
     use yerd_core::PhpVersion;
     use yerd_ipc::{Request, Response};
     use yerd_platform::PlatformDirs;
@@ -174,7 +174,7 @@ mod tests {
             ScopeResolution::Scoped(scope) => {
                 assert_eq!(
                     scope.served_root,
-                    std::fs::canonicalize(&scoped_dir).unwrap()
+                    Some(std::fs::canonicalize(&scoped_dir).unwrap())
                 );
                 #[cfg(unix)]
                 assert!(scope.php_bin.ends_with("php-8.3/bin/php"));
@@ -212,8 +212,54 @@ mod tests {
             ScopeResolution::Scoped(scope) => {
                 assert_eq!(
                     scope.served_root,
-                    std::fs::canonicalize(sub_dir.join("public")).unwrap()
+                    Some(std::fs::canonicalize(sub_dir.join("public")).unwrap())
                 );
+            }
+            other => panic!("expected Scoped, got {other:?}"),
+        }
+
+        // A site whose served root doesn't exist on disk (an unbuilt `public/`)
+        // still resolves - matching is on the document root, so `yerd exec`
+        // gets the pinned PHP - but `served_root` is `None`, which is how the
+        // `wp` shim knows to decline scoping rather than aim `--path=` at the
+        // project root, where WordPress isn't served from.
+        //
+        // `SetWebRoot` validates that the directory exists, so the subpath is
+        // set while `public/` is present and the directory removed afterwards -
+        // which is the only way to reach this state, and matches the real case
+        // (a `public/` that was deleted, or never built after a fresh clone).
+        let unbuilt_dir = tmp.path().join("unbuilt");
+        std::fs::create_dir_all(unbuilt_dir.join("public")).unwrap();
+        let req = yerd::resolve_link(Some("unbuilt"), Some(&unbuilt_dir)).expect("resolve_link");
+        exchange_ok(&dirs, &req).await;
+        exchange_ok(
+            &dirs,
+            &Request::SetPhp {
+                name: "unbuilt".into(),
+                version: installed_php,
+            },
+        )
+        .await;
+        exchange_ok(
+            &dirs,
+            &Request::SetWebRoot {
+                name: "unbuilt".into(),
+                path: Some("public".into()),
+            },
+        )
+        .await;
+        std::fs::remove_dir(unbuilt_dir.join("public")).unwrap();
+        let cwd = std::fs::canonicalize(&unbuilt_dir).unwrap();
+        match scoped_site_scope(dirs.clone(), cwd).await {
+            ScopeResolution::Scoped(scope) => {
+                assert_eq!(
+                    scope.served_root, None,
+                    "a served root that isn't on disk must not fall back to the document root"
+                );
+                #[cfg(unix)]
+                assert!(scope.php_bin.ends_with("php-8.3/bin/php"));
+                #[cfg(windows)]
+                assert!(scope.php_bin.ends_with("php-8.3/php.exe"));
             }
             other => panic!("expected Scoped, got {other:?}"),
         }
@@ -228,11 +274,16 @@ mod tests {
             other => panic!("expected MatchedPhpMissing, got {other:?}"),
         }
 
-        // cwd outside every registered site -> NoScope.
+        // cwd outside every registered site -> NoScope, and explicitly *not*
+        // flagged as a daemon failure: the daemon answered, nothing matched.
+        // Conflating the two is what makes a timed-out lookup silently run the
+        // global default inside a pinned site.
         let cwd = std::fs::canonicalize(&unscoped_dir).unwrap();
         assert!(matches!(
             scoped_site_scope(dirs.clone(), cwd).await,
-            ScopeResolution::NoScope
+            ScopeResolution::NoScope {
+                daemon_unavailable: false
+            }
         ));
 
         shutdown_tx.send_replace(true);

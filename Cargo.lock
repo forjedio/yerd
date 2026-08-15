@@ -6321,7 +6321,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -6342,7 +6342,7 @@ dependencies = [
 
 [[package]]
 name = "yerd"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "clap",
  "interprocess",
@@ -6365,7 +6365,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-config"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "serde",
  "tempfile",
@@ -6376,7 +6376,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-core"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -6387,14 +6387,14 @@ dependencies = [
 
 [[package]]
 name = "yerd-depcheck"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "yerd-dns"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "async-trait",
  "hickory-client",
@@ -6408,7 +6408,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-doctor"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "yerd-core",
  "yerd-ipc",
@@ -6416,7 +6416,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-gui"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "block2 0.6.2",
  "core-foundation 0.9.4",
@@ -6457,7 +6457,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-helper"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "clap",
  "hex",
@@ -6473,7 +6473,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-ipc"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -6484,7 +6484,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-mail"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "mail-parser",
  "serde",
@@ -6498,7 +6498,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-mcp"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -6509,7 +6509,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-php"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "async-trait",
  "nix",
@@ -6527,7 +6527,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-platform"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "directories",
  "hex",
@@ -6548,7 +6548,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-proxy"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -6572,7 +6572,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-release-manifest"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "semver",
  "serde",
@@ -6582,7 +6582,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-service-ctl"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "nix",
  "thiserror 1.0.69",
@@ -6591,7 +6591,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-services"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "async-trait",
  "serde",
@@ -6600,13 +6600,14 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "yerd-core",
  "yerd-platform",
  "yerd-supervise",
 ]
 
 [[package]]
 name = "yerd-supervise"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "async-trait",
  "nix",
@@ -6618,7 +6619,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-tls"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "pem",
  "rcgen",
@@ -6632,7 +6633,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-tunnel"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "async-trait",
  "tempfile",
@@ -6643,7 +6644,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-update"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "hex",
  "minisign-verify",
@@ -6653,7 +6654,7 @@ dependencies = [
 
 [[package]]
 name = "yerdd"
-version = "2.0.4"
+version = "2.1.0-rc.1"
 dependencies = [
  "async-trait",
  "clap",

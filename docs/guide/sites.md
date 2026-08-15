@@ -360,6 +360,12 @@ The served path shows up in `yerd sites` (the `SERVED` column, `/` meaning the p
 A request that resolves to a real file under the served root (a stylesheet, image, `favicon.ico`, compiled JS, …) is returned straight from disk by the proxy, with a guessed `Content-Type` - it never touches PHP. A directory request (including the site root) falls back to `index.html` or `index.htm` from that directory when there's no `index.php` there, so a plain static site (no PHP at all) works with no extra configuration. Everything else is handed to the framework's front controller (`index.php`). PHP source files are never served as static bytes. A symlink is allowed to point anywhere inside the site's project directory - so Laravel's `public/storage -> ../storage/app/public` link works with no extra setup - but a symlink that escapes the project directory entirely is refused with an explicit `403 Forbidden` naming the requested path, rather than being silently handed to PHP.
 :::
 
+::: info Directory requests get a trailing-slash redirect
+On a site running in **direct** mode - front controller off, where named `.php` files are executable by URL - a `GET /sub` naming a real directory answers `301` to `/sub/`, exactly as Apache's `DirectorySlash` and nginx's `try_files $uri $uri/` do. The slashed form is then resolved normally: `sub/index.php` if it has one, otherwise `sub/index.html`. This is what makes a legacy multi-directory PHP app work - without it, `/sub` fell through to the *root* `index.php`, and an app whose root script redirects into the subdirectory looped until the browser gave up.
+
+Front-controller sites are deliberately unaffected: there, `/sub` is a framework route, not a directory. The redirect is also limited to `GET` and `HEAD`, so a `POST` is never redirected.
+:::
+
 ### Overriding the served path
 
 When detection guesses wrong, or you have an unconventional layout, set the served directory explicitly:
@@ -376,9 +382,48 @@ yerd root my-app --auto      # forget the override; go back to auto-detection
 The [Sites view](./desktop-app#sites) shows the served web root as a badge per site, and its **Edit…** dialog sets it directly - leave the field blank to go back to auto-detection.
 :::
 
+## Routing rules
+
+Detection and the web root cover the common layouts, but two shapes need a rule.
+
+A **legacy portal with a nested app** - an older PHP site that grew a Yii or CodeIgniter API in a subdirectory - has *two* front controllers, and only the root one is found automatically. A rule points the rest at the nested one:
+
+```sh
+yerd route add portal /api api/index.php
+# portal.test/api/user/login  → api/index.php (POST included)
+# portal.test/anything-else   → the root index.php
+```
+
+A **JavaScript SPA** needs history-API deep links to serve the app shell:
+
+```sh
+yerd route add dashboard / index.html
+# dashboard.test/settings/profile → index.html
+```
+
+A rule only applies when the request matched no real file, so assets and real directories keep winning. A site whose web root holds an `index.html` and no `index.php` gets the SPA behaviour automatically, with no rule at all.
+
+See [Routing rules](../reference/cli/routes) for the full semantics, and note this is different from a [reverse proxy path rule](./proxies), which forwards to a separate running service rather than to a file inside the site.
+
+## Streaming responses (SSE / Livewire `wire:stream`)
+
+Streamed responses pass straight through as PHP flushes them - server-sent events, `response()->stream()`, Livewire's `wire:stream`, and token-by-token AI output all reach the browser incrementally. There is no setting to turn on and no header to send: `X-Accel-Buffering: no` is unnecessary (Yerd consumes it rather than forwarding it), and a response that sets no `Content-Length` is sent chunked.
+
+Each open stream occupies one PHP-FPM worker for as long as it stays open, so a page holding several event streams, or a few tabs left open on one, can reach the per-version ceiling of 16 workers and leave later requests queueing. Raise it with [`yerd php pool`](./php-versions#pool-size) if you work with streaming regularly.
+
+If a stream still arrives in one burst, the buffering is on the application side. Check `output_buffering` and any `ob_*` handlers your framework installs, and `zlib.output_compression`, which buffers to compress:
+
+```php
+while (ob_get_level() > 0) {
+    ob_end_flush();
+}
+flush();
+```
+
 ## Related
 
 - [PHP Versions](./php-versions) - set the global default and pin a site to a version.
+- [Routing rules](../reference/cli/routes) - nested front controllers and SPA deep links.
 - [HTTPS &amp; Certificates](./https) - the local CA and the `secure` flag.
 - [DNS &amp; .test Domains](./dns) - how `*.test` requests reach the daemon.
 - [Configuration Reference](../reference/configuration) - where sites and the TLD are stored.

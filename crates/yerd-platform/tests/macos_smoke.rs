@@ -16,14 +16,62 @@ use std::net::{Ipv4Addr, SocketAddr};
 mod common;
 
 use yerd_platform::{
-    ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTrustStore, Paths, PlatformError,
-    PortBinder, ResolverInstaller, TrustStore,
+    pure::ide_spec::{
+        ide_cli_candidates_macos, mac_app_name_matches, mac_application_locations, IDE_SPECS,
+    },
+    ActiveIdeLauncher, ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTrustStore,
+    IdeLauncher, Paths, PlatformError, PortBinder, ResolverInstaller, TrustStore,
 };
 
 use common::random_fingerprint;
 
 fn loopback(port: u16) -> SocketAddr {
     SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+}
+
+#[test]
+fn ide_launcher_smoke_returns_known_unique_rank_sorted_ides() {
+    let detected = ActiveIdeLauncher.detect();
+    let mut seen: Vec<&str> = Vec::new();
+    let mut previous_rank = 0u8;
+    for ide in &detected {
+        let spec = IDE_SPECS
+            .iter()
+            .find(|spec| spec.id == ide.id)
+            .expect("every detected id must exist in IDE_SPECS");
+        assert!(!seen.contains(&ide.id), "duplicate detected id {}", ide.id);
+        assert!(spec.rank >= previous_rank, "detection must be rank sorted");
+        previous_rank = spec.rank;
+        seen.push(ide.id);
+    }
+}
+
+#[test]
+fn mac_ide_path_helpers_keep_discovery_deterministic() {
+    let home = tempfile::tempdir().expect("temporary home");
+    let candidates = ide_cli_candidates_macos(Some(home.path()));
+    assert!(candidates.contains(
+        &home
+            .path()
+            .join("Library/Application Support/JetBrains/Toolbox/scripts",)
+    ));
+}
+
+#[test]
+fn mac_ide_name_matching_rejects_backups_and_accepts_previews() {
+    assert!(mac_app_name_matches(
+        "vscode",
+        "Visual Studio Code - Insiders"
+    ));
+    assert!(!mac_app_name_matches(
+        "vscode",
+        "Visual Studio Code - Backup"
+    ));
+
+    let home = std::path::PathBuf::from("/Users/test");
+    let locations = mac_application_locations(Some(&home));
+    assert!(locations.contains(&home.join("Applications")));
+    assert!(locations.contains(&home.join("Library/Application Support/JetBrains/Toolbox/apps")));
 }
 
 #[test]

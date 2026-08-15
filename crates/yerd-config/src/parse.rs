@@ -136,6 +136,9 @@ struct Wire {
     // v14: optional `[proxy_rules]` table; absent in v13 and earlier → empty.
     #[serde(default)]
     proxy_rules: ProxyRulesSectionWire,
+    // v20: optional `[route_rules]` table; absent in v19 and earlier → empty.
+    #[serde(default)]
+    route_rules: RouteRulesSectionWire,
 }
 
 /// One `[[proxies]]` table: a whole-host proxy's name, upstream, and HTTPS flag.
@@ -169,7 +172,28 @@ struct ProxyRuleWire {
     target: String,
 }
 
-/// The `[domains]` table. Both maps default to empty, so an absent table parses
+/// The `[route_rules]` table. Both maps default to empty, so an absent table
+/// parses to [`crate::schema::RouteRulesSection::default`].
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RouteRulesSectionWire {
+    #[serde(default)]
+    linked: BTreeMap<String, Vec<RouteRuleWire>>,
+    #[serde(default)]
+    parked: BTreeMap<String, Vec<RouteRuleWire>>,
+}
+
+/// One `[[route_rules.linked.<name>]]` / `[[route_rules.parked."<docroot>"]]`
+/// rule: a path prefix plus a target path relative to the site's served root
+/// (validated into `yerd_core::RouteRule` in `TryFrom`).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RouteRuleWire {
+    prefix: String,
+    target: String,
+}
+
+/// The `[domains]` table. Every map defaults to empty, so an absent table parses
 /// to [`crate::schema::DomainsSection::default`].
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -178,9 +202,12 @@ struct DomainsSectionWire {
     linked: BTreeMap<String, DomainDeltaWire>,
     #[serde(default)]
     parked: BTreeMap<String, DomainDeltaWire>,
+    #[serde(default)]
+    proxy: BTreeMap<String, DomainDeltaWire>,
 }
 
-/// One `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` delta. Domain
+/// One `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` /
+/// `[domains.proxy.<name>]` delta. Domain
 /// sub-parts are raw `String`s here (validated into `Domain` in `TryFrom`).
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -297,6 +324,10 @@ struct PhpSectionWire {
     // v16: free-form per-version ini directives, keyed by version string.
     #[serde(default)]
     directives: BTreeMap<String, BTreeMap<String, String>>,
+    // v20: per-version FPM pool settings, keyed by version string. Additive:
+    // pre-v20 files omit it.
+    #[serde(default)]
+    pool: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl Default for PhpSectionWire {
@@ -307,6 +338,7 @@ impl Default for PhpSectionWire {
             extensions: BTreeMap::new(),
             version_settings: BTreeMap::new(),
             directives: BTreeMap::new(),
+            pool: BTreeMap::new(),
         }
     }
 }
@@ -349,6 +381,11 @@ struct ServiceInstanceWire {
     /// a hand-edited reverb table without the field does not auto-start.
     #[serde(default)]
     enabled: Option<bool>,
+    /// The optional `[services.<id>.overrides]` table (v22). Absent (empty) for
+    /// every file written before it existed, and filtered leniently during
+    /// conversion by [`convert_service_overrides`].
+    #[serde(default)]
+    overrides: BTreeMap<String, String>,
 }
 
 /// The `[mail]` table. Both keys default (off / 2525) so a config written before
@@ -489,6 +526,7 @@ impl TryFrom<Wire> for Config {
             extensions: convert_extensions(w.php.extensions)?,
             version_settings: convert_version_settings(w.php.version_settings)?,
             directives: convert_directives(w.php.directives)?,
+            pool: convert_pool(w.php.pool)?,
         };
         let ports = Ports {
             http: w.ports.http,
@@ -525,6 +563,7 @@ impl TryFrom<Wire> for Config {
                     let enabled = inst
                         .enabled
                         .unwrap_or_else(|| default_autostart_for_key(&name));
+                    let overrides = convert_service_overrides(&name, inst.overrides);
                     (
                         name,
                         ServiceInstance {
@@ -532,6 +571,7 @@ impl TryFrom<Wire> for Config {
                             port: inst.port,
                             site: inst.site,
                             enabled,
+                            overrides,
                         },
                     )
                 })
@@ -559,11 +599,16 @@ impl TryFrom<Wire> for Config {
         let domains = crate::schema::DomainsSection {
             linked: convert_domain_deltas(w.domains.linked)?,
             parked: convert_domain_deltas(w.domains.parked)?,
+            proxy: convert_domain_deltas(w.domains.proxy)?,
         };
         let proxies = convert_proxies(w.proxies)?;
         let proxy_rules = crate::schema::ProxyRulesSection {
             linked: convert_proxy_rules(w.proxy_rules.linked)?,
             parked: convert_proxy_rules(w.proxy_rules.parked)?,
+        };
+        let route_rules = crate::schema::RouteRulesSection {
+            linked: convert_route_rules(w.route_rules.linked)?,
+            parked: convert_route_rules(w.route_rules.parked)?,
         };
         Ok(Config {
             version: crate::CURRENT_VERSION,
@@ -587,6 +632,7 @@ impl TryFrom<Wire> for Config {
             domains,
             proxies,
             proxy_rules,
+            route_rules,
         })
     }
 }
@@ -617,6 +663,22 @@ fn convert_proxy_rules(
                     let target = yerd_core::UpstreamTarget::from_url_str(&r.target)?;
                     Ok(yerd_core::ProxyRule::new(&r.prefix, target)?)
                 })
+                .collect::<Result<Vec<_>, ConfigError>>()?;
+            Ok((key, rules))
+        })
+        .collect()
+}
+
+/// Convert a `[route_rules.*]` wire map into validated [`yerd_core::RouteRule`]
+/// lists. A bad prefix or target surfaces as [`ConfigError::Core`].
+fn convert_route_rules(
+    wire: BTreeMap<String, Vec<RouteRuleWire>>,
+) -> Result<BTreeMap<String, Vec<yerd_core::RouteRule>>, ConfigError> {
+    wire.into_iter()
+        .map(|(key, rules)| {
+            let rules = rules
+                .into_iter()
+                .map(|r| Ok(yerd_core::RouteRule::new(&r.prefix, &r.target)?))
                 .collect::<Result<Vec<_>, ConfigError>>()?;
             Ok((key, rules))
         })
@@ -757,6 +819,58 @@ fn convert_directives(
     Ok(out)
 }
 
+/// Convert the raw wire per-version pool map into the typed
+/// [`PhpSection::pool`] shape. Same policy as [`convert_directives`]: a bad
+/// version key errors, while an entry whose name is not a pool setting Yerd
+/// exposes, or whose value is out of range, is dropped leniently.
+fn convert_pool(
+    wire: BTreeMap<String, BTreeMap<String, String>>,
+) -> Result<BTreeMap<yerd_core::PhpVersion, BTreeMap<String, String>>, ConfigError> {
+    use yerd_core::php_pool;
+    let mut out = BTreeMap::new();
+    for (ver, entries) in wire {
+        let v = yerd_core::PhpVersion::from_str(&ver)?;
+        let kept: BTreeMap<String, String> = entries
+            .into_iter()
+            .filter(|(k, val)| {
+                php_pool::validate_name(k).is_ok() && php_pool::validate_value(val).is_ok()
+            })
+            .collect();
+        if !kept.is_empty() {
+            out.insert(v, kept);
+        }
+    }
+    Ok(out)
+}
+
+/// Filter one instance's raw wire overrides into the typed
+/// [`ServiceInstance::overrides`] shape. Same lenient policy as
+/// [`convert_directives`], keyed by dialect instead of PHP version: the
+/// instance's type part decides the dialect, and an entry with an invalid or
+/// reserved name, or an invalid value, is dropped rather than failing the load.
+/// A type that accepts no overrides at all (Meilisearch, Reverb, or an unknown
+/// id) keeps none, so a hand-edited table there is inert instead of fatal.
+///
+/// Strictness lives at set time in the daemon, which refuses the same entries
+/// with the hint naming the typed path that manages them.
+fn convert_service_overrides(
+    key: &str,
+    wire: BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    use yerd_core::service_directives;
+    let (ty, _) = split_wire_id(key);
+    let Some(dialect) = service_directives::dialect_for(ty) else {
+        return BTreeMap::new();
+    };
+    wire.into_iter()
+        .filter(|(k, val)| {
+            service_directives::validate_name(k).is_ok()
+                && service_directives::validate_value(dialect, val).is_ok()
+                && service_directives::reserved(dialect, k).is_none()
+        })
+        .collect()
+}
+
 pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     validate_ports(c)?;
     validate_unique_linked(c)?;
@@ -770,6 +884,7 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     validate_groups(c)?;
     validate_domains(c)?;
     validate_proxies(c)?;
+    validate_route_rules(c)?;
     Ok(())
 }
 
@@ -813,6 +928,40 @@ fn validate_proxies(c: &Config) -> Result<(), ConfigError> {
     }
     for rules in c.proxy_rules.parked.values() {
         validate_rule_set(rules, &targets_loop)?;
+    }
+    Ok(())
+}
+
+/// Linked `[route_rules]` keys must name a `[[linked]]` site, and each site's
+/// prefixes must be unique. Parked rules key by document-root and can't be
+/// checked here, exactly as for `[proxy_rules]` and `[domains]`.
+///
+/// There is no target-loop guard: a routing rule's target is a path under the
+/// site's own served root, not a URL, so it cannot forward anywhere. Containment
+/// is enforced at construction and re-checked against the real filesystem on
+/// every request.
+fn validate_route_rules(c: &Config) -> Result<(), ConfigError> {
+    let linked_names: BTreeSet<&str> = c.linked.iter().map(yerd_core::Site::name).collect();
+    for (site, rules) in &c.route_rules.linked {
+        if !linked_names.contains(site.as_str()) {
+            return Err(ve(ValidateErrorReason::RouteRuleUnknownSite));
+        }
+        validate_route_rule_set(rules)?;
+    }
+    for rules in c.route_rules.parked.values() {
+        validate_route_rule_set(rules)?;
+    }
+    Ok(())
+}
+
+/// Prefix uniqueness within one site's routing rules, so the longest-prefix
+/// match can never face a tie.
+fn validate_route_rule_set(rules: &[yerd_core::RouteRule]) -> Result<(), ConfigError> {
+    let mut seen_prefix: BTreeSet<&str> = BTreeSet::new();
+    for r in rules {
+        if !seen_prefix.insert(r.prefix()) {
+            return Err(ve(ValidateErrorReason::RouteRuleDuplicatePrefix));
+        }
     }
     Ok(())
 }
@@ -861,8 +1010,18 @@ fn validate_php_extensions(c: &Config) -> Result<(), ConfigError> {
 /// cross-site uniqueness) are **not** checked here: this crate is pure and cannot
 /// see parked sites on disk to derive their names/apex, so those are the daemon's
 /// job (mirroring how docroot-keyed `[[overrides]]` are not name-validated here).
+///
+/// Keys naming no current site or proxy are tolerated rather than rejected, as
+/// `[domains.linked]` already tolerates them: a stale delta is inert, and the
+/// daemon prunes it when the site or proxy goes away.
 fn validate_domains(c: &Config) -> Result<(), ConfigError> {
-    for delta in c.domains.linked.values().chain(c.domains.parked.values()) {
+    for delta in c
+        .domains
+        .linked
+        .values()
+        .chain(c.domains.parked.values())
+        .chain(c.domains.proxy.values())
+    {
         let mut seen: BTreeSet<&str> = BTreeSet::new();
         for d in &delta.added {
             if !seen.insert(d.as_str()) {
@@ -1193,7 +1352,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 19,
+                current: 23,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -1370,6 +1529,65 @@ mod tests {
         assert_eq!(delta.primary.as_ref().unwrap().as_str(), "corp");
         let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
         assert_eq!(back, c);
+    }
+
+    #[test]
+    fn domains_proxy_deltas_parse_and_round_trip_with_a_dotted_key() {
+        let s = "version = 22\n[domains.proxy.\"api.account\"]\n\
+                 added = [\"corp\", \"*.api.account\"]\nprimary = \"corp\"\n";
+        let c = Config::from_toml(s).unwrap();
+        let delta = c.domains.proxy.get("api.account").unwrap();
+        assert_eq!(delta.added.len(), 2);
+        assert_eq!(delta.primary.as_ref().unwrap().as_str(), "corp");
+        let emitted = c.to_toml().unwrap();
+        assert!(
+            emitted.contains("[domains.proxy.\"api.account\"]"),
+            "dotted proxy key must be quoted: {emitted}"
+        );
+        let back = Config::from_toml(&emitted).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn domains_proxy_rejects_structural_violations() {
+        let dup = "version = 22\n[domains.proxy.reverb]\nadded = [\"corp\", \"corp\"]\n";
+        assert!(matches!(
+            Config::from_toml(dup),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::DomainAddedDuplicate,
+            })
+        ));
+        let wild = "version = 22\n[domains.proxy.reverb]\nadded = [\"*.reverb\"]\n\
+                    primary = \"*.reverb\"\n";
+        assert!(matches!(
+            Config::from_toml(wild),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::DomainPrimaryWildcard,
+            })
+        ));
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn v22_config_migrates_to_v23_changing_only_the_version_line() {
+        let mut c = Config::default();
+        c.domains.linked.insert(
+            "blog".to_owned(),
+            crate::DomainDelta {
+                added: vec![yerd_core::Domain::parse_subpart("corp").unwrap()],
+                suppressed: vec![],
+                primary: None,
+            },
+        );
+        let v23 = c.to_toml().unwrap();
+        let v22 = v23.replacen("version = 23\n", "version = 22\n", 1);
+        assert_ne!(
+            v22, v23,
+            "the replace must actually downgrade the version line"
+        );
+        let migrated = Config::from_toml(&v22).unwrap();
+        assert_eq!(migrated, c);
+        assert_eq!(migrated.to_toml().unwrap(), v23);
     }
 
     #[test]
@@ -1837,6 +2055,80 @@ php = "not-a-version"
     }
 
     #[test]
+    fn route_rules_round_trip() {
+        let mut c = Config::default();
+        c.linked.push(linked_site("app", "/srv/app"));
+        c.route_rules.linked.insert(
+            "app".to_owned(),
+            vec![
+                yerd_core::RouteRule::new("/api", "api/index.php").unwrap(),
+                yerd_core::RouteRule::new("/", "index.html").unwrap(),
+            ],
+        );
+        c.route_rules.parked.insert(
+            "/srv/blog".to_owned(),
+            vec![yerd_core::RouteRule::new("/admin", "admin/index.php").unwrap()],
+        );
+        let toml = c.to_toml().unwrap();
+        let back = Config::from_toml(&toml).unwrap();
+        assert_eq!(c, back);
+        assert_eq!(back.to_toml().unwrap(), toml);
+    }
+
+    #[test]
+    fn removing_last_route_rule_returns_to_byte_identical_default() {
+        let mut c = Config::default();
+        c.route_rules.linked.insert("app".to_owned(), Vec::new());
+        assert_eq!(c.to_toml().unwrap(), Config::default().to_toml().unwrap());
+    }
+
+    #[test]
+    fn validate_rejects_unknown_route_rule_site() {
+        let mut c = Config::default();
+        c.route_rules.linked.insert(
+            "ghost".to_owned(),
+            vec![yerd_core::RouteRule::new("/api", "api/index.php").unwrap()],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::RouteRuleUnknownSite,
+            }) => {}
+            other => panic!("expected RouteRuleUnknownSite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_route_rule_prefix() {
+        let mut c = Config::default();
+        c.linked.push(linked_site("app", "/srv/app"));
+        c.route_rules.linked.insert(
+            "app".to_owned(),
+            vec![
+                yerd_core::RouteRule::new("/api", "api/index.php").unwrap(),
+                yerd_core::RouteRule::new("/api/", "other/index.php").unwrap(),
+            ],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::RouteRuleDuplicatePrefix,
+            }) => {}
+            other => panic!("expected RouteRuleDuplicatePrefix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_rejects_bad_route_rule_target() {
+        let s = "version = 21\n\
+[[route_rules.linked.app]]\n\
+prefix = \"/api\"\n\
+target = \"../../etc/passwd\"\n";
+        assert!(
+            matches!(Config::from_toml(s), Err(ConfigError::Core(_))),
+            "a hand-edited escaping target must fail at load"
+        );
+    }
+
+    #[test]
     fn validate_rejects_proxy_name_collision_with_linked() {
         let mut c = Config::default();
         c.linked.push(
@@ -2159,6 +2451,47 @@ php = "not-a-version"
         assert!(c2.services.instances.get("reverb:blog").unwrap().enabled);
     }
 
+    /// Load-time leniency, matching the per-version directives tables: a
+    /// reserved directive, a malformed name, and a value carrying a control
+    /// character are each dropped without failing the load, and a service type
+    /// with no dialect keeps none at all.
+    #[test]
+    fn invalid_service_overrides_are_dropped_leniently() {
+        let toml = "version = 22\n[services.mysql.overrides]\n\
+                    max_connections = \"500\"\n\
+                    \"bind-address\" = \"0.0.0.0\"\n\
+                    \"1bad\" = \"x\"\n\
+                    sql_mode = \"a\\nb\"\n\
+                    [services.meilisearch.overrides]\n\
+                    max_connections = \"500\"\n";
+        let c = Config::from_toml(toml).expect("parses");
+        let mysql = c.services.instances.get("mysql").expect("present");
+        assert_eq!(mysql.overrides.len(), 1);
+        assert_eq!(
+            mysql.overrides.get("max_connections").map(String::as_str),
+            Some("500")
+        );
+        let meili = c.services.instances.get("meilisearch").expect("present");
+        assert!(meili.overrides.is_empty());
+    }
+
+    /// The `-`/`_` spellings `mysqld` treats interchangeably are both reserved,
+    /// so neither can smuggle a Yerd-managed directive past the load filter.
+    #[test]
+    fn reserved_service_overrides_are_dropped_in_either_spelling() {
+        let toml = "version = 22\n[services.mariadb.overrides]\n\
+                    bind_address = \"0.0.0.0\"\n\
+                    \"log-error\" = \"/tmp/x.log\"\n";
+        let c = Config::from_toml(toml).expect("parses");
+        assert!(c
+            .services
+            .instances
+            .get("mariadb")
+            .expect("present")
+            .overrides
+            .is_empty());
+    }
+
     #[test]
     fn validate_returns_first_failure_in_documented_order() {
         let mut c = Config::default();
@@ -2385,6 +2718,61 @@ php = "not-a-version"
         let bad2 = "version = 16\n[php]\ndefault = \"8.3\"\n\
                     [php.directives.\"eight\"]\n\"xdebug.mode\" = \"debug\"\n";
         assert!(Config::from_toml(bad2).is_err());
+    }
+
+    #[test]
+    fn pool_settings_round_trip() {
+        let s = "version = 20\n[php]\ndefault = \"8.3\"\n\
+                 [php.pool.\"8.3\"]\nmax_children = \"32\"\n";
+        let c = Config::from_toml(s).unwrap();
+        let v83 = yerd_core::PhpVersion::new(8, 3);
+        assert_eq!(
+            c.php
+                .pool
+                .get(&v83)
+                .and_then(|m| m.get("max_children"))
+                .map(String::as_str),
+            Some("32")
+        );
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
+    }
+
+    /// Same load-time leniency as the directives tables: an out-of-range or
+    /// unparseable value, or a pool setting Yerd does not expose, is dropped
+    /// rather than failing the load.
+    #[test]
+    fn invalid_pool_entries_are_dropped_leniently() {
+        let s = "version = 20\n[php]\ndefault = \"8.3\"\n\
+                 [php.pool.\"8.3\"]\n\
+                 max_children = \"32\"\n\
+                 start_servers = \"4\"\n\
+                 [php.pool.\"8.4\"]\n\
+                 max_children = \"0\"\n\
+                 [php.pool.\"8.5\"]\n\
+                 max_children = \"2000\"\n\
+                 [php.pool.\"8.2\"]\n\
+                 max_children = \"abc\"\n";
+        let c = Config::from_toml(s).unwrap();
+        let v83 = yerd_core::PhpVersion::new(8, 3);
+        let pool = c.php.pool.get(&v83).unwrap();
+        assert_eq!(pool.len(), 1);
+        assert_eq!(pool.get("max_children").map(String::as_str), Some("32"));
+        for (major, minor) in [(8, 4), (8, 5), (8, 2)] {
+            assert!(
+                !c.php
+                    .pool
+                    .contains_key(&yerd_core::PhpVersion::new(major, minor)),
+                "{major}.{minor}"
+            );
+        }
+    }
+
+    #[test]
+    fn bad_pool_version_key_errors() {
+        let bad = "version = 20\n[php]\ndefault = \"8.3\"\n\
+                   [php.pool.\"eight\"]\nmax_children = \"32\"\n";
+        assert!(Config::from_toml(bad).is_err());
     }
 
     #[test]

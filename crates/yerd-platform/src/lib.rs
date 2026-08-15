@@ -1,7 +1,8 @@
 //! OS abstraction layer for Yerd.
 //!
 //! The core traits live here - [`Paths`], [`TrustStore`], [`ResolverInstaller`],
-//! [`PortBinder`], [`PortRedirector`], and [`TerminalLauncher`] - each with a single thin
+//! [`PortBinder`], [`PortRedirector`], [`TerminalLauncher`], [`IdeLauncher`], and
+//! [`SystemOpener`] - each with a single thin
 //! implementation per OS selected by `#[cfg(target_os = ...)]`. macOS and Linux
 //! have full implementations. Windows has a real [`Paths`] impl (`os::windows`)
 //! and aliases every other trait to the [`os::unsupported`] stub, which returns
@@ -27,9 +28,11 @@
 pub mod detect;
 pub mod error;
 pub mod helper;
+pub mod ide;
 pub mod lan_ip;
 pub mod metrics;
 pub mod nss_exec;
+pub mod opener;
 pub mod paths;
 pub mod port_binder;
 pub mod port_redirect;
@@ -42,12 +45,14 @@ mod os;
 
 pub use detect::{gather_project_signals, FsSignalSource, ProjectSignalSource};
 pub use error::{
-    BindPairErrorReason, PlatformError, ResolverErrorReason, TerminalErrorReason,
-    TrustStoreErrorReason,
+    BindPairErrorReason, IdeErrorReason, OpenErrorReason, PlatformError, ResolverErrorReason,
+    TerminalErrorReason, TrustStoreErrorReason,
 };
 pub use helper::{ArgvParseError, HelperInvocation};
+pub use ide::{DetectedIde, FakeIdeLauncher, IdeLauncher, LaunchTarget};
 pub use lan_ip::{ActiveLanIpProvider, FakeLanIpProvider, LanIpProvider};
 pub use metrics::SystemMetrics;
+pub use opener::{FakeSystemOpener, SystemOpener};
 pub use paths::{Paths, PlatformDirs};
 pub use port_binder::{BoundPort, PortBinder, PortPair};
 pub use port_redirect::PortRedirector;
@@ -58,8 +63,9 @@ pub use trust_store::{
 };
 
 pub use os::active::{
-    ActivePaths, ActivePortBinder, ActivePortRedirector, ActiveResolverInstaller,
-    ActiveSystemMetrics, ActiveTerminalLauncher, ActiveTrustStore,
+    ActiveIdeLauncher, ActivePaths, ActivePortBinder, ActivePortRedirector,
+    ActiveResolverInstaller, ActiveSystemMetrics, ActiveSystemOpener, ActiveTerminalLauncher,
+    ActiveTrustStore,
 };
 
 /// Windows IPC identity helpers: the current user's SID and the derived daemon

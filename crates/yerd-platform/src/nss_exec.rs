@@ -220,6 +220,28 @@ pub fn browser_trust(
     }
 }
 
+/// The first existing `certutil`: every absolute path in `candidates` in order,
+/// then `certutil` under each of `path_dirs`. The absolute list wins because a
+/// service manager hands the daemon a stripped `PATH` that hides the tool. The
+/// existence probe is injected so the walk is unit-tested against the real
+/// candidate lists on any host, without touching the filesystem. Only the
+/// `#[cfg(unix)]` edge calls it, but the pure walk stays compiled (and tested)
+/// everywhere.
+#[cfg_attr(windows, allow(dead_code))]
+fn resolve_certutil(
+    candidates: &[PathBuf],
+    path_dirs: &[PathBuf],
+    is_file: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    if let Some(found) = candidates.iter().find(|c| is_file(c.as_path())) {
+        return Some(found.clone());
+    }
+    path_dirs
+        .iter()
+        .map(|dir| dir.join("certutil"))
+        .find(|c| is_file(c.as_path()))
+}
+
 // ---- real (edge) impls ----------------------------------------------------
 
 #[cfg(unix)]
@@ -231,6 +253,7 @@ mod real {
     use std::process::Command;
 
     use super::{CertutilRunner, NssFs, Os, RunResult};
+    use crate::pure::nss;
     use crate::trust_store::{BrowserCaTrust, CaFingerprint, NssOutcome};
 
     /// The layout of the host we are running on.
@@ -245,27 +268,27 @@ mod real {
         }
     }
 
-    /// `certutil` located at an absolute path (resolved once). Absolute-path
-    /// resolution mirrors the `/usr/bin/id` / `/bin/ps` precedent - a stripped
-    /// `PATH` under a service manager must not hide the tool.
+    /// `certutil` located at an absolute path (resolved once). The per-OS
+    /// candidate list is probed before `$PATH`, mirroring the `/usr/bin/id` /
+    /// `/bin/ps` precedent: a stripped `PATH` under a service manager must not
+    /// hide the tool. On macOS that means the Homebrew and `MacPorts` prefixes,
+    /// which the `LaunchAgent`'s `PATH` never contains.
     struct RealCertutil {
         path: Option<PathBuf>,
     }
 
     impl RealCertutil {
         fn resolve() -> Self {
-            let common = Path::new("/usr/bin/certutil");
-            if common.is_file() {
-                return Self {
-                    path: Some(common.to_path_buf()),
-                };
+            let path_dirs: Vec<PathBuf> = std::env::var_os("PATH")
+                .map(|paths| std::env::split_paths(&paths).collect())
+                .unwrap_or_default();
+            let candidates = match current_os() {
+                Os::Linux => nss::certutil_candidates_linux(),
+                Os::Macos => nss::certutil_candidates_macos(),
+            };
+            Self {
+                path: super::resolve_certutil(&candidates, &path_dirs, Path::is_file),
             }
-            let path = std::env::var_os("PATH").and_then(|paths| {
-                std::env::split_paths(&paths)
-                    .map(|dir| dir.join("certutil"))
-                    .find(|candidate| candidate.is_file())
-            });
-            Self { path }
         }
     }
 
@@ -663,6 +686,45 @@ mod tests {
                 stdout: vec![],
             }
         }
+    }
+
+    #[test]
+    fn resolve_certutil_finds_a_non_usr_bin_candidate() {
+        let present: HashSet<PathBuf> = [PathBuf::from("/opt/homebrew/bin/certutil")]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            resolve_certutil(&nss::certutil_candidates_macos(), &[], |p| present
+                .contains(p)),
+            Some(PathBuf::from("/opt/homebrew/bin/certutil"))
+        );
+    }
+
+    #[test]
+    fn resolve_certutil_falls_back_to_path_dirs() {
+        let present: HashSet<PathBuf> = [PathBuf::from("/home/alice/bin/certutil")]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            resolve_certutil(
+                &nss::certutil_candidates_macos(),
+                &[PathBuf::from("/home/alice/bin")],
+                |p| present.contains(p)
+            ),
+            Some(PathBuf::from("/home/alice/bin/certutil"))
+        );
+    }
+
+    #[test]
+    fn resolve_certutil_none_when_nothing_exists() {
+        assert_eq!(
+            resolve_certutil(
+                &nss::certutil_candidates_linux(),
+                &[PathBuf::from("/usr/local/bin")],
+                |_| false
+            ),
+            None
+        );
     }
 
     fn sample_ca_pem() -> String {

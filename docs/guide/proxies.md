@@ -37,6 +37,36 @@ yerd secure reverb
 
 Remove it with `yerd proxy remove reverb`.
 
+### Names and extra domains
+
+A proxy's name may be **dotted**, so its own address can be a subdomain:
+
+```sh
+yerd proxy add api.account http://127.0.0.1:9011
+# http://api.account.test/
+```
+
+Beyond that address, a whole-host proxy carries extra domains, subdomains, and
+wildcards exactly as a site does - through the same [`yerd domain`](../reference/cli/domains)
+commands, with the proxy name where a site name would go:
+
+```sh
+yerd proxy add account-dev http://127.0.0.1:48087
+yerd domain add account-dev custom-domain.test
+yerd domain add account-dev '*.account-dev.test'
+yerd domain primary account-dev custom-domain.test
+```
+
+`yerd proxy list` shows a customised proxy's domains beneath it and marks the
+primary; `yerd domain list` stays site-only. In the desktop app the same controls
+are the **Manage domains** button on the Proxies page.
+
+A domain can only be claimed by one site or proxy. If two claim the same one,
+every **site** is considered before any proxy, and a domain added explicitly
+beats a claim on a default apex - a proxy that loses one domain keeps its
+others, and [`yerd doctor`](../reference/cli/diagnostics) reports each contested
+domain with its winner.
+
 ## Path rules (the Reverb case)
 
 Attach a path to an existing site. Say `myapp` is a Laravel app and Reverb is

@@ -125,6 +125,13 @@
     @apply overflow-hidden bg-background;
     border-radius: 10px;
   }
+  /* A maximized transparent window must meet the screen edges like a native
+     Windows/KDE window; retaining the normal rounded shell leaves visible
+     gaps at the corners. TitleBar toggles this class from the native window
+     maximized state. */
+  html.window-maximized #app {
+    border-radius: 0;
+  }
 
   /* …but real inputs and value/code text stay selectable & copyable. */
   input,

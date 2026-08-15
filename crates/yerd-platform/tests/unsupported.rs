@@ -15,9 +15,9 @@ use std::net::{Ipv4Addr, SocketAddr};
 mod common;
 
 use yerd_platform::{
-    ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTerminalLauncher,
-    ActiveTrustStore, Paths, PlatformError, PortBinder, ResolverInstaller, TerminalLauncher,
-    TrustStore,
+    ActiveIdeLauncher, ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveSystemOpener,
+    ActiveTerminalLauncher, ActiveTrustStore, DetectedIde, IdeLauncher, LaunchTarget, Paths,
+    PlatformError, PortBinder, ResolverInstaller, SystemOpener, TerminalLauncher, TrustStore,
 };
 
 use common::random_fingerprint;
@@ -86,6 +86,33 @@ fn terminal_launcher_unsupported() {
     assert!(matches!(
         ActiveTerminalLauncher
             .open_terminal(std::path::Path::new("/srv/site"))
+            .unwrap_err(),
+        PlatformError::Unsupported { .. }
+    ));
+}
+
+#[test]
+fn ide_launcher_unsupported() {
+    let launcher = ActiveIdeLauncher;
+    assert!(launcher.detect().is_empty());
+    let ide = DetectedIde {
+        id: "vscode",
+        display_name: "VS Code",
+        launch: LaunchTarget::Cli(std::path::PathBuf::from("/usr/bin/code")),
+    };
+    assert!(matches!(
+        launcher
+            .launch(&ide, std::path::Path::new("/srv/site"))
+            .unwrap_err(),
+        PlatformError::Unsupported { .. }
+    ));
+}
+
+#[test]
+fn system_opener_unsupported() {
+    assert!(matches!(
+        ActiveSystemOpener
+            .open_path(std::path::Path::new("/srv/site"))
             .unwrap_err(),
         PlatformError::Unsupported { .. }
     ));

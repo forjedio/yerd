@@ -435,12 +435,13 @@ async fn ensure_database_engine(
     def: &Arc<dyn ServiceDefinition>,
     state: &Arc<DaemonState>,
 ) -> Result<(), String> {
-    let (configured_version, port) = {
+    let (configured_version, port, overrides) = {
         let cfg = state.config.lock().await;
         let inst = cfg.services.instances.get(def.id());
         (
             inst.and_then(|i| i.version.clone()),
             inst.and_then(|i| i.port).unwrap_or(def.default_port()),
+            inst.map(|i| i.overrides.clone()).unwrap_or_default(),
         )
     };
 
@@ -456,9 +457,18 @@ async fn ensure_database_engine(
             }
         };
 
-    crate::services::ensure_and_persist(state, def, def.id(), Some(version), port, None, None)
-        .await
-        .map_err(response_message)
+    crate::services::ensure_and_persist(
+        state,
+        def,
+        def.id(),
+        Some(version),
+        port,
+        None,
+        None,
+        overrides,
+    )
+    .await
+    .map_err(response_message)
 }
 
 /// Fetch the services listing, pick the newest build available for this

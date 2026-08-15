@@ -14,11 +14,13 @@ export interface Toast {
 const toasts = ref<Toast[]>([]);
 let nextId = 1;
 
-function push(kind: ToastKind, title: string, detail?: string): number {
+/** Raise a toast that auto-dismisses: errors linger, success and info clear
+ *  sooner. `ttlMs` overrides that default, for a confirmation that shouldn't
+ *  outstay its welcome (an idempotent action the user may repeat). */
+function push(kind: ToastKind, title: string, detail?: string, ttlMs?: number): number {
   const id = nextId++;
   toasts.value = [...toasts.value, { id, kind, title, detail }];
-  // Errors linger; success/info auto-dismiss.
-  const ttl = kind === "error" ? 8000 : 4000;
+  const ttl = ttlMs ?? (kind === "error" ? 8000 : 4000);
   setTimeout(() => dismiss(id), ttl);
   return id;
 }
@@ -30,9 +32,10 @@ function dismiss(id: number): void {
 export function useToast() {
   return {
     toasts: readonly(toasts),
-    success: (title: string, detail?: string) => push("success", title, detail),
-    error: (title: string, detail?: string) => push("error", title, detail),
-    info: (title: string, detail?: string) => push("info", title, detail),
+    success: (title: string, detail?: string, ttlMs?: number) =>
+      push("success", title, detail, ttlMs),
+    error: (title: string, detail?: string, ttlMs?: number) => push("error", title, detail, ttlMs),
+    info: (title: string, detail?: string, ttlMs?: number) => push("info", title, detail, ttlMs),
     dismiss,
   };
 }

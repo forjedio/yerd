@@ -29,17 +29,35 @@ Source: [`crates/yerd-doctor/src/lib.rs`](https://github.com/forjedio/yerd/blob/
 
 ## Public API
 
-### `diagnose(&StatusReport, Option<bool>) -> Vec<Diagnosis>`
+### `diagnose(&StatusReport, Option<bool>, &[(String, String, String)]) -> Vec<Diagnosis>`
 
 Runs every check against the report and returns the findings in a stable order.
-The second argument, `path_needs_setup`, lets the caller surface a
-`BinDirNotOnPath` warning when the yerd bin dir isn't on `PATH` (`None` = unknown,
-skip that check).
+Everything past the report is daemon-supplied input that can't be read from it,
+because this crate does no I/O:
+
+- `path_needs_setup` surfaces a `BinDirNotOnPath` warning when the yerd bin dir
+  isn't on `PATH` (`None` = unknown, skip that check).
+- `local_override_files` carries one `(service_id, path, content)` tuple per
+  override-capable service whose hand-edited
+  [`conf.d/50-local.<ext>`](./yerd-services#configuration-overrides) exists. Each
+  is scanned with `yerd_core::service_directives::scan_local`, and every issue
+  becomes a `ServiceOverrideInvalid` warning. A service id with no dialect is
+  skipped, so an argv-driven or unknown service is never scanned.
 
 ```rust
 #[must_use]
-pub fn diagnose(report: &StatusReport, path_needs_setup: Option<bool>) -> Vec<Diagnosis>;
+pub fn diagnose(
+    report: &StatusReport,
+    path_needs_setup: Option<bool>,
+    local_override_files: &[(String, String, String)],
+) -> Vec<Diagnosis>;
 ```
+
+::: info The remedy is the user's editor, not a command
+Yerd never rewrites `50-local.<ext>` - that is the entire point of the file - so
+`ServiceOverrideInvalid` is **not** auto-fixable and its remedy names the file
+and a restart rather than a command that would undo the user's work.
+:::
 
 Two cross-cutting invariants hold for the output:
 
@@ -161,6 +179,7 @@ The plain `yerd doctor` path is even simpler - it just renders `diagnose(&build_
 | 5 | `DefaultPhpNotInstalled` | `Fail` | `default_php` not among installed `php` | `yerd install php <default>` |
 | 6 | `FpmPoolFailed` | `Fail` | one per pool with `state == Failed` | auto-fixed by `yerd doctor fix`, or `yerd use <ver>` |
 | 7 | `ServiceFailed` | `Fail` | one per DB/cache service with `state == Failed` | `yerd service restart <svc>` |
+| 7a | `ServiceOverrideInvalid` | `Warn` | one per bad line of a hand-edited `conf.d/50-local.<ext>` file; **not** auto-fixable | edit the file yourself, then `yerd service restart <svc>` |
 | 8 | `PhpUpdateAvailable` | `Ok` | a pool has `update_available = Some(latest)` | `yerd update php <ver>` |
 | 9 | `ResolverBackupSaved` | `Ok` | `resolver_backup == Some(path)` | informational, **no** remedy |
 | 10 | `NoSites` | `Ok` | `sites.parked == 0 && sites.linked == 0` | `yerd park <dir>` / `yerd link <name> <dir>` |

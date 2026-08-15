@@ -35,6 +35,7 @@ import {
   type PhpExtensionsMap,
   removePhpExtension,
   setPhpDirectives,
+  setPhpPoolSettings,
   setPhpVersionSettings,
 } from "@/ipc/client";
 import type { PhpExtInfo, PhpVersion, PhpVersionsResponse } from "@/ipc/types";
@@ -44,6 +45,7 @@ import {
   directiveValueProblem,
   effectiveValue,
   overrideCount,
+  poolMaxChildrenProblem,
   SETTING_KEYS,
   TEXT_SETTINGS,
 } from "@/lib/phpSettings";
@@ -56,6 +58,8 @@ const props = defineProps<{
   overrides: Record<string, string>;
   /** This version's free-form ini directives (may be empty). */
   directives: Record<string, string>;
+  /** This version's FPM pool overrides (may be empty; empty means default). */
+  pool: Record<string, string>;
   /** This version's registered custom extensions (may be empty). */
   extensions: PhpExtInfo[];
   /**
@@ -157,6 +161,51 @@ async function saveSettings(): Promise<void> {
     emit("updated", r);
   } catch (e) {
     toast.error(`Couldn't update PHP ${props.version} settings`, (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+}
+
+// ── FPM pool sizing ──
+// Same pristine/seed discipline as the settings grid: an empty field means the
+// built-in default, and server refreshes only reseed while the field is clean.
+const poolMaxChildren = ref("");
+const poolSeeded = ref("");
+
+function seedPool(pool: Record<string, string>): void {
+  poolMaxChildren.value = pool["max_children"] ?? "";
+  poolSeeded.value = poolMaxChildren.value;
+}
+
+const poolDirty = computed(
+  () => poolMaxChildren.value.trim() !== poolSeeded.value.trim(),
+);
+
+const poolProblem = computed(() => poolMaxChildrenProblem(poolMaxChildren.value));
+
+watch(
+  () => props.pool,
+  (p) => {
+    if (!poolDirty.value) seedPool(p);
+  },
+  { immediate: true },
+);
+
+async function savePool(): Promise<void> {
+  if (isBusy.value || poolProblem.value) return;
+  busy.value = "pool";
+  try {
+    const r = await setPhpPoolSettings(props.version, {
+      max_children: poolMaxChildren.value.trim(),
+    });
+    seedPool(r.pool?.[props.version] ?? {});
+    toast.success(
+      `PHP ${props.version} pool size updated`,
+      "The pool restarts to apply the change.",
+    );
+    emit("updated", r);
+  } catch (e) {
+    toast.error(`Couldn't update the PHP ${props.version} pool size`, (e as IpcError).message);
   } finally {
     busy.value = null;
   }
@@ -289,6 +338,7 @@ const panelDirty = computed(() => {
   if (!props.installedVersion) return false;
   return (
     settingsDirty.value ||
+    poolDirty.value ||
     dirName.value !== "" ||
     dirValue.value !== "" ||
     editName.value !== null
@@ -299,6 +349,7 @@ watch(panelDirty, (d) => emit("dirty", d), { immediate: true });
 
 function discard(): void {
   seed(props.overrides);
+  seedPool(props.pool);
   dirName.value = "";
   dirValue.value = "";
   cancelEdit();
@@ -357,6 +408,57 @@ function discard(): void {
           </div>
         </div>
       </TooltipProvider>
+
+      <!-- FPM pool sizing. Web (FPM) only: these are pool-block settings, so
+           they never reach this version's CLI ini. -->
+      <div class="mt-5 border-t border-border pt-4">
+        <TooltipProvider :delay-duration="0">
+          <div class="flex items-center gap-1">
+            <label class="text-xs font-medium" :for="`pool-${version}-max-children`">
+              FPM pool size
+            </label>
+            <Tooltip>
+              <TooltipTrigger as-child>
+                <span class="inline-flex cursor-help text-muted-foreground">
+                  <Info class="size-3.5" />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                Most PHP workers this version may run at once (pm.max_children,
+                1-1024). The pool is on-demand, so a higher ceiling costs
+                nothing while idle. Raise it if requests queue behind queue
+                workers, parallel tests, or many open tabs.
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        </TooltipProvider>
+        <div class="mt-1 flex items-start gap-2">
+          <Input
+            :id="`pool-${version}-max-children`"
+            v-model="poolMaxChildren"
+            type="number"
+            min="1"
+            max="1024"
+            placeholder="16 (default)"
+            class="max-w-40"
+            :disabled="isBusy"
+          />
+          <Button
+            size="sm"
+            :disabled="!poolDirty || isBusy || poolProblem !== null"
+            @click="savePool"
+          >
+            <Spinner v-if="busy === 'pool'" class="size-4" />
+            {{ busy === "pool" ? "Applying…" : "Apply" }}
+          </Button>
+        </div>
+        <p v-if="poolProblem" class="mt-1 text-xs text-destructive">
+          {{ poolProblem }}
+        </p>
+        <p v-else class="mt-1 text-xs text-muted-foreground">
+          Empty means the default of 16. Changing this restarts the pool.
+        </p>
+      </div>
 
       <div class="mt-4 flex items-center justify-between gap-2">
         <span class="text-xs text-muted-foreground">

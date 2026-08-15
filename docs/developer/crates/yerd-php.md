@@ -292,6 +292,16 @@ The `instance_id` is the daemon's `std::process::id()`. It is embedded into Unix
 
 `PoolConfig` (`#[non_exhaustive]`) is the input to `render_fpm_conf`. `PoolConfig::dev_defaults(version, listen, dirs, instance_id)` builds a sane local-dev config: `pm = OnDemand`, `max_children = 16` (enough for Laravel + Vite + several tabs), pid/log under `dirs.state`, config under `dirs.config`, all basenames embedding both version and instance id. Its `extension: Option<PathBuf>` and `ini_defines: Vec<(String, String)>` fields are populated by `ensure` from `DumpExtSettings` (see [Dump-extension loading](#dump-extension-loading)) and become the `-d` arguments on the spawned command.
 
+The `max_children` default is single-sourced from `yerd_core::php_pool::DEFAULT_MAX_CHILDREN`, so the value FPM renders and the value the CLI reports as the default cannot drift. `PhpManager::set_pool_overrides` takes the config's per-version `[php.pool]` map (the daemon pushes it at boot and after every `yerd php pool` write), and `ensure` applies it **conditionally** before rendering:
+
+```rust
+if let Some(n) = yerd_core::php_pool::override_max_children(self.pool_overrides.get(&v)) {
+    cfg.max_children = n;
+}
+```
+
+`override_max_children` returns `None` when the version has no override or when the stored value no longer validates, so a bad hand-edit degrades to the default rather than breaking the pool. Pool settings are FPM-only: they are pool-block directives, not ini, so they never reach a CLI `php.ini`. The `pm.` prefix is reserved out of the free-form directives path (`yerd_core::php_directives::reserved`) to stop them being set there, where they would render as `php_value[pm.max_children]` and make FPM log `ERROR: Unable to set php_value` on every worker spawn.
+
 `PhpManager<S, C, P>` is generic over the `ProcessSpawner`, `Clock`, and `HealthProbe` seams; it holds one `Pool` per `PhpVersion` in a `BTreeMap` (so shutdown order is deterministic). `lib.rs` includes a compile-time assertion that the production instantiation is `Send + 'static`:
 
 ```rust

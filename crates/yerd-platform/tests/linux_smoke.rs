@@ -17,14 +17,46 @@ use std::net::{Ipv4Addr, SocketAddr};
 mod common;
 
 use yerd_platform::{
-    ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTrustStore, Paths, PlatformError,
-    PortBinder, ResolverInstaller, TrustStore,
+    pure::ide_spec::{desktop_entry_matches, IDE_SPECS},
+    ActiveIdeLauncher, ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTrustStore,
+    IdeLauncher, Paths, PlatformError, PortBinder, ResolverInstaller, TrustStore,
 };
 
 use common::random_fingerprint;
 
 fn loopback(port: u16) -> SocketAddr {
     SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+}
+
+#[test]
+fn ide_launcher_smoke_returns_known_unique_rank_sorted_ides() {
+    let detected = ActiveIdeLauncher.detect();
+    let mut seen: Vec<&str> = Vec::new();
+    let mut previous_rank = 0u8;
+    for ide in &detected {
+        let spec = IDE_SPECS
+            .iter()
+            .find(|spec| spec.id == ide.id)
+            .expect("every detected id must exist in IDE_SPECS");
+        assert!(!seen.contains(&ide.id), "duplicate detected id {}", ide.id);
+        assert!(spec.rank >= previous_rank, "detection must be rank sorted");
+        previous_rank = spec.rank;
+        seen.push(ide.id);
+    }
+}
+
+#[test]
+fn linux_desktop_entry_matching_rejects_unrelated_applications() {
+    let zed = "[Desktop Entry]\nType=Application\nName=Zed\nExec=zeditor %U\n";
+    assert!(desktop_entry_matches("zed", "dev.zed.Zed.desktop", zed));
+    assert!(!desktop_entry_matches("vscode", "dev.zed.Zed.desktop", zed));
+
+    let unrelated = "[Desktop Entry]\nType=Application\nName=Codecs\nExec=codecs\n";
+    assert!(!desktop_entry_matches(
+        "vscode",
+        "codecs.desktop",
+        unrelated
+    ));
 }
 
 #[test]

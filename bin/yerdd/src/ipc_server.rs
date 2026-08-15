@@ -168,7 +168,9 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         | Request::SetPrimaryDomain { .. }
         | Request::ResetDomains { .. }
         | Request::RemoveProxy { .. }
-        | Request::RemoveProxyRule { .. } => handle_mutation(req, state).await,
+        | Request::RemoveProxyRule { .. }
+        | Request::AddRouteRule { .. }
+        | Request::RemoveRouteRule { .. } => handle_mutation(req, state).await,
         Request::AddProxy { ref url, .. } | Request::AddProxyRule { ref url, .. } => {
             if is_self_forward(url, &[state.http.bound, state.https.bound]) {
                 Response::Error {
@@ -181,6 +183,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             }
         }
         Request::ListProxies => list_proxies(state).await,
+        Request::ListRoutes => list_routes(state).await,
         Request::ListGroups => {
             let cfg = state.config.lock().await;
             Response::Groups {
@@ -215,6 +218,9 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             version,
             directives,
         } => set_php_directives(version, directives, state).await,
+        Request::SetPhpPoolSettings { version, settings } => {
+            set_php_pool_settings(version, settings, state).await
+        }
         Request::AddPhpExtension {
             version,
             path,
@@ -236,6 +242,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
                 &build_status_report(state).await,
                 path_needs_setup(state),
                 daemon_autostart_enabled(),
+                &crate::services::local_override_files(&state.dirs),
             ),
         },
         Request::DoctorFix => run_doctor_fix(state).await,
@@ -282,6 +289,12 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         }
         Request::SetServicePort { service, port } => {
             crate::services::set_service_port(&service, port, state).await
+        }
+        Request::SetServiceOverrides { service, overrides } => {
+            crate::services::set_service_overrides(&service, overrides, state).await
+        }
+        Request::ServiceOverrides { service } => {
+            crate::services::service_overrides(&service, state).await
         }
         Request::ServiceLogs { service, lines } => {
             crate::services::service_logs(&service, lines, state)
@@ -474,13 +487,14 @@ fn installed_versions(state: &DaemonState) -> Vec<yerd_core::PhpVersion> {
 /// Build the `PhpVersions` reply: installed versions, the live global default,
 /// cached update annotations, and the global ini settings. Read-only; no network.
 async fn php_versions_response(state: &DaemonState) -> Response {
-    let (default, settings, version_settings, directives) = {
+    let (default, settings, version_settings, directives, pool) = {
         let cfg = state.config.lock().await;
         (
             cfg.php.default,
             cfg.php.settings.clone(),
             cfg.php.version_settings.clone(),
             cfg.php.directives.clone(),
+            cfg.php.pool.clone(),
         )
     };
     Response::PhpVersions {
@@ -490,6 +504,7 @@ async fn php_versions_response(state: &DaemonState) -> Response {
         settings,
         version_settings: Box::new(version_settings),
         directives: Box::new(directives),
+        pool: Box::new(pool),
     }
 }
 
@@ -1000,15 +1015,20 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
     }
 
     let after = build_status_report(state).await;
-    let manual = yerd_doctor::diagnose(&after, path_needs_setup(state), daemon_autostart_enabled())
-        .into_iter()
-        .filter(|d| {
-            matches!(
-                d.severity,
-                yerd_ipc::Severity::Warn | yerd_ipc::Severity::Fail
-            )
-        })
-        .collect();
+    let manual = yerd_doctor::diagnose(
+        &after,
+        path_needs_setup(state),
+        daemon_autostart_enabled(),
+        &crate::services::local_override_files(&state.dirs),
+    )
+    .into_iter()
+    .filter(|d| {
+        matches!(
+            d.severity,
+            yerd_ipc::Severity::Warn | yerd_ipc::Severity::Fail
+        )
+    })
+    .collect();
 
     Response::DoctorFix {
         report: yerd_ipc::FixReport { performed, manual },
@@ -2261,6 +2281,79 @@ async fn set_php_directives(
     php_versions_response(state).await
 }
 
+/// `yerd php pool set/unset` - merge per-version FPM pool settings into the
+/// config and apply them to that version's pool. An empty-string value resets
+/// the setting to its built-in default. Mirrors [`set_php_directives`]'s lock
+/// order and `php_settings_mutate` discipline; only the affected version's
+/// pool restarts. Values are stored canonically (`"032"` persists as `"32"`),
+/// matching [`set_php_version_settings`].
+async fn set_php_pool_settings(
+    version: yerd_core::PhpVersion,
+    settings: std::collections::BTreeMap<String, String>,
+    state: &DaemonState,
+) -> Response {
+    if let Some(resp) = require_installed(version, state) {
+        return resp;
+    }
+    let _mutate_guard = state.php_settings_mutate.lock().await;
+    let mut cfg_guard = state.config.lock().await;
+    let mut new = cfg_guard.clone();
+    for (key, value) in settings {
+        if let Err(e) = yerd_core::php_pool::validate_name(&key) {
+            return Response::Error {
+                code: ErrorCode::InvalidPath,
+                message: e.to_string(),
+            };
+        }
+        if value.is_empty() {
+            if let Some(map) = new.php.pool.get_mut(&version) {
+                map.remove(&key);
+            }
+            continue;
+        }
+        let parsed = match yerd_core::php_pool::validate_value(&value) {
+            Ok(n) => n,
+            Err(e) => {
+                return Response::Error {
+                    code: ErrorCode::InvalidPath,
+                    message: e.to_string(),
+                }
+            }
+        };
+        new.php
+            .pool
+            .entry(version)
+            .or_default()
+            .insert(key, parsed.to_string());
+    }
+    if new
+        .php
+        .pool
+        .get(&version)
+        .is_some_and(std::collections::BTreeMap::is_empty)
+    {
+        new.php.pool.remove(&version);
+    }
+
+    if new.php.pool == cfg_guard.php.pool {
+        drop(cfg_guard);
+        return php_versions_response(state).await;
+    }
+
+    if let Err(e) = new.validate() {
+        return internal(format!("config validation failed: {e}"));
+    }
+    if let Err(e) = new.save(&state.config_path) {
+        return internal(format!("config save failed: {e}"));
+    }
+    *cfg_guard = new;
+    drop(cfg_guard);
+
+    apply_version_php_config(state, version).await;
+    tracing::info!(version = %version, "applied per-version FPM pool settings");
+    php_versions_response(state).await
+}
+
 /// `NotFound` error when `version` has no installed CLI binary, else `None`.
 /// Per-version config only makes sense for an installed version (mirrors
 /// `add_php_extension`).
@@ -2275,21 +2368,28 @@ fn require_installed(version: yerd_core::PhpVersion, state: &DaemonState) -> Opt
     })
 }
 
-/// Push the config's per-version settings overrides and directives into the
-/// live `PhpManager`, restart the affected version's pool if it is currently
-/// running, and rewrite the per-version CLI inis. Follows `set_php_settings`'s
-/// lock discipline: the config lock is released before the manager lock is
-/// taken. Runs under the caller's `php_settings_mutate` guard, which is what
-/// keeps the config re-read here from racing a concurrent settings mutation.
+/// Push the config's per-version settings overrides, directives, and FPM pool
+/// settings into the live `PhpManager`, restart the affected version's pool if
+/// it is currently running, and rewrite the per-version CLI inis. Follows
+/// `set_php_settings`'s lock discipline: the config lock is released before the
+/// manager lock is taken. Runs under the caller's `php_settings_mutate` guard,
+/// which is what keeps the config re-read here from racing a concurrent
+/// settings mutation. The pool map never reaches `write_cli_ini`, so pool
+/// settings cannot leak into a CLI `php.ini`.
 async fn apply_version_php_config(state: &DaemonState, affected: yerd_core::PhpVersion) {
-    let (version_settings, directives) = {
+    let (version_settings, directives, pool) = {
         let cfg = state.config.lock().await;
-        (cfg.php.version_settings.clone(), cfg.php.directives.clone())
+        (
+            cfg.php.version_settings.clone(),
+            cfg.php.directives.clone(),
+            cfg.php.pool.clone(),
+        )
     };
     {
         let mut mgr = state.php_manager.lock().await;
         mgr.set_ini_overrides(version_settings);
         mgr.set_directives(directives);
+        mgr.set_pool_overrides(pool);
         if mgr.snapshots().iter().any(|s| s.version == affected) {
             if let Err(e) = mgr.restart(affected).await {
                 tracing::warn!(version = %affected, error = %e, "failed to restart FPM pool after per-version PHP config change");
@@ -2637,16 +2737,30 @@ fn is_self_forward(url: &str, bound_ports: &[u16]) -> bool {
 /// name (mirroring `ListSites`) so the output round-trips through
 /// `yerd proxy remove <site> <prefix>`. A parked docroot with no current site
 /// falls back to the raw key.
+///
+/// Domain fields are reported only for a proxy the router actually holds. A
+/// name-shadowed proxy stays in the config but is never inserted, and the shared
+/// domain maps are keyed by claimant name, so enriching it would report the
+/// shadowing site's domains as the proxy's own.
 async fn list_proxies(state: &DaemonState) -> Response {
     let cfg = state.config.lock().await;
     let router = state.router.read().await;
     let proxies = cfg
         .proxies
         .iter()
-        .map(|p| yerd_ipc::ProxyEntry {
-            name: p.name().to_owned(),
-            target: p.target().to_string(),
-            secure: p.secure(),
+        .map(|p| {
+            let (primary_domain, domains) = if router.proxy(p.name()).is_some() {
+                site_entry_domains(&router, p.name(), cfg.tld.as_str())
+            } else {
+                (None, Vec::new())
+            };
+            yerd_ipc::ProxyEntry {
+                name: p.name().to_owned(),
+                target: p.target().to_string(),
+                secure: p.secure(),
+                primary_domain,
+                domains,
+            }
         })
         .collect();
     let mut rules = Vec::new();
@@ -2673,6 +2787,40 @@ async fn list_proxies(state: &DaemonState) -> Response {
         }
     }
     Response::Proxies { proxies, rules }
+}
+
+/// Reply to [`Request::ListRoutes`]: every per-site path-prefix routing rule.
+/// Parked rules key by document-root, resolved through the live router to the
+/// current site name exactly as [`list_proxies`] does, so the output round-trips
+/// through `yerd route remove <site> <prefix>`. A parked docroot with no current
+/// site falls back to the raw key.
+async fn list_routes(state: &DaemonState) -> Response {
+    let cfg = state.config.lock().await;
+    let router = state.router.read().await;
+    let mut rules = Vec::new();
+    for (site, site_rules) in &cfg.route_rules.linked {
+        for r in site_rules {
+            rules.push(yerd_ipc::RouteRuleEntry {
+                site: site.clone(),
+                prefix: r.prefix().to_owned(),
+                target: r.target().to_owned(),
+            });
+        }
+    }
+    for (docroot, site_rules) in &cfg.route_rules.parked {
+        let site_name = router
+            .iter()
+            .find(|s| s.document_root().to_string_lossy().as_ref() == docroot.as_str())
+            .map_or_else(|| docroot.clone(), |s| s.name().to_owned());
+        for r in site_rules {
+            rules.push(yerd_ipc::RouteRuleEntry {
+                site: site_name.clone(),
+                prefix: r.prefix().to_owned(),
+                target: r.target().to_owned(),
+            });
+        }
+    }
+    Response::Routes { rules }
 }
 
 /// Apply a group mutation (create/delete/reorder/assign). Groups are a
@@ -2774,7 +2922,7 @@ fn resolve_web_root_mutation(
 
     Err(Response::Error {
         code: ErrorCode::NotFound,
-        message: format!("no site named {name_lc}"),
+        message: mutate::not_found_site(new, &name_lc).to_string(),
     })
 }
 
@@ -2978,6 +3126,81 @@ mod tests {
             dispatch(Request::Ping, &state).await,
             Response::Pong
         ));
+    }
+
+    #[tokio::test]
+    async fn list_proxies_reports_domains_only_for_a_customised_proxy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let target = yerd_core::UpstreamTarget::from_url_str("http://127.0.0.1:9011").unwrap();
+        let plain = yerd_core::ProxySite::new("reverb", target.clone()).unwrap();
+        let custom = yerd_core::ProxySite::new("app", target).unwrap();
+        {
+            let mut cfg = state.config.lock().await;
+            cfg.proxies.push(plain.clone());
+            cfg.proxies.push(custom.clone());
+        }
+        {
+            let corp = yerd_core::Domain::parse_subpart("corp").unwrap();
+            let mut router = state.router.write().await;
+            router.insert_proxy(plain).unwrap();
+            router
+                .insert_proxy_with_domains(
+                    custom,
+                    vec![yerd_core::Domain::apex("app"), corp.clone()],
+                    corp,
+                )
+                .unwrap();
+        }
+
+        match dispatch(Request::ListProxies, &state).await {
+            Response::Proxies { proxies, .. } => {
+                let plain = proxies.iter().find(|p| p.name == "reverb").unwrap();
+                assert_eq!(plain.primary_domain, None);
+                assert!(plain.domains.is_empty());
+                let custom = proxies.iter().find(|p| p.name == "app").unwrap();
+                assert_eq!(custom.primary_domain.as_deref(), Some("corp.test"));
+                assert_eq!(custom.domains, ["app.test", "corp.test"]);
+            }
+            other => panic!("expected Proxies, got {other:?}"),
+        }
+    }
+
+    /// A name-shadowed proxy is never inserted, so its name in the shared domain
+    /// maps belongs to the site that shadowed it. Reporting it must stay empty
+    /// rather than advertising the site's domains as the proxy's.
+    #[tokio::test]
+    async fn list_proxies_reports_nothing_for_a_name_shadowed_proxy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let target = yerd_core::UpstreamTarget::from_url_str("http://127.0.0.1:9011").unwrap();
+        let shadowed = yerd_core::ProxySite::new("app", target).unwrap();
+        {
+            let mut cfg = state.config.lock().await;
+            cfg.proxies.push(shadowed);
+        }
+        {
+            let corp = yerd_core::Domain::parse_subpart("corp").unwrap();
+            let site = yerd_core::Site::parked("app", "/srv/app", yerd_core::PhpVersion::new(8, 3))
+                .unwrap();
+            let mut router = state.router.write().await;
+            router
+                .insert_with_domains(
+                    site,
+                    vec![yerd_core::Domain::apex("app"), corp.clone()],
+                    corp,
+                )
+                .unwrap();
+        }
+
+        match dispatch(Request::ListProxies, &state).await {
+            Response::Proxies { proxies, .. } => {
+                let shadowed = proxies.iter().find(|p| p.name == "app").unwrap();
+                assert_eq!(shadowed.primary_domain, None);
+                assert!(shadowed.domains.is_empty());
+            }
+            other => panic!("expected Proxies, got {other:?}"),
+        }
     }
 
     const SAMPLE_EML: &[u8] = b"From: Example <hello@example.com>\r\n\
@@ -3664,6 +3887,29 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
+    /// The doctor's view of the hand-edited override file is assembled by the
+    /// daemon, so the wiring - registry walk, path, read - only shows up here.
+    #[tokio::test]
+    async fn dispatch_diagnose_flags_a_reserved_key_in_the_local_override_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let path = yerd_services::version::local_override_path(&state.dirs, "mysql", "cnf");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"[mysqld]\nbind-address = 0.0.0.0\n").unwrap();
+
+        match dispatch(Request::Diagnose, &state).await {
+            Response::Diagnoses { items } => {
+                let finding = items
+                    .iter()
+                    .find(|d| d.code == yerd_ipc::DiagnosisCode::ServiceOverrideInvalid)
+                    .expect("override finding present");
+                assert!(finding.detail.contains("bind-address"), "{finding:?}");
+                assert!(finding.detail.contains("50-local.cnf"), "{finding:?}");
+            }
+            other => panic!("expected Diagnoses, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn dispatch_doctor_fix_with_no_pools_is_noop_but_reports_manual() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4243,6 +4489,125 @@ Subject: Captured\r\n\r\nhi\r\n";
             }
             other => panic!("expected PhpVersions, got {other:?}"),
         }
+    }
+
+    async fn set_pool(
+        state: &DaemonState,
+        version: PhpVersion,
+        name: &str,
+        value: &str,
+    ) -> Response {
+        dispatch(
+            Request::SetPhpPoolSettings {
+                version,
+                settings: std::collections::BTreeMap::from([(name.to_string(), value.to_string())]),
+            },
+            state,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn set_php_pool_settings_persists_validates_and_removes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let v83 = PhpVersion::new(8, 3);
+        fake_install(&state.dirs, v83);
+
+        assert!(matches!(
+            set_pool(&state, PhpVersion::new(8, 5), "max_children", "32").await,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+
+        match set_pool(&state, v83, "max_children", "32").await {
+            Response::PhpVersions { pool, .. } => {
+                assert_eq!(
+                    pool.get(&v83)
+                        .and_then(|m| m.get("max_children"))
+                        .map(String::as_str),
+                    Some("32")
+                );
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+
+        for (name, value) in [
+            ("max_children", "0"),
+            ("max_children", "1025"),
+            ("max_children", "abc"),
+            ("max_children", "-1"),
+            ("start_servers", "4"),
+            ("pm.max_children", "32"),
+        ] {
+            assert!(
+                matches!(
+                    set_pool(&state, v83, name, value).await,
+                    Response::Error {
+                        code: ErrorCode::InvalidPath,
+                        ..
+                    }
+                ),
+                "{name}={value} should be rejected"
+            );
+        }
+        assert_eq!(
+            state
+                .config
+                .lock()
+                .await
+                .php
+                .pool
+                .get(&v83)
+                .and_then(|m| m.get("max_children"))
+                .map(String::as_str),
+            Some("32")
+        );
+
+        match set_pool(&state, v83, "max_children", "064").await {
+            Response::PhpVersions { pool, .. } => {
+                assert_eq!(
+                    pool.get(&v83)
+                        .and_then(|m| m.get("max_children"))
+                        .map(String::as_str),
+                    Some("64"),
+                    "value must persist canonically"
+                );
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+
+        match set_pool(&state, v83, "max_children", "").await {
+            Response::PhpVersions { pool, .. } => {
+                assert!(
+                    !pool.contains_key(&v83),
+                    "emptied pool map must drop the version key"
+                );
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+    }
+
+    /// The `pm.` prefix is now reserved out of the free-form directives path,
+    /// so the workaround from issue #200 is refused at set time with a pointer
+    /// at the pool command instead of rendering a broken `php_value` line.
+    #[tokio::test]
+    async fn pool_settings_are_refused_through_the_directives_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let v83 = PhpVersion::new(8, 3);
+        fake_install(&state.dirs, v83);
+
+        match set_directive(&state, v83, "pm.max_children", "32").await {
+            Response::Error {
+                code: ErrorCode::InvalidPath,
+                message,
+            } => assert!(message.contains("yerd php pool"), "got: {message}"),
+            other => panic!("expected InvalidPath, got {other:?}"),
+        }
+        assert!(state.config.lock().await.php.directives.is_empty());
     }
 
     #[tokio::test]

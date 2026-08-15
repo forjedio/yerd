@@ -14,6 +14,13 @@ without Yerd running the service itself. Two shapes:
 `yerd proxy add`'s two forms are distinguished by argument count: two arguments
 create a whole-host proxy, three attach a path rule to a site.
 
+::: tip Looking for a path that maps to a *file* instead?
+A proxy path rule forwards to a separate running service. To send unmatched URIs
+under a prefix to a file **inside the site** - a nested `api/index.php`, or
+`index.html` for a JavaScript SPA - use [`yerd route`](./routes) instead. When a
+site has both on the same prefix, the proxy rule wins.
+:::
+
 | Command | Description | Example |
 | --- | --- | --- |
 | `yerd proxy add <NAME> <URL>` | Create a whole-host proxy (`<NAME>.test` → `<URL>`). | `yerd proxy add reverb http://localhost:8080` |
@@ -46,6 +53,30 @@ A path rule inherits its parent site's TLS: securing `myapp` (`yerd secure
 myapp`) also secures its `/app` rule. A whole-host proxy is secured on its own
 name (`yerd secure reverb` / `yerd unsecure reverb`), exactly like a site.
 
+## Names and domains
+
+A whole-host proxy's name may be **dotted**, so the proxy's own address can be a
+subdomain. Beyond that address, a proxy carries extra domains, subdomains, and
+wildcards exactly as a site does, through the same
+[`yerd domain`](./domains) commands - pass the proxy name where a site name
+would go.
+
+```sh
+# A dotted name gives the proxy a subdomain address of its own
+yerd proxy add api.account http://127.0.0.1:9011
+curl http://api.account.test/
+
+# Extra domains and wildcards, exactly as for a site
+yerd proxy add account-dev http://127.0.0.1:48087
+yerd domain add account-dev custom-domain.test
+yerd domain add account-dev '*.account-dev.test'
+yerd domain primary account-dev custom-domain.test
+```
+
+`yerd proxy list` shows a customized proxy's domains on an indented line beneath
+it, marking the primary when you have set one away from the default
+`<name>.<tld>`. `yerd domain list` remains site-only.
+
 ## Upstreams
 
 The upstream `<URL>` is `http://host:port` or `https://host:port`. The port is
@@ -75,7 +106,12 @@ For an incoming host, Yerd resolves it to a site or a whole-host proxy, then:
   but **not** `/apple`.
 
 If a whole-host proxy's name collides with a real site's apex, the site wins and
-the proxy is dropped (surfaced by [`yerd doctor`](./diagnostics)).
+the proxy is dropped. Every **other** contested domain is settled one domain at a
+time: a domain added explicitly beats a claim on a default apex, and among equal
+claims the earlier claimant wins - every site is considered before any proxy, and
+proxies among themselves in config order. A proxy that loses one domain keeps its
+others. [`yerd doctor`](./diagnostics) reports each contested domain with its
+winner and the claimants that lost it.
 
 ::: details Client-side validation & guards
 `proxy add` validates the upstream URL and, for a path rule, that the prefix

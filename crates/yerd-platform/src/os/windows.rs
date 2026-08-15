@@ -26,7 +26,9 @@ use crate::terminal::TerminalLauncher;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
 use crate::{BindPairErrorReason, PlatformError};
 
+pub use super::unsupported::UnsupportedIdeLauncher as WindowsIdeLauncher;
 pub use super::unsupported::UnsupportedSystemMetrics as WindowsSystemMetrics;
+pub use super::unsupported::UnsupportedSystemOpener as WindowsSystemOpener;
 
 /// `CREATE_NEW_CONSOLE` process-creation flag: the spawned shell gets its own
 /// console window instead of inheriting the caller's (the daemon/GUI has none

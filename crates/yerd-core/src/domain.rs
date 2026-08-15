@@ -30,8 +30,9 @@ pub struct Domain {
 }
 
 impl Domain {
-    /// The default exact domain for a site: its `name` label. `name` must already
-    /// be a validated site label (lowercased); this does not re-validate.
+    /// The default exact domain for a claimant: its `name`. `name` must already
+    /// be a validated site label or proxy name (lowercased); this does not
+    /// re-validate.
     #[must_use]
     pub fn apex(name: &str) -> Self {
         Self {

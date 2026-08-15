@@ -23,6 +23,7 @@ import type {
   ElevateTarget,
   GroupsState,
   GuiLogs,
+  IdeOption,
   InfoResponse,
   JobProgressResponse,
   MailDetail,
@@ -34,6 +35,7 @@ import type {
   ProxyEntry,
   ProxyRuleEntry,
   Response,
+  RouteRuleEntry,
   ServiceAvailability,
   ServiceStatus,
   SetupState,
@@ -267,6 +269,26 @@ export async function removeProxyRule(site: string, prefix: string): Promise<voi
   ensureOk(await call<Response>("remove_proxy_rule", { site, prefix }));
 }
 
+// ── routing rules ────────────────────────────────────────────────────────────
+
+/** Every site's path-prefix routing rules. Unlike a proxy rule, a routing rule's
+ *  target is a file inside the site's own web root. */
+export async function listRoutes(): Promise<RouteRuleEntry[]> {
+  const r = ensureOk(await call<Response>("list_routes"));
+  return r.type === "routes" ? r.rules : [];
+}
+
+/** Add a routing rule: URIs under `prefix` that match no real file are handled
+ *  by `target`, a path relative to the site's web root. The daemon validates
+ *  both and rejects an absolute target or one containing `..`. */
+export async function addRouteRule(site: string, prefix: string, target: string): Promise<void> {
+  ensureOk(await call<Response>("add_route_rule", { site, prefix, target }));
+}
+
+export async function removeRouteRule(site: string, prefix: string): Promise<void> {
+  ensureOk(await call<Response>("remove_route_rule", { site, prefix }));
+}
+
 // ── php versions ───────────────────────────────────────────────────────────
 
 export async function listPhp(): Promise<PhpVersionsResponse> {
@@ -427,6 +449,21 @@ export async function setPhpDirectives(
 ): Promise<PhpVersionsResponse> {
   return ensureOk(
     await call<Response>("set_php_directives", { version, directives }),
+  ) as PhpVersionsResponse;
+}
+
+/**
+ * Merge FPM pool settings (currently only `max_children`) for one installed
+ * version. These apply to the version's FPM pool only, never its CLI ini. An
+ * empty-string value resets the setting to its built-in default. Returns the
+ * refreshed version list.
+ */
+export async function setPhpPoolSettings(
+  version: PhpVersion,
+  settings: Record<string, string>,
+): Promise<PhpVersionsResponse> {
+  return ensureOk(
+    await call<Response>("set_php_pool_settings", { version, settings }),
   ) as PhpVersionsResponse;
 }
 
@@ -699,6 +736,32 @@ export async function setServicePort(service: string, port: number): Promise<voi
   ensureOk(await call<Response>("set_service_port", { service, port }));
 }
 
+/** A service instance's stored configuration overrides, keyed by directive name.
+ *  Refused by the daemon for a service that accepts none. */
+export async function serviceOverrides(service: string): Promise<Record<string, string>> {
+  const r = ensureOk(await call<Response>("service_overrides", { service }));
+  return r.type === "service_overrides" ? r.overrides : {};
+}
+
+/** Persist one configuration override; takes effect on the next start/restart.
+ *  The daemon validates the name/value shape and refuses a directive it manages
+ *  itself, so its message is what the UI shows. */
+export async function setServiceOverride(
+  service: string,
+  key: string,
+  value: string,
+): Promise<void> {
+  ensureOk(
+    await call<Response>("set_service_overrides", { service, overrides: { [key]: value } }),
+  );
+}
+
+/** Drop one configuration override - an empty value is the daemon's remove
+ *  signal. Takes effect on the next start/restart. */
+export async function unsetServiceOverride(service: string, key: string): Promise<void> {
+  await setServiceOverride(service, key, "");
+}
+
 /** The last `lines` lines of a service's log file. */
 export async function serviceLogs(service: string, lines: number): Promise<string[]> {
   const r = ensureOk(await call<Response>("service_logs", { service, lines }));
@@ -911,6 +974,17 @@ export async function openInEditor(path: string): Promise<void> {
   await openPath(path);
 }
 
+/** Open a site's folder with the host's default application. The host resolves
+ *  the directory from the daemon's site list, so only a site name travels. */
+export async function openInSystemDefault(site: string): Promise<void> {
+  await call<void>("open_in_default", { site });
+}
+
+/** Open a site's folder in the selected host IDE. */
+export async function openInIde(site: string, ide: string): Promise<void> {
+  await call<void>("open_in_ide", { site, ide });
+}
+
 /** Open a terminal in a project directory through the host bridge. */
 export async function openInTerminal(path: string): Promise<void> {
   await call<void>("open_terminal", { path });
@@ -1056,6 +1130,35 @@ export async function setAutostartGui(on: boolean, nudge = true): Promise<void> 
 
 export async function setAutostartGuiMinimized(on: boolean): Promise<void> {
   await call<void>("set_gui_minimized", { on });
+}
+
+export async function setGuiMaximized(maximized: boolean): Promise<void> {
+  await call<void>("set_gui_maximized", { maximized });
+}
+
+/** Return supported IDEs detected on the host. */
+export async function getInstalledIdes(): Promise<IdeOption[]> {
+  return call<IdeOption[]>("get_installed_ides");
+}
+
+/** The global preferred editor: an IDE id, `"system"`, or null for auto-detect. */
+export async function getPreferredIde(): Promise<string | null> {
+  return call<string | null>("get_preferred_ide");
+}
+
+/** Persist the global preferred editor; null restores auto-detect. */
+export async function setPreferredIde(ide: string | null): Promise<void> {
+  await call<void>("set_preferred_ide", { ide });
+}
+
+/** Every stored per-site editor override, keyed by site name. */
+export async function getSiteIdeOverrides(): Promise<Record<string, string>> {
+  return call<Record<string, string>>("get_site_ide_overrides");
+}
+
+/** Persist one site's editor override; null clears it. */
+export async function setSiteIdeOverride(site: string, ide: string | null): Promise<void> {
+  await call<void>("set_site_ide_override", { site, ide });
 }
 
 export async function getTrayIconVariant(): Promise<TrayIconVariant> {

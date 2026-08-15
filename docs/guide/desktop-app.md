@@ -16,11 +16,11 @@ The sidebar opens on **Overview** and groups the rest:
 
 | Group | Pages |
 | --- | --- |
-| (top) | **Overview** - a live dashboard of what's running |
-| Environment | **PHP** · **Sites** |
-| Developer | **Tooling** · **Services** · **Mail** · **Dumps** |
+| General | **Overview** - a live dashboard of what's running · **About** |
+| Environment | **Sites** · **PHP** · **Services** |
+| Developer | **Tooling** · **Proxies** · **Mail** · **Dumps** |
 | Integrations | **Share** - publish a site over a public URL ([guide](./sharing)) |
-| System | **Settings** · **Doctor** · **About** |
+| System | **Settings** · **Doctor** |
 
 ### Overview
 
@@ -38,7 +38,7 @@ App- and daemon-level settings (one of the pages that stays usable when the daem
 - **Application Ports** (while the daemon is running). Editable HTTP/HTTPS (the rootless fallback ports used when 80/443 need elevation), DNS, mail-capture, and dumps ports. If a port is in use elsewhere the page flags it here (site serving or `.test` resolution shows as unbound) so you can pick a free one. Change a value and **Save & restart** validates it, saves, restarts the daemon, and rechecks. HTTP/HTTPS are locked while ports are elevated - un-elevate them on the Doctor page first.
 - **Start at login.** Three toggles - start the daemon at login, start the app at login, and start the app minimized (hidden to the tray). The daemon-at-login toggle is disabled where no per-user service manager is available.
 - **Terminal CLI** (macOS and Linux). Installs `yerd` - and your installed tools (`php`, `composer`, ...) - onto your shell `PATH`. On a packaged Linux install `yerd` itself is already on `PATH`, so this is mainly how Linux users get the PHP/tool shims on `PATH` too.
-- **Appearance.** A System / Light / Dark theme selector; a **Tray icon** selector (Automatic, Light Y, Dark Y, Full icon) for the menu bar / system tray icon; and a **Title bar** selector (Automatic, macOS, Linux, Linux (Reversed), Windows) that forces a window-control style regardless of host platform. All three apply live and are remembered across launches.
+- **Appearance.** A System / Light / Dark theme selector; a **Tray icon** selector (Automatic, Light Y, Dark Y, Full icon) for the menu bar / system tray icon; a **Title bar** selector (Automatic, macOS, Linux, Linux (Reversed), Windows) that forces a window-control style regardless of host platform; and a **Preferred editor** selector (macOS and Linux) choosing which editor the Open-in-editor button uses - Auto-detect, any detected editor (VS Code, VSCodium, Cursor, Zed, Sublime Text, PhpStorm, Windsurf), or System default (open folder). Auto-detect picks the highest-ranked editor you have installed, preferring a dedicated PHP IDE over a general editor. **Rescan** re-runs detection if you install an editor while Yerd is open. All apply live and are remembered across launches.
 
 ### PHP
 
@@ -51,8 +51,9 @@ Manages your installed [PHP versions](./php-versions):
 - Refresh re-checks for updates. Update all updates every version with a pending update. Updates are notify-only.
 - Each row's `⋯` menu offers Restart (only when the pool is running or failed), Update (only when available), Set default (marks it with a star), and Uninstall. Restart all restarts every running pool.
 - A Default settings card edits the global ini defaults applied to every version: `memory_limit`, `max_execution_time`, `max_input_time`, `max_file_uploads`, `upload_max_filesize`, `post_max_size`, `error_reporting`, and `display_errors`. Leave a field blank to use PHP's built-in default. Saving restarts running pools to apply.
-- A Per-version configuration card lists your versions down the side, newest first. Picking one scopes everything to that version: a settings form overriding the defaults above (empty fields inherit), its custom extensions, and free-form ini directives. See [Per-version configuration](./php-versions#per-version-configuration).
+- A Per-version configuration card lists your versions down the side, newest first. Picking one scopes everything to that version: a settings form overriding the defaults above (empty fields inherit), its custom extensions, free-form ini directives, and its FPM pool size. See [Per-version configuration](./php-versions#per-version-configuration).
 - The Extensions section of that card registers extra `.so` extensions for the selected version (loaded into both FPM and the CLI): Add… browses for the file, optionally names it and toggles Zend extension. Each is load-probed before saving, and any whose file has gone missing is flagged. See [Custom extensions](./php-versions#custom-extensions).
+- **FPM pool size** sets how many PHP workers that version may run at once (`pm.max_children`, 1-1024, default 16). It applies to the web pool only, never the CLI. The pool is on-demand, so a higher ceiling costs nothing while idle - raise it when requests queue behind queue workers, parallel test runs, or long-lived streams. Saving restarts that version's pool. See [Pool size](./php-versions#pool-size).
 
 ### Sites
 
@@ -62,11 +63,24 @@ The home base for [managing sites](./sites). Polls the daemon every 5 seconds wh
 
 Parked folders. Each parked directory shows a count of the `.test` sites it produces (one per child directory). Park folder opens a native directory picker; each row's menu offers Reveal folder or Un-park (with confirmation).
 
-Sites. Every parked and linked site is a card: the `name.test` URL (click to open in your browser), the document root, and badges for kind (`parked`/`linked`), PHP version, HTTPS/HTTP, and the [served web root](./sites#web-root-the-served-directory) when it isn't the project root. A `+N` badge appears when the site answers extra domains beyond its apex, and an amber warning shows when another site claims this site's apex.
+Sites. Every parked and linked site is a card: the `name.test` URL (click to open in your browser), the document root, and badges for kind (`parked`/`linked`), PHP version, HTTPS/HTTP, and the [served web root](./sites#web-root-the-served-directory) when it isn't the project root. A `+N` badge appears when the site answers extra domains beyond its apex, and an amber warning shows when another site claims this site's apex. A WordPress site with one-click login enabled also gets a small chip that signs you straight into `wp-admin`.
 
-Each card's `⋯` menu offers **Edit…**, **Manage domains…** (set the primary domain, add or remove aliases and wildcards), Open in browser, Reveal folder, **Share publicly…** (jumps to the [Share page](#share)), and (linked sites only) Unlink. **Edit…** opens one dialog covering everything about the site: PHP version, web root (blank means auto-detect), the HTTPS toggle, and its [group](./sites#site-groups). Parked sites have no destructive action here; remove them by un-parking their folder, or they'd reappear.
+The card itself keeps only the inline shortcuts - open, the HTTPS lock, and that WordPress chip. **Everything else about a site lives in its details sidebar**, which the card's pencil button slides in from the right.
 
-Sites can also be organized into named, reorderable groups shown as collapsible sections on this page; see [Sites](./sites) for the full walkthrough.
+The filter box above the list matches **any** domain a site answers, not just its name - typing `admin.` finds `codestash.test` when its only match is an added `admin.codestash.test`.
+
+Sites can also be organized into named, reorderable groups shown as collapsible sections on this page; see [Sites](./sites) for the full walkthrough. The **Create** menu at the top of the page offers New Laravel site…, New WordPress site…, Link existing site, Park folder, and New group….
+
+#### The site details sidebar
+
+Four tabs, covering everything Yerd knows about one site:
+
+- **General.** An **Open site** button, then a row of actions - **Terminal** (opens your terminal in the project directory), the **editor** button (macOS and Linux), **Dumps** or **WP Admin** depending on the site, and **Share publicly…** (a [Cloudflare Quick Tunnel](#share)). Below them: PHP version, the **Editor** used for this site, the path (with reveal), the served web root (blank means auto-detect), the URL, the **HTTPS** toggle, **WordPress Auto Admin Login** with an admin picker on WordPress sites, its [group](./sites#site-groups), and - for a linked site only - **Unlink**. Parked sites have no destructive action here; remove them by un-parking their folder, or they'd reappear.
+- **Domains.** Set the primary domain and add or remove aliases, subdomains, and wildcards. See [Domains](../reference/cli/domains).
+- **Routing.** The **Route through front controller** switch (on: everything funnels through `index.php`, as Laravel and Symfony want; off: named `.php` files execute directly), and beneath it the per-prefix [routing rules](../reference/cli/routes) that carve exceptions out of that default - a nested `api/index.php`, or `index.html` for an SPA.
+- **Information.** A read-only summary: detected application, every domain the site answers, web root, kind, protocol, front-controller mode, and WordPress auto-login state.
+
+The **Editor** row defaults to the Preferred editor set in [Settings](#settings), shown as `Use default (…)`; pick a specific editor to override it for that one site, and the choice is remembered.
 
 ::: tip Untrusted CA banner
 If your local CA isn't trusted in the system store, the Sites view shows a banner (browsers will warn on HTTPS sites until fixed). It links to the **Doctor** page's Environment panel, where one click runs the fix. See [HTTPS & Certificates](./https).
@@ -78,11 +92,22 @@ If your local CA isn't trusted in the system store, the Sites view shows a banne
 
 Installs self-contained developer tools - Composer, Node, and Bun - onto your PATH alongside PHP, each managed by Yerd (install / update / uninstall) so they don't collide with system installs. See [Tooling](./tooling).
 
+### Proxies
+
+Puts a `.test` address in front of a service Yerd doesn't run itself. Two cards, matching the two shapes of [reverse proxy](./proxies):
+
+- **Whole-host proxies** - `reverb.test` → an upstream URL. Each row opens in the browser, toggles HTTPS, and has a **Manage domains** button giving the proxy extra domains, subdomains, and wildcards exactly as a site gets them; a customised proxy shows a `N domains · primary …` hint. Proxy names may be **dotted**, so a proxy's own address can be a subdomain (`api.account.test`).
+- **Path rules** - one path on an existing site forwarded to a service (`myapp.test/app` → Reverb), keeping everything same-origin.
+
+The **Add** menu creates either shape. See [Reverse Proxies](./proxies).
+
 ### Services
 
 <ThemedImage light="/images/services-light.png" dark="/images/services-dark.png" alt="Services page" />
 
-The database and cache engines Yerd supervises - Redis (Valkey), MySQL, MariaDB, and PostgreSQL. Install a version, then Start / Stop / Restart it. Each installed engine's `⋯` menu also offers **Configuration** (copy the Laravel `.env` for that engine - with a database picker that pre-fills `DB_DATABASE` for SQL engines), Edit port, View logs, **Manage databases** (create / drop / back up / restore, SQL engines only), Change version, and Uninstall. The daemon **auto-starts every installed engine** on boot. See [Services & Databases](./services).
+The database and cache engines Yerd supervises - Redis (Valkey), MySQL, MariaDB, and PostgreSQL. Install a version, then Start / Stop / Restart it. Each installed engine's `⋯` menu also offers **Configuration** (copy the Laravel `.env` for that engine - with a database picker that pre-fills `DB_DATABASE` for SQL engines), Edit port, **Override settings**, View logs, **Manage databases** (create / drop / back up / restore, SQL engines only), Change version, and Uninstall. The daemon **auto-starts every installed engine** on boot. See [Services & Databases](./services).
+
+**Override settings** opens a dialog listing the engine's stored [configuration overrides](./services#service-configuration-overrides) - free-form directives for its own config file, such as `max_allowed_packet` or `maxmemory-policy` - with an add form and a remove button per entry. Like Edit port, an override takes effect on the **next start or restart**, not immediately. The item only appears for the engines that have a config file to override; Meilisearch and Reverb are argv-driven, so they don't get it.
 
 ### Mail
 
@@ -157,7 +182,7 @@ The command palette also lists your sites at the bottom (grouped by domain): **O
 | Close window | `⌘W` | `Ctrl+W` | Hide the window to the tray |
 | Close dialog | `Esc` | `Esc` | Dismiss the open modal |
 
-`⌘1`…`⌘9` follow the sidebar order: **1** Overview, **2** PHP, **3** Sites, **4** Tooling, **5** Services, **6** Mail, **7** Dumps, **8** Settings, **9** Doctor.
+`⌘1`…`⌘9` are: **1** Overview, **2** PHP, **3** Sites, **4** Tooling, **5** Services, **6** Mail, **7** Dumps, **8** Settings, **9** Doctor. Proxies and About have no digit - reach them from the sidebar or the command palette.
 
 ::: info Quitting the app
 There's no Quit shortcut: closing the window (`⌘W` / `Ctrl+W`) hides it to the tray and leaves the daemon running, by design. Quit from the tray menu, or on macOS with the standard `⌘Q`.

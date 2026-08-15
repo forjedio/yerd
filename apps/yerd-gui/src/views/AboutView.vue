@@ -4,6 +4,7 @@ import { ArrowUpRight, Download, FileText, RefreshCw, Stethoscope } from "lucide
 import { computed, onMounted, onUnmounted, ref } from "vue";
 
 import logoUrl from "@/assets/logo.svg";
+import mdbinMarkUrl from "@/assets/mdbin-mark.svg";
 import PageHeader from "@/components/PageHeader.vue";
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
@@ -38,6 +39,16 @@ const running = computed(() => connected.value === true);
 const appVersion = ref("");
 const protocol = ref<number | null>(null);
 const daemonVersion = ref("");
+
+/** The mdbin capabilities worth naming in the cross-promo, in their own
+ *  wording. Short enough to read as tags rather than a second paragraph. */
+const mdbinFeatures = [
+  "Highlighted code",
+  "Mermaid + FreeDraw",
+  "Line comments",
+  "Forkable edits",
+  "MCP server",
+] as const;
 
 // ── self-update ──
 const channelOptions = [
@@ -329,22 +340,58 @@ async function copyDiagnostics(): Promise<void> {
           </Button>
         </div>
 
-        <div
-          class="flex flex-col gap-3 border-t border-brand/20 pt-5 sm:flex-row sm:items-center sm:justify-between sm:gap-6"
-        >
-          <p class="text-sm text-muted-foreground">
-            Why not check out other free tools by Forjed, such as
-            <span class="font-medium text-foreground">MDBIN</span> - share Markdown
-            with a link, no account needed.
+        <!-- Cross-promo for mdbin, the studio's other free tool. Its own brand
+             mark and wordmark (lowercase, mono) rather than ours, so it reads as
+             a product being recommended and not another Yerd feature. -->
+        <div class="border-t border-brand/20 pt-5">
+          <p class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Also from Forjed
           </p>
-          <Button
-            variant="outline"
-            class="shrink-0"
-            @click="openInBrowser('https://mdbin.app/?utm=yerdapp')"
-          >
-            Try MDBIN
-            <ArrowUpRight class="opacity-80" />
-          </Button>
+
+          <div class="mt-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-4">
+            <img
+              :src="mdbinMarkUrl"
+              alt=""
+              aria-hidden="true"
+              class="size-9 shrink-0 rounded-lg"
+            />
+
+            <div class="min-w-0 flex-1">
+              <p class="font-mono text-lg font-extrabold leading-none tracking-tight">mdbin</p>
+              <p class="mt-1.5 text-sm font-medium">Share Markdown with a link.</p>
+              <p class="mt-1 text-sm text-muted-foreground">
+                Paste a README, a deploy note, an RFC - publish it and send the URL. Code is
+                highlighted, Mermaid diagrams render themselves, and anyone can comment on a
+                line or fork the doc to suggest an edit. No account needed.
+              </p>
+
+              <ul class="mt-3 flex flex-wrap gap-1.5">
+                <li
+                  v-for="feature in mdbinFeatures"
+                  :key="feature"
+                  class="rounded-full border border-brand/20 bg-background/60 px-2.5 py-0.5 text-[11px] text-muted-foreground"
+                >
+                  {{ feature }}
+                </li>
+              </ul>
+
+              <div class="mt-4 flex flex-wrap items-center gap-2">
+                <Button
+                  variant="outline"
+                  @click="openInBrowser('https://mdbin.app/new?utm=yerdapp')"
+                >
+                  Create a document
+                  <ArrowUpRight class="opacity-80" />
+                </Button>
+                <button
+                  class="rounded-md px-2 py-1 text-sm text-muted-foreground hover:text-foreground"
+                  @click="openInBrowser('https://mdbin.app/?utm=yerdapp')"
+                >
+                  mdbin.app
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </Card>
 

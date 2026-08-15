@@ -71,6 +71,9 @@ fn main() {
             commands::remove_proxy,
             commands::add_proxy_rule,
             commands::remove_proxy_rule,
+            commands::list_routes,
+            commands::add_route_rule,
+            commands::remove_route_rule,
             commands::list_groups,
             commands::create_group,
             commands::delete_group,
@@ -91,6 +94,7 @@ fn main() {
             commands::set_php_settings,
             commands::set_php_version_settings,
             commands::set_php_directives,
+            commands::set_php_pool_settings,
             commands::list_php_extensions,
             commands::add_php_extension,
             commands::remove_php_extension,
@@ -112,6 +116,8 @@ fn main() {
             commands::stop_service,
             commands::restart_service,
             commands::set_service_port,
+            commands::set_service_overrides,
+            commands::service_overrides,
             commands::service_logs,
             commands::addable_service_types,
             commands::add_service,
@@ -170,6 +176,8 @@ fn main() {
             commands::route_tunnel_dns,
             commands::set_site_tunnel,
             commands::open_terminal,
+            commands::open_in_default,
+            commands::open_in_ide,
             commands::start_named_tunnel,
             commands::stop_named_tunnel,
             commands::create_site,
@@ -189,10 +197,16 @@ fn main() {
             autostart::set_autostart_daemon,
             autostart::set_autostart_gui,
             autostart::set_gui_minimized,
+            autostart::set_gui_maximized,
+            commands::get_installed_ides,
             autostart::get_tray_icon_variant,
             autostart::set_tray_icon_variant,
             autostart::get_title_bar_style,
             autostart::set_title_bar_style,
+            autostart::get_preferred_ide,
+            autostart::set_preferred_ide,
+            autostart::get_site_ide_overrides,
+            autostart::set_site_ide_override,
             autostart::setup_state,
             autostart::mark_onboarded,
             autostart::daemon_version_conflict,
@@ -417,6 +431,8 @@ fn decide_initial_window(app: &tauri::AppHandle) {
     let Some(win) = app.get_webview_window("main") else {
         return;
     };
+    #[cfg(not(target_os = "macos"))]
+    restore_main_window_state(&win);
     let autostarted = std::env::args().any(|a| a == AUTOSTART_ARG);
     #[cfg(target_os = "macos")]
     let autostarted = autostarted || launch_probe::is_login_launch();
@@ -425,6 +441,18 @@ fn decide_initial_window(app: &tauri::AppHandle) {
     } else {
         let _ = win.show();
         let _ = win.set_focus();
+    }
+}
+
+/// Apply the persisted native state before revealing the main window. The
+/// window starts hidden, so restoring maximized here avoids showing a normal
+/// sized frame first. A false value needs no action because a new Tauri window
+/// starts restored; an already-created window is also left unchanged when its
+/// persisted state is restored.
+#[cfg(not(target_os = "macos"))]
+fn restore_main_window_state(win: &tauri::WebviewWindow) {
+    if autostart::gui_maximized() {
+        let _ = win.maximize();
     }
 }
 
@@ -458,6 +486,8 @@ pub(crate) fn show_main(app: &tauri::AppHandle) {
         // Space rather than the one it was last shown on.
         #[cfg(target_os = "macos")]
         move_window_to_active_space(&win);
+        #[cfg(not(target_os = "macos"))]
+        restore_main_window_state(&win);
         let _ = win.show();
         let _ = win.set_focus();
     }

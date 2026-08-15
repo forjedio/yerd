@@ -3,6 +3,7 @@ import { computed, nextTick, onUnmounted, ref } from "vue";
 import {
   ChevronDown,
   ExternalLink,
+  Globe,
   Lock,
   LockOpen,
   Plus,
@@ -13,6 +14,8 @@ import {
 } from "lucide-vue-next";
 
 import PageHeader from "@/components/PageHeader.vue";
+import SiteDomainsPanel from "@/components/SiteDomainsPanel.vue";
+import type { DomainsTarget } from "@/components/SiteDomainsPanel.vue";
 import AsyncState from "@/components/ui/AsyncState.vue";
 import Button from "@/components/ui/Button.vue";
 import {
@@ -33,6 +36,7 @@ import { usePoll } from "@/composables/usePoll";
 import { useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
 import { isUnbound, openTitle, siteUrl } from "@/lib/siteUrl";
+import type { SiteLike } from "@/lib/siteUrl";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import {
   addProxy,
@@ -113,9 +117,19 @@ const siteOptions = computed(() =>
 const hasSites = computed(() => siteOptions.value.length > 0);
 
 /** A `SiteLike` for the shared URL helpers - a whole-host proxy is served on the
- *  same ports as sites, so it obeys the same bound-port / unbound rules. */
-function proxyAsSite(p: ProxyEntry): { name: string; secure: boolean } {
-  return { name: p.name, secure: p.secure };
+ *  same ports as sites, so it obeys the same bound-port / unbound rules. The
+ *  primary domain matters: once one is set, the apex may no longer route here. */
+function proxyAsSite(p: ProxyEntry): SiteLike {
+  return { name: p.name, secure: p.secure, primary_domain: p.primary_domain };
+}
+
+/** A compact card hint for a proxy that carries custom domains; null for a
+ *  default (apex-only) proxy, which the daemon leaves without either field. */
+function domainHint(p: ProxyEntry): string | null {
+  if (!p.primary_domain && !p.domains?.length) return null;
+  const count = p.domains?.length ?? 1;
+  const countPart = count === 1 ? "1 domain" : `${count} domains`;
+  return p.primary_domain ? `${countPart} · primary ${p.primary_domain}` : countPart;
 }
 
 // A whole-host proxy is reachable only via its .test domain: in resolver-off
@@ -168,8 +182,12 @@ const addProxyOpen = ref(false);
 const newProxyName = ref("");
 const newProxyUrl = ref("");
 const newProxySecure = ref(false);
+// Dotted names are accepted: a proxy's apex may itself be a subdomain, e.g.
+// `api.account` serving `api.account.test`.
 const newProxyValid = computed(
-  () => /^[a-z0-9-]+$/i.test(newProxyName.value.trim()) && newProxyUrl.value.trim() !== "",
+  () =>
+    /^[a-z0-9-]+(\.[a-z0-9-]+)*$/i.test(newProxyName.value.trim()) &&
+    newProxyUrl.value.trim() !== "",
 );
 
 function openAddProxy(): void {
@@ -248,6 +266,28 @@ async function confirmAddRule(close: () => void): Promise<void> {
   } finally {
     setBusy(key, false);
   }
+}
+
+// ── proxy domains ──
+const domainsOpen = ref(false);
+const domainsName = ref<string | null>(null);
+
+// Resolved from the live list rather than captured at open time, so a reload
+// triggered by the panel re-renders it with the daemon's new domain set.
+const domainsTarget = computed<DomainsTarget | null>(() => {
+  const p = proxies.value.find((x) => x.name === domainsName.value);
+  return p ? { name: p.name, primary_domain: p.primary_domain, domains: p.domains } : null;
+});
+
+function openDomains(p: ProxyEntry): void {
+  domainsName.value = p.name;
+  void nextTick(() => {
+    domainsOpen.value = true;
+  });
+}
+
+function onDomainsChanged(): void {
+  void load({ force: true });
 }
 
 // ── remove proxy ──
@@ -407,6 +447,15 @@ onUnmounted(
                     <Button
                       variant="ghost"
                       size="icon"
+                      :aria-label="`Domains for ${p.name}.${tld}`"
+                      title="Manage domains"
+                      @click="openDomains(p)"
+                    >
+                      <Globe class="size-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
                       :aria-label="`Remove proxy ${p.name}.${tld}`"
                       title="Remove proxy"
                       @click="openRemoveProxy(p)"
@@ -419,6 +468,9 @@ onUnmounted(
 
               <p class="mt-1 truncate font-mono text-xs text-muted-foreground" :title="p.target">
                 → {{ p.target }}
+              </p>
+              <p v-if="domainHint(p)" class="mt-1 truncate text-xs text-muted-foreground">
+                {{ domainHint(p) }}
               </p>
 
               <div class="mt-3 flex items-center gap-1.5">
@@ -490,10 +542,12 @@ onUnmounted(
     <Modal v-model:open="addProxyOpen" title="New proxy">
       <div class="space-y-4">
         <div>
-          <label class="text-sm font-medium" for="proxyname">Name (single label)</label>
+          <label class="text-sm font-medium" for="proxyname">Name</label>
           <Input id="proxyname" v-model="newProxyName" placeholder="e.g. mydockersite" class="mt-2" />
           <p class="mt-1 text-xs text-muted-foreground">
             Served at <code class="font-mono">{{ (newProxyName.trim() || "name") }}.{{ tld }}</code>.
+            Dots are allowed, so <code class="font-mono">api.account</code> serves
+            <code class="font-mono">api.account.{{ tld }}</code>.
           </p>
         </div>
         <div>
@@ -550,6 +604,24 @@ onUnmounted(
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Cancel</Button>
         <Button :disabled="!newRuleValid" @click="confirmAddRule(close)">Add rule</Button>
+      </template>
+    </Modal>
+
+    <!-- proxy domains -->
+    <Modal
+      v-model:open="domainsOpen"
+      :title="`Domains for ${domainsName}.${tld}`"
+      size="lg"
+      @update:open="(v: boolean) => { if (!v) domainsName = null; }"
+    >
+      <SiteDomainsPanel
+        v-if="domainsTarget"
+        :site="domainsTarget"
+        :tld="tld"
+        @changed="onDomainsChanged"
+      />
+      <template #footer="{ close }">
+        <Button variant="ghost" @click="close">Close</Button>
       </template>
     </Modal>
 

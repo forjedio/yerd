@@ -21,10 +21,10 @@ use yerd_ipc::{
     AddableServiceType, CaStatus, Channel, CloudflaredSource, CloudflaredStatus, DatabaseSummary,
     Diagnosis, DiagnosisCode, DumpCategory, DumpCounts, DumpEvent, DumpExtStatus, ErrorCode,
     FixReport, FixResult, MailAttachment, MailDetail, MailHeader, MailStatus, MailSummary,
-    NamedTunnelMeta, PhpPoolStatus, PoolRunState, PortRedirectTargets, PortStatus, Request,
-    Response, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts,
-    SiteHostname, StagedArtifact, StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState,
-    UpdateSource,
+    NamedTunnelMeta, PhpPoolStatus, PoolRunState, PortRedirectTargets, PortStatus, ProxyEntry,
+    ProxyRuleEntry, Request, Response, ServiceAvailability, ServiceRunState, ServiceStatus,
+    Severity, SiteCounts, SiteHostname, StagedArtifact, StatusReport, ToolStatus, TunnelInfo,
+    TunnelKind, TunnelRunState, UpdateSource,
 };
 
 // ---------- Request ----------
@@ -753,6 +753,7 @@ fn response_php_versions_byte_shape() {
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
+        pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
@@ -796,6 +797,7 @@ fn response_php_versions_with_updates_byte_shape() {
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
+        pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
@@ -817,6 +819,7 @@ fn response_php_versions_with_settings_byte_shape() {
         ]),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
+        pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
@@ -841,6 +844,7 @@ fn response_php_versions_with_version_settings_and_directives_byte_shape() {
             PhpVersion::new(8, 3),
             BTreeMap::from([("xdebug.mode".to_string(), "debug".to_string())]),
         )])),
+        pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
@@ -856,9 +860,57 @@ fn response_php_versions_with_version_settings_and_directives_byte_shape() {
         Response::PhpVersions {
             ref version_settings,
             ref directives,
+            ref pool,
             ..
-        } if version_settings.is_empty() && directives.is_empty()
+        } if version_settings.is_empty() && directives.is_empty() && pool.is_empty()
     ));
+}
+
+#[test]
+fn response_php_versions_with_pool_byte_shape() {
+    let r = Response::PhpVersions {
+        installed: vec![PhpVersion::new(8, 4)],
+        default: PhpVersion::new(8, 4),
+        updates: vec![],
+        settings: BTreeMap::new(),
+        version_settings: Box::new(BTreeMap::new()),
+        directives: Box::new(BTreeMap::new()),
+        pool: Box::new(BTreeMap::from([(
+            PhpVersion::new(8, 4),
+            BTreeMap::from([("max_children".to_string(), "32".to_string())]),
+        )])),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"php_versions","installed":["8.4"],"default":"8.4","pool":{"8.4":{"max_children":"32"}}}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_php_pool_settings_byte_shape() {
+    let r = Request::SetPhpPoolSettings {
+        version: PhpVersion::new(8, 4),
+        settings: BTreeMap::from([("max_children".to_string(), "32".to_string())]),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_php_pool_settings","version":"8.4","settings":{"max_children":"32"}}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+
+    let reset = Request::SetPhpPoolSettings {
+        version: PhpVersion::new(8, 4),
+        settings: BTreeMap::from([("max_children".to_string(), String::new())]),
+    };
+    let s = serde_json::to_string(&reset).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_php_pool_settings","version":"8.4","settings":{"max_children":""}}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), reset);
 }
 
 #[test]
@@ -1187,6 +1239,7 @@ fn status_services_appear_only_when_non_empty() {
         type_id: String::new(),
         site: None,
         error: None,
+        supports_overrides: false,
     }];
     let s = serde_json::to_string(&report).unwrap();
     assert!(
@@ -1311,6 +1364,10 @@ fn diagnosis_code_each_variant_byte_shape() {
             DiagnosisCode::DaemonAutostartDisabled,
             r#""daemon_autostart_disabled""#,
         ),
+        (
+            DiagnosisCode::ServiceOverrideInvalid,
+            r#""service_override_invalid""#,
+        ),
         (DiagnosisCode::AllGood, r#""all_good""#),
     ];
     for (code, expected) in cases {
@@ -1420,6 +1477,60 @@ fn request_set_front_controller_byte_shape() {
 }
 
 #[test]
+fn request_add_route_rule_byte_shape() {
+    let r = Request::AddRouteRule {
+        site: "portal".into(),
+        prefix: "/api".into(),
+        target: "api/index.php".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"add_route_rule","site":"portal","prefix":"/api","target":"api/index.php"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_remove_route_rule_byte_shape() {
+    let r = Request::RemoveRouteRule {
+        site: "portal".into(),
+        prefix: "/api".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"remove_route_rule","site":"portal","prefix":"/api"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_list_routes_byte_shape() {
+    let r = Request::ListRoutes;
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"list_routes"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_routes_byte_shape() {
+    let r = Response::Routes {
+        rules: vec![yerd_ipc::RouteRuleEntry {
+            site: "portal".into(),
+            prefix: "/api".into(),
+            target: "api/index.php".into(),
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"routes","rules":[{"site":"portal","prefix":"/api","target":"api/index.php"}]}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
 fn request_wordpress_admin_users_byte_shape() {
     let r = Request::WordpressAdminUsers {
         site: "blog".into(),
@@ -1499,6 +1610,56 @@ fn request_set_service_port_byte_shape() {
         r#"{"type":"set_service_port","service":"redis","port":6380}"#
     );
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_service_overrides_byte_shape() {
+    let r = Request::SetServiceOverrides {
+        service: "mysql".into(),
+        overrides: BTreeMap::from([
+            ("max_connections".to_string(), "500".to_string()),
+            ("sql_mode".to_string(), String::new()),
+        ]),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_service_overrides","service":"mysql","overrides":{"max_connections":"500","sql_mode":""}}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_service_overrides_byte_shape() {
+    let r = Request::ServiceOverrides {
+        service: "mysql".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"service_overrides","service":"mysql"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_service_overrides_byte_shape() {
+    let r = Response::ServiceOverrides {
+        overrides: BTreeMap::from([("max_connections".to_string(), "500".to_string())]),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"service_overrides","overrides":{"max_connections":"500"}}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_service_overrides_empty_byte_shape() {
+    let r = Response::ServiceOverrides {
+        overrides: BTreeMap::new(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"service_overrides","overrides":{}}"#);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
 
 #[test]
@@ -1620,6 +1781,7 @@ fn response_services_per_site_instance_byte_shape() {
             type_id: "reverb".into(),
             site: Some("blog".into()),
             error: Some("artisan reverb:start exited with code 1".into()),
+            supports_overrides: false,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -1761,12 +1923,52 @@ fn response_services_byte_shape() {
             type_id: String::new(),
             site: None,
             error: None,
+            supports_overrides: false,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = r#"{"type":"services","services":[{"service":"redis","display_name":"Redis (Valkey)","installed_versions":["8"],"selected_version":"8","state":"running","pid":42,"listen":"127.0.0.1:6379","port":6379,"enabled":true,"supports_databases":false}]}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+/// `supports_overrides` is additive: omitted from the wire when `false` (the
+/// shape older clients already parse) and emitted last when `true`.
+#[test]
+fn response_services_supports_overrides_byte_shape() {
+    let r = Response::Services {
+        services: vec![ServiceStatus {
+            service: "mysql".into(),
+            display_name: "MySQL".into(),
+            installed_versions: vec!["9.7".into()],
+            selected_version: Some("9.7".into()),
+            state: ServiceRunState::Running,
+            pid: Some(42),
+            listen: Some("127.0.0.1:3306".into()),
+            port: 3306,
+            enabled: true,
+            supports_databases: true,
+            type_id: "mysql".into(),
+            site: None,
+            error: None,
+            supports_overrides: true,
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"services","services":[{"service":"mysql","display_name":"MySQL","installed_versions":["9.7"],"selected_version":"9.7","state":"running","pid":42,"listen":"127.0.0.1:3306","port":3306,"enabled":true,"supports_databases":true,"type_id":"mysql","supports_overrides":true}]}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+/// An older daemon's payload, which has no `supports_overrides` key at all,
+/// still decodes and reads as "no overrides".
+#[test]
+fn service_status_without_supports_overrides_decodes_as_false() {
+    let s = r#"{"type":"services","services":[{"service":"redis","display_name":"Redis (Valkey)","installed_versions":["8"],"selected_version":"8","state":"running","pid":42,"listen":"127.0.0.1:6379","port":6379,"enabled":true,"supports_databases":false}]}"#;
+    match serde_json::from_str::<Response>(s).unwrap() {
+        Response::Services { services } => assert!(!services[0].supports_overrides),
+        other => panic!("expected Response::Services, got {other:?}"),
+    }
 }
 
 #[test]
@@ -3073,5 +3275,49 @@ fn response_groups_empty_byte_shape() {
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(s, r#"{"type":"groups","order":[],"members":{}}"#);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+/// An uncustomised proxy carries no domain fields, so the wire bytes stay
+/// identical to what daemons emitted before those fields existed.
+#[test]
+fn response_proxies_byte_shape() {
+    let r = Response::Proxies {
+        proxies: vec![ProxyEntry {
+            name: "reverb".into(),
+            target: "http://127.0.0.1:8080".into(),
+            secure: false,
+            primary_domain: None,
+            domains: vec![],
+        }],
+        rules: vec![ProxyRuleEntry {
+            site: "app".into(),
+            prefix: "/app".into(),
+            target: "http://127.0.0.1:9000".into(),
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"proxies","proxies":[{"name":"reverb","target":"http://127.0.0.1:8080","secure":false}],"rules":[{"site":"app","prefix":"/app","target":"http://127.0.0.1:9000"}]}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+/// A customized proxy appends its primary and full FQDN set after the
+/// pre-existing fields, leaving their order untouched.
+#[test]
+fn response_proxies_customized_domains_byte_shape() {
+    let r = Response::Proxies {
+        proxies: vec![ProxyEntry {
+            name: "reverb".into(),
+            target: "http://127.0.0.1:8080".into(),
+            secure: false,
+            primary_domain: Some("corp.test".into()),
+            domains: vec!["corp.test".into(), "*.reverb.test".into()],
+        }],
+        rules: vec![],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"proxies","proxies":[{"name":"reverb","target":"http://127.0.0.1:8080","secure":false,"primary_domain":"corp.test","domains":["corp.test","*.reverb.test"]}],"rules":[]}"#;
+    assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }

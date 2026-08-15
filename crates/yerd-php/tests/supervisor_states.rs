@@ -306,6 +306,86 @@ async fn set_ca_bundle_is_rendered_into_pool_config() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn set_pool_overrides_is_rendered_into_pool_config() {
+    let v = PhpVersion::new(8, 3);
+    let spawner = FakeSpawner::new(vec![SpawnPlan {
+        pid: 101,
+        behavior: ChildBehavior::Lives,
+    }]);
+    let tmp = tempfile::tempdir().unwrap();
+    let dirs = PlatformDirs {
+        config: tmp.path().join("cfg"),
+        data: tmp.path().join("data"),
+        state: tmp.path().join("state"),
+        cache: tmp.path().join("cache"),
+        runtime: tmp.path().join("run"),
+    };
+    std::fs::create_dir_all(&dirs.config).unwrap();
+    std::fs::create_dir_all(&dirs.state).unwrap();
+    std::fs::create_dir_all(&dirs.runtime).unwrap();
+    let mut mgr = PhpManager::new(
+        spawner,
+        FakeClock,
+        FakeProbe::always_ok(),
+        dirs.clone(),
+        ActivePortBinder::new(),
+        5151,
+        binaries_with(v),
+    );
+    mgr.set_pool_overrides(BTreeMap::from([(
+        v,
+        BTreeMap::from([("max_children".to_owned(), "32".to_owned())]),
+    )]));
+
+    mgr.ensure(v).await.unwrap();
+
+    let on_disk = std::fs::read_to_string(dirs.config.join("php-fpm-8.3-5151.conf")).unwrap();
+    assert!(on_disk.contains("pm.max_children = 32\n"), "got: {on_disk}");
+    assert!(!on_disk.contains("pm.max_children = 16"), "got: {on_disk}");
+}
+
+/// An override that no longer validates leaves the built-in default alone
+/// rather than breaking the pool: `override_max_children` returns `None` and
+/// `ensure` never touches `cfg.max_children`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn invalid_pool_override_falls_back_to_the_default() {
+    let v = PhpVersion::new(8, 3);
+    let spawner = FakeSpawner::new(vec![SpawnPlan {
+        pid: 101,
+        behavior: ChildBehavior::Lives,
+    }]);
+    let tmp = tempfile::tempdir().unwrap();
+    let dirs = PlatformDirs {
+        config: tmp.path().join("cfg"),
+        data: tmp.path().join("data"),
+        state: tmp.path().join("state"),
+        cache: tmp.path().join("cache"),
+        runtime: tmp.path().join("run"),
+    };
+    std::fs::create_dir_all(&dirs.config).unwrap();
+    std::fs::create_dir_all(&dirs.state).unwrap();
+    std::fs::create_dir_all(&dirs.runtime).unwrap();
+    let mut mgr = PhpManager::new(
+        spawner,
+        FakeClock,
+        FakeProbe::always_ok(),
+        dirs.clone(),
+        ActivePortBinder::new(),
+        5152,
+        binaries_with(v),
+    );
+    mgr.set_pool_overrides(BTreeMap::from([(
+        v,
+        BTreeMap::from([("max_children".to_owned(), "0".to_owned())]),
+    )]));
+
+    mgr.ensure(v).await.unwrap();
+
+    let on_disk = std::fs::read_to_string(dirs.config.join("php-fpm-8.3-5152.conf")).unwrap();
+    assert!(on_disk.contains("pm.max_children = 16\n"), "got: {on_disk}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn set_binaries_makes_a_runtime_install_visible() {
     let v = PhpVersion::new(8, 3);
     let spawner = FakeSpawner::new(vec![SpawnPlan {

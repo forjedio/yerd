@@ -1,4 +1,4 @@
-//! macOS implementations of the four traits.
+//! macOS implementations of the host-platform traits.
 //!
 //! `Paths` uses `directories` for `config`/`data`/`cache`; `state`
 //! coincides with `data` on macOS (no XDG state distinction); `runtime`
@@ -15,28 +15,34 @@
 #![allow(clippy::similar_names)]
 
 use std::fs;
-use std::io::Write;
+use std::io;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use directories::ProjectDirs;
 
 use crate::error::ops;
+use crate::ide::{DetectedIde, IdeLauncher, LaunchTarget};
 use crate::metrics::SystemMetrics;
+use crate::opener::SystemOpener;
+use crate::os::unix::{executable_in_directories, spawn_and_check, DEFAULT_STARTUP_WINDOW};
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::{
     loopback_port_reachable, loopback_redirect_reaches_proxy, PortRedirector,
+};
+use crate::pure::ide_spec::{
+    ide_cli_candidates_macos, mac_app_name_matches, mac_application_locations, spec_for, IdeSpec,
+    IDE_SPECS,
 };
 use crate::pure::{pem_match, pf_anchor, port_plan, ps_metrics, resolver_file};
 use crate::resolver::ResolverInstaller;
 use crate::terminal::TerminalLauncher;
 use crate::trust_store::{BrowserCaTrust, CaFingerprint, NssOutcome, TrustStore};
 use crate::{
-    BindPairErrorReason, PlatformError, ResolverErrorReason, TerminalErrorReason,
-    TrustStoreErrorReason,
+    BindPairErrorReason, IdeErrorReason, OpenErrorReason, PlatformError, ResolverErrorReason,
+    TerminalErrorReason, TrustStoreErrorReason,
 };
 
 /// macOS terminal launcher.
@@ -52,77 +58,241 @@ impl MacosTerminalLauncher {
 }
 
 impl TerminalLauncher for MacosTerminalLauncher {
+    /// Hand the directory straight to Terminal.app, which opens a new window
+    /// with the folder as the login shell's working directory.
+    ///
+    /// The obvious alternative - writing a throwaway `.command` script and
+    /// `open`ing it - is what a shipped build used to do, and it leaks: Terminal
+    /// echoes the script's full temp path into the fresh window and stamps the
+    /// launcher's filename into the window title. Passing the directory leaves
+    /// the window as clean as one opened by hand.
     fn open_terminal(&self, path: &Path) -> Result<(), PlatformError> {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut command = Command::new("/usr/bin/open");
+        command.arg("-a").arg("Terminal").arg(path);
+        wait_and_check(&mut command, "/usr/bin/open").map_err(|source| PlatformError::Terminal {
+            reason: TerminalErrorReason::OpenTerminal(source),
+        })
+    }
+}
 
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| PlatformError::Terminal {
-                reason: TerminalErrorReason::PrepareLauncher(std::io::Error::other(e)),
-            })?
-            .as_millis();
-        let quoted_path = shell_quote(&path.to_string_lossy());
-        let script = format!(
-            "#!/bin/sh\nrm -f -- \"$0\"\ncd -- {quoted_path}\nexec \"${{SHELL:-/bin/zsh}}\" -l\n"
-        );
+/// macOS IDE launcher using a CLI launcher when available and the standard
+/// application opener as a fallback.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MacosIdeLauncher;
 
-        let mut created = None;
-        for attempt in 0u32..100 {
-            let script_path = std::env::temp_dir().join(format!(
-                "yerd-terminal-{}-{stamp}-{attempt}.command",
-                std::process::id()
-            ));
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o700)
-                .open(&script_path)
-            {
-                Ok(file) => {
-                    created = Some((script_path, file));
+impl MacosIdeLauncher {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+fn executable_in_path(name: &str) -> Option<PathBuf> {
+    if let Some(paths) = std::env::var_os("PATH") {
+        if let Some(executable) = executable_in_directories(name, std::env::split_paths(&paths)) {
+            return Some(executable);
+        }
+    }
+
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    executable_in_directories(name, ide_cli_candidates_macos(home.as_deref()))
+}
+
+fn application_locations() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    application_locations_from_home(home.as_deref())
+}
+
+fn application_locations_from_home(home: Option<&Path>) -> Vec<PathBuf> {
+    mac_application_locations(home)
+}
+
+fn ide_cli(spec: &IdeSpec) -> Option<PathBuf> {
+    spec.cli_names
+        .iter()
+        .find_map(|name| executable_in_path(name))
+}
+
+/// How deep the bundle scan descends below an application root. Three levels
+/// reach the `JetBrains` Toolbox layout, `apps/PhpStorm/ch-0/PhpStorm.app`.
+const APPLICATION_SCAN_DEPTH: u8 = 3;
+
+/// Recursive `read_dir` over one application root, replacing the old Spotlight
+/// query so detection also works with `mdutil -i off`.
+///
+/// `wanted` is the set of IDE ids still unresolved by the CLI lookup; only those
+/// are matched, and the walk stops as soon as all of them are found.
+///
+/// `path.is_dir()` follows symlinks on purpose: nix-darwin populates
+/// `~/Applications/Nix Apps` with links, and the unfollowed entry type would
+/// skip every one. A `*.app` is matched but never descended into, which keeps
+/// the walk bounded on a large `/Applications`.
+fn application_bundles_in(
+    directory: &Path,
+    depth: u8,
+    wanted: &[&'static str],
+    found: &mut Vec<(&'static str, PathBuf)>,
+) {
+    if found.len() == wanted.len() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        if let Some(stem) = name.strip_suffix(".app") {
+            for spec in IDE_SPECS {
+                if !wanted.contains(&spec.id) || found.iter().any(|(id, _)| *id == spec.id) {
+                    continue;
+                }
+                if mac_app_name_matches(spec.id, stem) {
+                    found.push((spec.id, path.clone()));
                     break;
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(e) => {
-                    return Err(PlatformError::Terminal {
-                        reason: TerminalErrorReason::CreateLauncher(e),
-                    });
-                }
             }
+        } else if depth > 0 {
+            application_bundles_in(&path, depth - 1, wanted, found);
         }
-        let Some((script_path, mut file)) = created else {
-            return Err(PlatformError::Terminal {
-                reason: TerminalErrorReason::CreateLauncher(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    "could not create a unique terminal launcher",
-                )),
-            });
-        };
-        if let Err(e) = file
-            .write_all(script.as_bytes())
-            .and_then(|()| fs::set_permissions(&script_path, fs::Permissions::from_mode(0o700)))
-        {
-            let _ = fs::remove_file(&script_path);
-            return Err(PlatformError::Terminal {
-                reason: TerminalErrorReason::PrepareLauncher(e),
-            });
-        }
-        drop(file);
-
-        match Command::new("open").arg(&script_path).spawn() {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                let _ = fs::remove_file(&script_path);
-                Err(PlatformError::Terminal {
-                    reason: TerminalErrorReason::OpenLauncher(e),
-                })
-            }
+        if found.len() == wanted.len() {
+            return;
         }
     }
 }
 
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
+fn detected_applications(wanted: &[&'static str]) -> Vec<(&'static str, PathBuf)> {
+    let mut found = Vec::new();
+    for root in application_locations() {
+        application_bundles_in(&root, APPLICATION_SCAN_DEPTH, wanted, &mut found);
+        if found.len() == wanted.len() {
+            break;
+        }
+    }
+    found
+}
+
+/// macOS system-default opener.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MacosSystemOpener;
+
+impl MacosSystemOpener {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+/// Run a command that is expected to exit promptly and report its status.
+/// Only used for `/usr/bin/open`, which returns as soon as it has handed the
+/// request to `LaunchServices`; a long-lived launcher goes through
+/// [`spawn_and_check`] instead.
+fn wait_and_check(command: &mut Command, program: &str) -> io::Result<()> {
+    let output = command.output()?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "{program} exited with {}",
+            output.status
+        )))
+    }
+}
+
+impl SystemOpener for MacosSystemOpener {
+    fn open_path(&self, path: &Path) -> Result<(), PlatformError> {
+        let mut command = Command::new("/usr/bin/open");
+        command.arg(path);
+        wait_and_check(&mut command, "/usr/bin/open").map_err(|source| PlatformError::SystemOpen {
+            reason: OpenErrorReason::Launch {
+                program: "/usr/bin/open".to_owned(),
+                source,
+            },
+        })
+    }
+}
+
+/// Two-pass detection: resolve every spec's CLI target first, then hand only the
+/// ids that are still unresolved to `scan`. When `PATH` already covers every
+/// installed editor, `scan` is never called and detection touches no application
+/// root at all. Both halves are parameters so a test can drive them without an
+/// installed IDE or a mutated environment.
+fn detect_ides<C, S>(cli: C, scan: S) -> Vec<DetectedIde>
+where
+    C: Fn(&IdeSpec) -> Option<PathBuf>,
+    S: FnOnce(&[&'static str]) -> Vec<(&'static str, PathBuf)>,
+{
+    let cli_targets: Vec<Option<PathBuf>> = IDE_SPECS.iter().map(&cli).collect();
+    let unresolved: Vec<&'static str> = IDE_SPECS
+        .iter()
+        .zip(&cli_targets)
+        .filter(|(_, target)| target.is_none())
+        .map(|(spec, _)| spec.id)
+        .collect();
+    let applications = if unresolved.is_empty() {
+        Vec::new()
+    } else {
+        scan(&unresolved)
+    };
+
+    let mut detected: Vec<DetectedIde> = IDE_SPECS
+        .iter()
+        .zip(cli_targets)
+        .filter_map(|(spec, target)| {
+            let launch = if let Some(executable) = target {
+                LaunchTarget::Cli(executable)
+            } else {
+                let bundle = applications
+                    .iter()
+                    .find(|(found, _)| *found == spec.id)
+                    .map(|(_, path)| path.clone())?;
+                LaunchTarget::Application(bundle)
+            };
+            Some(DetectedIde {
+                id: spec.id,
+                display_name: spec.display_name,
+                launch,
+            })
+        })
+        .collect();
+    detected.sort_by_key(|ide| spec_for(ide.id).map_or(u8::MAX, |spec| spec.rank));
+    detected
+}
+
+impl IdeLauncher for MacosIdeLauncher {
+    fn detect(&self) -> Vec<DetectedIde> {
+        detect_ides(ide_cli, detected_applications)
+    }
+
+    fn launch(&self, ide: &DetectedIde, path: &Path) -> Result<(), PlatformError> {
+        let started = match &ide.launch {
+            LaunchTarget::Cli(executable) => {
+                let program = executable.to_string_lossy().into_owned();
+                let mut command = Command::new(executable);
+                command.arg(path).current_dir(path);
+                spawn_and_check(&mut command, &program, DEFAULT_STARTUP_WINDOW)
+            }
+            LaunchTarget::Application(bundle) => {
+                let mut command = Command::new("/usr/bin/open");
+                command.arg("-a").arg(bundle).arg(path);
+                wait_and_check(&mut command, "/usr/bin/open")
+            }
+        };
+        started.map_err(|source| PlatformError::Ide {
+            reason: IdeErrorReason::Launch {
+                ide: ide.display_name.to_owned(),
+                source,
+            },
+        })
+    }
 }
 
 /// macOS `Paths` implementation.
@@ -690,6 +860,139 @@ mod tests {
         let _ = MacosPortBinder::new();
         let _ = MacosSystemMetrics::new();
         let _ = MacosPortRedirector::new();
+    }
+
+    #[test]
+    fn short_lived_process_status_is_reported() {
+        let mut success = Command::new("/bin/sh");
+        success.args(["-c", "exit 0"]);
+        assert!(wait_and_check(&mut success, "/bin/sh").is_ok());
+
+        let mut failure = Command::new("/bin/sh");
+        failure.args(["-c", "exit 7"]);
+        assert!(wait_and_check(&mut failure, "/bin/sh").is_err());
+    }
+
+    /// Every known IDE id, the scan's `wanted` set when nothing resolved on `PATH`.
+    fn every_id() -> Vec<&'static str> {
+        IDE_SPECS.iter().map(|spec| spec.id).collect()
+    }
+
+    /// A versioned bundle name is matched by the scan itself, with no Spotlight
+    /// index involved.
+    #[test]
+    fn versioned_bundles_are_found_without_spotlight() {
+        let root = tempfile::tempdir().unwrap();
+        let application = root.path().join("PhpStorm 2025.1.app");
+        fs::create_dir(&application).unwrap();
+        fs::create_dir(root.path().join("Unrelated.app")).unwrap();
+
+        let mut found = Vec::new();
+        application_bundles_in(root.path(), APPLICATION_SCAN_DEPTH, &every_id(), &mut found);
+        assert_eq!(found, vec![("phpstorm", application)]);
+    }
+
+    #[test]
+    fn toolbox_nested_bundles_are_found_at_depth_three() {
+        let root = tempfile::tempdir().unwrap();
+        let application = root.path().join("PhpStorm/ch-0/PhpStorm.app");
+        fs::create_dir_all(&application).unwrap();
+
+        let mut found = Vec::new();
+        application_bundles_in(root.path(), APPLICATION_SCAN_DEPTH, &every_id(), &mut found);
+        assert_eq!(found, vec![("phpstorm", application)]);
+    }
+
+    /// A bundle for an IDE the CLI pass already resolved is skipped.
+    #[test]
+    fn bundles_outside_the_wanted_set_are_ignored() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("PhpStorm.app")).unwrap();
+        let zed = root.path().join("Zed.app");
+        fs::create_dir(&zed).unwrap();
+
+        let mut found = Vec::new();
+        application_bundles_in(root.path(), APPLICATION_SCAN_DEPTH, &["zed"], &mut found);
+        assert_eq!(found, vec![("zed", zed)]);
+    }
+
+    /// The whole point of the two-pass split: when `PATH` covers every editor the
+    /// application roots are never touched.
+    #[test]
+    fn detection_skips_the_bundle_scan_when_every_editor_resolves_via_cli() {
+        let scanned = std::cell::Cell::new(false);
+        let detected = detect_ides(
+            |spec| Some(PathBuf::from(format!("/usr/local/bin/{}", spec.id))),
+            |_| {
+                scanned.set(true);
+                Vec::new()
+            },
+        );
+
+        assert!(!scanned.get(), "the bundle scan must not run");
+        let mut ranked: Vec<&IdeSpec> = IDE_SPECS.iter().collect();
+        ranked.sort_by_key(|spec| spec.rank);
+        let ids: Vec<&str> = detected.iter().map(|ide| ide.id).collect();
+        assert_eq!(ids, ranked.iter().map(|spec| spec.id).collect::<Vec<_>>());
+        assert!(detected
+            .iter()
+            .all(|ide| matches!(ide.launch, LaunchTarget::Cli(_))));
+    }
+
+    #[test]
+    fn detection_scans_only_for_editors_missing_from_path() {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let detected = detect_ides(
+            |spec| (spec.id == "zed").then(|| PathBuf::from("/usr/local/bin/zed")),
+            |wanted| {
+                asked.borrow_mut().extend_from_slice(wanted);
+                vec![("phpstorm", PathBuf::from("/Applications/PhpStorm.app"))]
+            },
+        );
+
+        assert!(!asked.borrow().contains(&"zed"));
+        assert_eq!(asked.borrow().len(), IDE_SPECS.len() - 1);
+        let ids: Vec<&str> = detected.iter().map(|ide| ide.id).collect();
+        assert_eq!(ids, vec!["phpstorm", "zed"]);
+        assert!(matches!(
+            detected.first().map(|ide| &ide.launch),
+            Some(LaunchTarget::Application(_))
+        ));
+        assert!(matches!(
+            detected.get(1).map(|ide| &ide.launch),
+            Some(LaunchTarget::Cli(_))
+        ));
+    }
+
+    /// nix-darwin fills `~/Applications/Nix Apps` with symlinks, so the scan has
+    /// to follow them.
+    #[test]
+    fn symlinked_bundles_are_found() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = directory.path().join("store");
+        let root = directory.path().join("Applications");
+        fs::create_dir(&store).unwrap();
+        fs::create_dir(&root).unwrap();
+
+        let real = store.join("Zed.app");
+        fs::create_dir(&real).unwrap();
+        let link = root.join("Zed.app");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let mut found = Vec::new();
+        application_bundles_in(&root, APPLICATION_SCAN_DEPTH, &every_id(), &mut found);
+        assert_eq!(found, vec![("zed", link)]);
+    }
+
+    #[test]
+    fn application_locations_uses_the_supplied_home() {
+        let home = PathBuf::from("/Users/test");
+        let locations = application_locations_from_home(Some(&home));
+        assert!(locations.contains(&home.join("Applications")));
+        assert!(
+            locations.contains(&home.join("Library/Application Support/JetBrains/Toolbox/apps"))
+        );
+        assert!(!locations.contains(&home.join("Downloads")));
     }
 
     // ---- Paths::resolve / read_real_uid -------------------------------

@@ -11,7 +11,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 import ServicesView from "./ServicesView.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { resetResourceCache } from "@/composables/useResource";
-import type { AddableServiceType } from "@/ipc/types";
+import type { AddableServiceType, ServiceStatus } from "@/ipc/types";
 
 function meilisearchType(): AddableServiceType {
   return {
@@ -158,5 +158,73 @@ describe("ServicesView add-in-flight state", () => {
     await flushPromises();
 
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+  });
+});
+
+/** reka-ui only mounts a dropdown's content once the trigger is opened, which
+ *  needs pointer events jsdom does not deliver, so the row menu is rendered
+ *  inline instead and asserted on its text. */
+const dropdownStubs = {
+  DropdownMenu: { template: "<div><slot /></div>" },
+  DropdownMenuTrigger: { template: "<div><slot /></div>" },
+  DropdownMenuContent: { template: "<div><slot /></div>" },
+  DropdownMenuItem: { template: "<div><slot /></div>" },
+  DropdownMenuSeparator: { template: "<hr />" },
+};
+
+function mysqlRow(overrides: Partial<ServiceStatus> = {}): ServiceStatus {
+  return {
+    service: "mysql",
+    display_name: "MySQL",
+    installed_versions: ["9.7.1"],
+    selected_version: "9.7.1",
+    state: "running",
+    pid: 42,
+    listen: "127.0.0.1:3306",
+    port: 3306,
+    enabled: true,
+    supports_databases: true,
+    ...overrides,
+  };
+}
+
+async function mountRows(services: ServiceStatus[]) {
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "list_services") return Promise.resolve({ type: "services", services });
+    return Promise.reject(new Error(`unexpected invoke ${cmd}`));
+  });
+  const wrapper = mount(ServicesView, {
+    global: { stubs: { teleport: true, RouterLink: true, ...dropdownStubs } },
+  });
+  mounted.push(wrapper);
+  await flushPromises();
+  return wrapper;
+}
+
+describe("ServicesView overrides menu item", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    resetResourceCache();
+    useDaemon().report.value = null;
+  });
+
+  afterEach(() => {
+    mounted.forEach((w) => w.unmount());
+    mounted.length = 0;
+  });
+
+  it("offers the overrides action for a service that supports them", async () => {
+    const wrapper = await mountRows([mysqlRow({ supports_overrides: true })]);
+    expect(wrapper.text()).toContain("Override settings");
+  });
+
+  it("hides the overrides action when the daemon reports no support", async () => {
+    const wrapper = await mountRows([mysqlRow({ supports_overrides: false })]);
+    expect(wrapper.text()).not.toContain("Override settings");
+  });
+
+  it("hides the overrides action when an older daemon omits the field", async () => {
+    const wrapper = await mountRows([mysqlRow()]);
+    expect(wrapper.text()).not.toContain("Override settings");
   });
 });

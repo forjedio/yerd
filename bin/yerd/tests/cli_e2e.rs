@@ -640,10 +640,35 @@ mod tests {
             other => panic!("expected PhpVersions, got {other:?}"),
         }
 
+        let pool_set = Command::Php {
+            action: yerd::cli::PhpAction::Pool {
+                action: yerd::cli::PhpPoolAction::Set {
+                    version: "8.3".into(),
+                    name: "max_children".into(),
+                    value: "32".into(),
+                },
+            },
+        };
+        match send(&dirs, &pool_set).await {
+            Response::PhpVersions { pool, .. } => {
+                assert_eq!(
+                    pool.get(&v83)
+                        .and_then(|m| m.get("max_children"))
+                        .map(String::as_str),
+                    Some("32")
+                );
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+
         let per_version_ini =
             std::fs::read_to_string(dirs.data.join("php-cli-8.3.ini")).expect("per-version ini");
         assert!(per_version_ini.contains("memory_limit = 1G\n"));
         assert!(per_version_ini.contains("xdebug.mode = debug\n"));
+        assert!(
+            !per_version_ini.contains("max_children"),
+            "pool settings must not reach the CLI ini: {per_version_ini}"
+        );
         let base_ini = std::fs::read_to_string(dirs.data.join("php-cli.ini")).expect("base ini");
         assert!(!base_ini.contains("1G"));
         assert!(!base_ini.contains("xdebug.mode"));
@@ -654,6 +679,22 @@ mod tests {
             "{on_disk}"
         );
         assert!(on_disk.contains("[php.directives.\"8.3\"]"), "{on_disk}");
+        assert!(on_disk.contains("[php.pool.\"8.3\"]"), "{on_disk}");
+
+        let pool_unset = Command::Php {
+            action: yerd::cli::PhpAction::Pool {
+                action: yerd::cli::PhpPoolAction::Unset {
+                    version: "8.3".into(),
+                    name: "max_children".into(),
+                },
+            },
+        };
+        match send(&dirs, &pool_unset).await {
+            Response::PhpVersions { pool, .. } => {
+                assert!(!pool.contains_key(&v83));
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
 
         let ini_unset = Command::Php {
             action: yerd::cli::PhpAction::Ini {

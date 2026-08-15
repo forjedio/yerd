@@ -244,6 +244,37 @@ pub fn config_path(dirs: &PlatformDirs, service_id: &str) -> PathBuf {
         .join(format!("{service_id}.conf"))
 }
 
+/// The override sidecar dir: `state/services/<id>/conf.d`, beside the rendered
+/// config that includes it.
+///
+/// Holds the two files an override-capable engine reads after Yerd's own
+/// settings: the regenerated [`managed_override_path`] and the user-owned
+/// [`local_override_path`].
+#[must_use]
+pub fn confd_dir(dirs: &PlatformDirs, service_id: &str) -> PathBuf {
+    dirs.state.join("services").join(service_id).join("conf.d")
+}
+
+/// The Yerd-managed override file: `state/services/<id>/conf.d/10-yerd.<ext>`,
+/// rewritten from the instance's stored overrides on every start.
+///
+/// `ext` comes from `yerd_core::service_directives::file_ext`, which this module
+/// takes as a string so paths stay free of the dialect type.
+#[must_use]
+pub fn managed_override_path(dirs: &PlatformDirs, service_id: &str, ext: &str) -> PathBuf {
+    confd_dir(dirs, service_id).join(format!("10-yerd.{ext}"))
+}
+
+/// The user-owned override file: `state/services/<id>/conf.d/50-local.<ext>`,
+/// created once as a commented stub and never rewritten.
+///
+/// It sorts after [`managed_override_path`], and every include form reads the
+/// two in name order, so a hand edit here wins over a managed override.
+#[must_use]
+pub fn local_override_path(dirs: &PlatformDirs, service_id: &str, ext: &str) -> PathBuf {
+    confd_dir(dirs, service_id).join(format!("50-local.{ext}"))
+}
+
 /// The `MySQL`/`MariaDB` bootstrap-SQL path: `state/services/<id>/<id>-init.sql`.
 ///
 /// Referenced by the `init-file` directive in the rendered `my.cnf`; the server
@@ -517,6 +548,47 @@ mod tests {
         assert_eq!(
             server_path(&dirs, "redis", "valkey-server", &v),
             PathBuf::from("/tmp/x/d/services/redis/8/bin/valkey-server.exe")
+        );
+    }
+
+    #[test]
+    fn override_sidecar_path_layout() {
+        let dirs = dirs_in(std::path::Path::new("/tmp/x"));
+        assert_eq!(
+            confd_dir(&dirs, "mysql"),
+            PathBuf::from("/tmp/x/s/services/mysql/conf.d")
+        );
+        assert_eq!(
+            managed_override_path(&dirs, "mysql", "cnf"),
+            PathBuf::from("/tmp/x/s/services/mysql/conf.d/10-yerd.cnf")
+        );
+        assert_eq!(
+            local_override_path(&dirs, "mysql", "cnf"),
+            PathBuf::from("/tmp/x/s/services/mysql/conf.d/50-local.cnf")
+        );
+        assert_eq!(
+            managed_override_path(&dirs, "redis", "conf"),
+            PathBuf::from("/tmp/x/s/services/redis/conf.d/10-yerd.conf")
+        );
+        assert_eq!(
+            local_override_path(&dirs, "postgres", "conf"),
+            PathBuf::from("/tmp/x/s/services/postgres/conf.d/50-local.conf")
+        );
+    }
+
+    /// The sidecar dir must sit beside the config that includes it, and the
+    /// managed file must sort before the local one, since name order is what
+    /// delivers the precedence.
+    #[test]
+    fn sidecar_sits_beside_the_config_and_sorts_before_the_local_file() {
+        let dirs = dirs_in(std::path::Path::new("/tmp/x"));
+        assert_eq!(
+            confd_dir(&dirs, "mysql").parent(),
+            config_path(&dirs, "mysql").parent()
+        );
+        assert!(
+            managed_override_path(&dirs, "mysql", "cnf")
+                < local_override_path(&dirs, "mysql", "cnf")
         );
     }
 

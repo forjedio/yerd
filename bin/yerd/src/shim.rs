@@ -78,6 +78,26 @@ pub(crate) fn default_from_config(dirs: &PlatformDirs) -> Option<(PathBuf, Strin
     php.is_file().then_some((php, minor))
 }
 
+/// Path to the bundled Composer phar (`{data}/tools/composer/composer.phar`).
+/// Shared by the `composer` shim and `yerd exec composer`, which run the same
+/// phar under different PHP versions.
+#[must_use]
+pub(crate) fn composer_phar(dirs: &PlatformDirs) -> PathBuf {
+    dirs.data
+        .join("tools")
+        .join("composer")
+        .join("composer.phar")
+}
+
+/// Message for when [`composer_phar`] doesn't exist. Shared so the `composer`
+/// shim and `yerd exec composer` fail identically.
+#[must_use]
+pub(crate) fn composer_missing_message() -> String {
+    "Composer is not installed — install it from the Tooling page \
+     (or run `yerd install tool composer`)"
+        .to_owned()
+}
+
 /// Path to a version's generated CLI ini (`{data}/php-cli-<minor>.ini`).
 #[must_use]
 pub(crate) fn cli_ini_path(dirs: &PlatformDirs, minor: &str) -> PathBuf {

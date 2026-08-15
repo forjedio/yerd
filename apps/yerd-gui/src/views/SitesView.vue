@@ -16,6 +16,7 @@ import {
   Plus,
   Rocket,
   Search,
+  SearchX,
   ShieldAlert,
 } from "lucide-vue-next";
 
@@ -40,6 +41,7 @@ import Modal from "@/components/ui/Modal.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { sitesIntent } from "@/lib/shortcuts/sitesIntent";
+import { matchesSiteFilter } from "@/lib/siteFilter";
 import { slugifySiteName } from "@/lib/siteName";
 import { useSitesGroupState } from "@/lib/sitesGroupState";
 import { useDaemon } from "@/composables/useDaemon";
@@ -374,12 +376,13 @@ const folderRows = computed(() =>
   })),
 );
 
-// Live, case-insensitive filter on the full `<name>.<tld>` domain, sorted
-// alphabetically by name so the list is stable and scannable.
+// Live, case-insensitive filter across every domain a site serves - its apex
+// plus any added domains, subdomains and wildcards - sorted alphabetically by
+// name so the list is stable and scannable.
 const filteredSites = computed(() => {
-  const q = siteFilter.value.trim().toLowerCase();
+  const q = siteFilter.value.trim();
   const list = q
-    ? sites.value.filter((s) => `${s.name}.${tld.value}`.toLowerCase().includes(q))
+    ? sites.value.filter((s) => matchesSiteFilter(s, tld.value, q))
     : [...sites.value];
   return list.sort((a, b) => a.name.localeCompare(b.name));
 });
@@ -424,6 +427,10 @@ const visibleSections = computed(() =>
 // match" copy as the flat view instead of a blank pane.
 const groupedNoMatch = computed(() => searching.value && visibleSections.value.length === 0);
 
+/** Shared by the flat and grouped listings, which each render their own
+ *  filter-miss state but must word it identically. */
+const filterMissTitle = computed(() => `No sites match “${siteFilter.value}”`);
+
 /** A section renders expanded when searching (to reveal matches) or when not
  *  remembered-collapsed. */
 function sectionExpanded(sec: GroupSection): boolean {
@@ -450,6 +457,7 @@ async function changeWpAutoLogin(
   site: SiteEntry,
   enabled: boolean,
   user: string | null,
+  options?: { silent?: boolean },
 ): Promise<void> {
   if (enabled === (site.wp_auto_login ?? false) && (user ?? "") === (site.wp_auto_login_user ?? "")) {
     return;
@@ -457,11 +465,13 @@ async function changeWpAutoLogin(
   rowBusy.value = `edit:${site.name}`;
   try {
     await setWordpressAutoLogin(site.name, enabled, user);
-    toast.success(
-      enabled
-        ? `Auto-login enabled for ${site.name}`
-        : `Auto-login disabled for ${site.name}`,
-    );
+    if (!options?.silent) {
+      toast.success(
+        enabled
+          ? `Auto-login enabled for ${site.name}`
+          : `Auto-login disabled for ${site.name}`,
+      );
+    }
     await load({ force: true });
   } catch (e) {
     toast.error("Couldn't change auto-login", (e as IpcError).message);
@@ -754,15 +764,18 @@ async function shareSitePublicly(s: Site): Promise<void> {
               @toggle-secure="toggleSecure"
             />
           </div>
-          <p
+          <EmptyState
             v-else-if="siteFilter"
-            class="py-12 text-center text-sm text-muted-foreground"
-          >
-            No sites match “{{ siteFilter }}”.
-          </p>
-          <p v-else class="py-12 text-center text-sm text-muted-foreground">
-            Your parked folders have no child directories yet.
-          </p>
+            :icon="SearchX"
+            :title="filterMissTitle"
+            description="Every domain a site serves is searched, including added domains and wildcards. Try a shorter fragment, or clear the filter."
+          />
+          <EmptyState
+            v-else
+            :icon="FolderOpen"
+            title="No sites yet"
+            description="Your parked folders have no child directories. Add a project inside one, or link a single project directory."
+          />
         </template>
 
         <!-- Grouped listing: collapsible sections + trailing Unallocated. -->
@@ -853,12 +866,12 @@ async function shareSitePublicly(s: Site): Promise<void> {
               </div>
             </section>
           </div>
-          <p
+          <EmptyState
             v-if="groupedNoMatch"
-            class="py-12 text-center text-sm text-muted-foreground"
-          >
-            No sites match “{{ siteFilter }}”.
-          </p>
+            :icon="SearchX"
+            :title="filterMissTitle"
+            description="Every domain a site serves is searched, including added domains and wildcards. Try a shorter fragment, or clear the filter."
+          />
         </template>
 
         <!-- Parked folders (demoted: the management surface, below the sites) -->

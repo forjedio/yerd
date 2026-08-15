@@ -8,12 +8,15 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tauri::Manager;
 use yerd_core::PhpVersion;
-use yerd_ipc::{ErrorCode, Request, Response};
-use yerd_platform::TerminalLauncher;
+use yerd_ipc::{ErrorCode, Request, Response, SiteEntry};
+use yerd_platform::{
+    DetectedIde, IdeErrorReason, IdeLauncher, PlatformError, SystemOpener, TerminalLauncher,
+};
 
 use crate::error::GuiError;
 use crate::ipc::{exchange, exchange_timeout};
@@ -167,6 +170,38 @@ pub async fn add_proxy_rule(
 #[tauri::command]
 pub async fn remove_proxy_rule(site: String, prefix: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::RemoveProxyRule { site, prefix }).await?)
+}
+
+// ── routing rules ──────────────────────────────────────────────────────────
+
+/// List every site's path-prefix routing rules.
+#[tauri::command]
+pub async fn list_routes() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListRoutes).await?)
+}
+
+/// Add a routing rule to `site`: URIs under `prefix` that match no real file are
+/// handled by `target`, a path relative to the site's served root.
+#[tauri::command]
+pub async fn add_route_rule(
+    site: String,
+    prefix: String,
+    target: String,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::AddRouteRule {
+            site,
+            prefix,
+            target,
+        })
+        .await?,
+    )
+}
+
+/// Remove the routing rule `prefix` from `site`.
+#[tauri::command]
+pub async fn remove_route_rule(site: String, prefix: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::RemoveRouteRule { site, prefix }).await?)
 }
 
 // ── site groups ────────────────────────────────────────────────────────────
@@ -416,6 +451,15 @@ pub async fn set_php_directives(
     )
 }
 
+/// Update one PHP version's FPM pool settings (`""` resets to the default).
+#[tauri::command]
+pub async fn set_php_pool_settings(
+    version: PhpVersion,
+    settings: std::collections::BTreeMap<String, String>,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetPhpPoolSettings { version, settings }).await?)
+}
+
 #[tauri::command]
 pub async fn list_php_extensions() -> Result<Response, GuiError> {
     finish(exchange(&Request::ListPhpExtensions).await?)
@@ -559,6 +603,22 @@ pub async fn restart_service(service: String) -> Result<Response, GuiError> {
 #[tauri::command]
 pub async fn set_service_port(service: String, port: u16) -> Result<Response, GuiError> {
     finish(exchange(&Request::SetServicePort { service, port }).await?)
+}
+
+/// Merge configuration overrides into a service instance (`""` removes a key).
+/// Takes effect on the next start/restart; nothing is restarted here.
+#[tauri::command]
+pub async fn set_service_overrides(
+    service: String,
+    overrides: std::collections::BTreeMap<String, String>,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetServiceOverrides { service, overrides }).await?)
+}
+
+/// Read back a service instance's stored configuration overrides.
+#[tauri::command]
+pub async fn service_overrides(service: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::ServiceOverrides { service }).await?)
 }
 
 #[tauri::command]
@@ -982,20 +1042,168 @@ pub async fn job_cancel(job_id: String) -> Result<Response, GuiError> {
 
 // ── host helpers ───────────────────────────────────────────────────────────
 
+fn validated_project_directory(path: String) -> Result<PathBuf, GuiError> {
+    let path = PathBuf::from(path);
+    if path.is_dir() {
+        Ok(path)
+    } else {
+        Err(GuiError::internal(format!(
+            "project path is not a directory: {}",
+            path.display()
+        )))
+    }
+}
+
 /// Validate a project directory and delegate terminal launching to the active
 /// OS implementation in `yerd-platform`.
 #[tauri::command]
 pub async fn open_terminal(path: String) -> Result<(), GuiError> {
-    let path = PathBuf::from(path);
-    if !path.is_dir() {
-        return Err(GuiError::internal(format!(
-            "project path is not a directory: {}",
-            path.display()
-        )));
-    }
+    let path = validated_project_directory(path)?;
     yerd_platform::ActiveTerminalLauncher::new()
         .open_terminal(&path)
         .map_err(|error| GuiError::internal(error.to_string()))
+}
+
+/// An IDE available to the current host, returned to the site details sidebar.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdeOption {
+    /// Stable identifier used by the site details action.
+    pub id: String,
+    /// User-facing IDE name.
+    pub label: String,
+}
+
+/// The most recent host detection, so a launch never re-scans and the resolved
+/// launch paths stay host-side (the webview only ever sees ids and labels).
+/// `static Mutex` precedent: `DAEMON_REG_LOCK` in `autostart.rs`.
+static DETECTED_IDES: Mutex<Option<Vec<DetectedIde>>> = Mutex::new(None);
+
+/// A poisoned cache still holds a usable detection, so recover rather than
+/// propagate: this is a memo, not a correctness boundary.
+fn detected_ides_guard() -> MutexGuard<'static, Option<Vec<DetectedIde>>> {
+    DETECTED_IDES.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Detect off the async runtime and refresh the host-side cache.
+async fn detect_ides() -> Result<Vec<DetectedIde>, GuiError> {
+    let ides = tokio::task::spawn_blocking(|| yerd_platform::ActiveIdeLauncher::new().detect())
+        .await
+        .map_err(|error| GuiError::internal(format!("detecting IDEs failed: {error}")))?;
+    *detected_ides_guard() = Some(ides.clone());
+    Ok(ides)
+}
+
+/// List supported IDE launchers detected on this host, best first. Re-detects
+/// on every call, which is what makes the Settings "Rescan" button work.
+#[tauri::command]
+pub async fn get_installed_ides() -> Result<Vec<IdeOption>, GuiError> {
+    Ok(ide_options(&detect_ides().await?))
+}
+
+fn ide_options(ides: &[DetectedIde]) -> Vec<IdeOption> {
+    ides.iter()
+        .map(|ide| IdeOption {
+            id: ide.id.to_owned(),
+            label: ide.display_name.to_owned(),
+        })
+        .collect()
+}
+
+/// The document root the daemon holds for `name`.
+fn resolve_site_root(sites: &[SiteEntry], name: &str) -> Option<PathBuf> {
+    sites
+        .iter()
+        .find(|entry| entry.site.name() == name)
+        .map(|entry| entry.site.document_root().to_path_buf())
+}
+
+/// Resolve the daemon-owned document root for a site the webview named.
+///
+/// The webview never supplies a directory: it names a site, and the daemon's own
+/// answer decides which path is opened, so an arbitrary host directory can no
+/// longer be handed to an editor. Stale per-site overrides are pruned from the
+/// same answer, but only once the requested site is found in it - a daemon
+/// mid-restart replying with an empty list must not wipe every stored override.
+async fn site_root_for_editor(site: &str) -> Result<PathBuf, GuiError> {
+    let response = finish(exchange_timeout(&Request::ListSites, PROBE_TIMEOUT).await?)?;
+    let Response::Sites { sites } = response else {
+        return Err(GuiError::internal(
+            "unexpected daemon reply while resolving the site folder",
+        ));
+    };
+    let root = resolve_site_root(&sites, site)
+        .ok_or_else(|| GuiError::internal(format!("unknown site: {site}")))?;
+    let known: Vec<String> = sites
+        .iter()
+        .map(|entry| entry.site.name().to_owned())
+        .collect();
+    crate::autostart::prune_site_ide_overrides(&known);
+    Ok(root)
+}
+
+/// User-facing name for an IDE id, falling back to the raw id when this build
+/// has no spec row for it (a preference written by a newer Yerd).
+fn ide_display_name(id: &str) -> String {
+    yerd_platform::pure::ide_spec::spec_for(id)
+        .map_or_else(|| id.to_owned(), |spec| spec.display_name.to_owned())
+}
+
+/// Launch `id` from an already-detected list; an id that was not detected is a
+/// typed "not installed" failure rather than a fresh host scan.
+fn launch_ide(
+    launcher: &impl IdeLauncher,
+    detected: &[DetectedIde],
+    id: &str,
+    root: &Path,
+) -> Result<(), PlatformError> {
+    let ide = detected
+        .iter()
+        .find(|ide| ide.id == id)
+        .ok_or_else(|| PlatformError::Ide {
+            reason: IdeErrorReason::NotInstalled(ide_display_name(id)),
+        })?;
+    launcher.launch(ide, root)
+}
+
+/// Hand a resolved site root to the host's default folder handler.
+fn open_root(opener: &impl SystemOpener, root: &Path) -> Result<(), GuiError> {
+    opener
+        .open_path(root)
+        .map_err(|error| GuiError::internal(error.to_string()))
+}
+
+/// Open a site's folder with the host's default application. The platform
+/// abstraction handles KDE's native opener before generic XDG fallbacks and
+/// keeps site paths outside the frontend opener scope working.
+#[tauri::command]
+pub async fn open_in_default(site: String) -> Result<(), GuiError> {
+    let root = site_root_for_editor(&site).await?;
+    tokio::task::spawn_blocking(move || open_root(&yerd_platform::ActiveSystemOpener::new(), &root))
+        .await
+        .map_err(|error| GuiError::internal(format!("opening the site folder failed: {error}")))?
+}
+
+/// Open a site's folder in a selected, host-detected IDE.
+#[tauri::command]
+pub async fn open_in_ide(site: String, ide: String) -> Result<(), GuiError> {
+    let root = site_root_for_editor(&site).await?;
+    let cached = detected_ides_guard().clone();
+    let detected = match cached {
+        Some(detected) => detected,
+        None => detect_ides().await?,
+    };
+    tokio::task::spawn_blocking(move || {
+        launch_ide(
+            &yerd_platform::ActiveIdeLauncher::new(),
+            &detected,
+            &ide,
+            &root,
+        )
+    })
+    .await
+    .map_err(|error| GuiError::internal(format!("opening the editor failed: {error}")))?
+    .map_err(|error| GuiError::internal(error.to_string()))
 }
 
 /// Persist a mail attachment into the app cache and return its absolute path.
@@ -1190,6 +1398,108 @@ fn safe_attachment_filename(name: &str) -> String {
 mod tests {
     use super::*;
 
+    use yerd_platform::{FakeIdeLauncher, FakeSystemOpener, LaunchTarget};
+
+    fn detected(id: &'static str, display_name: &'static str) -> DetectedIde {
+        DetectedIde {
+            id,
+            display_name,
+            launch: LaunchTarget::Cli(PathBuf::from(format!("/usr/bin/{id}"))),
+        }
+    }
+
+    fn site_entry(name: &str, root: &str) -> SiteEntry {
+        SiteEntry {
+            site: yerd_core::Site::linked(name, PathBuf::from(root), PhpVersion::new(8, 3))
+                .expect("valid site"),
+            is_wordpress: false,
+            primary_domain: None,
+            domains: Vec::new(),
+            apex_shadowed_by: None,
+            uses_front_controller: false,
+            is_laravel: false,
+        }
+    }
+
+    #[test]
+    fn ide_options_preserve_wire_and_display_names() {
+        let options = ide_options(&[
+            detected("vscode", "VS Code"),
+            detected("phpstorm", "PhpStorm"),
+        ]);
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0].id, "vscode");
+        assert_eq!(options[0].label, "VS Code");
+        assert_eq!(options[1].id, "phpstorm");
+        assert_eq!(options[1].label, "PhpStorm");
+    }
+
+    #[test]
+    fn resolve_site_root_matches_by_name_only() {
+        let sites = vec![
+            site_entry("blog", "/srv/blog"),
+            site_entry("shop", "/srv/shop"),
+        ];
+
+        assert_eq!(
+            resolve_site_root(&sites, "shop"),
+            Some(PathBuf::from("/srv/shop"))
+        );
+        assert_eq!(resolve_site_root(&sites, "missing"), None);
+        assert_eq!(resolve_site_root(&[], "blog"), None);
+    }
+
+    #[test]
+    fn launch_ide_dispatches_to_the_requested_detected_editor() {
+        let launcher = FakeIdeLauncher::new(vec![]);
+        let detected = [detected("phpstorm", "PhpStorm"), detected("zed", "Zed")];
+
+        launch_ide(&launcher, &detected, "zed", Path::new("/srv/blog")).expect("launch succeeds");
+
+        assert_eq!(
+            launcher.launches(),
+            vec![("zed".to_owned(), PathBuf::from("/srv/blog"))]
+        );
+    }
+
+    #[test]
+    fn launch_ide_rejects_an_undetected_id_with_its_display_name() {
+        let launcher = FakeIdeLauncher::new(vec![]);
+
+        let error = launch_ide(&launcher, &[], "phpstorm", Path::new("/srv/blog"))
+            .expect_err("undetected id fails");
+        assert!(error.to_string().contains("PhpStorm is not installed"));
+
+        let unknown = launch_ide(&launcher, &[], "not-an-editor", Path::new("/srv/blog"))
+            .expect_err("unknown id fails");
+        assert!(unknown
+            .to_string()
+            .contains("not-an-editor is not installed"));
+        assert!(launcher.launches().is_empty());
+    }
+
+    #[test]
+    fn launch_ide_propagates_a_launcher_failure() {
+        let launcher = FakeIdeLauncher::failing(vec![], std::io::ErrorKind::PermissionDenied);
+        let detected = [detected("zed", "Zed")];
+
+        let error = launch_ide(&launcher, &detected, "zed", Path::new("/srv/blog"))
+            .expect_err("launcher failure propagates");
+        assert!(error.to_string().contains("Zed"));
+    }
+
+    #[test]
+    fn open_root_maps_an_opener_failure_to_a_typed_gui_error() {
+        let opener = FakeSystemOpener::new();
+        open_root(&opener, Path::new("/srv/blog")).expect("open succeeds");
+        assert_eq!(opener.opened(), vec![PathBuf::from("/srv/blog")]);
+
+        let failing = FakeSystemOpener::failing(std::io::ErrorKind::NotFound);
+        let error = open_root(&failing, Path::new("/srv/blog")).expect_err("open fails");
+        assert_eq!(error.code, "internal");
+        assert!(error.message.contains("fake-opener"));
+    }
+
     #[test]
     fn finish_passes_success_through() {
         match finish(Response::Ok) {
@@ -1211,6 +1521,25 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.code, "not_found");
         assert_eq!(err.message, "no such site");
+    }
+
+    #[test]
+    fn validated_project_directory_accepts_directories() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            validated_project_directory(directory.path().display().to_string()).unwrap(),
+            directory.path()
+        );
+    }
+
+    #[test]
+    fn validated_project_directory_rejects_non_directories() {
+        let err = validated_project_directory("/path/that/does/not/exist".to_owned())
+            .expect_err("missing path must be rejected");
+        assert_eq!(
+            err.message,
+            "project path is not a directory: /path/that/does/not/exist"
+        );
     }
 
     #[test]

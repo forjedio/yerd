@@ -218,6 +218,17 @@ pub enum Request {
         /// Directive name → value; `""` removes the directive.
         directives: BTreeMap<String, String>,
     },
+    /// Merge per-version FPM pool settings into the config and apply them to
+    /// that version's pool. These are pool-block values, not ini directives,
+    /// so they never reach the CLI ini. An empty-string value resets the
+    /// setting to its built-in default.
+    SetPhpPoolSettings {
+        /// The installed PHP version the pool settings apply to.
+        version: PhpVersion,
+        /// Setting name → value; currently only `"max_children"` (`1..=1024`).
+        /// `""` resets to the default.
+        settings: BTreeMap<String, String>,
+    },
     /// Register a custom PHP extension for a version: the daemon validates and
     /// load-probes the `.so`, persists it, and loads it into that version's FPM
     /// pool and CLI ini.
@@ -343,6 +354,25 @@ pub enum Request {
         service: String,
         /// The new loopback port.
         port: u16,
+    },
+    /// Merge free-form configuration overrides into a service instance. An
+    /// empty-string value removes a key, exactly like
+    /// [`Self::SetPhpDirectives`]. The daemon validates each name/value shape
+    /// and refuses a directive it manages itself, with a hint naming the typed
+    /// path. Takes effect on the next start/restart (nothing is reloaded or
+    /// restarted implicitly), like [`Self::SetServicePort`]. A service that
+    /// accepts no overrides (Meilisearch, Reverb) is refused.
+    SetServiceOverrides {
+        /// Service id.
+        service: String,
+        /// Override name → value; `""` removes the override.
+        overrides: BTreeMap<String, String>,
+    },
+    /// Read back a service instance's stored configuration overrides. Refused
+    /// for a service that accepts none.
+    ServiceOverrides {
+        /// Service id.
+        service: String,
     },
     /// Fetch the last `lines` lines of a service's log file.
     ServiceLogs {
@@ -770,6 +800,29 @@ pub enum Request {
         /// `true` removes the CA from the NSS stores; `false` installs it.
         uninstall: bool,
     },
+    /// Add a path-prefix **routing** rule to a site: URIs under `prefix` that
+    /// match no real file are handled by `target`, a path relative to the site's
+    /// served root. Unlike [`Self::AddProxyRule`], which forwards to an HTTP
+    /// upstream, this resolves to a file inside the site's own tree - a nested
+    /// front controller (`api/index.php`) or an SPA document (`index.html`).
+    AddRouteRule {
+        /// The site the rule attaches to.
+        site: String,
+        /// The path prefix, e.g. `/api` (must begin with `/`).
+        prefix: String,
+        /// The target path relative to the served root (validated by the
+        /// daemon; never absolute and never containing `..`).
+        target: String,
+    },
+    /// Remove a path-prefix routing rule from a site.
+    RemoveRouteRule {
+        /// The site the rule is on.
+        site: String,
+        /// The path prefix to remove.
+        prefix: String,
+    },
+    /// Enumerate every site's path-prefix routing rules.
+    ListRoutes,
 }
 
 #[cfg(test)]
@@ -814,6 +867,7 @@ mod variant_name_pinning {
             Request::SetPhpSettings { .. } => {}
             Request::SetPhpVersionSettings { .. } => {}
             Request::SetPhpDirectives { .. } => {}
+            Request::SetPhpPoolSettings { .. } => {}
             Request::AddPhpExtension { .. } => {}
             Request::RemovePhpExtension { .. } => {}
             Request::ListPhpExtensions => {}
@@ -836,6 +890,8 @@ mod variant_name_pinning {
             Request::StopService { .. } => {}
             Request::RestartService { .. } => {}
             Request::SetServicePort { .. } => {}
+            Request::SetServiceOverrides { .. } => {}
+            Request::ServiceOverrides { .. } => {}
             Request::ServiceLogs { .. } => {}
             Request::AddService { .. } => {}
             Request::RemoveService { .. } => {}
@@ -905,6 +961,9 @@ mod variant_name_pinning {
             Request::SetLanEnabled { .. } => {}
             Request::MintRemoteSetupCode => {}
             Request::TrustBrowsers { .. } => {}
+            Request::AddRouteRule { .. } => {}
+            Request::RemoveRouteRule { .. } => {}
+            Request::ListRoutes => {}
         }
     }
 
@@ -1022,6 +1081,13 @@ mod variant_name_pinning {
         pin(Request::SetServicePort {
             service: "redis".into(),
             port: 6380,
+        });
+        pin(Request::SetServiceOverrides {
+            service: "mysql".into(),
+            overrides: BTreeMap::new(),
+        });
+        pin(Request::ServiceOverrides {
+            service: "mysql".into(),
         });
         pin(Request::ServiceLogs {
             service: "redis".into(),
@@ -1178,6 +1244,16 @@ mod variant_name_pinning {
             prefix: "/app".to_owned(),
         });
         pin(Request::ListProxies);
+        pin(Request::AddRouteRule {
+            site: "portal".to_owned(),
+            prefix: "/api".to_owned(),
+            target: "api/index.php".to_owned(),
+        });
+        pin(Request::RemoveRouteRule {
+            site: "portal".to_owned(),
+            prefix: "/api".to_owned(),
+        });
+        pin(Request::ListRoutes);
         pin(Request::SetMcpEnabled { enabled: true });
         pin(Request::SetLanEnabled { enabled: true });
         pin(Request::MintRemoteSetupCode);

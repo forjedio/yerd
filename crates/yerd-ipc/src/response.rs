@@ -149,6 +149,14 @@ pub enum Response {
         /// `version_settings`.
         #[serde(default, skip_serializing_if = "boxed_version_map_is_empty")]
         directives: Box<BTreeMap<PhpVersion, BTreeMap<String, String>>>,
+        /// Configured per-version FPM pool overrides (`"max_children" ->
+        /// "32"`), keyed by version. Only versions with an override appear; a
+        /// version that is absent runs the built-in default
+        /// ([`yerd_core::php_pool::DEFAULT_MAX_CHILDREN`]). Empty when none
+        /// are set; `#[serde(default)]` keeps older daemons (which omit it)
+        /// decodable. Boxed like `version_settings`.
+        #[serde(default, skip_serializing_if = "boxed_version_map_is_empty")]
+        pool: Box<BTreeMap<PhpVersion, BTreeMap<String, String>>>,
     },
     /// Reply to [`crate::Request::AvailablePhp`].
     AvailablePhp {
@@ -225,6 +233,12 @@ pub enum Response {
     WordpressAdminUsers {
         /// The site's administrator accounts, for the auto-login user picker.
         users: Vec<WordPressAdminUser>,
+    },
+    /// Reply to [`crate::Request::ServiceOverrides`] - the instance's stored
+    /// configuration overrides, empty when it has none.
+    ServiceOverrides {
+        /// Override name → value, in name order.
+        overrides: BTreeMap<String, String>,
     },
     /// Reply to [`crate::Request::ServiceLogs`] - trailing log lines, oldest first.
     ServiceLogs {
@@ -398,6 +412,12 @@ pub enum Response {
         /// changed - the client should tell the user to install it.
         certutil_missing: bool,
     },
+    /// Reply to [`crate::Request::ListRoutes`] - every site's path-prefix
+    /// routing rules.
+    Routes {
+        /// Per-site routing rules.
+        rules: Vec<RouteRuleEntry>,
+    },
 }
 
 /// One registered custom PHP extension (see [`Response::PhpExtensions`]).
@@ -481,6 +501,20 @@ pub struct ProxyEntry {
     pub target: String,
     /// Whether the proxy is served over HTTPS.
     pub secure: bool,
+    /// The proxy's primary (canonical) domain FQDN, populated **only** when it
+    /// differs from the default apex (`{name}.{tld}`). Omitted for an
+    /// effectively-default proxy so the wire shape stays byte-identical to
+    /// older clients, which synthesize `{name}.{tld}` from the TLD they already
+    /// hold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_domain: Option<String>,
+    /// The proxy's full effective routable domain set as FQDNs, in router order
+    /// (apex-first-then-added, so a non-apex primary is not necessarily first;
+    /// identify the primary via `primary_domain`, not position). Populated
+    /// **only** for an effectively-customized proxy (empty and omitted
+    /// otherwise).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domains: Vec<String>,
 }
 
 /// One per-site path-prefix reverse-proxy rule (reply element of
@@ -493,6 +527,24 @@ pub struct ProxyRuleEntry {
     /// The path prefix (e.g. `/app`).
     pub prefix: String,
     /// The upstream URL (`http[s]://host:port`).
+    pub target: String,
+}
+
+/// One per-site path-prefix routing rule (reply element of
+/// [`Response::Routes`]).
+///
+/// Deliberately separate from [`ProxyRuleEntry`] despite the identical field
+/// shape: `yerd-ipc` is a byte-pinned contract, and coupling two features'
+/// wire evolution to one struct would make either one hard to change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RouteRuleEntry {
+    /// The site the rule attaches to (a linked site name or a parked
+    /// document-root display label).
+    pub site: String,
+    /// The path prefix (e.g. `/api`).
+    pub prefix: String,
+    /// The target path, relative to the site's served root (e.g.
+    /// `api/index.php`).
     pub target: String,
 }
 
@@ -617,6 +669,7 @@ mod variant_name_pinning {
             Response::WordpressVersions { .. } => {}
             Response::WordpressLoginToken { .. } => {}
             Response::WordpressAdminUsers { .. } => {}
+            Response::ServiceOverrides { .. } => {}
             Response::ServiceLogs { .. } => {}
             Response::Databases { .. } => {}
             Response::Dumps { .. } => {}
@@ -633,6 +686,7 @@ mod variant_name_pinning {
             Response::Groups { .. } => {}
             Response::BrowserTrust { .. } => {}
             Response::Proxies { .. } => {}
+            Response::Routes { .. } => {}
         }
     }
 
@@ -693,6 +747,7 @@ mod variant_name_pinning {
             settings: BTreeMap::new(),
             version_settings: Box::new(BTreeMap::new()),
             directives: Box::new(BTreeMap::new()),
+            pool: Box::new(BTreeMap::new()),
         });
         pin_response(Response::AvailablePhp {
             available: vec![PhpVersion::new(8, 4), PhpVersion::new(8, 5)],
@@ -796,6 +851,9 @@ mod variant_name_pinning {
                 login: "admin".into(),
                 display_name: "Admin".into(),
             }],
+        });
+        pin_response(Response::ServiceOverrides {
+            overrides: BTreeMap::new(),
         });
         pin_response(Response::ServiceLogs { lines: vec![] });
         pin_response(Response::Databases {
@@ -915,11 +973,20 @@ mod variant_name_pinning {
                 name: "reverb".into(),
                 target: "http://127.0.0.1:8080".into(),
                 secure: false,
+                primary_domain: None,
+                domains: vec![],
             }],
             rules: vec![ProxyRuleEntry {
                 site: "app".into(),
                 prefix: "/app".into(),
                 target: "http://127.0.0.1:8080".into(),
+            }],
+        });
+        pin_response(Response::Routes {
+            rules: vec![RouteRuleEntry {
+                site: "portal".into(),
+                prefix: "/api".into(),
+                target: "api/index.php".into(),
             }],
         });
         for c in [

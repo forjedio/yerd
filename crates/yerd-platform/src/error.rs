@@ -111,6 +111,20 @@ pub enum PlatformError {
         /// Specific terminal-launch failure.
         reason: TerminalErrorReason,
     },
+
+    /// A selected IDE could not be opened.
+    #[error("IDE: {reason}")]
+    Ide {
+        /// Specific IDE-launch failure.
+        reason: IdeErrorReason,
+    },
+
+    /// The host desktop's default file or folder opener could not be launched.
+    #[error("system opener: {reason}")]
+    SystemOpen {
+        /// Specific system-opener failure.
+        reason: OpenErrorReason,
+    },
 }
 
 fn display_install_hint(hint: Option<&'static str>) -> String {
@@ -174,21 +188,52 @@ pub enum ResolverErrorReason {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum TerminalErrorReason {
-    /// The temporary macOS launcher could not be created.
-    #[error("could not create launcher: {0}")]
-    CreateLauncher(#[source] std::io::Error),
-
-    /// The temporary macOS launcher could not be written or configured.
-    #[error("could not prepare launcher: {0}")]
-    PrepareLauncher(#[source] std::io::Error),
-
-    /// The temporary macOS launcher could not be opened.
-    #[error("could not open launcher: {0}")]
-    OpenLauncher(#[source] std::io::Error),
+    /// The macOS terminal application could not be launched.
+    #[error("could not open terminal: {0}")]
+    OpenTerminal(#[source] std::io::Error),
 
     /// No supported terminal emulator could be launched.
     #[error("no supported terminal emulator was found")]
     NoSupportedTerminal,
+}
+
+/// Specific failure modes for [`PlatformError::Ide`].
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum IdeErrorReason {
+    /// The requested IDE was not detected on this host. Carries the IDE's
+    /// display name, not its id, because the string is user-facing.
+    #[error("{0} is not installed")]
+    NotInstalled(String),
+
+    /// The detected IDE process could not be started.
+    #[error("could not open {ide}: {source}")]
+    Launch {
+        /// Display name of the IDE that was selected.
+        ide: String,
+        /// Process-spawn failure.
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// Specific failure modes for [`PlatformError::SystemOpen`].
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum OpenErrorReason {
+    /// No desktop opener executable was available.
+    #[error("no supported desktop opener was found")]
+    NoSupportedOpener,
+
+    /// A desktop opener executable could not be started.
+    #[error("could not start {program}: {source}")]
+    Launch {
+        /// Opener executable that was attempted last.
+        program: String,
+        /// Underlying process-spawn failure.
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// Specific failure modes for [`PlatformError::BindPair`].
@@ -254,6 +299,10 @@ pub mod ops {
     pub const UNINSTALL_LAN_PORT_REDIRECT: &str = "uninstall-lan-port-redirect";
     /// Open a user terminal in a project directory.
     pub const OPEN_TERMINAL: &str = "open-terminal";
+    /// Open a project directory in a selected IDE.
+    pub const OPEN_IDE: &str = "open-ide";
+    /// Open a path with the host desktop's default application.
+    pub const OPEN_DEFAULT: &str = "open-default";
 }
 
 #[cfg(test)]
@@ -401,6 +450,18 @@ mod tests {
         }
     }
 
+    /// The rendered message must read as the user-facing display name, which is
+    /// why the variant carries a resolved `String` rather than an id.
+    #[test]
+    fn display_ide_not_installed_uses_the_display_name() {
+        let reason = IdeErrorReason::NotInstalled("PhpStorm".to_owned());
+        assert_eq!(reason.to_string(), "PhpStorm is not installed");
+        assert_eq!(
+            PlatformError::Ide { reason }.to_string(),
+            "IDE: PhpStorm is not installed"
+        );
+    }
+
     /// Tripwire: constructing every variant of every reason enum and the
     /// outer error type. New variants drop coverage if not added here.
     #[test]
@@ -445,13 +506,29 @@ mod tests {
             install_hint: Some("y"),
         };
         for reason in [
-            TerminalErrorReason::CreateLauncher(std::io::Error::from(std::io::ErrorKind::Other)),
-            TerminalErrorReason::PrepareLauncher(std::io::Error::from(std::io::ErrorKind::Other)),
-            TerminalErrorReason::OpenLauncher(std::io::Error::from(std::io::ErrorKind::Other)),
+            TerminalErrorReason::OpenTerminal(std::io::Error::from(std::io::ErrorKind::Other)),
             TerminalErrorReason::NoSupportedTerminal,
         ] {
             let _ = PlatformError::Terminal { reason };
         }
+        let _ = PlatformError::Ide {
+            reason: IdeErrorReason::NotInstalled("VS Code".to_owned()),
+        };
+        let _ = PlatformError::Ide {
+            reason: IdeErrorReason::Launch {
+                ide: "VS Code".to_owned(),
+                source: std::io::Error::from(std::io::ErrorKind::Other),
+            },
+        };
+        let _ = PlatformError::SystemOpen {
+            reason: OpenErrorReason::NoSupportedOpener,
+        };
+        let _ = PlatformError::SystemOpen {
+            reason: OpenErrorReason::Launch {
+                program: "xdg-open".to_owned(),
+                source: std::io::Error::from(std::io::ErrorKind::Other),
+            },
+        };
     }
 
     /// Op-tag constants must be non-empty and stable strings.
@@ -477,6 +554,8 @@ mod tests {
             ops::UNINSTALL_FIREFOX_NSS,
             ops::BROWSER_CA_TRUST,
             ops::OPEN_TERMINAL,
+            ops::OPEN_IDE,
+            ops::OPEN_DEFAULT,
         ] {
             assert!(!op.is_empty());
         }
