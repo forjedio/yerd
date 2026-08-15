@@ -23,19 +23,24 @@ import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
 import {
   IpcError,
-  getInstalledIdes,
+  getPreferredIde,
+  getSiteIdeOverrides,
   openInBrowser,
   openInIde,
   openInSystemDefault,
   openInTerminal,
   openPath,
   pickDirectory,
+  setSiteIdeOverride,
   showDumpsWindow,
   wordpressAdminUsers,
 } from "@/ipc/client";
-import type { IdeOption, SiteEntry, StatusReport } from "@/ipc/types";
+import type { SiteEntry, StatusReport } from "@/ipc/types";
+import { resolveIde } from "@/lib/ideChoice";
 import { siteUrl } from "@/lib/siteUrl";
 import { openWpAdmin } from "@/lib/wpAdmin";
+import { loadIdes, useIdes } from "@/composables/useIdes";
+import { loadPlatform, usePlatform } from "@/composables/usePlatform";
 import { useToast } from "@/composables/useToast";
 
 const props = defineProps<{
@@ -68,11 +73,13 @@ const emit = defineEmits<{
 }>();
 
 const toast = useToast();
+const { installedIdes } = useIdes();
+const { supportsPathInstall } = usePlatform();
 const activeTab = ref<"general" | "domains" | "routing" | "information">("general");
 const webRoot = ref("");
-const installedIdes = ref<IdeOption[]>([]);
-const selectedIde = ref("auto");
-let ideDetectionRequestId = 0;
+const globalIde = ref<string | null>(null);
+const siteIdeOverride = ref<string | null>(null);
+let editorPreferenceRequestId = 0;
 
 const phpOptions = computed(() => {
   const versions = props.site
@@ -81,25 +88,38 @@ const phpOptions = computed(() => {
   return versions.map((version) => ({ value: version, label: `PHP ${version}` }));
 });
 
+// What this site's editor button resolves to right now: its own override, else
+// the global preference, else the best-ranked detected editor, else the folder.
+const editorChoice = computed(() =>
+  resolveIde(siteIdeOverride.value, globalIde.value, installedIdes.value),
+);
+
+const editorLabel = computed(() => editorChoice.value.label);
+
+const editorTooltip = computed(() =>
+  editorChoice.value.kind === "system"
+    ? "Open the site folder"
+    : `Open the site folder in ${editorChoice.value.label}`,
+);
+
 const ideOptions = computed(() => [
-  { value: "auto", label: "Auto-detect" },
+  {
+    value: "default",
+    label: `Use default (${resolveIde(null, globalIde.value, installedIdes.value).label})`,
+  },
   ...installedIdes.value.map((ide) => ({ value: ide.id, label: ide.label })),
+  { value: "system", label: "System default (open folder)" },
 ]);
 
+// A native <select> renders blank when its value matches no option, so an
+// override naming an editor that isn't installed here shows as the default
+// entry while the stored preference is left untouched.
+const selectedIde = computed(() => {
+  const stored = siteIdeOverride.value ?? "default";
+  return ideOptions.value.some((option) => option.value === stored) ? stored : "default";
+});
+
 const hasGroups = computed(() => (props.groupOptions?.length ?? 0) > 0);
-
-const effectiveIde = computed(() => {
-  if (selectedIde.value === "auto") return installedIdes.value[0]?.id ?? "system";
-  if (selectedIde.value === "system") return "system";
-  return installedIdes.value.some((ide) => ide.id === selectedIde.value)
-    ? selectedIde.value
-    : installedIdes.value[0]?.id ?? "system";
-});
-
-const editorLabel = computed(() => {
-  if (effectiveIde.value === "system") return "Open folder";
-  return installedIdes.value.find((ide) => ide.id === effectiveIde.value)?.label ?? "Editor";
-});
 
 const DEFAULT_ADMIN_OPTION = { value: "", label: "Earliest admin (default)" };
 type WpAdminUsersStatus = "idle" | "loading" | "ready" | "error";
@@ -180,26 +200,43 @@ async function revealSitePath(site: SiteEntry): Promise<void> {
   }
 }
 
-async function loadInstalledIdes(): Promise<void> {
-  const requestId = ++ideDetectionRequestId;
+/** Read the global preference and this site's override. The request id guards
+ *  against a fast site switch resolving out of order and applying one site's
+ *  override to another. */
+async function loadEditorPreferences(siteName: string): Promise<void> {
+  const requestId = ++editorPreferenceRequestId;
   try {
-    const detected = await getInstalledIdes();
-    if (requestId !== ideDetectionRequestId) return;
-    installedIdes.value = detected;
+    const [global, overrides] = await Promise.all([getPreferredIde(), getSiteIdeOverrides()]);
+    if (requestId !== editorPreferenceRequestId) return;
+    globalIde.value = global;
+    siteIdeOverride.value = overrides[siteName] ?? null;
   } catch (error) {
-    if (requestId !== ideDetectionRequestId) return;
-    installedIdes.value = [];
-    toast.error("Couldn't detect installed IDEs", (error as IpcError).message);
+    if (requestId !== editorPreferenceRequestId) return;
+    globalIde.value = null;
+    siteIdeOverride.value = null;
+    toast.error("Couldn't load the editor preference", (error as IpcError).message);
+  }
+}
+
+async function changeIde(site: SiteEntry, value: string): Promise<void> {
+  const previous = siteIdeOverride.value;
+  const next = value === "default" ? null : value;
+  siteIdeOverride.value = next;
+  try {
+    await setSiteIdeOverride(site.name, next);
+  } catch (error) {
+    siteIdeOverride.value = previous;
+    toast.error("Couldn't change the editor", (error as IpcError).message);
   }
 }
 
 async function openEditor(site: SiteEntry): Promise<void> {
   try {
-    const selectedIde = effectiveIde.value;
-    if (selectedIde === "system") {
-      await openInSystemDefault(site.document_root);
+    const choice = editorChoice.value;
+    if (choice.kind === "system") {
+      await openInSystemDefault(site.name);
     } else {
-      await openInIde(site.document_root, selectedIde);
+      await openInIde(site.name, choice.id);
     }
   } catch (error) {
     toast.error("Couldn't open the site folder", (error as IpcError).message);
@@ -306,11 +343,11 @@ watch(
   () => {
     activeTab.value = "general";
     if (!props.open || !props.site) {
-      ideDetectionRequestId += 1;
+      editorPreferenceRequestId += 1;
       return;
     }
-    selectedIde.value = "auto";
-    void loadInstalledIdes();
+    void loadIdes();
+    void loadEditorPreferences(props.site.name);
     if (!props.open || !props.site?.is_wordpress) return;
     wpAdminUsersStatus.value = "idle";
     wpAdminUsersOptions.value = [DEFAULT_ADMIN_OPTION];
@@ -320,6 +357,7 @@ watch(
 );
 
 onMounted(() => {
+  void loadPlatform();
   document.addEventListener("keydown", onKeydown);
 });
 onUnmounted(() => {
@@ -429,11 +467,14 @@ onUnmounted(() => {
               <Button class="min-w-0 px-2" variant="outline" size="sm" @click="openTerminal(site)">
                 <Terminal /> <span class="truncate">Terminal</span>
               </Button>
+              <!-- Same macOS-or-Linux predicate as the PATH install: host editor
+                   launching has no Windows adapter either. -->
               <Button
+                v-if="supportsPathInstall"
                 class="min-w-0 px-2"
                 variant="outline"
                 size="sm"
-                :title="`Open the site folder in ${editorLabel}`"
+                :title="editorTooltip"
                 @click="openEditor(site)"
               >
                 <Code2 /> <span class="truncate">{{ editorLabel }}</span>
@@ -484,15 +525,20 @@ onUnmounted(() => {
                   />
                 </dd>
               </div>
-              <div class="flex items-center justify-between gap-4 px-3 py-3">
-                <dt class="shrink-0 text-xs text-muted-foreground">IDE switch</dt>
+              <!-- Same macOS-or-Linux predicate as the PATH install: host editor
+                   launching has no Windows adapter either. -->
+              <div
+                v-if="supportsPathInstall"
+                class="flex items-center justify-between gap-4 px-3 py-3"
+              >
+                <dt class="shrink-0 text-xs text-muted-foreground">Editor</dt>
                 <dd class="min-w-0">
                   <Select
                     :model-value="selectedIde"
                     :options="ideOptions"
                     aria-label="Site IDE"
                     :disabled="busy"
-                    @update:model-value="selectedIde = $event"
+                    @update:model-value="changeIde(site, $event)"
                   />
                 </dd>
               </div>

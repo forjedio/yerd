@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 
 use crate::error::ops;
-use crate::ide::IdeLauncher;
+use crate::ide::{DetectedIde, IdeLauncher};
 use crate::metrics::SystemMetrics;
 use crate::opener::SystemOpener;
 use crate::paths::{Paths, PlatformDirs};
@@ -17,7 +17,7 @@ use crate::port_redirect::PortRedirector;
 use crate::resolver::ResolverInstaller;
 use crate::terminal::TerminalLauncher;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
-use crate::{Ide, PlatformError};
+use crate::PlatformError;
 
 /// Stub terminal launcher for unsupported OSes.
 #[derive(Debug, Default, Clone, Copy)]
@@ -52,11 +52,11 @@ impl UnsupportedIdeLauncher {
 }
 
 impl IdeLauncher for UnsupportedIdeLauncher {
-    fn installed_ides(&self) -> Vec<Ide> {
+    fn detect(&self) -> Vec<DetectedIde> {
         Vec::new()
     }
 
-    fn open_in_ide(&self, _: Ide, _: &Path) -> Result<(), PlatformError> {
+    fn launch(&self, _: &DetectedIde, _: &Path) -> Result<(), PlatformError> {
         Err(PlatformError::Unsupported {
             operation: ops::OPEN_IDE,
         })

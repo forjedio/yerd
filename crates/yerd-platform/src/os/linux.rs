@@ -9,21 +9,22 @@
 
 use std::fs;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
 
 use directories::ProjectDirs;
 
 use crate::error::ops;
-use crate::ide::IdeLauncher;
+use crate::ide::{DetectedIde, IdeLauncher, LaunchTarget};
 use crate::metrics::SystemMetrics;
 use crate::opener::SystemOpener;
+use crate::os::unix::{executable_in_directories, spawn_and_check, DEFAULT_STARTUP_WINDOW};
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::PortRedirector;
-use crate::pure::ide_spec::{desktop_entry_matches, spec_for};
+use crate::pure::ide_spec::{
+    desktop_entry_matches, ide_cli_candidates_linux, spec_for, IdeSpec, IDE_SPECS,
+};
 use crate::pure::opener_spec::linux_default_openers;
 use crate::pure::terminal_spec::{working_dir_flags, TERMINAL_SPECS};
 use crate::pure::{
@@ -33,8 +34,8 @@ use crate::resolver::ResolverInstaller;
 use crate::terminal::TerminalLauncher;
 use crate::trust_store::{BrowserCaTrust, CaFingerprint, NssOutcome, TrustStore};
 use crate::{
-    BindPairErrorReason, Ide, IdeErrorReason, PlatformError, ResolverErrorReason,
-    TerminalErrorReason, TrustStoreErrorReason,
+    BindPairErrorReason, IdeErrorReason, PlatformError, ResolverErrorReason, TerminalErrorReason,
+    TrustStoreErrorReason,
 };
 
 /// Linux terminal launcher.
@@ -158,23 +159,18 @@ impl LinuxIdeLauncher {
     }
 }
 
-fn executable_in_directories<I>(name: &str, directories: I) -> Option<PathBuf>
-where
-    I: IntoIterator<Item = PathBuf>,
-{
-    directories
-        .into_iter()
-        .map(|directory| directory.join(name))
-        .find(|candidate| {
-            fs::metadata(candidate).is_ok_and(|metadata| {
-                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-            })
-        })
-}
-
+/// A desktop-launched GUI inherits a minimal `PATH`, so the Flatpak, Snap, Nix,
+/// and Toolbox export directories are probed as a fallback.
 fn executable_in_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")
-        .and_then(|paths| executable_in_path_from_paths(name, std::env::split_paths(&paths)))
+    if let Some(paths) = std::env::var_os("PATH") {
+        if let Some(executable) = executable_in_path_from_paths(name, std::env::split_paths(&paths))
+        {
+            return Some(executable);
+        }
+    }
+
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    executable_in_directories(name, ide_cli_candidates_linux(home.as_deref()))
 }
 
 fn executable_in_path_from_paths<I>(name: &str, paths: I) -> Option<PathBuf>
@@ -184,12 +180,10 @@ where
     executable_in_directories(name, paths)
 }
 
-fn ide_executable(ide: Ide) -> Option<PathBuf> {
-    spec_for(ide).and_then(|spec| {
-        spec.cli_names
-            .iter()
-            .find_map(|name| executable_in_path(name))
-    })
+fn ide_executable(spec: &IdeSpec) -> Option<PathBuf> {
+    spec.cli_names
+        .iter()
+        .find_map(|name| executable_in_path(name))
 }
 
 /// Return the XDG application directories plus common package-manager exports.
@@ -246,8 +240,10 @@ fn application_dirs() -> Vec<PathBuf> {
     application_dirs_from_parts(data_home.as_deref(), home.as_deref(), &data_dirs)
 }
 
-fn desktop_entries_in(directory: &Path, depth: u8, matches: &mut Vec<(Ide, PathBuf)>) {
-    if matches.len() == Ide::all().len() {
+/// `fs::metadata` rather than `entry.file_type()`: Flatpak and Nix export their
+/// desktop entries as symlinks, and the unfollowed type would skip every one.
+fn desktop_entries_in(directory: &Path, depth: u8, matches: &mut Vec<(&'static str, PathBuf)>) {
+    if matches.len() == IDE_SPECS.len() {
         return;
     }
     let Ok(entries) = fs::read_dir(directory) else {
@@ -255,10 +251,10 @@ fn desktop_entries_in(directory: &Path, depth: u8, matches: &mut Vec<(Ide, PathB
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
+        let Ok(metadata) = fs::metadata(&path) else {
             continue;
         };
-        if file_type.is_file()
+        if metadata.is_file()
             && path.extension().and_then(|extension| extension.to_str()) == Some("desktop")
         {
             let Ok(contents) = fs::read_to_string(&path) else {
@@ -268,59 +264,44 @@ fn desktop_entries_in(directory: &Path, depth: u8, matches: &mut Vec<(Ide, PathB
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or_default();
-            for ide in Ide::all() {
-                if matches.iter().any(|(found, _)| *found == *ide) {
+            for spec in IDE_SPECS {
+                if matches.iter().any(|(found, _)| *found == spec.id) {
                     continue;
                 }
-                if desktop_entry_matches(*ide, file_name, &contents) {
-                    matches.push((*ide, path.clone()));
+                if desktop_entry_matches(spec.id, file_name, &contents) {
+                    matches.push((spec.id, path.clone()));
                     break;
                 }
             }
-        } else if file_type.is_dir() && depth > 0 {
+        } else if metadata.is_dir() && depth > 0 {
             desktop_entries_in(&path, depth - 1, matches);
         }
-        if matches.len() == Ide::all().len() {
+        if matches.len() == IDE_SPECS.len() {
             return;
         }
     }
 }
 
-fn desktop_entries_for_ides() -> Vec<(Ide, PathBuf)> {
+fn desktop_entries_for_ides() -> Vec<(&'static str, PathBuf)> {
     let mut matches = Vec::new();
     for directory in application_dirs() {
         desktop_entries_in(&directory, 1, &mut matches);
-        if matches.len() == Ide::all().len() {
+        if matches.len() == IDE_SPECS.len() {
             break;
         }
     }
     matches
 }
 
-fn desktop_entry_for(ide: Ide) -> Option<PathBuf> {
-    desktop_entries_for_ides()
-        .into_iter()
-        .find_map(|(found, path)| (found == ide).then_some(path))
-}
-
+/// `gio launch <entry> <path>` is the only desktop-entry launcher that takes the
+/// project directory: `kioclient exec` reads its second positional as a MIME
+/// type, so it would open the IDE without the folder and still report success.
+/// A missing `gio` therefore surfaces as a typed launch error rather than a
+/// silent no-op.
 fn launch_desktop_entry(desktop_entry: &Path, path: &Path) -> std::io::Result<()> {
-    let mut last_error = None;
-    for (program, subcommand, pass_path) in [
-        ("gio", "launch", true),
-        ("kioclient", "exec", false),
-        ("kioclient5", "exec", false),
-    ] {
-        let mut command = Command::new(program);
-        command.args([subcommand]).arg(desktop_entry);
-        if pass_path {
-            command.arg(path);
-        }
-        match wait_and_check(&mut command, program) {
-            Ok(()) => return Ok(()),
-            Err(source) => last_error = Some(source),
-        }
-    }
-    Err(last_error.unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound)))
+    let mut command = Command::new("gio");
+    command.arg("launch").arg(desktop_entry).arg(path);
+    spawn_and_check(&mut command, "gio", DEFAULT_STARTUP_WINDOW)
 }
 
 fn kde_session() -> bool {
@@ -333,47 +314,13 @@ fn kde_session() -> bool {
         })
 }
 
-fn wait_and_check(command: &mut Command, program: &str) -> std::io::Result<()> {
-    let output = command.output()?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other(format!(
-            "{program} exited with {}",
-            output.status
-        )))
-    }
-}
-
-fn spawn_and_check(command: &mut Command, program: &str) -> std::io::Result<()> {
-    let mut child = command.spawn()?;
-    let deadline = Instant::now() + Duration::from_millis(500);
-    loop {
-        match child.try_wait()? {
-            Some(status) if status.success() => return Ok(()),
-            Some(status) => {
-                return Err(std::io::Error::other(format!(
-                    "{program} exited with {status}"
-                )));
-            }
-            None if Instant::now() >= deadline => {
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
-                return Ok(());
-            }
-            None => std::thread::sleep(Duration::from_millis(10)),
-        }
-    }
-}
-
 fn spawn_default_opener(program: &str, path: &Path) -> std::io::Result<()> {
     let mut command = Command::new(program);
     if program == "gio" {
         command.arg("open");
     }
     command.arg(path);
-    wait_and_check(&mut command, program)
+    spawn_and_check(&mut command, program, DEFAULT_STARTUP_WINDOW)
 }
 
 /// Linux system-default opener. KDE is checked first because some Plasma
@@ -414,42 +361,46 @@ impl SystemOpener for LinuxSystemOpener {
 }
 
 impl IdeLauncher for LinuxIdeLauncher {
-    fn installed_ides(&self) -> Vec<Ide> {
+    fn detect(&self) -> Vec<DetectedIde> {
         let desktop_entries = desktop_entries_for_ides();
-        Ide::all()
+        let mut detected: Vec<DetectedIde> = IDE_SPECS
             .iter()
-            .copied()
-            .filter(|ide| {
-                ide_executable(*ide).is_some()
-                    || desktop_entries.iter().any(|(found, _)| *found == *ide)
+            .filter_map(|spec| {
+                let launch = if let Some(executable) = ide_executable(spec) {
+                    LaunchTarget::Cli(executable)
+                } else {
+                    let entry = desktop_entries
+                        .iter()
+                        .find(|(found, _)| *found == spec.id)
+                        .map(|(_, path)| path.clone())?;
+                    LaunchTarget::Application(entry)
+                };
+                Some(DetectedIde {
+                    id: spec.id,
+                    display_name: spec.display_name,
+                    launch,
+                })
             })
-            .collect()
+            .collect();
+        detected.sort_by_key(|ide| spec_for(ide.id).map_or(u8::MAX, |spec| spec.rank));
+        detected
     }
 
-    fn open_in_ide(&self, ide: Ide, path: &Path) -> Result<(), PlatformError> {
-        if let Some(executable) = ide_executable(ide) {
-            let program = executable.to_string_lossy().into_owned();
-            let mut command = Command::new(&executable);
-            command.arg(path).current_dir(path);
-            return match spawn_and_check(&mut command, &program) {
-                Ok(()) => Ok(()),
-                Err(source) => Err(PlatformError::Ide {
-                    reason: IdeErrorReason::Launch { ide, source },
-                }),
-            };
-        }
-
-        if let Some(desktop_entry) = desktop_entry_for(ide) {
-            return match launch_desktop_entry(&desktop_entry, path) {
-                Ok(()) => Ok(()),
-                Err(source) => Err(PlatformError::Ide {
-                    reason: IdeErrorReason::Launch { ide, source },
-                }),
-            };
-        }
-
-        Err(PlatformError::Ide {
-            reason: IdeErrorReason::NotInstalled(ide),
+    fn launch(&self, ide: &DetectedIde, path: &Path) -> Result<(), PlatformError> {
+        let started = match &ide.launch {
+            LaunchTarget::Cli(executable) => {
+                let program = executable.to_string_lossy().into_owned();
+                let mut command = Command::new(executable);
+                command.arg(path).current_dir(path);
+                spawn_and_check(&mut command, &program, DEFAULT_STARTUP_WINDOW)
+            }
+            LaunchTarget::Application(desktop_entry) => launch_desktop_entry(desktop_entry, path),
+        };
+        started.map_err(|source| PlatformError::Ide {
+            reason: IdeErrorReason::Launch {
+                ide: ide.display_name.to_owned(),
+                source,
+            },
         })
     }
 }
@@ -877,6 +828,8 @@ impl PortRedirector for LinuxPortRedirector {
     clippy::indexing_slicing
 )]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
 
     #[test]
@@ -893,40 +846,6 @@ mod tests {
         if Path::new("/proc/self/status").exists() {
             assert!(read_real_uid().is_some());
         }
-    }
-
-    #[test]
-    fn short_lived_process_status_is_reported() {
-        let mut success = Command::new("/usr/bin/true");
-        assert!(wait_and_check(&mut success, "/usr/bin/true").is_ok());
-
-        let mut failure = Command::new("/usr/bin/false");
-        assert!(wait_and_check(&mut failure, "/usr/bin/false").is_err());
-    }
-
-    #[test]
-    fn direct_launcher_failure_is_reported_after_startup_check() {
-        let mut command = Command::new("/usr/bin/false");
-        assert!(spawn_and_check(&mut command, "/usr/bin/false").is_err());
-    }
-
-    #[test]
-    fn direct_launcher_failure_after_initial_poll_is_reported() {
-        let mut command = Command::new("/bin/sh");
-        command.args(["-c", "sleep 0.2; exit 7"]);
-        assert!(spawn_and_check(&mut command, "/bin/sh").is_err());
-    }
-
-    #[test]
-    fn executable_lookup_accepts_only_executable_files() {
-        let directory = tempfile::tempdir().unwrap();
-        let executable = directory.path().join("zeditor");
-        fs::write(&executable, b"#!/bin/sh\n").unwrap();
-        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-        assert_eq!(
-            executable_in_directories("zeditor", vec![directory.path().to_path_buf()]),
-            Some(executable)
-        );
     }
 
     #[test]
@@ -955,7 +874,31 @@ mod tests {
 
         let mut matches = Vec::new();
         desktop_entries_in(directory.path(), 1, &mut matches);
-        assert_eq!(matches, vec![(Ide::Zed, entry)]);
+        assert_eq!(matches, vec![("zed", entry)]);
+    }
+
+    /// Flatpak and Nix expose desktop entries as symlinks into their own store,
+    /// so the scan has to follow them.
+    #[test]
+    fn desktop_entry_scan_follows_symlinked_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = directory.path().join("store");
+        let applications = directory.path().join("applications");
+        fs::create_dir(&store).unwrap();
+        fs::create_dir(&applications).unwrap();
+
+        let real = store.join("dev.zed.Zed.desktop");
+        fs::write(
+            &real,
+            "[Desktop Entry]\nType=Application\nName=Zed\nExec=zeditor %U\n",
+        )
+        .unwrap();
+        let link = applications.join("dev.zed.Zed.desktop");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let mut matches = Vec::new();
+        desktop_entries_in(&applications, 0, &mut matches);
+        assert_eq!(matches, vec![("zed", link)]);
     }
 
     #[test]

@@ -22,20 +22,27 @@ src/
   detect.rs         ProjectSignalSource trait + gather_project_signals (web-root signals)
   error.rs          PlatformError + typed reason enums + ops:: tag constants
   helper.rs         HelperInvocation (typed) + to_argv / from_argv wire contract
+  ide.rs            IdeLauncher trait + DetectedIde / LaunchTarget + FakeIdeLauncher
+  lan_ip.rs         LanIpProvider trait + FakeLanIpProvider
   metrics.rs        SystemMetrics trait (Option-returning, best-effort)
+  opener.rs         SystemOpener trait + FakeSystemOpener
   paths.rs          Paths trait + PlatformDirs struct
   port_binder.rs    PortBinder trait + BoundPort / PortPair
   port_redirect.rs  PortRedirector trait + loopback_port_reachable / loopback_redirect_reaches_proxy
   resolver.rs       ResolverInstaller trait
+  terminal.rs       TerminalLauncher trait
   trust_store.rs    TrustStore trait + CaFingerprint + NssOutcome / NssFailure
   os/
     mod.rs          cfg-selects exactly one impl; exposes `active` aliases
+    unix.rs         executable_in_directories + spawn_and_check (Linux + macOS)
     linux.rs        Linux* impls
     macos.rs        Macos* impls (+ security-framework)
     unsupported.rs  Unsupported* stubs (Windows, Phase 1)
   pure/
     mod.rs
     firefox.rs          parse_profiles_ini
+    ide_spec.rs         IDE_SPECS table (id, display_name, rank) + name/id/exec matchers
+    opener_spec.rs      ordered system-opener candidates per desktop
     pem_match.rs        find_by_fingerprint, sha256, der_to_pem
     pf_anchor.rs        compose/insert/remove macOS pf redirect rules
     port_plan.rs        classify_desired / classify_fallback
@@ -46,6 +53,7 @@ src/
     dns_probe.rs        compose/validate the loopback DNS probe
     resolved_drop_in.rs compose/parse systemd-resolved drop-in
     resolver_file.rs    compose/parse macOS /etc/resolver/<tld>
+    terminal_spec.rs    TERMINAL_SPECS probe table
 ```
 
 Runtime dependencies are deliberately tiny: `thiserror`, `directories`, `sha2`, `hex`, `pem`, `serde_json` (only to read `composer.json` during signal gathering), plus `yerd-tls` and `yerd-core` (for the `ProjectSignals` / `Detection` types the detector feeds), with `security-framework` gated to macOS only. A test (`tests/no_runtime_deps.rs`) walks the resolved dependency graph (scoped with `--filter-platform` so cfg gates apply) and asserts that `tokio`, `anyhow`, `reqwest`, `openssl`, `openssl-sys`, and `native-tls` never appear in the normal-kind runtime graph - none of which `serde_json` or `yerd-core` pull in.
@@ -181,6 +189,33 @@ pub trait SystemMetrics {
 ```
 
 Unlike every other trait here, metrics return `Option`, not `Result`. `None` collapses two cases - "OS unsupported" and "transient read failed" - because the only caller (`yerd status`) treats both identically: show nothing. The OS impls do only the file read / subprocess; the actual decoding lives in the table-tested `proc_metrics` / `ps_metrics` parsers.
+
+### `IdeLauncher`
+
+```rust
+pub trait IdeLauncher {
+    fn detect(&self) -> Vec<DetectedIde>;
+    fn launch(&self, ide: &DetectedIde, path: &Path) -> Result<(), PlatformError>;
+}
+```
+
+Detection resolves the launch target once and launching consumes it, so no code path scans the filesystem twice for the same click. `DetectedIde` carries the id, the display name, and a `LaunchTarget` that is either `Cli(PathBuf)` (a binary found on `PATH` or in the per-OS candidate directories) or `Application(PathBuf)` (the OS's indirect handle: a `.desktop` entry on Linux, a `.app` bundle on macOS). Two variants keep every adapter's `launch` total without a dead arm.
+
+Editor identity is a `&'static str` id from the `IDE_SPECS` table rather than an enum, following `terminal_spec.rs`: adding an editor is a one-row table diff, and the id is the value persisted by the GUI, so a future custom-command escape hatch is not a breaking change. The table's `rank` column (lower = preferred) is what "auto-detect" resolves against, and `detect` returns rank-sorted results.
+
+`LaunchTarget` holds a resolved filesystem path, so it never crosses the webview boundary: the GUI sends an id, and the Tauri layer maps it back through its own cache.
+
+### `SystemOpener`
+
+```rust
+pub trait SystemOpener {
+    fn open_path(&self, path: &Path) -> Result<(), PlatformError>;
+}
+```
+
+Opens a directory with the desktop's default handler - the fallback when no editor is detected or the user picks "System default". Candidate ordering per desktop lives in the table-tested `pure/opener_spec.rs`.
+
+Both traits ship public fakes (`FakeIdeLauncher`, `FakeSystemOpener`), following `FakeLanIpProvider`: each records its calls and takes an optional forced error, so callers can test the seam without touching the host.
 
 ## OS implementations and the `Active*` aliases
 

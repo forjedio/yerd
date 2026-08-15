@@ -2,15 +2,17 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::ide::Ide;
-
 /// Executable and application names used to detect one IDE on each OS.
 pub struct IdeSpec {
-    /// Stable IDE identifier.
-    pub ide: Ide,
+    /// Stable IDE identifier, used as the persisted and wire form.
+    pub id: &'static str,
+    /// User-facing name.
+    pub display_name: &'static str,
+    /// Auto-detect preference; the lowest rank among detected IDEs wins.
+    pub rank: u8,
     /// CLI executable names, checked in `PATH`.
     pub cli_names: &'static [&'static str],
-    /// macOS application names, checked in standard folders and Spotlight.
+    /// macOS application names, checked in the standard application roots.
     pub mac_app_names: &'static [&'static str],
     /// Linux desktop-entry application names, matched case-insensitively.
     pub linux_desktop_names: &'static [&'static str],
@@ -18,56 +20,82 @@ pub struct IdeSpec {
     pub linux_desktop_ids: &'static [&'static str],
 }
 
-/// Supported IDE launch metadata in the site sidebar display order.
+/// Supported IDE launch metadata in `rank` order.
+///
+/// VS Code deliberately has no bare `"Code"` desktop name: distro packages that
+/// call themselves `Name=Code` are still matched through `linux_desktop_ids` and
+/// the `Exec` command, while unrelated applications whose name merely starts
+/// with "Code" no longer match.
 pub const IDE_SPECS: &[IdeSpec] = &[
     IdeSpec {
-        ide: Ide::VsCode,
-        cli_names: &["code", "code-insiders"],
-        mac_app_names: &["Visual Studio Code"],
-        linux_desktop_names: &["Visual Studio Code", "VS Code", "Code"],
-        linux_desktop_ids: &["code", "com.visualstudio.code", "visual-studio-code"],
-    },
-    IdeSpec {
-        ide: Ide::Cursor,
-        cli_names: &["cursor"],
-        mac_app_names: &["Cursor"],
-        linux_desktop_names: &["Cursor"],
-        linux_desktop_ids: &["cursor", "com.todesktop.230313mzl4w4u92"],
-    },
-    IdeSpec {
-        ide: Ide::Zed,
-        cli_names: &["zed", "zeditor"],
-        mac_app_names: &["Zed"],
-        linux_desktop_names: &["Zed"],
-        linux_desktop_ids: &["zed", "dev.zed.Zed"],
-    },
-    IdeSpec {
-        ide: Ide::Sublime,
-        cli_names: &["subl", "sublime_text"],
-        mac_app_names: &["Sublime Text", "Sublime Text 4"],
-        linux_desktop_names: &["Sublime Text"],
-        linux_desktop_ids: &["sublime_text", "sublime-text"],
-    },
-    IdeSpec {
-        ide: Ide::PhpStorm,
+        id: "phpstorm",
+        display_name: "PhpStorm",
+        rank: 0,
         cli_names: &["phpstorm"],
         mac_app_names: &["PhpStorm"],
         linux_desktop_names: &["PhpStorm"],
         linux_desktop_ids: &["phpstorm", "jetbrains-phpstorm"],
     },
     IdeSpec {
-        ide: Ide::Windsurf,
+        id: "cursor",
+        display_name: "Cursor",
+        rank: 1,
+        cli_names: &["cursor"],
+        mac_app_names: &["Cursor"],
+        linux_desktop_names: &["Cursor"],
+        linux_desktop_ids: &["cursor", "com.todesktop.230313mzl4w4u92"],
+    },
+    IdeSpec {
+        id: "windsurf",
+        display_name: "Windsurf",
+        rank: 2,
         cli_names: &["windsurf"],
         mac_app_names: &["Windsurf"],
         linux_desktop_names: &["Windsurf"],
         linux_desktop_ids: &["windsurf"],
     },
+    IdeSpec {
+        id: "zed",
+        display_name: "Zed",
+        rank: 3,
+        cli_names: &["zed", "zeditor"],
+        mac_app_names: &["Zed"],
+        linux_desktop_names: &["Zed"],
+        linux_desktop_ids: &["zed", "dev.zed.Zed"],
+    },
+    IdeSpec {
+        id: "vscode",
+        display_name: "VS Code",
+        rank: 4,
+        cli_names: &["code", "code-insiders"],
+        mac_app_names: &["Visual Studio Code"],
+        linux_desktop_names: &["Visual Studio Code", "VS Code"],
+        linux_desktop_ids: &["code", "com.visualstudio.code", "visual-studio-code"],
+    },
+    IdeSpec {
+        id: "vscodium",
+        display_name: "VSCodium",
+        rank: 5,
+        cli_names: &["codium", "vscodium"],
+        mac_app_names: &["VSCodium"],
+        linux_desktop_names: &["VSCodium"],
+        linux_desktop_ids: &["codium", "com.vscodium.codium"],
+    },
+    IdeSpec {
+        id: "sublime",
+        display_name: "Sublime Text",
+        rank: 6,
+        cli_names: &["subl", "sublime_text"],
+        mac_app_names: &["Sublime Text", "Sublime Text 4"],
+        linux_desktop_names: &["Sublime Text"],
+        linux_desktop_ids: &["sublime_text", "sublime-text"],
+    },
 ];
 
-/// Find metadata for one supported IDE.
+/// Find metadata for one supported IDE id.
 #[must_use]
-pub fn spec_for(ide: Ide) -> Option<&'static IdeSpec> {
-    IDE_SPECS.iter().find(|spec| spec.ide == ide)
+pub fn spec_for(id: &str) -> Option<&'static IdeSpec> {
+    IDE_SPECS.iter().find(|spec| spec.id == id)
 }
 
 /// Return whether a macOS application result is inside an approved search root.
@@ -91,7 +119,31 @@ pub fn ide_cli_candidates_macos(home: Option<&Path>) -> Vec<PathBuf> {
     candidates
 }
 
-/// Return the macOS application roots used for standard and Spotlight scans.
+/// Return extra Linux CLI directories used when the GUI has no shell `PATH`.
+/// Covers the Flatpak, Snap, Nix, and `JetBrains` Toolbox export directories a
+/// desktop-launched process does not inherit.
+#[must_use]
+pub fn ide_cli_candidates_linux(home: Option<&Path>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(home) = home {
+        candidates.push(home.join(".local/bin"));
+    }
+    candidates.push(PathBuf::from("/var/lib/flatpak/exports/bin"));
+    if let Some(home) = home {
+        candidates.push(home.join(".local/share/flatpak/exports/bin"));
+    }
+    candidates.push(PathBuf::from("/snap/bin"));
+    if let Some(home) = home {
+        candidates.push(home.join(".nix-profile/bin"));
+    }
+    candidates.push(PathBuf::from("/run/current-system/sw/bin"));
+    if let Some(home) = home {
+        candidates.push(home.join(".local/share/JetBrains/Toolbox/scripts"));
+    }
+    candidates
+}
+
+/// Return the macOS application roots scanned for IDE bundles.
 #[must_use]
 pub fn mac_application_locations(home: Option<&Path>) -> Vec<PathBuf> {
     let mut locations = vec![
@@ -108,8 +160,8 @@ pub fn mac_application_locations(home: Option<&Path>) -> Vec<PathBuf> {
 
 /// Return whether a desktop-entry `Name` identifies the selected IDE.
 #[must_use]
-pub fn desktop_name_matches(ide: Ide, name: &str) -> bool {
-    spec_for(ide).is_some_and(|spec| {
+pub fn desktop_name_matches(id: &str, name: &str) -> bool {
+    spec_for(id).is_some_and(|spec| {
         spec.linux_desktop_names
             .iter()
             .any(|candidate| candidate.eq_ignore_ascii_case(name.trim()))
@@ -161,9 +213,9 @@ fn mac_app_suffix_matches(suffix: &str) -> bool {
 /// Return whether a macOS application bundle name identifies the selected IDE.
 /// Versioned and preview bundle names may add a suffix after the known name.
 #[must_use]
-pub fn mac_app_name_matches(ide: Ide, name: &str) -> bool {
+pub fn mac_app_name_matches(id: &str, name: &str) -> bool {
     let name = name.trim();
-    spec_for(ide).is_some_and(|spec| {
+    spec_for(id).is_some_and(|spec| {
         spec.mac_app_names.iter().any(|candidate| {
             if name.eq_ignore_ascii_case(candidate) {
                 return true;
@@ -179,18 +231,18 @@ pub fn mac_app_name_matches(ide: Ide, name: &str) -> bool {
     })
 }
 
-fn desktop_id_matches(ide: Ide, file_name: &str) -> bool {
-    let id = file_name
+fn desktop_id_matches(id: &str, file_name: &str) -> bool {
+    let entry_id = file_name
         .trim()
         .strip_suffix(".desktop")
         .unwrap_or(file_name)
         .rsplit('/')
         .next()
         .unwrap_or_default();
-    spec_for(ide).is_some_and(|spec| {
+    spec_for(id).is_some_and(|spec| {
         spec.linux_desktop_ids
             .iter()
-            .any(|candidate| candidate.eq_ignore_ascii_case(id))
+            .any(|candidate| candidate.eq_ignore_ascii_case(entry_id))
     })
 }
 
@@ -209,11 +261,11 @@ fn executable_name(value: &str) -> Option<&str> {
         .filter(|name| !name.is_empty())
 }
 
-fn desktop_exec_matches(ide: Ide, exec: &str) -> bool {
+fn desktop_exec_matches(id: &str, exec: &str) -> bool {
     let Some(executable) = executable_name(exec) else {
         return false;
     };
-    spec_for(ide).is_some_and(|spec| {
+    spec_for(id).is_some_and(|spec| {
         spec.cli_names
             .iter()
             .any(|candidate| candidate.eq_ignore_ascii_case(executable))
@@ -222,7 +274,7 @@ fn desktop_exec_matches(ide: Ide, exec: &str) -> bool {
 
 /// Return whether desktop-entry text describes the selected IDE.
 #[must_use]
-pub fn desktop_entry_matches(ide: Ide, file_name: &str, text: &str) -> bool {
+pub fn desktop_entry_matches(id: &str, file_name: &str, text: &str) -> bool {
     let mut in_desktop_entry = false;
     let mut is_application = false;
     let mut name = None;
@@ -249,45 +301,66 @@ pub fn desktop_entry_matches(ide: Ide, file_name: &str, text: &str) -> bool {
     }
 
     is_application
-        && (name.is_some_and(|value| desktop_name_matches(ide, value))
-            || desktop_id_matches(ide, file_name)
-            || exec.is_some_and(|value| desktop_exec_matches(ide, value)))
+        && (name.is_some_and(|value| desktop_name_matches(id, value))
+            || desktop_id_matches(id, file_name)
+            || exec.is_some_and(|value| desktop_exec_matches(id, value)))
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 mod tests {
     use std::path::PathBuf;
 
     use super::*;
 
     #[test]
-    fn every_ide_has_metadata() {
-        for ide in Ide::all() {
-            assert!(spec_for(*ide).is_some());
-        }
+    fn rank_order_is_the_documented_auto_detect_preference() {
+        let mut ordered: Vec<&IdeSpec> = IDE_SPECS.iter().collect();
+        ordered.sort_by_key(|spec| spec.rank);
+        let ids: Vec<&str> = ordered.iter().map(|spec| spec.id).collect();
+        assert_eq!(
+            ids,
+            vec!["phpstorm", "cursor", "windsurf", "zed", "vscode", "vscodium", "sublime"]
+        );
     }
 
     #[test]
-    fn wire_names_round_trip() {
-        for ide in Ide::all() {
-            assert_eq!(Ide::from_wire(ide.wire_name()), Some(*ide));
+    fn ranks_and_ids_are_unique() {
+        let mut ranks: Vec<u8> = IDE_SPECS.iter().map(|spec| spec.rank).collect();
+        ranks.sort_unstable();
+        let count = ranks.len();
+        ranks.dedup();
+        assert_eq!(ranks.len(), count);
+
+        let mut ids: Vec<&str> = IDE_SPECS.iter().map(|spec| spec.id).collect();
+        ids.sort_unstable();
+        let count = ids.len();
+        ids.dedup();
+        assert_eq!(ids.len(), count);
+    }
+
+    #[test]
+    fn every_spec_is_reachable_by_id() {
+        for spec in IDE_SPECS {
+            assert!(spec_for(spec.id).is_some());
         }
-        assert_eq!(Ide::from_wire("system"), None);
+        assert!(spec_for("system").is_none());
     }
 
     #[test]
     fn desktop_entries_match_only_the_application_group() {
         let zed = "# comment\n[Desktop Entry]\nType=Application\nName=Zed\nExec=zeditor %U\n";
-        assert!(desktop_entry_matches(Ide::Zed, "dev.zed.Zed.desktop", zed));
-        assert!(!desktop_entry_matches(
-            Ide::VsCode,
-            "dev.zed.Zed.desktop",
-            zed
-        ));
+        assert!(desktop_entry_matches("zed", "dev.zed.Zed.desktop", zed));
+        assert!(!desktop_entry_matches("vscode", "dev.zed.Zed.desktop", zed));
 
         let wrong_type = "[Desktop Entry]\nType=Link\nName=Zed\n";
         assert!(!desktop_entry_matches(
-            Ide::Zed,
+            "zed",
             "dev.zed.Zed.desktop",
             wrong_type
         ));
@@ -296,34 +369,71 @@ mod tests {
     #[test]
     fn desktop_entries_match_known_ids_and_exec_commands() {
         let vscode = "[Desktop Entry]\nType=Application\nName=Code Editor\nExec=/usr/bin/code %F\n";
-        assert!(desktop_entry_matches(Ide::VsCode, "code.desktop", vscode));
+        assert!(desktop_entry_matches("vscode", "code.desktop", vscode));
 
         let phpstorm = "[Desktop Entry]\nType=Application\nName=JetBrains IDE\nExec=\"/opt/PhpStorm/bin/phpstorm\" %f\n";
         assert!(desktop_entry_matches(
-            Ide::PhpStorm,
+            "phpstorm",
             "jetbrains-phpstorm.desktop",
             phpstorm
         ));
 
         let unrelated = "[Desktop Entry]\nType=Application\nName=Codecs\nExec=codecs\n";
         assert!(!desktop_entry_matches(
-            Ide::VsCode,
+            "vscode",
             "codecs.desktop",
             unrelated
         ));
     }
 
     #[test]
+    fn bare_code_name_matches_only_with_a_vs_code_exec_or_id() {
+        let packaged = "[Desktop Entry]\nType=Application\nName=Code\nExec=code %F\n";
+        assert!(desktop_entry_matches(
+            "vscode",
+            "unrelated.desktop",
+            packaged
+        ));
+
+        let impostor = "[Desktop Entry]\nType=Application\nName=Code\nExec=some-other-editor %F\n";
+        assert!(!desktop_entry_matches(
+            "vscode",
+            "unrelated.desktop",
+            impostor
+        ));
+    }
+
+    #[test]
+    fn vscodium_matches_its_names_ids_and_exec_commands() {
+        let by_name = "[Desktop Entry]\nType=Application\nName=VSCodium\nExec=/usr/bin/codium %F\n";
+        assert!(desktop_entry_matches(
+            "vscodium",
+            "unrelated.desktop",
+            by_name
+        ));
+
+        let by_id = "[Desktop Entry]\nType=Application\nName=Editor\nExec=editor\n";
+        assert!(desktop_entry_matches(
+            "vscodium",
+            "com.vscodium.codium.desktop",
+            by_id
+        ));
+
+        assert!(mac_app_name_matches("vscodium", "VSCodium"));
+        assert!(!mac_app_name_matches("vscodium", "VSCodium Backup"));
+    }
+
+    #[test]
     fn mac_app_names_match_versioned_and_preview_bundles() {
-        assert!(mac_app_name_matches(Ide::PhpStorm, "PhpStorm 2025.1"));
+        assert!(mac_app_name_matches("phpstorm", "PhpStorm 2025.1"));
         assert!(mac_app_name_matches(
-            Ide::VsCode,
+            "vscode",
             "Visual Studio Code - Insiders"
         ));
-        assert!(mac_app_name_matches(Ide::PhpStorm, "PhpStorm 2025.1 EAP"));
-        assert!(!mac_app_name_matches(Ide::VsCode, "Codecs"));
+        assert!(mac_app_name_matches("phpstorm", "PhpStorm 2025.1 EAP"));
+        assert!(!mac_app_name_matches("vscode", "Codecs"));
         assert!(!mac_app_name_matches(
-            Ide::VsCode,
+            "vscode",
             "Visual Studio Code - Backup"
         ));
     }
@@ -372,6 +482,31 @@ mod tests {
             vec![
                 PathBuf::from("/usr/local/bin"),
                 PathBuf::from("/opt/homebrew/bin")
+            ]
+        );
+    }
+
+    #[test]
+    fn linux_cli_candidates_include_common_gui_launch_paths() {
+        let home = PathBuf::from("/home/test");
+        assert_eq!(
+            ide_cli_candidates_linux(Some(&home)),
+            vec![
+                PathBuf::from("/home/test/.local/bin"),
+                PathBuf::from("/var/lib/flatpak/exports/bin"),
+                PathBuf::from("/home/test/.local/share/flatpak/exports/bin"),
+                PathBuf::from("/snap/bin"),
+                PathBuf::from("/home/test/.nix-profile/bin"),
+                PathBuf::from("/run/current-system/sw/bin"),
+                PathBuf::from("/home/test/.local/share/JetBrains/Toolbox/scripts"),
+            ]
+        );
+        assert_eq!(
+            ide_cli_candidates_linux(None),
+            vec![
+                PathBuf::from("/var/lib/flatpak/exports/bin"),
+                PathBuf::from("/snap/bin"),
+                PathBuf::from("/run/current-system/sw/bin"),
             ]
         );
     }

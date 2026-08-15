@@ -17,9 +17,9 @@ use std::net::{Ipv4Addr, SocketAddr};
 mod common;
 
 use yerd_platform::{
-    pure::ide_spec::desktop_entry_matches, ActiveIdeLauncher, ActivePaths, ActivePortBinder,
-    ActiveResolverInstaller, ActiveTrustStore, Ide, IdeLauncher, Paths, PlatformError, PortBinder,
-    ResolverInstaller, TrustStore,
+    pure::ide_spec::{desktop_entry_matches, IDE_SPECS},
+    ActiveIdeLauncher, ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTrustStore,
+    IdeLauncher, Paths, PlatformError, PortBinder, ResolverInstaller, TrustStore,
 };
 
 use common::random_fingerprint;
@@ -29,31 +29,31 @@ fn loopback(port: u16) -> SocketAddr {
 }
 
 #[test]
-fn ide_launcher_smoke_returns_known_unique_ides() {
-    let detected = ActiveIdeLauncher.installed_ides();
-    assert!(detected.iter().all(|ide| Ide::all().contains(ide)));
-    let mut unique = Vec::new();
-    for ide in detected.iter().copied() {
-        if !unique.contains(&ide) {
-            unique.push(ide);
-        }
+fn ide_launcher_smoke_returns_known_unique_rank_sorted_ides() {
+    let detected = ActiveIdeLauncher.detect();
+    let mut seen: Vec<&str> = Vec::new();
+    let mut previous_rank = 0u8;
+    for ide in &detected {
+        let spec = IDE_SPECS
+            .iter()
+            .find(|spec| spec.id == ide.id)
+            .expect("every detected id must exist in IDE_SPECS");
+        assert!(!seen.contains(&ide.id), "duplicate detected id {}", ide.id);
+        assert!(spec.rank >= previous_rank, "detection must be rank sorted");
+        previous_rank = spec.rank;
+        seen.push(ide.id);
     }
-    assert_eq!(unique.len(), detected.len());
 }
 
 #[test]
 fn linux_desktop_entry_matching_rejects_unrelated_applications() {
     let zed = "[Desktop Entry]\nType=Application\nName=Zed\nExec=zeditor %U\n";
-    assert!(desktop_entry_matches(Ide::Zed, "dev.zed.Zed.desktop", zed));
-    assert!(!desktop_entry_matches(
-        Ide::VsCode,
-        "dev.zed.Zed.desktop",
-        zed
-    ));
+    assert!(desktop_entry_matches("zed", "dev.zed.Zed.desktop", zed));
+    assert!(!desktop_entry_matches("vscode", "dev.zed.Zed.desktop", zed));
 
     let unrelated = "[Desktop Entry]\nType=Application\nName=Codecs\nExec=codecs\n";
     assert!(!desktop_entry_matches(
-        Ide::VsCode,
+        "vscode",
         "codecs.desktop",
         unrelated
     ));

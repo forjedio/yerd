@@ -17,6 +17,7 @@
 //!
 //! Everything is host-side and threads failures through [`GuiError`].
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -95,6 +96,21 @@ struct GuiSettings {
     /// gui-settings.json without this field must still deserialize.
     #[serde(default)]
     title_bar_style: TitleBarStyle,
+    /// Global "Preferred editor": `None` is auto-detect (the best-ranked editor
+    /// found on the host), `"system"` opens the folder with the desktop's
+    /// default handler, and anything else is an IDE id from `IDE_SPECS`. Kept a
+    /// `String` so an id this build doesn't know about round-trips untouched.
+    /// `#[serde(default)]` is mandatory - an existing gui-settings.json without
+    /// this field must still deserialize.
+    #[serde(default)]
+    preferred_ide: Option<String>,
+    /// Per-site editor overrides keyed by site name, using the same encoding as
+    /// [`GuiSettings::preferred_ide`]. Keys for sites the daemon no longer knows
+    /// about are pruned by the editor-open commands, which already hold a fresh
+    /// site list. `#[serde(default)]` is mandatory - an existing
+    /// gui-settings.json without this field must still deserialize.
+    #[serde(default)]
+    site_ide_overrides: BTreeMap<String, String>,
 }
 
 /// Outcome of comparing the running GUI/daemon version against the version that
@@ -1479,15 +1495,75 @@ pub fn set_title_bar_style(style: TitleBarStyle) -> Result<(), GuiError> {
     save_settings(&s)
 }
 
+/// Current global preferred editor, for the Settings screen. `None` means
+/// auto-detect.
+#[tauri::command]
+pub fn get_preferred_ide() -> Option<String> {
+    load_settings().preferred_ide
+}
+
+/// Persist the chosen global preferred editor; `None` restores auto-detect.
+#[tauri::command]
+pub fn set_preferred_ide(ide: Option<String>) -> Result<(), GuiError> {
+    let mut s = load_settings();
+    s.preferred_ide = ide;
+    save_settings(&s)
+}
+
+/// Every stored per-site editor override, keyed by site name.
+#[tauri::command]
+pub fn get_site_ide_overrides() -> BTreeMap<String, String> {
+    load_settings().site_ide_overrides
+}
+
+/// Persist one site's editor override; `None` clears it so the site falls back
+/// to the global preference. No IPC happens here - stale keys are pruned by the
+/// editor-open commands, which already hold an authoritative site list.
+#[tauri::command]
+pub fn set_site_ide_override(site: String, ide: Option<String>) -> Result<(), GuiError> {
+    let mut s = load_settings();
+    match ide {
+        Some(ide) => {
+            s.site_ide_overrides.insert(site, ide);
+        }
+        None => {
+            s.site_ide_overrides.remove(&site);
+        }
+    }
+    save_settings(&s)
+}
+
+/// Drop overrides for sites absent from `known`, reporting whether the map
+/// changed. Pure so the caller decides when a write is worth doing.
+pub(crate) fn prune_site_overrides(
+    overrides: &mut BTreeMap<String, String>,
+    known: &[String],
+) -> bool {
+    let before = overrides.len();
+    overrides.retain(|site, _| known.iter().any(|name| name == site));
+    overrides.len() != before
+}
+
+/// Load, prune against `known`, and save only if something was actually
+/// removed. Cosmetic housekeeping: a failed write is not worth failing the
+/// editor launch the caller is in the middle of.
+pub(crate) fn prune_site_ide_overrides(known: &[String]) {
+    let mut s = load_settings();
+    if prune_site_overrides(&mut s.site_ide_overrides, known) {
+        let _ = save_settings(&s);
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        daemon_self_repair_busy, decide, reg_action, reg_plan, Decision, GuiSettings, RegAction,
-        StartPhase, TitleBarStyle, DAEMON_SELF_REPAIR_BUSY,
+        daemon_self_repair_busy, decide, prune_site_overrides, reg_action, reg_plan, Decision,
+        GuiSettings, RegAction, StartPhase, TitleBarStyle, DAEMON_SELF_REPAIR_BUSY,
     };
     use crate::tray::TrayIconVariant;
     use semver::Version;
+    use std::collections::BTreeMap;
     use std::sync::atomic::Ordering;
 
     fn v(s: &str) -> Version {
@@ -1505,6 +1581,75 @@ mod tests {
         let s: GuiSettings = serde_json::from_str("{}").expect("empty object deserializes");
         assert_eq!(s.title_bar_style, TitleBarStyle::Auto);
         assert!(!s.gui_maximized);
+    }
+
+    #[test]
+    fn gui_settings_without_editor_fields_deserializes_to_auto_detect() {
+        let s: GuiSettings = serde_json::from_str("{}").expect("empty object deserializes");
+        assert_eq!(s.preferred_ide, None);
+        assert!(s.site_ide_overrides.is_empty());
+    }
+
+    #[test]
+    fn gui_settings_round_trips_stored_editor_preferences() {
+        let json = r#"{"preferred_ide":"phpstorm","site_ide_overrides":{"blog":"system"}}"#;
+        let s: GuiSettings = serde_json::from_str(json).expect("editor fields deserialize");
+        assert_eq!(s.preferred_ide.as_deref(), Some("phpstorm"));
+        assert_eq!(
+            s.site_ide_overrides.get("blog").map(String::as_str),
+            Some("system")
+        );
+    }
+
+    /// One `prune_site_overrides` table row.
+    struct PruneCase {
+        stored: &'static [&'static str],
+        known: &'static [&'static str],
+        kept: &'static [&'static str],
+        changed: bool,
+    }
+
+    #[test]
+    fn prune_site_overrides_drops_only_unknown_sites() {
+        let cases = [
+            PruneCase {
+                stored: &[],
+                known: &[],
+                kept: &[],
+                changed: false,
+            },
+            PruneCase {
+                stored: &["blog"],
+                known: &["blog", "shop"],
+                kept: &["blog"],
+                changed: false,
+            },
+            PruneCase {
+                stored: &["blog", "gone"],
+                known: &["blog"],
+                kept: &["blog"],
+                changed: true,
+            },
+            PruneCase {
+                stored: &["gone"],
+                known: &[],
+                kept: &[],
+                changed: true,
+            },
+        ];
+
+        for case in cases {
+            let mut overrides: BTreeMap<String, String> = case
+                .stored
+                .iter()
+                .map(|site| ((*site).to_owned(), "zed".to_owned()))
+                .collect();
+            let known: Vec<String> = case.known.iter().map(|s| (*s).to_owned()).collect();
+
+            assert_eq!(prune_site_overrides(&mut overrides, &known), case.changed);
+            let kept: Vec<&str> = overrides.keys().map(String::as_str).collect();
+            assert_eq!(kept, case.kept);
+        }
     }
 
     #[test]

@@ -48,10 +48,10 @@ pub use error::{
     TerminalErrorReason, TrustStoreErrorReason,
 };
 pub use helper::{ArgvParseError, HelperInvocation};
-pub use ide::{Ide, IdeLauncher};
+pub use ide::{DetectedIde, FakeIdeLauncher, IdeLauncher, LaunchTarget};
 pub use lan_ip::{ActiveLanIpProvider, FakeLanIpProvider, LanIpProvider};
 pub use metrics::SystemMetrics;
-pub use opener::SystemOpener;
+pub use opener::{FakeSystemOpener, SystemOpener};
 pub use paths::{Paths, PlatformDirs};
 pub use port_binder::{BoundPort, PortBinder, PortPair};
 pub use port_redirect::PortRedirector;

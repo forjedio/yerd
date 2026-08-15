@@ -18,10 +18,10 @@ mod common;
 use yerd_platform::{
     pure::ide_spec::{
         ide_cli_candidates_macos, mac_app_name_matches, mac_application_locations,
-        mac_application_path_allowed,
+        mac_application_path_allowed, IDE_SPECS,
     },
     ActiveIdeLauncher, ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTrustStore,
-    Ide, IdeLauncher, Paths, PlatformError, PortBinder, ResolverInstaller, TrustStore,
+    IdeLauncher, Paths, PlatformError, PortBinder, ResolverInstaller, TrustStore,
 };
 
 use common::random_fingerprint;
@@ -31,16 +31,20 @@ fn loopback(port: u16) -> SocketAddr {
 }
 
 #[test]
-fn ide_launcher_smoke_returns_known_unique_ides() {
-    let detected = ActiveIdeLauncher.installed_ides();
-    assert!(detected.iter().all(|ide| Ide::all().contains(ide)));
-    let mut unique = Vec::new();
-    for ide in detected.iter().copied() {
-        if !unique.contains(&ide) {
-            unique.push(ide);
-        }
+fn ide_launcher_smoke_returns_known_unique_rank_sorted_ides() {
+    let detected = ActiveIdeLauncher.detect();
+    let mut seen: Vec<&str> = Vec::new();
+    let mut previous_rank = 0u8;
+    for ide in &detected {
+        let spec = IDE_SPECS
+            .iter()
+            .find(|spec| spec.id == ide.id)
+            .expect("every detected id must exist in IDE_SPECS");
+        assert!(!seen.contains(&ide.id), "duplicate detected id {}", ide.id);
+        assert!(spec.rank >= previous_rank, "detection must be rank sorted");
+        previous_rank = spec.rank;
+        seen.push(ide.id);
     }
-    assert_eq!(unique.len(), detected.len());
 }
 
 #[test]
@@ -63,11 +67,11 @@ fn mac_ide_path_helpers_keep_discovery_deterministic() {
 #[test]
 fn mac_ide_name_matching_rejects_backups_and_accepts_previews() {
     assert!(mac_app_name_matches(
-        Ide::VsCode,
+        "vscode",
         "Visual Studio Code - Insiders"
     ));
     assert!(!mac_app_name_matches(
-        Ide::VsCode,
+        "vscode",
         "Visual Studio Code - Backup"
     ));
 

@@ -8,12 +8,15 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tauri::Manager;
 use yerd_core::PhpVersion;
-use yerd_ipc::{ErrorCode, Request, Response};
-use yerd_platform::{Ide, IdeLauncher, SystemOpener, TerminalLauncher};
+use yerd_ipc::{ErrorCode, Request, Response, SiteEntry};
+use yerd_platform::{
+    DetectedIde, IdeErrorReason, IdeLauncher, PlatformError, SystemOpener, TerminalLauncher,
+};
 
 use crate::error::GuiError;
 use crate::ipc::{exchange, exchange_timeout};
@@ -1044,45 +1047,136 @@ pub struct IdeOption {
     pub label: String,
 }
 
-/// List supported IDE launchers detected on this host.
-#[tauri::command]
-pub async fn get_installed_ides() -> Result<Vec<IdeOption>, GuiError> {
-    let ides =
-        tokio::task::spawn_blocking(|| yerd_platform::ActiveIdeLauncher::new().installed_ides())
-            .await
-            .map_err(|error| GuiError::internal(format!("detecting IDEs failed: {error}")))?;
-    Ok(ide_options(ides))
+/// The most recent host detection, so a launch never re-scans and the resolved
+/// launch paths stay host-side (the webview only ever sees ids and labels).
+/// `static Mutex` precedent: `DAEMON_REG_LOCK` in `autostart.rs`.
+static DETECTED_IDES: Mutex<Option<Vec<DetectedIde>>> = Mutex::new(None);
+
+/// A poisoned cache still holds a usable detection, so recover rather than
+/// propagate: this is a memo, not a correctness boundary.
+fn detected_ides_guard() -> MutexGuard<'static, Option<Vec<DetectedIde>>> {
+    DETECTED_IDES.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn ide_options(ides: impl IntoIterator<Item = Ide>) -> Vec<IdeOption> {
-    ides.into_iter()
+/// Detect off the async runtime and refresh the host-side cache.
+async fn detect_ides() -> Result<Vec<DetectedIde>, GuiError> {
+    let ides = tokio::task::spawn_blocking(|| yerd_platform::ActiveIdeLauncher::new().detect())
+        .await
+        .map_err(|error| GuiError::internal(format!("detecting IDEs failed: {error}")))?;
+    *detected_ides_guard() = Some(ides.clone());
+    Ok(ides)
+}
+
+/// List supported IDE launchers detected on this host, best first. Re-detects
+/// on every call, which is what makes the Settings "Rescan" button work.
+#[tauri::command]
+pub async fn get_installed_ides() -> Result<Vec<IdeOption>, GuiError> {
+    Ok(ide_options(&detect_ides().await?))
+}
+
+fn ide_options(ides: &[DetectedIde]) -> Vec<IdeOption> {
+    ides.iter()
         .map(|ide| IdeOption {
-            id: ide.wire_name().to_owned(),
-            label: ide.display_name().to_owned(),
+            id: ide.id.to_owned(),
+            label: ide.display_name.to_owned(),
         })
         .collect()
 }
 
-/// Open an existing project directory with the host's default application.
-/// The platform abstraction handles KDE's native opener before generic XDG
-/// fallbacks and keeps site paths outside the frontend opener scope working.
-#[tauri::command]
-pub async fn open_in_default(path: String) -> Result<(), GuiError> {
-    let path = validated_project_directory(path)?;
-    yerd_platform::ActiveSystemOpener::new()
-        .open_path(&path)
+/// The document root the daemon holds for `name`.
+fn resolve_site_root(sites: &[SiteEntry], name: &str) -> Option<PathBuf> {
+    sites
+        .iter()
+        .find(|entry| entry.site.name() == name)
+        .map(|entry| entry.site.document_root().to_path_buf())
+}
+
+/// Resolve the daemon-owned document root for a site the webview named.
+///
+/// The webview never supplies a directory: it names a site, and the daemon's own
+/// answer decides which path is opened, so an arbitrary host directory can no
+/// longer be handed to an editor. Stale per-site overrides are pruned from the
+/// same answer, but only once the requested site is found in it - a daemon
+/// mid-restart replying with an empty list must not wipe every stored override.
+async fn site_root_for_editor(site: &str) -> Result<PathBuf, GuiError> {
+    let response = finish(exchange_timeout(&Request::ListSites, PROBE_TIMEOUT).await?)?;
+    let Response::Sites { sites } = response else {
+        return Err(GuiError::internal(
+            "unexpected daemon reply while resolving the site folder",
+        ));
+    };
+    let root = resolve_site_root(&sites, site)
+        .ok_or_else(|| GuiError::internal(format!("unknown site: {site}")))?;
+    let known: Vec<String> = sites
+        .iter()
+        .map(|entry| entry.site.name().to_owned())
+        .collect();
+    crate::autostart::prune_site_ide_overrides(&known);
+    Ok(root)
+}
+
+/// User-facing name for an IDE id, falling back to the raw id when this build
+/// has no spec row for it (a preference written by a newer Yerd).
+fn ide_display_name(id: &str) -> String {
+    yerd_platform::pure::ide_spec::spec_for(id)
+        .map_or_else(|| id.to_owned(), |spec| spec.display_name.to_owned())
+}
+
+/// Launch `id` from an already-detected list; an id that was not detected is a
+/// typed "not installed" failure rather than a fresh host scan.
+fn launch_ide(
+    launcher: &impl IdeLauncher,
+    detected: &[DetectedIde],
+    id: &str,
+    root: &Path,
+) -> Result<(), PlatformError> {
+    let ide = detected
+        .iter()
+        .find(|ide| ide.id == id)
+        .ok_or_else(|| PlatformError::Ide {
+            reason: IdeErrorReason::NotInstalled(ide_display_name(id)),
+        })?;
+    launcher.launch(ide, root)
+}
+
+/// Hand a resolved site root to the host's default folder handler.
+fn open_root(opener: &impl SystemOpener, root: &Path) -> Result<(), GuiError> {
+    opener
+        .open_path(root)
         .map_err(|error| GuiError::internal(error.to_string()))
 }
 
-/// Open a project directory in a selected, host-detected IDE.
+/// Open a site's folder with the host's default application. The platform
+/// abstraction handles KDE's native opener before generic XDG fallbacks and
+/// keeps site paths outside the frontend opener scope working.
 #[tauri::command]
-pub async fn open_in_ide(path: String, ide: String) -> Result<(), GuiError> {
-    let path = validated_project_directory(path)?;
-    let ide = yerd_platform::Ide::from_wire(&ide)
-        .ok_or_else(|| GuiError::internal(format!("unsupported IDE: {ide}")))?;
-    yerd_platform::ActiveIdeLauncher::new()
-        .open_in_ide(ide, &path)
-        .map_err(|error| GuiError::internal(error.to_string()))
+pub async fn open_in_default(site: String) -> Result<(), GuiError> {
+    let root = site_root_for_editor(&site).await?;
+    tokio::task::spawn_blocking(move || open_root(&yerd_platform::ActiveSystemOpener::new(), &root))
+        .await
+        .map_err(|error| GuiError::internal(format!("opening the site folder failed: {error}")))?
+}
+
+/// Open a site's folder in a selected, host-detected IDE.
+#[tauri::command]
+pub async fn open_in_ide(site: String, ide: String) -> Result<(), GuiError> {
+    let root = site_root_for_editor(&site).await?;
+    let cached = detected_ides_guard().clone();
+    let detected = match cached {
+        Some(detected) => detected,
+        None => detect_ides().await?,
+    };
+    tokio::task::spawn_blocking(move || {
+        launch_ide(
+            &yerd_platform::ActiveIdeLauncher::new(),
+            &detected,
+            &ide,
+            &root,
+        )
+    })
+    .await
+    .map_err(|error| GuiError::internal(format!("opening the editor failed: {error}")))?
+    .map_err(|error| GuiError::internal(error.to_string()))
 }
 
 /// Persist a mail attachment into the app cache and return its absolute path.
@@ -1277,14 +1371,106 @@ fn safe_attachment_filename(name: &str) -> String {
 mod tests {
     use super::*;
 
+    use yerd_platform::{FakeIdeLauncher, FakeSystemOpener, LaunchTarget};
+
+    fn detected(id: &'static str, display_name: &'static str) -> DetectedIde {
+        DetectedIde {
+            id,
+            display_name,
+            launch: LaunchTarget::Cli(PathBuf::from(format!("/usr/bin/{id}"))),
+        }
+    }
+
+    fn site_entry(name: &str, root: &str) -> SiteEntry {
+        SiteEntry {
+            site: yerd_core::Site::linked(name, PathBuf::from(root), PhpVersion::new(8, 3))
+                .expect("valid site"),
+            is_wordpress: false,
+            primary_domain: None,
+            domains: Vec::new(),
+            apex_shadowed_by: None,
+            uses_front_controller: false,
+            is_laravel: false,
+        }
+    }
+
     #[test]
     fn ide_options_preserve_wire_and_display_names() {
-        let options = ide_options([Ide::VsCode, Ide::PhpStorm]);
+        let options = ide_options(&[
+            detected("vscode", "VS Code"),
+            detected("phpstorm", "PhpStorm"),
+        ]);
         assert_eq!(options.len(), 2);
         assert_eq!(options[0].id, "vscode");
         assert_eq!(options[0].label, "VS Code");
         assert_eq!(options[1].id, "phpstorm");
         assert_eq!(options[1].label, "PhpStorm");
+    }
+
+    #[test]
+    fn resolve_site_root_matches_by_name_only() {
+        let sites = vec![
+            site_entry("blog", "/srv/blog"),
+            site_entry("shop", "/srv/shop"),
+        ];
+
+        assert_eq!(
+            resolve_site_root(&sites, "shop"),
+            Some(PathBuf::from("/srv/shop"))
+        );
+        assert_eq!(resolve_site_root(&sites, "missing"), None);
+        assert_eq!(resolve_site_root(&[], "blog"), None);
+    }
+
+    #[test]
+    fn launch_ide_dispatches_to_the_requested_detected_editor() {
+        let launcher = FakeIdeLauncher::new(vec![]);
+        let detected = [detected("phpstorm", "PhpStorm"), detected("zed", "Zed")];
+
+        launch_ide(&launcher, &detected, "zed", Path::new("/srv/blog")).expect("launch succeeds");
+
+        assert_eq!(
+            launcher.launches(),
+            vec![("zed".to_owned(), PathBuf::from("/srv/blog"))]
+        );
+    }
+
+    #[test]
+    fn launch_ide_rejects_an_undetected_id_with_its_display_name() {
+        let launcher = FakeIdeLauncher::new(vec![]);
+
+        let error = launch_ide(&launcher, &[], "phpstorm", Path::new("/srv/blog"))
+            .expect_err("undetected id fails");
+        assert!(error.to_string().contains("PhpStorm is not installed"));
+
+        let unknown = launch_ide(&launcher, &[], "not-an-editor", Path::new("/srv/blog"))
+            .expect_err("unknown id fails");
+        assert!(unknown
+            .to_string()
+            .contains("not-an-editor is not installed"));
+        assert!(launcher.launches().is_empty());
+    }
+
+    #[test]
+    fn launch_ide_propagates_a_launcher_failure() {
+        let launcher = FakeIdeLauncher::failing(vec![], std::io::ErrorKind::PermissionDenied);
+        let detected = [detected("zed", "Zed")];
+
+        let error = launch_ide(&launcher, &detected, "zed", Path::new("/srv/blog"))
+            .expect_err("launcher failure propagates");
+        assert!(error.to_string().contains("Zed"));
+    }
+
+    #[test]
+    fn open_root_maps_an_opener_failure_to_a_typed_gui_error() {
+        let opener = FakeSystemOpener::new();
+        open_root(&opener, Path::new("/srv/blog")).expect("open succeeds");
+        assert_eq!(opener.opened(), vec![PathBuf::from("/srv/blog")]);
+
+        let failing = FakeSystemOpener::failing(std::io::ErrorKind::NotFound);
+        let error = open_root(&failing, Path::new("/srv/blog")).expect_err("open fails");
+        assert_eq!(error.code, "internal");
+        assert!(error.message.contains("fake-opener"));
     }
 
     #[test]

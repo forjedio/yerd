@@ -1,87 +1,105 @@
 //! Host IDE detection and project launching abstraction.
+//!
+//! Detection resolves a launch target once; launching consumes that target and
+//! never re-scans the host. The IDE identity itself is the `id` column of
+//! [`crate::pure::ide_spec::IDE_SPECS`], so adding an editor is a one-row change.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use crate::error::IdeErrorReason;
 use crate::PlatformError;
 
-/// Supported IDE identifiers exposed to the GUI.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Ide {
-    /// Microsoft Visual Studio Code.
-    VsCode,
-    /// Cursor.
-    Cursor,
-    /// Zed.
-    Zed,
-    /// Sublime Text.
-    Sublime,
-    /// `JetBrains` `PhpStorm`.
-    PhpStorm,
-    /// Windsurf.
-    Windsurf,
+/// How a detected IDE is started.
+///
+/// `Application` is the host's indirect launch handle: a `.desktop` entry path
+/// on Linux, a `.app` bundle path on macOS. Keeping it OS-neutral lets every
+/// adapter implement exactly two arms without a `cfg`-gated variant.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LaunchTarget {
+    /// A command-line launcher invoked directly with the project path.
+    Cli(PathBuf),
+    /// A desktop-integration handle opened through the host's launcher.
+    Application(PathBuf),
 }
 
-impl Ide {
-    /// Return every IDE known to the current protocol.
-    #[must_use]
-    pub const fn all() -> &'static [Self] {
-        &[
-            Self::VsCode,
-            Self::Cursor,
-            Self::Zed,
-            Self::Sublime,
-            Self::PhpStorm,
-            Self::Windsurf,
-        ]
-    }
-
-    /// Return the stable identifier used by GUI actions and IPC arguments.
-    #[must_use]
-    pub const fn wire_name(self) -> &'static str {
-        match self {
-            Self::VsCode => "vscode",
-            Self::Cursor => "cursor",
-            Self::Zed => "zed",
-            Self::Sublime => "sublime",
-            Self::PhpStorm => "phpstorm",
-            Self::Windsurf => "windsurf",
-        }
-    }
-
-    /// Return the user-facing name.
-    #[must_use]
-    pub const fn display_name(self) -> &'static str {
-        match self {
-            Self::VsCode => "VS Code",
-            Self::Cursor => "Cursor",
-            Self::Zed => "Zed",
-            Self::Sublime => "Sublime Text",
-            Self::PhpStorm => "PhpStorm",
-            Self::Windsurf => "Windsurf",
-        }
-    }
-
-    /// Parse a stable GUI action identifier.
-    #[must_use]
-    pub fn from_wire(value: &str) -> Option<Self> {
-        Self::all()
-            .iter()
-            .copied()
-            .find(|ide| ide.wire_name() == value)
-    }
+/// One IDE found on this host, with the target used to launch it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DetectedIde {
+    /// Stable IDE identifier from `IDE_SPECS`.
+    pub id: &'static str,
+    /// User-facing name from `IDE_SPECS`.
+    pub display_name: &'static str,
+    /// Resolved launch target.
+    pub launch: LaunchTarget,
 }
 
-impl std::fmt::Display for Ide {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.display_name())
-    }
-}
-
-/// Detect installed IDEs and open project directories in a selected IDE.
+/// Detect installed IDEs and open project directories in one of them.
 pub trait IdeLauncher {
-    /// Return supported IDEs available on this host.
-    fn installed_ides(&self) -> Vec<Ide>;
+    /// Return the IDEs available on this host, best first (lowest `rank`).
+    fn detect(&self) -> Vec<DetectedIde>;
 
-    /// Open `path` in `ide`.
-    fn open_in_ide(&self, ide: Ide, path: &Path) -> Result<(), PlatformError>;
+    /// Open `path` in a previously detected IDE.
+    fn launch(&self, ide: &DetectedIde, path: &Path) -> Result<(), PlatformError>;
+}
+
+/// Test fake returning a fixed detection list and recording every launch.
+#[derive(Debug, Default)]
+pub struct FakeIdeLauncher {
+    detected: Vec<DetectedIde>,
+    launch_error: Option<std::io::ErrorKind>,
+    launches: Mutex<Vec<(String, PathBuf)>>,
+}
+
+impl FakeIdeLauncher {
+    /// A fake that reports `detected` and launches successfully.
+    #[must_use]
+    pub fn new(detected: Vec<DetectedIde>) -> Self {
+        Self {
+            detected,
+            launch_error: None,
+            launches: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// A fake that reports `detected` but fails every launch with `kind`.
+    #[must_use]
+    pub fn failing(detected: Vec<DetectedIde>, kind: std::io::ErrorKind) -> Self {
+        Self {
+            detected,
+            launch_error: Some(kind),
+            launches: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Every `(ide id, path)` pair passed to [`IdeLauncher::launch`], in order.
+    #[must_use]
+    pub fn launches(&self) -> Vec<(String, PathBuf)> {
+        self.guard().clone()
+    }
+
+    /// A poisoned lock still holds the recorded calls, so recover rather than
+    /// propagate: this is a test double, not a correctness boundary.
+    fn guard(&self) -> MutexGuard<'_, Vec<(String, PathBuf)>> {
+        self.launches.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl IdeLauncher for FakeIdeLauncher {
+    fn detect(&self) -> Vec<DetectedIde> {
+        self.detected.clone()
+    }
+
+    fn launch(&self, ide: &DetectedIde, path: &Path) -> Result<(), PlatformError> {
+        self.guard().push((ide.id.to_owned(), path.to_path_buf()));
+        match self.launch_error {
+            None => Ok(()),
+            Some(kind) => Err(PlatformError::Ide {
+                reason: IdeErrorReason::Launch {
+                    ide: ide.display_name.to_owned(),
+                    source: std::io::Error::from(kind),
+                },
+            }),
+        }
+    }
 }

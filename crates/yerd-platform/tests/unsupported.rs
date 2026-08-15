@@ -15,8 +15,8 @@ mod common;
 
 use yerd_platform::{
     ActiveIdeLauncher, ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveSystemOpener,
-    ActiveTerminalLauncher, ActiveTrustStore, IdeLauncher, Paths, PlatformError, PortBinder,
-    ResolverInstaller, SystemOpener, TerminalLauncher, TrustStore,
+    ActiveTerminalLauncher, ActiveTrustStore, DetectedIde, IdeLauncher, LaunchTarget, Paths,
+    PlatformError, PortBinder, ResolverInstaller, SystemOpener, TerminalLauncher, TrustStore,
 };
 
 use common::random_fingerprint;
@@ -93,13 +93,15 @@ fn terminal_launcher_unsupported() {
 #[test]
 fn ide_launcher_unsupported() {
     let launcher = ActiveIdeLauncher;
-    assert!(launcher.installed_ides().is_empty());
+    assert!(launcher.detect().is_empty());
+    let ide = DetectedIde {
+        id: "vscode",
+        display_name: "VS Code",
+        launch: LaunchTarget::Cli(std::path::PathBuf::from("/usr/bin/code")),
+    };
     assert!(matches!(
         launcher
-            .open_in_ide(
-                yerd_platform::Ide::VsCode,
-                std::path::Path::new("/srv/site")
-            )
+            .launch(&ide, std::path::Path::new("/srv/site"))
             .unwrap_err(),
         PlatformError::Unsupported { .. }
     ));

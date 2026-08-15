@@ -201,15 +201,16 @@ pub enum TerminalErrorReason {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum IdeErrorReason {
-    /// The requested IDE was not detected on this host.
+    /// The requested IDE was not detected on this host. Carries the IDE's
+    /// display name, not its id, because the string is user-facing.
     #[error("{0} is not installed")]
-    NotInstalled(crate::Ide),
+    NotInstalled(String),
 
     /// The detected IDE process could not be started.
     #[error("could not open {ide}: {source}")]
     Launch {
-        /// IDE that was selected.
-        ide: crate::Ide,
+        /// Display name of the IDE that was selected.
+        ide: String,
         /// Process-spawn failure.
         #[source]
         source: std::io::Error,
@@ -449,6 +450,18 @@ mod tests {
         }
     }
 
+    /// The rendered message must read as the user-facing display name, which is
+    /// why the variant carries a resolved `String` rather than an id.
+    #[test]
+    fn display_ide_not_installed_uses_the_display_name() {
+        let reason = IdeErrorReason::NotInstalled("PhpStorm".to_owned());
+        assert_eq!(reason.to_string(), "PhpStorm is not installed");
+        assert_eq!(
+            PlatformError::Ide { reason }.to_string(),
+            "IDE: PhpStorm is not installed"
+        );
+    }
+
     /// Tripwire: constructing every variant of every reason enum and the
     /// outer error type. New variants drop coverage if not added here.
     #[test]
@@ -498,11 +511,11 @@ mod tests {
             let _ = PlatformError::Terminal { reason };
         }
         let _ = PlatformError::Ide {
-            reason: IdeErrorReason::NotInstalled(crate::Ide::VsCode),
+            reason: IdeErrorReason::NotInstalled("VS Code".to_owned()),
         };
         let _ = PlatformError::Ide {
             reason: IdeErrorReason::Launch {
-                ide: crate::Ide::VsCode,
+                ide: "VS Code".to_owned(),
                 source: std::io::Error::from(std::io::ErrorKind::Other),
             },
         };
