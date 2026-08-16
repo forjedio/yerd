@@ -243,13 +243,25 @@ impl HealthProbe for FakeProbe {
     }
 }
 
+/// A private directory tree per call, under the platform temp dir.
+///
+/// These were once a fixed `/tmp/yerd-test`, shared by every test in this file.
+/// That survived while each test drove a single spawn, but a Windows pool now
+/// renders one `zz-yerd.ini` per worker, so `cargo test` running these in
+/// parallel had several tests writing the same file and CI failed with
+/// `PermissionDenied`. The readback tests below already used `tempfile`; this
+/// brings the shared helper in line with them.
 fn make_dirs() -> PlatformDirs {
+    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let pid = std::process::id();
+    let root = std::env::temp_dir().join(format!("yerd-test-{pid}-{n}"));
     PlatformDirs {
-        config: PathBuf::from("/tmp/yerd-test/cfg"),
-        data: PathBuf::from("/tmp/yerd-test/data"),
-        state: PathBuf::from("/tmp/yerd-test/state"),
-        cache: PathBuf::from("/tmp/yerd-test/cache"),
-        runtime: PathBuf::from("/tmp/yerd-test/run"),
+        config: root.join("cfg"),
+        data: root.join("data"),
+        state: root.join("state"),
+        cache: root.join("cache"),
+        runtime: root.join("run"),
     }
 }
 

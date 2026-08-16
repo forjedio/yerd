@@ -359,10 +359,16 @@ where
     /// The worker index this `ensure` serves, advancing the pool's round-robin
     /// cursor past it. A version with no pool yet always starts at worker 0;
     /// its cursor is seeded when that first worker is stored.
+    ///
+    /// Off Windows `WORKERS_PER_VERSION` is 1, so the rotation collapses to a
+    /// constant 0 and clippy's `modulo_one` fires on what is, there, a
+    /// deliberately trivial modulo. The lint is allowed only on the platforms
+    /// where the divisor really is 1.
     fn next_worker_index(&mut self, v: PhpVersion) -> usize {
         let Some(pool) = self.pools.get_mut(&v) else {
             return 0;
         };
+        #[cfg_attr(not(windows), allow(clippy::modulo_one))]
         let index = pool.cursor % WORKERS_PER_VERSION;
         pool.cursor = pool.cursor.wrapping_add(1);
         index
