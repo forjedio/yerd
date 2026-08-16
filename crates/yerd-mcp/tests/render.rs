@@ -144,6 +144,8 @@ fn sample_report() -> yerd_ipc::StatusReport {
             http: 8080,
             https: 8443,
         }),
+        resolver_rule_servers: vec![],
+        dns_port_owner: None,
     }
 }
 

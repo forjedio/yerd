@@ -608,10 +608,10 @@ jobs:
           for b in yerd yerdd yerd-helper; do
             [ -f "$INSTDIR/$b.exe" ] || { echo "::error::install dir missing $b.exe"; exit 1; }
           done
-          # The main app exe: assert Yerd.exe, fall back to yerd-gui.exe (the Cargo
-          # bin name) - pin whichever the bundler emits once observed on the first run.
-          [ -f "$INSTDIR/Yerd.exe" ] || [ -f "$INSTDIR/yerd-gui.exe" ] \
-            || { echo "::error::install dir has neither Yerd.exe nor yerd-gui.exe"; exit 1; }
+          # The main app exe is the Tauri MAINBINARYNAME, which follows the Cargo
+          # [[bin]] name because tauri.conf.json sets no mainBinaryName.
+          [ -f "$INSTDIR/yerd-gui.exe" ] \
+            || { echo "::error::install dir missing yerd-gui.exe (the Tauri MAINBINARYNAME)"; exit 1; }
           # CLI runs (a normal non-zero exit is fine; a crash is >=128).
           code=0; "$INSTDIR/yerd.exe" --version >/dev/null 2>&1 || code=$?
           [ "$code" -lt 128 ] || { echo "::error::yerd.exe --version was killed (exit $code)"; exit 1; }

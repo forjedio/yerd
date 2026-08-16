@@ -20,7 +20,7 @@ use crate::error::{ops, TerminalErrorReason, TrustStoreErrorReason};
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::PortRedirector;
-use crate::pure::{nrpt, pem_match, port_plan, win_pipe, win_terminal, win_token};
+use crate::pure::{nrpt, pem_match, port_plan, win_pipe, win_port_owner, win_terminal, win_token};
 use crate::resolver::ResolverInstaller;
 use crate::terminal::TerminalLauncher;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
@@ -34,6 +34,11 @@ pub use super::unsupported::UnsupportedSystemOpener as WindowsSystemOpener;
 /// console window instead of inheriting the caller's (the daemon/GUI has none
 /// worth sharing). Safe std `creation_flags`, no FFI.
 const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+
+/// `CREATE_NO_WINDOW` process-creation flag: a console child runs with no
+/// window at all, so a console-less parent (the daemon) never flashes one.
+/// Safe std `creation_flags`, no FFI.
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Real `TerminalLauncher` for Windows.
 ///
@@ -346,6 +351,66 @@ pub fn nrpt_guids_for_tld(tld: &str) -> Vec<String> {
         .collect()
 }
 
+/// The DNS servers every NRPT rule for `.tld` forwards to, flattened across
+/// rules in registry enumeration order.
+///
+/// The `is_installed` probe collapses to a bare `bool`, so it cannot tell "no
+/// rule at all" from "a rule pointing somewhere else". This reports the actual
+/// targets so the doctor can name them. Empty means no `.tld` rule exists (or it
+/// carries no servers). Read-only, unprivileged.
+#[must_use]
+pub fn nrpt_servers_for_tld(tld: &str) -> Vec<String> {
+    read_nrpt_rules()
+        .into_iter()
+        .filter(|rule| nrpt::name_matches_tld(&rule.name, tld))
+        .flat_map(|rule| nrpt::split_servers(&rule.servers))
+        .collect()
+}
+
+/// The image name of the process holding UDP `port` on loopback, e.g.
+/// `"dnscrypt-proxy.exe"`.
+///
+/// Spawns `%SystemRoot%\System32\netstat.exe -a -n -o -p UDP` and then
+/// `tasklist.exe` for the PID it finds (absolute paths, never `PATH`), and
+/// parses both with the table-tested [`win_port_owner`] parsers. Both the
+/// loopback and the wildcard local address are checked: a squatter bound to
+/// `0.0.0.0:<port>` blocks a `127.0.0.1:<port>` bind just as surely as one bound
+/// to loopback, and is the more common shape. `None` when either tool fails, no
+/// row matches, or the PID has already exited.
+///
+/// UDP only. `yerd_dns::Bound::bind` binds UDP and TCP, so a TCP-only squatter
+/// goes unnamed; the caller degrades to the portless message it had before.
+/// No `unsafe`: the `GetExtendedUdpTable` alternative is FFI this crate's
+/// `#![forbid(unsafe_code)]` rules out, matching the existing `whoami.exe`
+/// precedent.
+#[must_use]
+pub fn udp_port_owner(port: u16) -> Option<String> {
+    let netstat = run_console_tool("netstat.exe", &["-a", "-n", "-o", "-p", "UDP"])?;
+    let pid = [format!("127.0.0.1:{port}"), format!("0.0.0.0:{port}")]
+        .iter()
+        .find_map(|addr| win_port_owner::udp_owning_pid(&netstat, addr))?;
+    let filter = format!("PID eq {pid}");
+    let csv = run_console_tool("tasklist.exe", &["/FI", &filter, "/FO", "CSV", "/NH"])?;
+    win_port_owner::image_name(&csv)
+}
+
+/// Run a `System32` console tool and return its stdout, or `None` on any
+/// spawn/exit failure. `CREATE_NO_WINDOW` keeps the daemon (which has no console
+/// of its own) from flashing one up on every status poll.
+fn run_console_tool(exe: &str, args: &[&str]) -> Option<String> {
+    use std::os::windows::process::CommandExt as _;
+
+    let output = std::process::Command::new(win_system32(exe))
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 /// Real `ResolverInstaller` for Windows, backed by an NRPT wildcard rule.
 ///
 /// `install`/`uninstall` return `NeedsHelper` (the elevated write goes through
@@ -432,7 +497,12 @@ fn sys_api(e: std::io::Error) -> PlatformError {
 
 /// Add a DER certificate to `store`, replacing any existing copy of the same
 /// cert. Takes `&mut CertStore` because schannel's `add_cert` mutates the store.
-/// Adding to a real "Root" store raises the Windows confirmation dialog.
+///
+/// Adding to a real "Root" store raises the Windows confirmation dialog, but a
+/// success here does not mean the certificate was written: the same call reports
+/// success when the user declines the dialog and when there is no interactive
+/// desktop to show it on. Callers that add to a real store must therefore verify
+/// the result themselves rather than trust the returned `Ok`.
 fn add_der(store: &mut CertStore, der: &[u8]) -> Result<(), PlatformError> {
     let cx = CertContext::new(der).map_err(sys_api)?;
     store
@@ -485,13 +555,38 @@ impl WindowsTrustStore {
 }
 
 impl TrustStore for WindowsTrustStore {
-    /// Install `ca_pem` into the `CurrentUser` Root store.
+    /// Install `ca_pem` into the `CurrentUser` Root store, and verify that it
+    /// landed.
     ///
     /// The fingerprint is verified against the exact DER bytes about to be
     /// imported (the integrity gate the macOS helper flow uses) before any store
-    /// is opened, so a mismatch fails without side effects. Pops the Windows
-    /// root-store confirmation dialog; a user decline surfaces as an error.
-    /// Must run in an interactive session, never from the daemon.
+    /// is opened, so a mismatch fails without side effects.
+    ///
+    /// The add itself pops the Windows root-store confirmation dialog, but its
+    /// success is not evidence of anything: the Win32 add reports success even
+    /// when nothing was written, both when the user declines the dialog and when
+    /// there is no interactive desktop to show the dialog on. The write is
+    /// therefore confirmed by re-probing [`Self::is_present_system`], and only a
+    /// certificate actually found in the store counts as an install.
+    ///
+    /// The write handle is closed before that probe opens its own, which is
+    /// load-bearing rather than tidiness: crypt32 keeps a system store's cached
+    /// data alive for as long as any handle to it is open, and `add_cert`
+    /// mutates that in-memory cache, so a probe made through a store opened
+    /// while the write handle is still live is exactly the arrangement in which
+    /// a silently dropped add stays visible and the check verifies nothing.
+    ///
+    /// # Errors
+    ///
+    /// An error after a successful add means the certificate was not installed,
+    /// either because the confirmation dialog was declined or because this
+    /// process had no interactive desktop to show it on. The two are
+    /// deliberately not distinguished: Win32 returns the same success from the
+    /// same call in both cases, so telling them apart would need a
+    /// session-detection layer this crate does not have. The returned message
+    /// names both causes instead.
+    ///
+    /// Must run in the CLI or GUI, never from the daemon, which has no desktop.
     fn install_system(&self, ca_pem: &str, fp: &CaFingerprint) -> Result<(), PlatformError> {
         let der = pem_match::first_cert_der(ca_pem.as_bytes()).ok_or_else(|| {
             PlatformError::TrustStore {
@@ -505,8 +600,22 @@ impl TrustStore for WindowsTrustStore {
                 ),
             });
         }
-        let mut store = CertStore::open_current_user("Root").map_err(sys_api)?;
-        add_der(&mut store, &der)
+        {
+            let mut store = CertStore::open_current_user("Root").map_err(sys_api)?;
+            add_der(&mut store, &der)?;
+        }
+        if self.is_present_system(fp)? {
+            Ok(())
+        } else {
+            Err(PlatformError::TrustStore {
+                reason: TrustStoreErrorReason::SystemApi(
+                    "the certificate was not added to the CurrentUser Root store: the \
+                     confirmation dialog was declined, or this process has no interactive \
+                     desktop to show it on"
+                        .to_owned(),
+                ),
+            })
+        }
     }
 
     /// Remove every `CurrentUser`-Root certificate matching `fp`. Idempotent: zero
@@ -533,8 +642,19 @@ impl TrustStore for WindowsTrustStore {
         self.is_present_system(fp)
     }
 
-    /// Firefox/NSS trust on Windows is a Phase 6 TODO (locked out of scope);
-    /// Chromium-family browsers follow the system Root store this impl manages.
+    /// Windows needs no NSS path, so this stays `Unsupported` deliberately.
+    /// Every supported browser follows the `CurrentUser\Root` store that
+    /// `install_system` writes: Chromium-family reads it natively, and Firefox
+    /// imports it through `security.enterprise_roots.enabled`, which ships
+    /// `true` by default (measured on stock release 153.0.3, no policy in
+    /// force). The certutil/NSS route is a closed decision, not pending work.
+    ///
+    /// Two observations that mislead anyone re-checking this. `about:certificate`
+    /// does not list the CA even while Firefox trusts it, because roots imported
+    /// from the OS never enter the NSS database that tab enumerates; check the
+    /// padlock's "Verified by" line or the Windows store instead. And Firefox
+    /// snapshots the root store at startup, so adding or removing the CA only
+    /// reaches Firefox after a restart.
     fn install_firefox_nss(&self, _: &Path) -> Result<NssOutcome, PlatformError> {
         Err(PlatformError::Unsupported {
             operation: ops::INSTALL_FIREFOX_NSS,

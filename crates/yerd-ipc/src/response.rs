@@ -821,6 +821,8 @@ mod variant_name_pinning {
                 lan_setup_bound: None,
                 port_redirect_targets: None,
                 lan_redirect_targets: None,
+                resolver_rule_servers: vec![],
+                dns_port_owner: None,
             }),
         });
         pin_response(Response::Diagnoses {

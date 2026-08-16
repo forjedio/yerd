@@ -79,6 +79,28 @@ pub enum ArgvParseError {
 }
 
 /// One privileged operation the daemon asks `yerd-helper` to perform.
+///
+/// # Two standing constraints on Windows-reachable operations
+///
+/// **The argv must be quoting-safe.** Elevation on Windows goes through
+/// `runas 1.2.0`, which doubles backslashes in any argv element containing a
+/// space, tab or quote. Every op reachable on Windows must therefore serialise
+/// to an argv whose elements are free of `' '`, `'\t'`, `'"'` and `'\\'`. In
+/// practice a **path argument is not representable**: adding one needs either
+/// an upstream `runas` fix or a replacement for it, and the `ShellExecuteExW`
+/// alternative would require an `unsafe` block, i.e. lifting `bin/yerd`'s
+/// `forbid(unsafe_code)`. The standing guard is the
+/// `windows_helper_argv_is_runas_quoting_safe` test in
+/// `bin/yerd/src/elevate.rs`; new Windows-reachable variants belong in its
+/// array.
+///
+/// **A path argument would also need an owner-SID check.** The Unix
+/// `require_user_owned` gate was deliberately not ported, because the only
+/// Windows op today (the NRPT resolver) takes no path (`PHASE4_PLAN` §4.3). The
+/// moment a Windows-reachable op does take one, it must first verify that the
+/// path's owner SID equals the invoking user's SID: an elevated helper writing
+/// through a junction the unprivileged user planted is otherwise a
+/// privilege-escalation primitive.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum HelperInvocation {

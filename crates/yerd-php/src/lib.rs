@@ -19,7 +19,7 @@ pub mod version;
 
 pub use error::{DownloadError, ExitReason, PhpError, SpawnFailureReason};
 pub use listen::{AllocatedListen, Listen};
-pub use manager::{DumpExtSettings, PhpManager, PoolRunState, PoolSnapshot};
+pub use manager::{DumpExtSettings, PhpManager, PoolRunState, PoolSnapshot, WORKERS_PER_VERSION};
 pub use pool::{ExtLoad, PoolConfig, ProcessManagerMode};
 pub use probe::{probe_extension, CommandRunner, ProbeOutput, TokioCommandRunner};
 pub use pure::ext_probe::{interpret_probe, ExtLoadError};

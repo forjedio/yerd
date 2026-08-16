@@ -421,6 +421,11 @@ pub struct Postgres;
 /// data. The trade-off is that dumps taken before a version change stay behind
 /// with the old version's data, which matches how Yerd already retains the rest
 /// of that version's state.
+///
+/// The three path args keep native separators on every OS, backslashes included:
+/// they are passed as argv elements straight to `Command`, never through a shell
+/// or a config parser, so nothing re-interprets them and no normalisation is
+/// wanted.
 pub struct Meilisearch;
 
 impl ServiceDefinition for Redis {
@@ -999,8 +1004,9 @@ mod tests {
     }
 
     /// The launch args pin `--dump-dir`/`--snapshot-dir` via `datadir.join(...)`,
-    /// which emits `\` on Windows; these goldens pin Unix separators. Windows
-    /// service packaging is a later phase, so this is Unix-scoped for now.
+    /// which emits `\` on Windows; these goldens pin Unix separators. The
+    /// Windows form is pinned separately by
+    /// [`meilisearch_launch_args_keep_native_separators_on_windows`].
     #[cfg(unix)]
     #[test]
     fn meilisearch_metadata_and_launch_are_safe_for_local_development() {
@@ -1043,10 +1049,54 @@ mod tests {
         assert!(plan.capture_output_to_log);
     }
 
+    /// The Windows counterpart of
+    /// [`meilisearch_metadata_and_launch_are_safe_for_local_development`]: the
+    /// three path args keep native separators, unquoted and unescaped, because
+    /// they go straight into argv with no shell and no config parser in between.
+    #[cfg(windows)]
+    #[test]
+    fn meilisearch_launch_args_keep_native_separators_on_windows() {
+        let d = reg().get("meilisearch").unwrap();
+        let ctx = LaunchContext {
+            port: 7701,
+            program: std::path::Path::new(r"C:\yerd\bin\meilisearch.exe"),
+            config_path: std::path::Path::new(""),
+            datadir: std::path::Path::new(r"C:\Users\a b\AppData\Local\yerd\data\meili"),
+            log_path: std::path::Path::new(r"C:\Users\a b\AppData\Local\yerd\logs\meili.log"),
+            geo_env: &[],
+            cwd: None,
+        };
+        let plan = d.plan_launch(&ctx).unwrap();
+        let args: Vec<_> = plan
+            .command
+            .get_args()
+            .map(|a| a.to_string_lossy())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "--http-addr",
+                "127.0.0.1:7701",
+                "--db-path",
+                r"C:\Users\a b\AppData\Local\yerd\data\meili",
+                "--dump-dir",
+                r"C:\Users\a b\AppData\Local\yerd\data\meili\dumps",
+                "--snapshot-dir",
+                r"C:\Users\a b\AppData\Local\yerd\data\meili\snapshots",
+                "--env",
+                "development",
+                "--no-analytics"
+            ]
+        );
+        assert!(plan.capture_output_to_log);
+    }
+
     /// Regression: both dirs default to cwd-relative, and the daemon's cwd is the
     /// read-only `/` on macOS, so neither may be left to Meilisearch's default.
     /// Unix-scoped for the same `datadir.join` separator reason as
-    /// [`meilisearch_metadata_and_launch_are_safe_for_local_development`].
+    /// [`meilisearch_metadata_and_launch_are_safe_for_local_development`];
+    /// [`meilisearch_pins_dump_and_snapshot_dirs_under_the_datadir_on_windows`]
+    /// is the Windows half.
     #[cfg(unix)]
     #[test]
     fn meilisearch_pins_dump_and_snapshot_dirs_under_the_datadir() {
@@ -1069,6 +1119,38 @@ mod tests {
         for (flag, expected) in [
             ("--dump-dir", "/data/meili/dumps"),
             ("--snapshot-dir", "/data/meili/snapshots"),
+        ] {
+            let Some(at) = args.iter().position(|a| a == flag) else {
+                panic!("{flag} must be passed explicitly")
+            };
+            assert_eq!(args.get(at + 1).map(String::as_str), Some(expected));
+        }
+    }
+
+    /// The same pinning on Windows, where the daemon's inherited cwd is no more
+    /// suitable a dump target than macOS' `/`. The goldens carry native `\`.
+    #[cfg(windows)]
+    #[test]
+    fn meilisearch_pins_dump_and_snapshot_dirs_under_the_datadir_on_windows() {
+        let ctx = LaunchContext {
+            port: 7700,
+            program: std::path::Path::new(r"C:\yerd\bin\meilisearch.exe"),
+            config_path: std::path::Path::new(""),
+            datadir: std::path::Path::new(r"C:\yerd\data\meili"),
+            log_path: std::path::Path::new(r"C:\yerd\logs\meili.log"),
+            geo_env: &[],
+            cwd: None,
+        };
+        let plan = reg().get("meilisearch").unwrap().plan_launch(&ctx).unwrap();
+        let args: Vec<_> = plan
+            .command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        for (flag, expected) in [
+            ("--dump-dir", r"C:\yerd\data\meili\dumps"),
+            ("--snapshot-dir", r"C:\yerd\data\meili\snapshots"),
         ] {
             let Some(at) = args.iter().position(|a| a == flag) else {
                 panic!("{flag} must be passed explicitly")

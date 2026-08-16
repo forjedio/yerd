@@ -1,8 +1,10 @@
 //! `PhpManager` - drives the pure state machine through real I/O.
 //!
-//! The manager holds one `Pool<S::Child>` per supervised PHP version. Each
-//! pool tracks its current [`PoolState`], the wall-clock baseline used to
-//! compute [`Elapsed`], the rendered [`PoolConfig`], and the live child
+//! The manager holds one `Pool<S::Child>` per supervised PHP version, and each
+//! pool holds [`WORKERS_PER_VERSION`] lazily spawned `Worker<S::Child>`s plus
+//! the round-robin cursor [`PhpManager::ensure`] hands their addresses out
+//! with. Each worker tracks its current [`PoolState`], the wall-clock baseline
+//! used to compute [`Elapsed`], the rendered [`PoolConfig`], and the live child
 //! (when one exists).
 //!
 //! ## Driver invariants
@@ -22,10 +24,10 @@
 //!
 //! ## Unix socket cleanup
 //!
-//! `ensure` removes any leftover Unix socket file under the planned path
-//! before spawning (ignoring `ENOENT`), and `stop` removes it on the way
-//! out. These are the only two serialisation points against stale
-//! sockets; if you add a third, document it here.
+//! `ensure_worker_once` removes any leftover Unix socket file under the
+//! planned path before spawning (ignoring `ENOENT`), and `stop_worker`
+//! removes it on the way out. These are the only two serialisation points
+//! against stale sockets; if you add a third, document it here.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -66,21 +68,59 @@ const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 /// briefly returns connection-refused.
 const HEALTH_PROBE_GAP: Duration = Duration::from_millis(100);
 
-/// Where the pool is in its lifecycle.
-struct Pool<Ch: ChildHandle> {
+/// How many server processes are supervised per PHP version.
+///
+/// Windows has no FPM SAPI: a pool is a `php-cgi.exe`, a single-request NTS
+/// `FastCGI` server with no pre-fork, so one process serves exactly one request
+/// at a time. Four of them cover a page plus its sub-requests and a second tab,
+/// at roughly 4x the idle RSS of a single interpreter. Everywhere else FPM
+/// pre-forks its own workers and [`AllocatedListen::plan`] hands out one socket
+/// path per version, so a second worker would only collide on it: the count
+/// stays 1 and a pool degenerates to a single supervised child.
+///
+/// Fixed at compile time on purpose. There is deliberately no `yerd.toml`, IPC
+/// or GUI surface for pool sizing; changing it is a one-line edit here.
+pub const WORKERS_PER_VERSION: usize = if cfg!(windows) { 4 } else { 1 };
+
+/// One supervised server process inside a version's pool.
+struct Worker<Ch: ChildHandle> {
     state: PoolState,
     state_since: Instant,
     cfg: PoolConfig,
     child: Option<Ch>,
 }
 
+impl<Ch: ChildHandle> Worker<Ch> {
+    /// This worker's PID while it is `Running` with a still-live child.
+    /// A `try_wait` error counts as not alive, which is what a status report
+    /// should show for a handle it can no longer interrogate.
+    fn live_pid(&mut self) -> Option<u32> {
+        let PoolState::Running { pid } = self.state else {
+            return None;
+        };
+        let child = self.child.as_mut()?;
+        matches!(child.try_wait(), Ok(None)).then_some(pid)
+    }
+}
+
+/// Every worker supervised for one PHP version, plus the round-robin cursor.
+///
+/// A slot stays `None` until the worker at that index has come up healthy, and
+/// the pool itself only exists because at least one of them did: see
+/// [`PhpManager::store_worker`].
+struct Pool<Ch: ChildHandle> {
+    workers: Vec<Option<Worker<Ch>>>,
+    cursor: usize,
+}
+
 /// Live run state of a supervised pool, as reported by
 /// [`PhpManager::snapshots`].
 ///
-/// The manager only ever *stores* pools that were healthy at insert time, so a
-/// snapshot is either `Running` (the master process is still alive) or `Failed`
-/// (the master has since exited). "No pool at all" - installed but never started
-/// - is not represented here; the daemon fills that in as `Stopped`.
+/// The manager only ever *stores* a pool once one of its workers came up
+/// healthy, so a snapshot is either `Running` (at least one worker is still
+/// alive) or `Failed` (every stored worker has since exited). The "no pool at
+/// all" case, installed but never started, is deliberately not represented
+/// here; the daemon fills that in as `Stopped`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoolRunState {
     /// The FPM master process is alive.
@@ -292,13 +332,16 @@ where
         self.ca_bundle = path;
     }
 
-    /// Ensure FPM is running for `v` and return its listen address.
+    /// Ensure a PHP server for `v` is running and return the address the caller
+    /// should send this request to.
     ///
-    /// Idempotent: if the pool is already `Running` and the child is
-    /// still alive, returns the cached listen address immediately. Else
-    /// plans an address, renders the config, spawns FPM, and waits for
-    /// a healthy probe before returning.
-    #[allow(clippy::too_many_lines)]
+    /// Every version is served by [`WORKERS_PER_VERSION`] workers on their own
+    /// addresses, handed out round-robin: each call advances the pool's cursor
+    /// and returns the worker it lands on. That worker is spawned lazily, so a
+    /// version that only ever serves one request at a time never starts more
+    /// than one process. Landing on a worker that is already `Running` with a
+    /// live child returns its cached address immediately; otherwise the worker
+    /// is planned, rendered, spawned and health-checked before returning.
     pub async fn ensure(&mut self, v: PhpVersion) -> Result<Listen, PhpError> {
         let binary = self
             .binaries
@@ -306,10 +349,90 @@ where
             .cloned()
             .ok_or(PhpError::VersionNotInstalled { version: v })?;
 
-        if let Some(listen) = self.running_listen(v)? {
+        let index = self.next_worker_index(v);
+        if let Some(listen) = self.running_listen(v, index)? {
             return Ok(listen);
         }
+        self.ensure_worker(v, index, &binary).await
+    }
 
+    /// The worker index this `ensure` serves, advancing the pool's round-robin
+    /// cursor past it. A version with no pool yet always starts at worker 0;
+    /// its cursor is seeded when that first worker is stored.
+    fn next_worker_index(&mut self, v: PhpVersion) -> usize {
+        let Some(pool) = self.pools.get_mut(&v) else {
+            return 0;
+        };
+        let index = pool.cursor % WORKERS_PER_VERSION;
+        pool.cursor = pool.cursor.wrapping_add(1);
+        index
+    }
+
+    /// Bring worker `i` of `v` up, replanning its address and retrying once on
+    /// Windows.
+    ///
+    /// [`AllocatedListen::plan`] binds `127.0.0.1:0`, reads the port and drops
+    /// the listener before php-cgi ever sees it, so another process can claim
+    /// that port in the gap. Once it has, the address baked into the worker's
+    /// config is dead and every restart attempt inside [`Self::drive`] burns on
+    /// it, so a second [`Self::ensure_worker_once`] with a freshly planned
+    /// address is the only thing that recovers. Unix plans a socket path rather
+    /// than a port and has no such window, so it never retries.
+    ///
+    /// The retry means one `ensure` can drive the state machine twice, i.e. up
+    /// to `2 * policy.max_restart_attempts` spawns.
+    /// `ensure_surfaces_permanent_failure` in `tests/supervisor_states.rs`
+    /// provisions exactly two drives' worth of spawn plans, which is what keeps
+    /// it ending in `PermanentFailure` rather than in `PhpError::Spawn` from an
+    /// exhausted fake queue. Trimming that plan count, or raising
+    /// `max_restart_attempts`, would make this retry surface the wrong error.
+    async fn ensure_worker(
+        &mut self,
+        v: PhpVersion,
+        i: usize,
+        binary: &std::path::Path,
+    ) -> Result<Listen, PhpError> {
+        #[cfg(not(windows))]
+        {
+            self.ensure_worker_once(v, i, binary).await
+        }
+        #[cfg(windows)]
+        {
+            let first = self.ensure_worker_once(v, i, binary).await;
+            if !matches!(
+                first,
+                Err(PhpError::HealthCheckTimedOut { .. } | PhpError::PermanentFailure { .. })
+            ) {
+                return first;
+            }
+            tracing::warn!(
+                version = %v,
+                worker = i,
+                "php-cgi worker did not come up; replanning its port and retrying once"
+            );
+            self.drop_worker(v, i);
+            self.ensure_worker_once(v, i, binary).await
+        }
+    }
+
+    /// Forget the worker stored at `i`, so a retry starts from an empty slot.
+    #[cfg(windows)]
+    fn drop_worker(&mut self, v: PhpVersion, i: usize) {
+        if let Some(slot) = self.pools.get_mut(&v).and_then(|p| p.workers.get_mut(i)) {
+            *slot = None;
+        }
+    }
+
+    /// One start attempt for worker `i` of `v`: plan an address, render the
+    /// config, spawn, and health-check. Stores the worker only once it is
+    /// `Running`.
+    #[allow(clippy::too_many_lines)]
+    async fn ensure_worker_once(
+        &mut self,
+        v: PhpVersion,
+        i: usize,
+        binary: &std::path::Path,
+    ) -> Result<Listen, PhpError> {
         let listen = self.plan_listen(v)?;
 
         if let Listen::UnixSocket(ref path) = listen {
@@ -374,7 +497,7 @@ where
         let cmd_builder = || {
             #[cfg_attr(not(windows), allow(unused_mut))]
             let mut cmd = build_cmd(
-                &binary,
+                binary,
                 &cfg.config_path,
                 &listen,
                 &env,
@@ -404,9 +527,10 @@ where
         match result.outcome {
             Outcome::Running { child, pid } => {
                 let listen = cfg.listen.clone();
-                self.pools.insert(
+                self.store_worker(
                     v,
-                    Pool {
+                    i,
+                    Worker {
                         state: PoolState::Running { pid },
                         state_since: result.state_since,
                         cfg,
@@ -423,16 +547,36 @@ where
         }
     }
 
-    /// Fast path for [`Self::ensure`]: if pool `v` is `Running` with a still-live
-    /// child, return its cached listen address; otherwise `None`.
-    fn running_listen(&mut self, v: PhpVersion) -> Result<Option<Listen>, PhpError> {
-        let Some(pool) = self.pools.get_mut(&v) else {
+    /// Record a healthy worker at index `i`, creating the version's pool if this
+    /// is its first live worker.
+    ///
+    /// The pool is created here and nowhere else. A version that has never
+    /// started must stay absent from `pools`, because the daemon renders "no
+    /// pool" as `Stopped` while an empty pool would read as
+    /// [`PoolRunState::Failed`] and start the snapshot-driven restart loops
+    /// against a version that was never asked to run.
+    fn store_worker(&mut self, v: PhpVersion, i: usize, worker: Worker<S::Child>) {
+        let pool = self.pools.entry(v).or_insert_with(|| Pool {
+            workers: std::iter::repeat_with(|| None)
+                .take(WORKERS_PER_VERSION)
+                .collect(),
+            cursor: i.wrapping_add(1),
+        });
+        if let Some(slot) = pool.workers.get_mut(i) {
+            *slot = Some(worker);
+        }
+    }
+
+    /// Fast path for [`Self::ensure`]: if worker `i` of pool `v` is `Running`
+    /// with a still-live child, return its cached listen address; else `None`.
+    fn running_listen(&mut self, v: PhpVersion, i: usize) -> Result<Option<Listen>, PhpError> {
+        let Some(Some(worker)) = self.pools.get_mut(&v).and_then(|p| p.workers.get_mut(i)) else {
             return Ok(None);
         };
-        if !matches!(pool.state, PoolState::Running { .. }) {
+        if !matches!(worker.state, PoolState::Running { .. }) {
             return Ok(None);
         }
-        let still_alive = match pool.child.as_mut() {
+        let still_alive = match worker.child.as_mut() {
             Some(ch) => ch
                 .try_wait()
                 .map_err(|source| PhpError::Spawn {
@@ -443,7 +587,7 @@ where
                 .is_none(),
             None => false,
         };
-        Ok(still_alive.then(|| pool.cfg.listen.clone()))
+        Ok(still_alive.then(|| worker.cfg.listen.clone()))
     }
 
     /// Plan a listen address, retrying up to `MAX_BIND_ATTEMPTS` to absorb the
@@ -474,24 +618,50 @@ where
     }
 
     /// Restart the pool: stop it cleanly, then `ensure` again.
+    ///
+    /// Every worker is stopped. The `ensure` brings the first one back, and the
+    /// rest are respawned lazily as later calls rotate onto their indices.
     pub async fn restart(&mut self, v: PhpVersion) -> Result<Listen, PhpError> {
         let _ = self.stop(v).await;
         self.ensure(v).await
     }
 
-    /// Stop the pool for `v`. No-op if there is no pool.
+    /// Stop every worker of the pool for `v`. No-op if there is no pool.
+    ///
+    /// The pool is dropped whatever happens, and the first worker error (if
+    /// any) is returned once they have all been driven down.
     pub async fn stop(&mut self, v: PhpVersion) -> Result<(), PhpError> {
-        let Some(mut pool) = self.pools.remove(&v) else {
+        let Some(pool) = self.pools.remove(&v) else {
             return Ok(());
         };
 
-        let child = pool.child.take();
-        let cfg = pool.cfg.clone();
+        let mut first_err: Option<PhpError> = None;
+        for worker in pool.workers.into_iter().flatten() {
+            if let Err(e) = self.stop_worker(v, worker).await {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// Drive one worker down to `Stopped` and remove its Unix socket.
+    async fn stop_worker(
+        &mut self,
+        v: PhpVersion,
+        mut worker: Worker<S::Child>,
+    ) -> Result<(), PhpError> {
+        let child = worker.child.take();
+        let cfg = worker.cfg;
         let result = self
             .drive(
                 v,
-                pool.state,
-                pool.state_since,
+                worker.state,
+                worker.state_since,
                 child,
                 Event::StopRequested,
                 &cfg,
@@ -523,24 +693,38 @@ where
         }
     }
 
-    /// Report a live snapshot of every supervised pool.
+    /// Report a live snapshot of every supervised pool, aggregated to **one row
+    /// per PHP version** rather than one per worker.
     ///
     /// Read-only intent, but takes `&mut self` because liveness uses
-    /// [`ChildHandle::try_wait`] (which needs `&mut` on the handle). A pool whose
-    /// child has exited - or whose stored state is somehow non-`Running` - is
-    /// reported as [`PoolRunState::Failed`]; an alive child is `Running` with its
-    /// PID. This does **not** reconcile the pool set (no insert/remove); the next
-    /// `ensure`/`restart` does that.
+    /// [`ChildHandle::try_wait`] (which needs `&mut` on the handle). A pool with
+    /// at least one live worker is [`PoolRunState::Running`], carrying that
+    /// worker's PID and address; a pool whose stored workers have all exited (or
+    /// whose stored state is somehow non-`Running`) is
+    /// [`PoolRunState::Failed`] with no PID and the first stored worker's
+    /// address. Reporting `Running` while any worker still serves matches what
+    /// the user observes, and a dead worker is repaired by the next `ensure`
+    /// that lands on its index. This does **not** reconcile the pool set (no
+    /// insert/remove); the next `ensure`/`restart` does that.
     pub fn snapshots(&mut self) -> Vec<PoolSnapshot> {
         let mut out = Vec::with_capacity(self.pools.len());
         for (version, pool) in &mut self.pools {
-            let listen = Some(pool.cfg.listen.clone());
-            let (state, pid) = match (&pool.state, pool.child.as_mut()) {
-                (PoolState::Running { pid }, Some(child)) => match child.try_wait() {
-                    Ok(None) => (PoolRunState::Running, Some(*pid)),
-                    _ => (PoolRunState::Failed, None),
-                },
-                _ => (PoolRunState::Failed, None),
+            let mut first_listen: Option<Listen> = None;
+            let mut live: Option<(u32, Listen)> = None;
+            for worker in pool.workers.iter_mut().flatten() {
+                if first_listen.is_none() {
+                    first_listen = Some(worker.cfg.listen.clone());
+                }
+                if live.is_some() {
+                    continue;
+                }
+                if let Some(pid) = worker.live_pid() {
+                    live = Some((pid, worker.cfg.listen.clone()));
+                }
+            }
+            let (state, pid, listen) = match live {
+                Some((pid, listen)) => (PoolRunState::Running, Some(pid), Some(listen)),
+                None => (PoolRunState::Failed, None, first_listen),
             };
             out.push(PoolSnapshot {
                 version: *version,

@@ -39,8 +39,14 @@ sync and runtime-free; `io/` (`atomic_write`, `fastcgi_probe`) and the
   supervisor counts it as a crash). Per-pool ini settings/directives/CA go into a
   supplemental ini loaded via `PHP_INI_SCAN_DIR` (never `-c`, which would drop the
   bundle's own `php.ini`); the `fpm_conf` template is not rendered on Windows.
-  One `php-cgi.exe` per version = one concurrent request per version (no pre-fork
-  on Windows) — a documented MVP limitation.
+  A `php-cgi.exe` serves one request at a time (no pre-fork on Windows), so a
+  version is backed by `WORKERS_PER_VERSION` of them (4 on Windows, 1 elsewhere),
+  each on its own loopback port. `PhpManager::ensure` spawns them lazily and
+  hands their addresses out round-robin, one worker per call. The count is a
+  **fixed compile-time constant**, deliberately with no `yerd.toml`, IPC or GUI
+  surface; `snapshots()` aggregates the workers back to one row per version.
+  A `Pool` is inserted only once a worker has started, so "installed but never
+  started" stays unrepresented and the daemon still renders it as `Stopped`.
 - Spawn/clock/download are always trait calls in logic; real forks happen only
   in `real.rs` and integration paths. Unit tests use fakes — never real forks.
 - FPM config rendering is golden-tested; regenerate the golden only on an

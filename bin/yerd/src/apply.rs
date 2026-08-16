@@ -841,6 +841,14 @@ fn sibling_gui() -> Option<PathBuf> {
 /// the GUI (`yerd-gui.exe`, the Tauri `MAINBINARYNAME`), the CLI, the daemon,
 /// and the privileged helper. Missing entries are skipped (a dev tree may lack
 /// `yerd-helper.exe`).
+///
+/// The GUI name is confirmed against the generated
+/// `target/release/nsis/x64/installer.nsi`, which reads
+/// `!define MAINBINARYNAME "yerd-gui"` and installs it with a bare
+/// `File "${MAINBINARYSRCPATH}"` (no `/oname=`), so the installed name is the
+/// Cargo `[[bin]]` name rather than the `productName`. Setting
+/// `mainBinaryName` in `apps/yerd-gui/src-tauri/tauri.conf.json` would move it,
+/// and this list would have to move with it.
 #[cfg(windows)]
 const WINDOWS_IMAGES: &[&str] = &["yerd-gui.exe", "yerd.exe", "yerdd.exe", "yerd-helper.exe"];
 

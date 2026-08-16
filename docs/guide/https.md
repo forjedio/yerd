@@ -150,10 +150,10 @@ surfaces as an error.
 
 ### Firefox and other NSS apps
 
-Firefox (and some other tools) **do not use the OS trust store**. They keep
-their own NSS certificate database per profile. Yerd handles this separately: it
-can install the CA into every discovered NSS database - Firefox profiles plus
-`~/.pki/nssdb` - using `certutil`.
+On **macOS and Linux**, Firefox (and some other tools) **do not use the OS trust
+store**. They keep their own NSS certificate database per profile. Yerd handles
+this separately: it can install the CA into every discovered NSS database -
+Firefox profiles plus `~/.pki/nssdb` - using `certutil`.
 
 This step is **best-effort**:
 
@@ -163,10 +163,22 @@ This step is **best-effort**:
 - Per-profile results are tracked individually, so one missing database doesn't
   block the others.
 
-::: warning Firefox still warns? Install certutil
+**Windows needs none of this.** Firefox there imports the Windows **CurrentUser**
+Root store - the one `yerd elevate trust` writes to - through its
+`security.enterprise_roots.enabled` preference, which is on by default, so there
+is no `certutil` step and no NSS database to populate. Restart Firefox after the
+trust step, though: it reads the root store once at startup. See the
+[Windows notes](./windows) for how to check it.
+
+::: warning Firefox still warns? Install certutil (macOS and Linux)
 If Chrome/Safari are green but Firefox shows a certificate warning, the NSS
 install was almost certainly skipped because `certutil` wasn't available. Install
 it and re-run the trust step.
+
+**On Windows this does not apply** - restart Firefox first, then check
+`security.enterprise_roots.enabled` in `about:config`. Do not look for the CA in
+`about:certificate`: roots imported from the OS never appear there, even when
+Firefox is trusting them.
 :::
 
 ## PHP and the local CA

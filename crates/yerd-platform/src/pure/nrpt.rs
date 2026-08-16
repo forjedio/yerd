@@ -94,16 +94,33 @@ pub fn name_matches_tld(name_entries: &[String], tld: &str) -> bool {
         .any(|entry| entry.trim().eq_ignore_ascii_case(&want))
 }
 
+/// The individual addresses in a rule's `GenericDNSServers` `REG_SZ`.
+///
+/// The value holds one or more addresses separated by `;`, `,`, or whitespace.
+/// Entries are trimmed and empty ones dropped, so a trailing separator or a
+/// value that is entirely blank yields an empty vec rather than blank strings.
+///
+/// Shared by [`rule_matches`] (the `is_installed` probe) and the doctor-facing
+/// `nrpt_servers_for_tld` reader, so both read a rule's targets the same way.
+#[must_use]
+pub fn split_servers(servers: &str) -> Vec<String> {
+    servers
+        .split([';', ',', ' ', '\t'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 /// Whether a rule both names the `.tld` namespace and forwards to `ip`.
 ///
 /// The `is_installed` probe's matcher: the rule must name `.tld` AND its
 /// `GenericDNSServers` must list `ip` (a rule aimed elsewhere reports absent so
-/// the redirect is re-installed). `servers` may hold several addresses separated
-/// by `;`, `,`, or whitespace.
+/// the redirect is re-installed). The server list is read with
+/// [`split_servers`], so an empty `ip` never matches a blank entry.
 #[must_use]
 pub fn rule_matches(name_entries: &[String], servers: &str, tld: &str, ip: &str) -> bool {
-    name_matches_tld(name_entries, tld)
-        && servers.split([';', ',', ' ', '\t']).any(|s| s.trim() == ip)
+    name_matches_tld(name_entries, tld) && split_servers(servers).iter().any(|s| s == ip)
 }
 
 #[cfg(test)]
@@ -188,6 +205,35 @@ mod tests {
         assert!(
             !rule_matches(&[], "127.0.0.1", "test", "127.0.0.1"),
             "empty name must not match"
+        );
+    }
+
+    #[test]
+    fn split_servers_table() {
+        let cases: &[(&str, &[&str])] = &[
+            ("", &[]),
+            ("   ", &[]),
+            ("127.0.0.1", &["127.0.0.1"]),
+            ("10.0.0.1;127.0.0.1", &["10.0.0.1", "127.0.0.1"]),
+            ("10.0.0.1,127.0.0.1", &["10.0.0.1", "127.0.0.1"]),
+            ("10.0.0.1 127.0.0.1", &["10.0.0.1", "127.0.0.1"]),
+            ("10.0.0.1\t127.0.0.1", &["10.0.0.1", "127.0.0.1"]),
+            (
+                " 10.0.0.1 ;\t127.0.0.1 , 8.8.8.8 ",
+                &["10.0.0.1", "127.0.0.1", "8.8.8.8"],
+            ),
+            (";;127.0.0.1;;", &["127.0.0.1"]),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(split_servers(raw), *want, "input {raw:?}");
+        }
+    }
+
+    #[test]
+    fn split_servers_never_yields_blanks() {
+        assert!(
+            !rule_matches(&[".test".to_owned()], ";;", "test", ""),
+            "an empty ip must not match a blank server entry"
         );
     }
 

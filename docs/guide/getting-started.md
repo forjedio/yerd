@@ -48,7 +48,7 @@ Windows is an early-access build. The installer is currently **unsigned**, so
 SmartScreen shows "Windows protected your PC" on first run - click **More info →
 Run anyway**. Install is per-user (no admin) into `%LOCALAPPDATA%\Yerd`. See the
 [Windows notes](./windows) for the full first-run flow and the known MVP limits
-(Firefox needs manual CA trust, no system metrics, unsigned installer).
+(no system metrics, unsigned installer).
 :::
 
 ::: tip Arch Linux

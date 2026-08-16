@@ -32,8 +32,8 @@ use tokio::sync::Mutex;
 use yerd_platform::{ActivePortBinder, PlatformDirs};
 use yerd_services::version;
 use yerd_services::{
-    ReadinessKind, ReadinessProbe, ServiceDefinition, ServiceError, ServiceManager,
-    ServiceRegistry, ServiceRunState, ServiceVersion,
+    server_binary_for_host, ReadinessKind, ReadinessProbe, ServiceDefinition, ServiceError,
+    ServiceManager, ServiceRegistry, ServiceRunState, ServiceVersion,
 };
 use yerd_supervise::supervisor::{KillSignal, StopProtocol, SupervisorPolicy};
 use yerd_supervise::{ChildHandle, Clock, ExitReason, Listen, ProcessSpawner};
@@ -222,9 +222,20 @@ fn redis_def() -> Arc<dyn ServiceDefinition> {
 
 /// Place a (dummy) Redis server binary on disk so `ensure`'s `is_file()` gate
 /// passes. The fake spawner never actually executes it.
+///
+/// The base name is host-dependent and must be resolved the same way
+/// `ServiceManager::ensure` resolves it: Unix ships `valkey-server`, while the
+/// Windows artifact ships the native `redis-server.exe` (Valkey has no Windows
+/// build). Writing the Unix name on Windows leaves `ensure`'s `is_file()` gate
+/// looking at a path that does not exist.
 fn install_redis_binary(dirs: &PlatformDirs, v: &ServiceVersion) {
     let def = redis_def();
-    let path = version::server_path(dirs, def.id(), def.server_binary().unwrap(), v);
+    let path = version::server_path(
+        dirs,
+        def.id(),
+        server_binary_for_host(def.as_ref()).unwrap(),
+        v,
+    );
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, b"#!/bin/sh\n").unwrap();
 }

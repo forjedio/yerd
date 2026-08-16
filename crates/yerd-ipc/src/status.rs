@@ -178,6 +178,22 @@ pub struct StatusReport {
     /// mode is on. `None` = not installed, unreadable, or not macOS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lan_redirect_targets: Option<PortRedirectTargets>,
+    /// The DNS servers the OS resolver rule for `*.<tld>` currently forwards to.
+    /// Windows-only (the NRPT rule's `GenericDNSServers`); empty elsewhere, and
+    /// empty when no rule exists. Non-empty alongside
+    /// [`Self::resolver_installed`] `== Some(false)` means a rule *does* exist
+    /// but points somewhere other than Yerd, which the bare boolean cannot
+    /// express. `#[serde(default, skip_serializing_if)]` keeps the wire additive.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolver_rule_servers: Vec<String>,
+    /// Image name of the process holding the DNS port Yerd could not bind (e.g.
+    /// `"dnscrypt-proxy.exe"`), so the [`DiagnosisCode::DnsPortUnbound`] finding
+    /// can name the squatter instead of just the port. Only populated when
+    /// [`Self::dns_unbound`] is set, so the probe stays off the healthy path;
+    /// `None` when the owner could not be determined. `#[serde(default,
+    /// skip_serializing_if)]` keeps the wire additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns_port_owner: Option<String>,
 }
 
 /// Destination ports `(http, https)` an installed macOS pf redirect anchor

@@ -28,15 +28,39 @@ Autostart is a **per-user logon entry** (an `HKCU\...\Run` value), enabled from
 the app - not a Windows Service. The installer registers no service and no
 autostart entry; the app owns that decision.
 
+## Certificate trust and browsers
+
+The local CA goes into your **CurrentUser** Root store (the one-time confirmation
+dialog in step 4). That store is per-user by design: it is what lets Yerd trust
+the CA with no administrator prompt. Every browser reads it, so there is no
+`certutil`, no NSS tooling, and no manual import on Windows.
+
+- **Edge, Chrome and other Chromium-family browsers** use the Windows store
+  directly and pick the CA up immediately.
+- **Firefox** imports the Windows user Root store too, through its
+  `security.enterprise_roots.enabled` preference, which is **on by default**.
+
+**Restart Firefox after `yerd elevate trust`.** Firefox reads the Windows root
+store once, at startup, so a CA added (or removed) while it is running is not
+picked up until you restart it. Edge and Chrome see the change straight away.
+
+::: tip Firefox alone still warns?
+Restart it first. If it still warns, check `security.enterprise_roots.enabled` in
+`about:config` - it ships `true`, but a hardening `user.js` or an earlier manual
+change can turn it off.
+
+Check trust from the **padlock**, not from `about:certificate`: on a secured
+`.test` site, click the padlock and open the connection details, where a trusted
+site reads *Verified by: Yerd Local CA*. The CA deliberately does **not** appear
+in `about:certificate` even when Firefox trusts it - that tab lists Firefox's own
+certificate database, and roots imported from the operating system are held
+separately from it. Looking there and seeing nothing is not a fault.
+:::
+
 ## Known MVP limitations
 
 These are tracked and slated for hardening after early access:
 
-- **Per-user cert trust only.** The local CA is added to your **CurrentUser**
-  Root store (a one-time confirmation dialog). Edge and Chrome use that store and
-  work out of the box. **Firefox needs manual trust** - it uses its own NSS
-  store and Yerd does not yet auto-trust it (`certutil`/NSS integration is a
-  post-MVP item).
 - **Unsigned installer.** Expect the SmartScreen "Run anyway" step above until a
   signing certificate is wired in (a dormant seam already exists in the bundle
   config). Some corporate AppLocker/WDAC policies may block an unsigned installer
@@ -45,15 +69,22 @@ These are tracked and slated for hardening after early access:
   not yet wired on Windows.
 - **Brief console flash at logon.** The daemon's autostart entry can flash a
   short-lived console window at logon (cosmetic).
-- **ACL hardening is a tracked TODO.** The CA key and runtime directory are not
-  yet locked down with restrictive ACLs.
-- **One concurrent PHP request per version.** Windows uses `php-cgi`, which has
-  no worker pool (a pool is post-MVP), so parallel requests to the same PHP
-  version are served one at a time. Two consequences worth knowing:
+- **ACL hardening is best-effort.** The runtime directory and the CA private key
+  get an `icacls` DACL granting only your own account (the daemon's named pipe
+  carries its own security descriptor), but if `icacls` cannot be run Yerd logs a
+  warning and carries on with the inherited default ACL rather than refusing to
+  start.
+- **Four concurrent PHP requests per version.** Windows uses `php-cgi`, which
+  serves one request at a time, so Yerd runs **four** of them per PHP version on
+  separate loopback ports and rotates requests across them. They start on
+  demand, so a version that is only ever asked for one request at a time never
+  runs more than one process. Four is fixed in the build; it is not a setting.
+  Two consequences worth knowing:
   - The **FPM pool size** setting is hidden on Windows, and `yerd php pool set`
-    is refused there - there is no pool to size.
+    is refused there - php-cgi has no worker pool of its own to size.
   - A request that makes a **loopback HTTP call back into a site on the same PHP
-    version blocks until it times out**, because the one worker is the caller.
+    version** borrows a second worker, so it works, but a chain deeper than four
+    (or three busy tabs plus a loopback) still blocks until it times out.
     WordPress's `wp-cron` loopback and an app calling its own API are the usual
     ways to hit this. Workarounds: put the caller and callee on different PHP
     versions, or disable the loopback (for WordPress, set

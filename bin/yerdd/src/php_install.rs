@@ -1354,11 +1354,12 @@ mod tests {
             assert_eq!(std::fs::read(base.join("php-cgi.exe")).unwrap(), b"CGI-EXE");
             let ini = std::fs::read_to_string(base.join("php.ini")).unwrap();
             let cacert = base.join("cacert.pem");
+            let quoted = yerd_core::php_settings::sanitize_quoted_ca_bundle_path(&cacert).unwrap();
             assert!(
-                ini.contains(&format!("curl.cainfo = \"{}\"", cacert.display())),
+                ini.contains(&format!("curl.cainfo = \"{quoted}\"")),
                 "php.ini not CA-patched: {ini}"
             );
-            assert!(ini.contains(&format!("openssl.cafile = \"{}\"", cacert.display())));
+            assert!(ini.contains(&format!("openssl.cafile = \"{quoted}\"")));
         }
 
         assert_eq!(

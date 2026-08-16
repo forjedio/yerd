@@ -2,10 +2,11 @@
 //!
 //! Exactly one of `linux`, `macos`, `windows`, or `unsupported` is active per
 //! build. Windows implements a growing subset with real `Windows*` types
-//! (`Paths`, `PortBinder`, `PortRedirector`, `TrustStore`) and delegates the
-//! remaining traits to the `unsupported` stub, so `unsupported` stays compiled
-//! on Windows too. The `active` re-export below is the entry point used by
-//! `lib.rs`.
+//! (`Paths`, `PortBinder`, `PortRedirector`, `TrustStore`, `ResolverInstaller`,
+//! `TerminalLauncher`) and delegates the remaining three (`IdeLauncher`,
+//! `SystemOpener`, `SystemMetrics`) to the `unsupported` stub, so `unsupported`
+//! stays compiled on Windows too. The `active` re-export below is the entry
+//! point used by `lib.rs`.
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -42,9 +43,9 @@ pub(crate) mod active {
     #[cfg(target_os = "windows")]
     pub use super::windows::{
         broadcast_user_env_marker, current_user_sid, daemon_pipe_name, is_token_elevated,
-        nrpt_guids_for_tld, set_user_path, user_path, WindowsIdeLauncher as ActiveIdeLauncher,
-        WindowsPaths as ActivePaths, WindowsPortBinder as ActivePortBinder,
-        WindowsPortRedirector as ActivePortRedirector,
+        nrpt_guids_for_tld, nrpt_servers_for_tld, set_user_path, udp_port_owner, user_path,
+        WindowsIdeLauncher as ActiveIdeLauncher, WindowsPaths as ActivePaths,
+        WindowsPortBinder as ActivePortBinder, WindowsPortRedirector as ActivePortRedirector,
         WindowsResolverInstaller as ActiveResolverInstaller,
         WindowsSystemMetrics as ActiveSystemMetrics, WindowsSystemOpener as ActiveSystemOpener,
         WindowsTerminalLauncher as ActiveTerminalLauncher, WindowsTrustStore as ActiveTrustStore,

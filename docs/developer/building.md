@@ -176,7 +176,8 @@ another yerdd is already running (lock held at /tmp/yerd-501/yerd.lock)
 
 So there are two workflows: **take over** the production paths (stop production,
 run your build in its place) or **isolate** your build onto a separate set of
-paths (Linux only). Pick based on your platform and what you're testing.
+paths (Linux and Windows; macOS has no override). Pick based on your platform
+and what you're testing.
 
 ### Step 1 - stop the production daemon and GUI
 
@@ -213,10 +214,11 @@ cargo build -p yerdd -p yerd
 ### Step 3 - run your build in the foreground
 
 Run the daemon you just built directly from the workspace. `serve` is the
-default subcommand, and `-v` turns up logging so you can watch it come up:
+subcommand that starts it, and `-v` turns up logging so you can watch it come
+up:
 
 ```sh
-cargo run -p yerdd -- -v
+cargo run -p yerdd -- serve -v
 ```
 
 On a rootless host it binds the fallback ports (`http=8080`, `https=8443`) and
@@ -249,7 +251,8 @@ cargo run -p yerdd -- --config ~/yerd-dev.toml -v
 - the **runtime socket** still resolve to the normal platform directories, so a
 daemon started this way still collides with the instance lock above. Use it
 *after* stopping the production daemon, not alongside it. For a fully parallel
-instance, isolate the directories instead (next section, Linux only).
+instance, isolate the directories instead - see the next two sections for the
+Linux and Windows routes.
 :::
 
 ### Fully isolating a parallel instance (Linux)
@@ -282,6 +285,41 @@ directories and socket. On macOS you must **stop the production daemon first**
 (Step 1) and accept that your build reads and writes the same state - you can't
 run two isolated instances side by side.
 :::
+
+### Fully isolating a parallel instance (Windows)
+
+Windows has its own route to the same thing. `Paths::resolve` reads `APPDATA`
+(config), `LOCALAPPDATA` (data, state, cache) and the temp directory (runtime,
+so both `TEMP` and `TMP`) from the environment. Redirect all four and the dev
+instance gets its own directories **and** its own IPC endpoint: the named-pipe
+name embeds a SHA-256 of the runtime directory, so a redirected instance cannot
+clash with production's pipe or its instance lock.
+
+Create the directories **before** you set the variables - a `TEMP`/`TMP` that
+doesn't exist makes `rustc` and `link.exe` fail in obscure ways:
+
+```powershell
+New-Item -ItemType Directory -Force C:\yerd-dev\roaming, C:\yerd-dev\local, C:\yerd-dev\tmp
+$env:APPDATA      = 'C:\yerd-dev\roaming'
+$env:LOCALAPPDATA = 'C:\yerd-dev\local'
+$env:TEMP         = 'C:\yerd-dev\tmp'
+$env:TMP          = 'C:\yerd-dev\tmp'
+cargo build -p yerdd -p yerd
+cargo run -p yerdd -- serve -v
+```
+
+Use a shell that has imported `vcvars64.bat` - the "Developer PowerShell for VS
+2022", or a plain PowerShell seeded with
+`cmd /c "call <VS>\VC\Auxiliary\Build\vcvars64.bat && set"` - because `link.exe`
+is not on the default `PATH`. Any `yerd` CLI (or `npm run tauri dev` GUI) started
+with the *same* four variables reaches your dev daemon; a shell without them
+still reaches production.
+
+Production holds 80, 443, 53, 2525 and 2304, so the dev daemon starts degraded:
+it falls back to `http=8080` / `https=8443` and logs warnings for DNS, mail
+capture and the dump server. That is expected, and it is enough for daemon, CLI,
+PHP and proxy work. Tear the instance down by stopping the daemon and deleting
+`C:\yerd-dev`.
 
 ### Step 4 - restore production
 

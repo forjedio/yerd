@@ -40,6 +40,12 @@ pub fn render_redis_conf(port: u16, datadir: &Path, logfile: &Path) -> String {
 /// Double-quote a path for a Redis/Valkey config value, escaping `\` and `"`
 /// (the only metacharacters its double-quoted-string parser honours). The same
 /// double-quoted-value form is accepted by `MySQL`/`MariaDB` option files.
+///
+/// This is the decided Windows form for both engines: the native separator is
+/// kept and doubled inside the quotes, so `C:\yerd\data` renders as
+/// `"C:\\yerd\\data"` and each parser unescapes it back to the native path.
+/// Normalising to forward slashes here would be wrong: the escape hazard
+/// [`pg_conf_path`] works around is answered by the doubling instead.
 fn quote_conf_path(p: &Path) -> String {
     let s = p.display().to_string();
     let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
@@ -205,7 +211,11 @@ fn pg_conf_path(p: &Path) -> String {
 /// - `MyCnf`: `!includedir`, which reads every `*.cnf` in the directory in name
 ///   order. The directive has **no quoting syntax** (unlike option *values*, cf.
 ///   [`quote_conf_path`]), so the path is emitted raw; a real `mysqld` parses a
-///   spaced macOS state path that way, which is why this is safe.
+///   spaced macOS state path that way, which is why this is safe. On Windows
+///   that means a raw native path with single backslashes: with no quoting there
+///   is no escape processing either, so [`pg_conf_path`]'s forward-slash
+///   reasoning (which is about backslashes *inside a quoted string*) does not
+///   carry over to this directive.
 /// - `PostgresConf`: `include_dir`, whose value is an ordinary quoted string and
 ///   which also reads its directory in name order.
 /// - `RedisConf`: no directory form exists, so both files are named explicitly.
@@ -275,8 +285,9 @@ mod tests {
     }
 
     /// Runs on every OS: the exact Unix-separator goldens are asserted on Unix;
-    /// on Windows the socket line is omitted (named-pipe semantics) and only
-    /// structural directives are checked, since `datadir.join(...)` emits `\`.
+    /// on Windows the socket line is omitted (named-pipe semantics), so that arm
+    /// checks the structural directives and then pins the decided Windows form
+    /// on a second render with native paths, quoted with doubled backslashes.
     #[test]
     fn my_cnf_is_loopback_only_no_password() {
         let socket = PathBuf::from("/run/mysql.sock");
@@ -309,6 +320,36 @@ mod tests {
             assert!(conf.contains("datadir = "));
             assert!(conf.contains("pid-file = "));
             assert!(conf.contains("init-file = "));
+
+            let win = render_my_cnf(
+                3306,
+                &PathBuf::from(r"C:\Users\a b\AppData\Local\yerd\data\mysql"),
+                None,
+                &PathBuf::from(r"C:\Users\a b\AppData\Local\yerd\logs\mysql.log"),
+                &PathBuf::from(r"C:\Users\a b\AppData\Local\yerd\cfg\mysql-init.sql"),
+            );
+            assert!(
+                win.contains(r#"datadir = "C:\\Users\\a b\\AppData\\Local\\yerd\\data\\mysql""#),
+                "{win}"
+            );
+            assert!(
+                win.contains(
+                    r#"pid-file = "C:\\Users\\a b\\AppData\\Local\\yerd\\data\\mysql\\mysqld.pid""#
+                ),
+                "{win}"
+            );
+            assert!(
+                win.contains(
+                    r#"log-error = "C:\\Users\\a b\\AppData\\Local\\yerd\\logs\\mysql.log""#
+                ),
+                "{win}"
+            );
+            assert!(
+                win.contains(
+                    r#"init-file = "C:\\Users\\a b\\AppData\\Local\\yerd\\cfg\\mysql-init.sql""#
+                ),
+                "{win}"
+            );
         }
     }
 
@@ -452,8 +493,9 @@ mod tests {
     }
 
     /// The exact separator golden is asserted on Unix only; `confd.join(...)`
-    /// emits `\` on Windows, so there the check is structural (both files
-    /// named, `50-local` last - the precedence the order carries).
+    /// emits `\` on Windows, so the non-Unix check is structural (both files
+    /// named, `50-local` last - the precedence the order carries) and Windows
+    /// additionally pins the native quoted form on a second render.
     #[test]
     fn redis_include_lines_name_both_files_local_last() {
         let confd = PathBuf::from("/s/services/redis/conf.d");
@@ -471,11 +513,29 @@ mod tests {
             assert!(managed < local, "50-local must be read last: {lines}");
             assert_eq!(lines.lines().count(), 2, "{lines}");
         }
+        #[cfg(windows)]
+        {
+            let win = render_include_lines(
+                OverrideDialect::RedisConf,
+                &PathBuf::from(r"C:\yerd\services\redis\conf.d"),
+            );
+            assert_eq!(
+                win,
+                "include \"C:\\\\yerd\\\\services\\\\redis\\\\conf.d\\\\10-yerd.conf\"\n\
+                 include \"C:\\\\yerd\\\\services\\\\redis\\\\conf.d\\\\50-local.conf\"\n"
+            );
+        }
     }
 
     /// The macOS state dir contains a space. `!includedir` has no quoting
     /// syntax, and a real `mysqld` reads the raw spaced path, so the `MyCnf`
     /// line must stay unquoted; the other two dialects quote as their values do.
+    ///
+    /// The Windows arm pins the same three decisions against a native spaced
+    /// path: `!includedir` raw with single backslashes (no quoting means no
+    /// escape processing, so nothing needs doubling or normalising),
+    /// `include_dir` forward-slashed inside its quotes, and `include`
+    /// backslash-doubled inside its quotes.
     #[test]
     fn include_lines_carry_spaced_paths_intact() {
         let confd = PathBuf::from("/Users/a b/Library/Application Support/yerd/services/x/conf.d");
@@ -493,6 +553,23 @@ mod tests {
             "include \"/Users/a b/Library/Application Support/yerd/services/x/conf.d/10-yerd.conf\"\n\
              include \"/Users/a b/Library/Application Support/yerd/services/x/conf.d/50-local.conf\"\n"
         );
+        #[cfg(windows)]
+        {
+            let win = PathBuf::from(r"C:\Users\a b\AppData\Local\yerd\services\x\conf.d");
+            assert_eq!(
+                render_include_lines(OverrideDialect::MyCnf, &win),
+                "!includedir C:\\Users\\a b\\AppData\\Local\\yerd\\services\\x\\conf.d\n"
+            );
+            assert_eq!(
+                render_include_lines(OverrideDialect::PostgresConf, &win),
+                "include_dir 'C:/Users/a b/AppData/Local/yerd/services/x/conf.d'\n"
+            );
+            assert_eq!(
+                render_include_lines(OverrideDialect::RedisConf, &win),
+                "include \"C:\\\\Users\\\\a b\\\\AppData\\\\Local\\\\yerd\\\\services\\\\x\\\\conf.d\\\\10-yerd.conf\"\n\
+                 include \"C:\\\\Users\\\\a b\\\\AppData\\\\Local\\\\yerd\\\\services\\\\x\\\\conf.d\\\\50-local.conf\"\n"
+            );
+        }
     }
 
     #[test]

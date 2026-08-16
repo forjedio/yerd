@@ -612,6 +612,8 @@ fn path_needs_setup(state: &DaemonState) -> Option<bool> {
         let _ = state;
         None
     }
+    // Shell rc files are the Unix way onto PATH; the `#[cfg(windows)]` arm above
+    // is the sibling that probes `HKCU\Environment` instead.
     #[cfg(unix)]
     {
         use yerd_platform::pure::shell_profile::{self, rc_relpaths, HostOs, Shell};
@@ -841,6 +843,19 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     .ok()
     .flatten();
 
+    let servers_tld = tld.clone();
+    let resolver_rule_servers =
+        tokio::task::spawn_blocking(move || resolver_rule_servers(&servers_tld))
+            .await
+            .unwrap_or_default();
+
+    let dns_port_owner = match state.dns_unbound {
+        Some(port) => tokio::task::spawn_blocking(move || dns_port_owner(port))
+            .await
+            .unwrap_or_default(),
+        None => None,
+    };
+
     let (port_redirect, foreign_web_listener, port_redirect_targets, lan_redirect_targets) =
         tokio::task::spawn_blocking(|| {
             use yerd_platform::PortRedirector;
@@ -912,7 +927,40 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         lan_enabled,
         lan_ip,
         lan_setup_bound,
+        resolver_rule_servers,
+        dns_port_owner,
     }
+}
+
+/// Servers the OS resolver rule for `*.<tld>` forwards to, for
+/// [`yerd_ipc::StatusReport::resolver_rule_servers`]. Windows reads the NRPT
+/// rule's `GenericDNSServers`; the other OSes have no equivalent single-value
+/// fact (a `/etc/resolver` file or a `systemd-resolved` drop-in is already
+/// covered by `resolver_installed`), so they report nothing.
+#[cfg(windows)]
+fn resolver_rule_servers(tld: &str) -> Vec<String> {
+    yerd_platform::nrpt_servers_for_tld(tld)
+}
+
+/// See [`resolver_rule_servers`] (Windows variant).
+#[cfg(not(windows))]
+fn resolver_rule_servers(_tld: &str) -> Vec<String> {
+    Vec::new()
+}
+
+/// Image name of the process holding `port`, for
+/// [`yerd_ipc::StatusReport::dns_port_owner`]. Only called when the DNS bind
+/// failed, so the two process spawns behind the Windows arm stay off the healthy
+/// status path. No equivalent probe exists on the other OSes yet.
+#[cfg(windows)]
+fn dns_port_owner(port: u16) -> Option<String> {
+    yerd_platform::udp_port_owner(port)
+}
+
+/// See [`dns_port_owner`] (Windows variant).
+#[cfg(not(windows))]
+fn dns_port_owner(_port: u16) -> Option<String> {
+    None
 }
 
 /// Map the platform layer's parsed anchor targets `(http, https)` to the wire
@@ -4026,7 +4074,8 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
-    #[cfg(unix)]
+    // The handler is `#[cfg(any(unix, windows))]`, so the test covers both.
+    #[cfg(any(unix, windows))]
     #[tokio::test]
     async fn dispatch_restart_daemon_arms_flag_and_oks() {
         let tmp = tempfile::tempdir().unwrap();

@@ -81,7 +81,7 @@ everything the app does.
 | Built-in health checks (`doctor`) | ❌ | ❌ | ✅ |
 | Under the hood | Native app (nginx + dnsmasq) | Containers (rootless Podman) | Native Rust (`rustls` proxy + embedded DNS) |
 
-<sub>✅\* = Windows is **early access**: it installs and runs (per-user, no admin), serves `.test` over HTTP/HTTPS with a per-user trusted CA, and self-updates. Known MVP limits: Firefox needs manual CA trust, no system metrics in the GUI, and the installer is unsigned (a one-time SmartScreen "More info → Run anyway"). See the [Windows notes](docs/guide/windows.md).</sub>
+<sub>✅\* = Windows is **early access**: it installs and runs (per-user, no admin), serves `.test` over HTTP/HTTPS with a per-user trusted CA, and self-updates. Known MVP limits: no system metrics in the GUI, and the installer is unsigned (a one-time SmartScreen "More info → Run anyway"). See the [Windows notes](docs/guide/windows.md).</sub>
 <br><sub>**Lerd** runs your stack in containers via **rootless Podman** (Linux +
 macOS; no Docker) - so it trivially adds database/cache services, but it pulls and
 runs container images rather than native processes. † Rootless by design on

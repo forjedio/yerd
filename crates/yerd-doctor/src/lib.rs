@@ -152,14 +152,32 @@ fn trust_findings(report: &StatusReport) -> Vec<Diagnosis> {
         out.push(warn(
             DiagnosisCode::ResolverNotInstalled,
             "Resolver not installed",
-            format!(
-                "*.{} is not routed to Yerd's DNS responder ({}).",
-                report.tld, report.dns_addr
-            ),
+            resolver_not_installed_detail(report),
             resolver_remedy(),
         ));
     }
     out
+}
+
+/// Detail for [`DiagnosisCode::ResolverNotInstalled`].
+///
+/// When the platform reported the rule's actual targets and they are non-empty,
+/// a rule *does* exist and simply points elsewhere, so say which server rather
+/// than implying nothing is installed. `resolver_installed == Some(false)` alone
+/// cannot distinguish the two cases.
+fn resolver_not_installed_detail(report: &StatusReport) -> String {
+    let head = format!(
+        "*.{} is not routed to Yerd's DNS responder ({}).",
+        report.tld, report.dns_addr
+    );
+    if report.resolver_rule_servers.is_empty() {
+        head
+    } else {
+        format!(
+            "{head} An existing rule sends it to {} instead.",
+            report.resolver_rule_servers.join(", ")
+        )
+    }
 }
 
 /// Title for [`DiagnosisCode::FpmPoolFailed`]. The code's serialised form stays
@@ -418,11 +436,15 @@ pub fn is_auto_fixable(code: DiagnosisCode) -> bool {
 fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
     let mut out = Vec::new();
     if let Some(dns_port) = report.dns_unbound {
+        let holder = report.dns_port_owner.as_ref().map_or_else(
+            || "another process holds it".to_owned(),
+            |owner| format!("{owner} holds it"),
+        );
         out.push(warn(
             DiagnosisCode::DnsPortUnbound,
             "Yerd's DNS port is busy",
             format!(
-                "Yerd couldn't bind its DNS port ({dns_port}) — another process holds it — so \
+                "Yerd couldn't bind its DNS port ({dns_port}) — {holder} — so \
                  *.test names won't resolve through Yerd until it's freed or changed."
             ),
             "Free that port, or change Yerd's DNS port in Settings (Yerd ▸ General), then restart. \
@@ -706,6 +728,8 @@ mod tests {
             lan_setup_bound: None,
             port_redirect_targets: None,
             lan_redirect_targets: None,
+            resolver_rule_servers: vec![],
+            dns_port_owner: None,
         }
     }
 
@@ -1108,6 +1132,34 @@ mod tests {
     }
 
     #[test]
+    fn dns_unbound_names_the_port_owner_when_known() {
+        let mut r = healthy();
+        r.dns_unbound = Some(53);
+        r.dns_port_owner = Some("dnscrypt-proxy.exe".into());
+        let ds = diagnose(&r, None, None, &[]);
+        let detail = ds
+            .iter()
+            .find(|d| d.code == DiagnosisCode::DnsPortUnbound)
+            .map(|d| d.detail.clone())
+            .expect("dns finding present");
+        assert!(detail.contains("dnscrypt-proxy.exe holds it"), "{detail}");
+        assert!(!detail.contains("another process"), "{detail}");
+    }
+
+    #[test]
+    fn dns_unbound_falls_back_to_the_anonymous_wording() {
+        let mut r = healthy();
+        r.dns_unbound = Some(53);
+        let ds = diagnose(&r, None, None, &[]);
+        let detail = ds
+            .iter()
+            .find(|d| d.code == DiagnosisCode::DnsPortUnbound)
+            .map(|d| d.detail.clone())
+            .expect("dns finding present");
+        assert!(detail.contains("another process holds it"), "{detail}");
+    }
+
+    #[test]
     fn dns_unbound_surfaces_even_when_web_unbound() {
         let mut r = healthy();
         r.dns_unbound = Some(1053);
@@ -1187,6 +1239,37 @@ mod tests {
         let cs = codes(&diagnose(&r, None, None, &[]));
         assert!(cs.contains(&DiagnosisCode::CaNotTrusted));
         assert!(cs.contains(&DiagnosisCode::ResolverNotInstalled));
+    }
+
+    #[test]
+    fn resolver_detail_names_the_server_an_existing_rule_points_at() {
+        let mut r = healthy();
+        r.resolver_installed = Some(false);
+        r.resolver_rule_servers = vec!["10.0.0.53".into(), "8.8.8.8".into()];
+        let ds = diagnose(&r, None, None, &[]);
+        let detail = ds
+            .iter()
+            .find(|d| d.code == DiagnosisCode::ResolverNotInstalled)
+            .map(|d| d.detail.clone())
+            .expect("resolver finding present");
+        assert!(detail.contains("10.0.0.53, 8.8.8.8"), "{detail}");
+        assert!(detail.contains("An existing rule"), "{detail}");
+    }
+
+    #[test]
+    fn resolver_detail_stays_terse_without_rule_servers() {
+        let mut r = healthy();
+        r.resolver_installed = Some(false);
+        let ds = diagnose(&r, None, None, &[]);
+        let detail = ds
+            .iter()
+            .find(|d| d.code == DiagnosisCode::ResolverNotInstalled)
+            .map(|d| d.detail.clone())
+            .expect("resolver finding present");
+        assert_eq!(
+            detail,
+            "*.test is not routed to Yerd's DNS responder (127.0.0.1:1053)."
+        );
     }
 
     #[test]

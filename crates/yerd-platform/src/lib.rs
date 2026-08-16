@@ -4,10 +4,13 @@
 //! [`PortBinder`], [`PortRedirector`], [`TerminalLauncher`], [`IdeLauncher`], and
 //! [`SystemOpener`] - each with a single thin
 //! implementation per OS selected by `#[cfg(target_os = ...)]`. macOS and Linux
-//! have full implementations. Windows has a real [`Paths`] impl (`os::windows`)
-//! and aliases every other trait to the [`os::unsupported`] stub, which returns
-//! [`PlatformError::Unsupported`] for every method until later phases replace
-//! each alias with a real `Windows*` type.
+//! have full implementations. Windows (`os::windows`) has real `Windows*` impls
+//! for [`Paths`], [`TrustStore`], [`ResolverInstaller`], [`PortBinder`],
+//! [`PortRedirector`] and [`TerminalLauncher`], and still aliases
+//! [`IdeLauncher`], [`SystemOpener`] and [`SystemMetrics`] to the
+//! [`os::unsupported`] stub, which returns [`PlatformError::Unsupported`] for
+//! every method until a later phase replaces each remaining alias with a real
+//! `Windows*` type.
 //!
 //! ## Privilege boundary
 //!
@@ -78,6 +81,13 @@ pub use os::active::{current_user_sid, daemon_pipe_name};
 /// through this crate so `winreg` stays out of its own dependency graph).
 #[cfg(target_os = "windows")]
 pub use os::active::{is_token_elevated, nrpt_guids_for_tld};
+
+/// Windows doctor-depth probes: which servers the `.tld` NRPT rule forwards to,
+/// and the image name squatting a UDP port. Both are read-only, unprivileged,
+/// and exist so the daemon can put a name in a diagnosis the bare
+/// `is_installed`/bind-failure booleans cannot supply.
+#[cfg(target_os = "windows")]
+pub use os::active::{nrpt_servers_for_tld, udp_port_owner};
 
 /// Windows user-`PATH` (`HKCU\Environment`) helpers: read the current value,
 /// write a new one (preserving the `REG_EXPAND_SZ` type), and broadcast the

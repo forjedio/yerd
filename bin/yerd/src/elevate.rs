@@ -1308,6 +1308,13 @@ mod windows_impl {
             assert_ne!(a, generate_result_token());
         }
 
+        /// The standing guard for the `runas 1.2.0` quoting bug: it doubles
+        /// backslashes in any argv element containing a space, tab or quote, so
+        /// no Windows-reachable helper invocation may contain one. Every new
+        /// Windows-reachable `HelperInvocation` variant must be added to the
+        /// array below. See the `HelperInvocation` item docs in `yerd-platform`
+        /// for the full constraint, including the owner-SID check a path
+        /// argument would additionally require.
         #[test]
         fn windows_helper_argv_is_runas_quoting_safe() {
             let token = generate_result_token();

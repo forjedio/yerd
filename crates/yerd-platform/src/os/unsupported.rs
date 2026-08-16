@@ -3,8 +3,10 @@
 //! Every trait method returns `Err(PlatformError::Unsupported { operation })`.
 //! This lets `cargo check --workspace` stay green on every host while the
 //! macOS + Linux impls are the only ones with full behaviour. Windows reuses
-//! these stubs for every trait except `Paths` (`os::windows` aliases them),
-//! replacing one at a time as later phases implement real `Windows*` types.
+//! only three of these stubs (`IdeLauncher`, `SystemOpener`, `SystemMetrics`,
+//! aliased by `os::windows`); every other trait has a real `Windows*` type
+//! there, and the remaining aliases go one at a time as later phases implement
+//! them.
 
 use std::net::SocketAddr;
 use std::path::Path;
