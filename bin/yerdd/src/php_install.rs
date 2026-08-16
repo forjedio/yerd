@@ -506,7 +506,7 @@ fn write_with_retry(path: &Path, bytes: &[u8]) -> Result<(), PhpError> {
 fn patch_bundle_ca(final_dir: &Path) -> Result<(), PhpError> {
     use std::fmt::Write as _;
     let cacert = final_dir.join("cacert.pem");
-    let Some(p) = yerd_core::php_settings::sanitize_ca_bundle_path(&cacert) else {
+    let Some(p) = yerd_core::php_settings::sanitize_quoted_ca_bundle_path(&cacert) else {
         tracing::warn!(path = %cacert.display(), "skipping php.ini CA patch: unsafe cacert path");
         return Ok(());
     };

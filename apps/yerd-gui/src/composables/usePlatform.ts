@@ -33,6 +33,9 @@ export interface PlatformInfo {
   /** macOS, Linux, and Windows: each wires `yerd path install` (a copy/symlink
    *  plus a PATH edit) through the CLI. */
   supportsPathInstall: ComputedRef<boolean>;
+  /** macOS and Linux only: `IdeLauncher` has no Windows adapter, so the host
+   *  editor cannot be launched there. */
+  supportsEditorLaunch: ComputedRef<boolean>;
 }
 
 export function usePlatform(): PlatformInfo {
@@ -44,6 +47,9 @@ export function usePlatform(): PlatformInfo {
     supportsPathInstall: computed(
       () =>
         platform.value === "macos" || platform.value === "linux" || platform.value === "windows",
+    ),
+    supportsEditorLaunch: computed(
+      () => platform.value === "macos" || platform.value === "linux",
     ),
   };
 }

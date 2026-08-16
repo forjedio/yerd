@@ -37,6 +37,7 @@ describe("usePlatform", () => {
     expect(p.isMac.value).toBe(false);
     expect(p.isLinux.value).toBe(false);
     expect(p.supportsPathInstall.value).toBe(true);
+    expect(p.supportsEditorLaunch.value).toBe(false);
   });
 
   it("flags macos with path-install support", async () => {
@@ -48,6 +49,7 @@ describe("usePlatform", () => {
     expect(p.isMac.value).toBe(true);
     expect(p.isWindows.value).toBe(false);
     expect(p.supportsPathInstall.value).toBe(true);
+    expect(p.supportsEditorLaunch.value).toBe(true);
   });
 
   it("retries after a failed load", async () => {

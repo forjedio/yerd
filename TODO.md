@@ -310,9 +310,10 @@ dev host. Run them before promoting the Windows build past early access:
       installer name (`Yerd_<ver>_x64-setup.exe`) and that the main app exe is
       `yerd-gui.exe` (the CI smoke asserts `Yerd.exe` with a `yerd-gui.exe`
       fallback - pin whichever the bundler actually emits on the first run).
-- [ ] Confirm Tauri accepts the JSONC comment (the dormant `signCommand` seam) in
-      `tauri.bundle-windows.conf.json`; if it rejects comments, move the seam note
-      out of the JSON.
+- [x] The dormant `signCommand` seam note is out of
+      `tauri.bundle-windows.conf.json` (strict JSON now); it lives in
+      `docs/developer/building.md` instead, so the overlay parses whichever
+      reader the CLI uses for `--config`.
 - [ ] `build.yml` Windows leg + `release.yml` matrix/rename/sign/SHA256SUMS `.exe`
       cases are inert until a `windows-latest` run / a tag - verify on the first
       Windows RC.

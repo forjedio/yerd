@@ -107,9 +107,22 @@ npm run tauri build -- --config src-tauri/tauri.bundle-windows.conf.json
 
 The overlay (`src-tauri/tauri.bundle-windows.conf.json`) sets `targets: ["nsis"]`,
 `installMode: currentUser` (per-user, no admin), `webviewInstallMode:
-downloadBootstrapper`, and the `nsis/hooks.nsh` install hooks. The installer is
-shipped **unsigned** for early access; a dormant `signCommand` seam is left in
-the overlay as a commented TODO (decision #5).
+downloadBootstrapper`, and the `nsis/hooks.nsh` install hooks. The overlay is
+strict JSON with no comments: `bundle.windows` is deserialised with
+`deny_unknown_fields`, so neither a `//` comment nor a `_comment` key can live
+in it.
+
+The installer ships **unsigned** for early access (decision #5). To sign it
+later, add a `signCommand` or a `certificateThumbprint` under
+`bundle.windows` in that overlay, e.g.
+
+```json
+"signCommand": "trusted-signing-cli -e <endpoint> -a <account> -c <cert> %1"
+```
+
+Self-update integrity does not depend on Authenticode (it is SHA-256 +
+minisign), so leaving signing off only affects SmartScreen on the first manual
+download.
 
 ### Node 22 + npm (for the frontend and docs)
 

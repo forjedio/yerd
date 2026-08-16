@@ -81,6 +81,15 @@ pub fn remove_entries(current: &str, remove: &[&str]) -> Option<String> {
     changed.then(|| kept.join(";"))
 }
 
+/// Whether the `;`-list `current` holds `entry`, compared by normalised key.
+/// Lets a caller report exactly which entries a [`remove_entries`] edit took
+/// out, instead of every entry it was asked to look for.
+#[must_use]
+pub fn contains_entry(current: &str, entry: &str) -> bool {
+    let key = norm(entry);
+    !key.is_empty() && norm_list_contains(current, &key)
+}
+
 /// Whether `list` (a `;`-value) already holds `key` (a normalised entry). Used
 /// to dedup within a single multi-entry `upsert` call.
 fn norm_list_contains(list: &str, key: &str) -> bool {
@@ -190,5 +199,21 @@ mod tests {
     fn remove_of_empty_target_list_is_noop() {
         assert_eq!(remove_entries(r"C:\a", &[]), None);
         assert_eq!(remove_entries(r"C:\a", &["  "]), None);
+    }
+
+    #[test]
+    fn contains_entry_matches_the_same_key_as_remove() {
+        let current = r"C:\Windows;c:\yerd\BIN\";
+        let cases: &[(&str, bool)] = &[
+            (r"C:\yerd\bin", true),
+            (r"C:\yerd\bin\", true),
+            (r"C:\Windows", true),
+            (r"C:\yerd\shim", false),
+            ("", false),
+            ("   ", false),
+        ];
+        for (entry, want) in cases {
+            assert_eq!(contains_entry(current, entry), *want, "entry: {entry}");
+        }
     }
 }

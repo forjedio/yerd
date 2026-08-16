@@ -285,16 +285,15 @@ mod tests {
         assert!(exit_result.is_ok(), "daemon exit was Err: {exit_result:?}");
     }
 
+    /// Spawn whichever subsystems came up. The DNS and web listeners are
+    /// `Option`s: `bring_up_with_dirs` leaves them `None` when the ports can't
+    /// be bound (a busy port on a CI runner, say) and runs degraded rather than
+    /// aborting, so each is driven only when present. The IPC listener - the one
+    /// these tests exercise - is always up.
     async fn drive_subsystems(
         daemon: yerdd::startup::Daemon,
         shutdown_rx: watch::Receiver<bool>,
     ) -> Result<(), yerdd::error::DaemonError> {
-        // The DNS and web listeners are bound via `ActivePortBinder`, which is
-        // the `Unsupported` stub on Windows, so `bring_up_with_dirs` leaves them
-        // `None` there (a real `WindowsPortBinder` is a later phase). Drive each
-        // subsystem only when present; the IPC listener (the one these tests
-        // exercise) is always up. On Unix all three are `Some`, so behaviour is
-        // unchanged.
         let dns_handle = daemon.dns_bound.map(|bound| {
             let responder = yerd_dns::Responder::new(daemon.dns_tld.clone());
             let mut rx = shutdown_rx.clone();

@@ -336,6 +336,7 @@ export type DiagnosisCode =
   | "domain_shadowed"
   | "port_redirect_stale"
   | "lan_redirect_stale"
+  | "daemon_autostart_disabled"
   | "all_good";
 
 export interface Diagnosis {

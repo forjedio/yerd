@@ -796,17 +796,6 @@ async fn wait_after_kill<Ch: ChildHandle>(
     }
 }
 
-/// Build the pool's server command.
-///
-/// Unix runs `php-fpm --fpm-config <conf>` in its own process group. Windows has
-/// no FPM SAPI: it runs `php-cgi.exe -b <host:port>` (the `FastCGI` server),
-/// pointing `PHP_INI_SCAN_DIR` at the supplemental ini's directory (`config_path`
-/// is that ini file). `-c` is deliberately **not** passed on Windows: it would
-/// drop the bundle's own `php.ini` (which carries `extension_dir`, the enabled
-/// extension set, and the install-time CA lines). `PHP_FCGI_MAX_REQUESTS=0`
-/// stops php-cgi from exiting after N requests (the supervisor would count that
-/// as a crash), and `PHP_FCGI_CHILDREN` is cleared (fork-based, unsupported on
-/// Windows).
 /// Point php-cgi's stdio at the pool's instance log.
 ///
 /// Unix needs no equivalent: FPM opens `error_log` itself, from the pool config
@@ -859,6 +848,17 @@ fn attach_child_log(cmd: &mut StdCommand, error_log: &std::path::Path) {
     }
 }
 
+/// Build the pool's server command.
+///
+/// Unix runs `php-fpm --fpm-config <conf>` in its own process group. Windows has
+/// no FPM SAPI: it runs `php-cgi.exe -b <host:port>` (the `FastCGI` server),
+/// pointing `PHP_INI_SCAN_DIR` at the supplemental ini's directory (`config_path`
+/// is that ini file). `-c` is deliberately **not** passed on Windows: it would
+/// drop the bundle's own `php.ini` (which carries `extension_dir`, the enabled
+/// extension set, and the install-time CA lines). `PHP_FCGI_MAX_REQUESTS=0`
+/// stops php-cgi from exiting after N requests (the supervisor would count that
+/// as a crash), and `PHP_FCGI_CHILDREN` is cleared (fork-based, unsupported on
+/// Windows).
 #[allow(clippy::too_many_lines)]
 fn build_cmd(
     binary: &std::path::Path,

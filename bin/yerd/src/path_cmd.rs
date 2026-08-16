@@ -602,7 +602,8 @@ mod windows {
         Ok(changed)
     }
 
-    /// Remove both dirs from the user PATH; returns the dirs that were present.
+    /// Remove both dirs from the user PATH; returns only the dirs that were
+    /// actually on it, since the caller prints each one back as removed.
     pub fn remove_from_path() -> Vec<PathBuf> {
         let entries = path_entries();
         let refs: Vec<&str> = entries.iter().filter_map(|p| p.to_str()).collect();
@@ -619,6 +620,12 @@ mod windows {
             let _ = yerd_platform::broadcast_user_env_marker(&s);
         }
         entries
+            .into_iter()
+            .filter(|p| {
+                p.to_str()
+                    .is_some_and(|s| win_path_env::contains_entry(&current, s))
+            })
+            .collect()
     }
 
     /// Copy the running `yerd.exe` into the program dir. Skips when the source is

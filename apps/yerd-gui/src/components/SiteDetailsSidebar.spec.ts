@@ -59,7 +59,14 @@ vi.mock("@/composables/usePlatform", () => ({
     platform: hostPlatform,
     isMac: computed(() => hostPlatform.value === "macos"),
     isLinux: computed(() => hostPlatform.value === "linux"),
+    isWindows: computed(() => hostPlatform.value === "windows"),
     supportsPathInstall: computed(
+      () =>
+        hostPlatform.value === "macos" ||
+        hostPlatform.value === "linux" ||
+        hostPlatform.value === "windows",
+    ),
+    supportsEditorLaunch: computed(
       () => hostPlatform.value === "macos" || hostPlatform.value === "linux",
     ),
   }),

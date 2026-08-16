@@ -5,12 +5,10 @@
 //!
 //! Live FPM coverage lands in `bin/yerdd`'s integration suite; this test stays
 //! fakes-only for the process/clock/probe edges. It still uses the *real*
-//! `ActivePortBinder`, which is harmless on Unix (the planner takes the
-//! Unix-socket path and ignores the binder) but returns `Unsupported` on the
-//! Windows stub (Windows would take the TCP-bind path). Windows coverage waits
-//! on the real `WindowsPortBinder` (a later phase), so this file is Unix-scoped.
+//! `ActivePortBinder`, which every supported OS now implements: Unix ignores it
+//! (the planner takes the Unix-socket path) and Windows binds a loopback port
+//! for the php-cgi `-b` address, so the file runs on both.
 
-#![cfg(unix)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

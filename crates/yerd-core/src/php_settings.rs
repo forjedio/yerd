@@ -213,6 +213,28 @@ pub fn sanitize_ca_bundle_path(path: &std::path::Path) -> Option<String> {
     Some(s.to_owned())
 }
 
+/// Sanitise a CA-bundle path for use as a **double-quoted** `openssl.cafile` /
+/// `curl.cainfo` value - the form Windows php.ini uses, where a path with
+/// spaces (`C:\Users\Bob Smith\...`) has to stay a single value. Builds on
+/// [`sanitize_ca_bundle_path`] and adds the two rules the quoted form needs:
+/// a `"` cannot be represented (the value would end early), so it returns
+/// `None`; and backslashes are doubled, because PHP's ini scanner collapses
+/// `\\` to `\` inside a double-quoted value. Without the doubling a UNC
+/// `%LOCALAPPDATA%` (a redirected or roaming profile) yields
+/// `\\server\share\cacert.pem`, which PHP reads back as `\server\share\...` - a
+/// path rooted on the current drive - so the bundle silently fails to load and
+/// PHP stops trusting Yerd's roots. Same reasoning as
+/// [`render_cli_ini_with_ext`]; a no-op in effect for the ordinary
+/// `C:\Users\...` and `/home/...` forms.
+#[must_use]
+pub fn sanitize_quoted_ca_bundle_path(path: &std::path::Path) -> Option<String> {
+    let s = sanitize_ca_bundle_path(path)?;
+    if s.contains('"') {
+        return None;
+    }
+    Some(s.replace('\\', "\\\\"))
+}
+
 /// Render the cover-shim ini: `base` (the CLI ini body) plus directives that
 /// load and enable pcov from `pcov_so`. Returns `None` if `pcov_so` isn't safe
 /// to emit as an unquoted ini value: the caller must treat that as a hard
@@ -457,6 +479,32 @@ mod tests {
         assert!(sanitize_ca_bundle_path(Path::new("/d/ca\ncert.pem")).is_none());
         assert!(sanitize_ca_bundle_path(Path::new("/d/ca;cert.pem")).is_none());
         assert!(sanitize_ca_bundle_path(Path::new("/d/ca#cert.pem")).is_none());
+    }
+
+    #[test]
+    fn sanitize_quoted_ca_bundle_path_doubles_backslashes_and_rejects_quotes() {
+        use std::path::Path;
+        let cases: &[(&str, Option<&str>)] = &[
+            (
+                r"C:\Users\Bob Smith\AppData\Local\Yerd\cacert.pem",
+                Some(r"C:\\Users\\Bob Smith\\AppData\\Local\\Yerd\\cacert.pem"),
+            ),
+            (
+                r"\\server\share\yerd\cacert.pem",
+                Some(r"\\\\server\\share\\yerd\\cacert.pem"),
+            ),
+            ("/d/cacert.pem", Some("/d/cacert.pem")),
+            (r#"C:\d\ca"cert.pem"#, None),
+            ("/d/ca;cert.pem", None),
+            ("/d/ca\ncert.pem", None),
+        ];
+        for (input, want) in cases {
+            assert_eq!(
+                sanitize_quoted_ca_bundle_path(Path::new(input)).as_deref(),
+                *want,
+                "input: {input}"
+            );
+        }
     }
 
     #[test]

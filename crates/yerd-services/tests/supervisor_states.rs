@@ -7,12 +7,11 @@
 //! Mirrors `yerd_php::tests::supervisor_states`. Stays fakes-only for the
 //! process/clock/probe edges, but drives `ServiceManager` with the *real*
 //! `ActivePortBinder`: `ensure`'s port pre-flight binds a loopback port, which
-//! the Windows `Unsupported` stub rejects. Windows coverage waits on the real
-//! `WindowsPortBinder` (a later phase), so this file is Unix-scoped. Happy-path
-//! coverage uses Redis because it needs no datadir-init binary; the SQL engines'
-//! init seam is covered by the in-file unit tests in `manager.rs`.
+//! every supported OS now implements (Windows included), so the file runs on
+//! both. Happy-path coverage uses Redis because it needs no datadir-init
+//! binary; the SQL engines' init seam is covered by the in-file unit tests in
+//! `manager.rs`.
 
-#![cfg(unix)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

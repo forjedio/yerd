@@ -97,7 +97,7 @@ pub fn render_win_ini(cfg: &PoolConfig) -> String {
         }
     }
     if let Some(path) = &cfg.ca_bundle {
-        if let Some(p) = yerd_core::php_settings::sanitize_ca_bundle_path(path) {
+        if let Some(p) = yerd_core::php_settings::sanitize_quoted_ca_bundle_path(path) {
             let _ = writeln!(out, "openssl.cafile = \"{p}\"");
             let _ = writeln!(out, "curl.cainfo = \"{p}\"");
         }
@@ -182,6 +182,25 @@ mod tests {
         // No FPM pool syntax leaks into the plain php.ini form.
         assert!(!ini.contains("php_value["), "{ini}");
         assert!(!ini.contains("[global]"), "{ini}");
+    }
+
+    /// The CA lines are double-quoted, so PHP's ini scanner collapses `\\` to
+    /// `\` when reading them back. A UNC `%LOCALAPPDATA%` (redirected or
+    /// roaming profile) must survive that round trip, or PHP looks for the
+    /// bundle on the current drive and quietly stops trusting Yerd's roots.
+    #[test]
+    fn win_ini_doubles_backslashes_so_unc_ca_paths_survive() {
+        let mut cfg = cfg_tcp();
+        cfg.ca_bundle = Some(PathBuf::from(r"\\server\share\yerd\cacert.pem"));
+        let ini = render_win_ini(&cfg);
+        assert!(
+            ini.contains(r#"openssl.cafile = "\\\\server\\share\\yerd\\cacert.pem""#),
+            "{ini}"
+        );
+        assert!(
+            ini.contains(r#"curl.cainfo = "\\\\server\\share\\yerd\\cacert.pem""#),
+            "{ini}"
+        );
     }
 
     #[test]
