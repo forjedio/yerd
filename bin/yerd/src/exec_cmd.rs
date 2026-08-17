@@ -15,10 +15,11 @@
 //! the shims and `yerd coverage` do. The one daemon round-trip is the
 //! `ListSites` lookup behind the scoping.
 //!
-//! Unix-only (`exec` and the whole resolution chain are).
+//! The resolution chain is cross-platform. Only the terminal step differs: on
+//! Unix it replaces this process image, and on Windows it spawns the tool,
+//! waits, and propagates the child's exit code.
 
 use std::ffi::OsString;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -33,9 +34,8 @@ use crate::site_scope::{
 /// Why `yerd exec` / `yerd which` couldn't resolve a PHP to run.
 ///
 /// Carries the exit code alongside the message because these are real
-/// subcommands, not shims: `docs/reference/cli/index.md` documents `2` for a
-/// client-side usage error and `69` for an unreachable daemon, and scripts
-/// branch on those. Collapsing everything to `1` (as the shims' `fail` does)
+/// subcommands, not shims: `2` means a client-side usage error and `69` an
+/// unreachable daemon, and scripts branch on those. Collapsing everything to `1` (as the shims' `fail` does)
 /// would make a typo'd `--site` indistinguishable from a daemon-side failure.
 #[derive(Debug, PartialEq, Eq)]
 pub struct SelectError {
@@ -200,8 +200,12 @@ async fn resolve(site: Option<&str>) -> Result<(PlatformDirs, PhpSelection), Sel
     Ok((dirs, selection))
 }
 
-/// `yerd exec <tool> [args…]`: run `tool` under the resolved PHP, replacing
-/// this process. Only returns on failure.
+/// `yerd exec <tool> [args…]`: run `tool` under the resolved PHP.
+///
+/// On Unix this replaces the process image and only returns on failure; on
+/// Windows it spawns the tool, waits, and returns the child's exit code. The
+/// console is inherited either way, so the tool keeps its stdio and a Ctrl+C
+/// reaches it.
 pub async fn run_exec(tool: ExecTool, site: Option<&str>, args: &[OsString]) -> ExitCode {
     let (dirs, selection) = match resolve(site).await {
         Ok(pair) => pair,
@@ -222,19 +226,19 @@ pub async fn run_exec(tool: ExecTool, site: Option<&str>, args: &[OsString]) -> 
         cmd.env("PHPRC", phprc);
     }
 
-    let err = cmd.exec();
-    if err.kind() == std::io::ErrorKind::NotFound {
-        return SelectError::usage(format!(
+    match crate::shim::run_php(cmd) {
+        Ok(code) => code,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => SelectError::usage(format!(
             "PHP binary not found at {} ({err}) — reinstall with `yerd install php`",
             php_bin.display()
         ))
-        .report();
+        .report(),
+        Err(err) => SelectError {
+            message: format!("failed to exec {}: {err}", php_bin.display()),
+            code: 74,
+        }
+        .report(),
     }
-    SelectError {
-        message: format!("failed to exec {}: {err}", php_bin.display()),
-        code: 74,
-    }
-    .report()
 }
 
 /// `yerd which <tool>`: print the binary `yerd exec` would use. Resolution and
@@ -301,14 +305,12 @@ mod tests {
         }
     }
 
+    /// Lay down a managed CLI binary at the host's real layout (`bin/php` on
+    /// Unix, a flat `php.exe` on Windows), so the resolver under test finds it
+    /// on both.
     fn fake_cli(dirs: &PlatformDirs, minor: &str) -> PathBuf {
-        let base = dirs
-            .data
-            .join("php")
-            .join(format!("php-{minor}"))
-            .join("bin");
-        std::fs::create_dir_all(&base).unwrap();
-        let php = base.join("php");
+        let php = crate::shim::cli_binary(dirs, minor);
+        std::fs::create_dir_all(php.parent().unwrap()).unwrap();
         std::fs::write(&php, b"#!/bin/sh\n").unwrap();
         php
     }
@@ -425,7 +427,7 @@ mod tests {
 
     /// The two failure classes must not collapse onto one code: a bad `--site`
     /// is a usage error (`2`), an unreachable daemon is `69`. Scripts branch on
-    /// the difference, and `docs/reference/cli/index.md` documents both.
+    /// the difference, so both codes are part of the CLI's public contract.
     #[test]
     fn select_error_codes_match_the_documented_table() {
         assert_eq!(SelectError::usage("x".to_owned()).code, 2);

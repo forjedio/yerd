@@ -22,6 +22,14 @@ serde_json  = { workspace = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+# Cert-store access only (CurrentUser/LocalMachine Root) for WindowsTrustStore;
+# never its TLS stream. See the root Cargo.toml comment.
+schannel = { workspace = true }
+# Read-only HKLM NRPT probe for WindowsResolverInstaller::is_installed and the
+# helper's `.test` rule-GUID discovery. See the root Cargo.toml comment.
+winreg   = { workspace = true }
+
 [dev-dependencies]
 tempfile      = { workspace = true }
 yerd-depcheck = { path = "../yerd-depcheck" }

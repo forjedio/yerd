@@ -24,8 +24,6 @@
 //!   back: an unknown name, an uninstalled pinned version, and an unreachable
 //!   daemon are all errors. The user named a site, so quietly running something
 //!   else would be wrong.
-//!
-//! Unix-only.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -143,8 +141,14 @@ struct Candidate {
 /// of those cases, but `NoScope::daemon_unavailable` distinguishes an
 /// unanswered lookup from a genuine no-match so they can warn about the
 /// former. `pub` for the same testability reason as [`SiteScope`].
+///
+/// Matching is string containment, so both sides must spell a path the same way.
+/// Callers hand in raw `fs::canonicalize` output, which on Windows is verbatim
+/// (`\\?\C:\...`) while the site roots are normalised, so `cwd` is normalised
+/// here rather than trusting every caller to have done it.
 #[must_use]
 pub fn site_scope(dirs: &PlatformDirs, cwd: &Path) -> ScopeResolution {
+    let cwd = &yerd_core::path_norm::strip_verbatim(cwd);
     let Ok(candidates) = candidates(dirs) else {
         return ScopeResolution::NoScope {
             daemon_unavailable: true,
@@ -192,13 +196,16 @@ pub fn site_scope_by_name(dirs: &PlatformDirs, name: &str) -> Result<SiteScope, 
 /// genuinely needs that directory for `--path=`, filters those out itself via
 /// [`SiteScope::served_root`] being `None`.
 fn candidates(dirs: &PlatformDirs) -> Result<Vec<Candidate>, DaemonUnavailable> {
-    let sock = dirs.runtime.join("yerd.sock");
-    let sites = list_sites_with_timeout(&sock).ok_or(DaemonUnavailable)?;
+    let sites = list_sites_with_timeout(dirs).ok_or(DaemonUnavailable)?;
     Ok(sites
         .iter()
         .filter_map(|entry| {
-            let document_root = std::fs::canonicalize(entry.site.document_root()).ok()?;
-            let served_root = std::fs::canonicalize(entry.site.served_root()).ok();
+            let document_root = std::fs::canonicalize(entry.site.document_root())
+                .map(|p| yerd_core::path_norm::strip_verbatim(&p))
+                .ok()?;
+            let served_root = std::fs::canonicalize(entry.site.served_root())
+                .map(|p| yerd_core::path_norm::strip_verbatim(&p))
+                .ok();
             Some(Candidate {
                 name: entry.site.name().to_owned(),
                 document_root,
@@ -245,25 +252,33 @@ fn scope_from(dirs: &PlatformDirs, hit: &Candidate) -> Result<SiteScope, PhpVers
 
 /// Spin up a one-shot, single-threaded tokio runtime (the shims otherwise
 /// have none) to make a single timeout-bounded `ListSites` call against the
-/// daemon socket at `sock` (matching [`transport::exchange`]'s own derivation
-/// of `<runtime>/yerd.sock` - passed explicitly here so tests can point at an
-/// isolated socket instead of the real, active one).
-fn list_sites_with_timeout(sock: &Path) -> Option<Vec<yerd_ipc::SiteEntry>> {
+/// daemon, deriving the address from `dirs` exactly as [`transport::exchange`]
+/// does (passed as `dirs` rather than read from the environment so tests can
+/// point at an isolated runtime directory instead of the real, active one).
+fn list_sites_with_timeout(dirs: &PlatformDirs) -> Option<Vec<yerd_ipc::SiteEntry>> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .ok()?;
-    let outcome = rt.block_on(async {
-        tokio::time::timeout(
-            SITE_LOOKUP_TIMEOUT,
-            transport::exchange_at(sock, &Request::ListSites),
-        )
-        .await
-    });
+    let outcome =
+        rt.block_on(async { tokio::time::timeout(SITE_LOOKUP_TIMEOUT, list_sites(dirs)).await });
     match outcome {
         Ok(Ok(Response::Sites { sites })) => Some(sites),
         _ => None,
     }
+}
+
+/// One `ListSites` exchange over the `<runtime>/yerd.sock` Unix socket.
+#[cfg(unix)]
+async fn list_sites(dirs: &PlatformDirs) -> Result<Response, crate::error::ClientError> {
+    transport::exchange_at(&dirs.runtime.join("yerd.sock"), &Request::ListSites).await
+}
+
+/// One `ListSites` exchange over the daemon's SID-derived named pipe (Windows).
+#[cfg(windows)]
+async fn list_sites(dirs: &PlatformDirs) -> Result<Response, crate::error::ClientError> {
+    let name = yerd_platform::daemon_pipe_name(dirs)?;
+    transport::exchange_at_name(&name, &Request::ListSites).await
 }
 
 /// Pick the site whose (already-canonicalized) document root is `cwd` or an
@@ -381,6 +396,7 @@ mod tests {
         assert_eq!(match_site(Path::new("/home/dev/other"), &candidates), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn match_site_resolves_symlinked_cwd_once_canonicalized() {
         let tmp = tempfile::tempdir().unwrap();

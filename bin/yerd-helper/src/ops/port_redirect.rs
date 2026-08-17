@@ -1,7 +1,7 @@
 //! `install-port-redirect` / `uninstall-port-redirect`. macOS only.
 //!
 //! macOS has no `setcap`, so the unprivileged daemon can't bind 80/443. Instead
-//! we install a pf `rdr` redirect (validated by the plan's Step 0 spike) that
+//! we install a pf `rdr` redirect that
 //! forwards inbound 80/443 to the daemon's rootless ports, plus a `LaunchDaemon`
 //! that re-applies it at boot. See `yerd_platform::pure::pf_anchor` for the
 //! exact rule text and the `/etc/pf.conf` editing strategy (we edit the

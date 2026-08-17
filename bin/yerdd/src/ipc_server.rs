@@ -241,18 +241,19 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             items: yerd_doctor::diagnose(
                 &build_status_report(state).await,
                 path_needs_setup(state),
+                daemon_autostart_enabled(),
                 &crate::services::local_override_files(&state.dirs),
             ),
         },
         Request::DoctorFix => run_doctor_fix(state).await,
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         Request::RestartDaemon => {
             state
                 .restart_requested
                 .store(true, std::sync::atomic::Ordering::Release);
             Response::Ok
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         Request::RestartDaemon => Response::Error {
             code: ErrorCode::Internal,
             message: "daemon restart is not supported on this platform".into(),
@@ -533,15 +534,19 @@ async fn available_php_with(
             }
         }
     };
-    let listing =
-        match crate::php_install::fetch_verified_listing(dl, public_key, yerd_php::Channel::Stable)
-            .await
-        {
-            Ok(body) => body,
-            Err(e) => return internal(format!("couldn't load the PHP listing: {e}")),
-        };
+    let listing = match crate::php_install::fetch_verified_listing(
+        dl,
+        public_key,
+        yerd_php::Channel::Stable,
+        os,
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(e) => return internal(format!("couldn't load the PHP listing: {e}")),
+    };
     let legacy =
-        crate::php_install::fetch_verified_listing(dl, public_key, yerd_php::Channel::Legacy)
+        crate::php_install::fetch_verified_listing(dl, public_key, yerd_php::Channel::Legacy, os)
             .await
             .ok()
             .map(|body| yerd_php::available_minors(&body, os, arch, yerd_php::Channel::Legacy))
@@ -553,6 +558,27 @@ async fn available_php_with(
     }
 }
 
+/// Whether the daemon is registered to start at login, for the doctor's
+/// [`yerd_ipc::DiagnosisCode::DaemonAutostartDisabled`] finding. Windows-only:
+/// `Some(true|false)` from the HKCU `Run` entry probe; `None` off-Windows, so
+/// macOS/Linux doctor output stays byte-identical (their login registration is
+/// the GUI's business, surfaced there rather than here). Computed on demand from
+/// the `Diagnose` handler, not on the per-poll status path.
+///
+/// The `Option` is the shared `diagnose` probe contract (`None` = off-Windows);
+/// on the Windows build the body is always `Some`, hence the local allow.
+#[allow(clippy::unnecessary_wraps)]
+fn daemon_autostart_enabled() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        Some(yerd_service_ctl::autostart_enabled())
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// Whether a dev tool is installed but Yerd's `{data}/bin` isn't on the user's
 /// PATH yet (no managed block in any known shell rc) - drives the doctor's
 /// [`yerd_ipc::DiagnosisCode::BinDirNotOnPath`] warning. `Some(false)` when no
@@ -560,8 +586,30 @@ async fn available_php_with(
 /// (non-Unix, or `$HOME` unset). Computed on demand from the `Diagnose` handler,
 /// not on the per-poll status path. The cover/pcov shims alone don't count - the
 /// gate is an actual installed dev tool.
+///
+/// The probe is read-only. On Windows an unreadable `HKCU\Environment` PATH is
+/// "can't tell" (`None`), so the doctor stays quiet rather than nagging on a bad
+/// read; an *absent* one is a real empty PATH, which does need setup. On Unix
+/// the equivalent signal is the managed block in a shell rc file.
 fn path_needs_setup(state: &DaemonState) -> Option<bool> {
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use yerd_platform::pure::win_path_env;
+
+        let any_tool = crate::tools::list_status(&state.dirs)
+            .iter()
+            .any(|t| t.installed);
+        let any_php = yerd_php::discover_bundled(&state.dirs).is_ok_and(|v| !v.is_empty());
+        if !any_tool && !any_php {
+            Some(false)
+        } else {
+            let shim = crate::php_install::shim_dir(&state.dirs);
+            let current = yerd_platform::user_path().ok()?.unwrap_or_default();
+            shim.to_str()
+                .map(|s| win_path_env::upsert_entries(&current, &[s]).is_some())
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = state;
         None
@@ -603,8 +651,9 @@ fn path_needs_setup(state: &DaemonState) -> Option<bool> {
 /// `handle_mutation`.
 /// Resident-set size for each of `pids`, gathered in a single `spawn_blocking`.
 ///
-/// `SystemMetrics::rss_bytes` shells out to `ps` on macOS (fork+exec+wait) -
-/// genuinely blocking I/O, unlike every other field of a `StatusReport`. Doing
+/// `SystemMetrics::rss_bytes` shells out to `ps` on macOS and `tasklist` on
+/// Windows (spawn+wait) - genuinely blocking I/O, unlike every other field of a
+/// `StatusReport`. Doing
 /// it once off-executor, rather than synchronously per pid inline, keeps a
 /// tokio worker thread from being tied up once per installed PHP version plus
 /// once for the daemon itself on every `Request::Status`/`Request::Diagnose`
@@ -795,6 +844,19 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     .ok()
     .flatten();
 
+    let servers_tld = tld.clone();
+    let resolver_rule_servers =
+        tokio::task::spawn_blocking(move || resolver_rule_servers(&servers_tld))
+            .await
+            .unwrap_or_default();
+
+    let dns_port_owner = match state.dns_unbound {
+        Some(port) => tokio::task::spawn_blocking(move || dns_port_owner(port))
+            .await
+            .unwrap_or_default(),
+        None => None,
+    };
+
     let (port_redirect, foreign_web_listener, port_redirect_targets, lan_redirect_targets) =
         tokio::task::spawn_blocking(|| {
             use yerd_platform::PortRedirector;
@@ -866,7 +928,40 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         lan_enabled,
         lan_ip,
         lan_setup_bound,
+        resolver_rule_servers,
+        dns_port_owner,
     }
+}
+
+/// Servers the OS resolver rule for `*.<tld>` forwards to, for
+/// [`yerd_ipc::StatusReport::resolver_rule_servers`]. Windows reads the NRPT
+/// rule's `GenericDNSServers`; the other OSes have no equivalent single-value
+/// fact (a `/etc/resolver` file or a `systemd-resolved` drop-in is already
+/// covered by `resolver_installed`), so they report nothing.
+#[cfg(windows)]
+fn resolver_rule_servers(tld: &str) -> Vec<String> {
+    yerd_platform::nrpt_servers_for_tld(tld)
+}
+
+/// See [`resolver_rule_servers`] (Windows variant).
+#[cfg(not(windows))]
+fn resolver_rule_servers(_tld: &str) -> Vec<String> {
+    Vec::new()
+}
+
+/// Image name of the process holding `port`, for
+/// [`yerd_ipc::StatusReport::dns_port_owner`]. Only called when the DNS bind
+/// failed, so the two process spawns behind the Windows arm stay off the healthy
+/// status path. No equivalent probe exists on the other OSes yet.
+#[cfg(windows)]
+fn dns_port_owner(port: u16) -> Option<String> {
+    yerd_platform::udp_port_owner(port)
+}
+
+/// See [`dns_port_owner`] (Windows variant).
+#[cfg(not(windows))]
+fn dns_port_owner(_port: u16) -> Option<String> {
+    None
 }
 
 /// Map the platform layer's parsed anchor targets `(http, https)` to the wire
@@ -943,7 +1038,7 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
                     Ok(_) => yerd_ipc::FixResult {
                         code: yerd_ipc::DiagnosisCode::FpmPoolFailed,
                         ok: true,
-                        message: format!("restarted PHP {v} FPM pool"),
+                        message: format!("restarted PHP {v} {}", yerd_core::php_vocab::POOL),
                     },
                     Err(e) => yerd_ipc::FixResult {
                         code: yerd_ipc::DiagnosisCode::FpmPoolFailed,
@@ -975,6 +1070,7 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
     let manual = yerd_doctor::diagnose(
         &after,
         path_needs_setup(state),
+        daemon_autostart_enabled(),
         &crate::services::local_override_files(&state.dirs),
     )
     .into_iter()
@@ -1033,7 +1129,8 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
     let has_stable = targets.iter().any(|v| !v.is_legacy());
     let has_legacy = targets.iter().any(|v| v.is_legacy());
     let stable = if has_stable {
-        match crate::php_install::fetch_verified_listing(&dl, key, yerd_php::Channel::Stable).await
+        match crate::php_install::fetch_verified_listing(&dl, key, yerd_php::Channel::Stable, os)
+            .await
         {
             Ok(body) => Some(body),
             Err(e) => return internal(format!("listing fetch/verify failed: {e}")),
@@ -1042,7 +1139,7 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
         None
     };
     let legacy = if has_legacy {
-        crate::php_install::fetch_verified_listing(&dl, key, yerd_php::Channel::Legacy)
+        crate::php_install::fetch_verified_listing(&dl, key, yerd_php::Channel::Legacy, os)
             .await
             .ok()
     } else {
@@ -1069,20 +1166,16 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
                 None => continue,
             },
         };
-        let artifact = match yerd_php::resolve_from_listing(listing, minor, os, arch, channel) {
-            Ok(a) => a,
-            Err(yerd_php::PhpError::VersionUnavailable { .. }) if version.is_none() => continue,
-            Err(e) => {
-                pending_error = Some(e);
-                break;
-            }
-        };
-        if yerd_php::is_newer_build(
-            &installed,
-            installed_rev,
-            &artifact.full_version,
-            artifact.revision,
-        ) {
+        let (full_version, revision) =
+            match yerd_php::resolve_build(listing, minor, os, arch, channel) {
+                Ok(b) => b,
+                Err(yerd_php::PhpError::VersionUnavailable { .. }) if version.is_none() => continue,
+                Err(e) => {
+                    pending_error = Some(e);
+                    break;
+                }
+            };
+        if yerd_php::is_newer_build(&installed, installed_rev, &full_version, revision) {
             if let Err(e) = crate::php_install::install(
                 minor,
                 &state.dirs,
@@ -1096,7 +1189,7 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
                 pending_error = Some(e);
                 break;
             }
-            tracing::info!(version = %minor, from = %installed, to = %artifact.full_version, "updated PHP");
+            tracing::info!(version = %minor, from = %installed, to = %full_version, "updated PHP");
             updated.push(minor);
         }
     }
@@ -2246,6 +2339,27 @@ async fn set_php_directives(
 /// order and `php_settings_mutate` discipline; only the affected version's
 /// pool restarts. Values are stored canonically (`"032"` persists as `"32"`),
 /// matching [`set_php_version_settings`].
+/// Windows has no FPM and `php-cgi` has no worker pool (`PHP_FCGI_CHILDREN` is
+/// fork-based), so there is nothing a pool size could change. Refusing is the
+/// honest answer: accepting the value would persist a setting that silently does
+/// nothing while the client reported success. `async` only to match the Unix
+/// signature at the single call site.
+#[cfg(windows)]
+#[allow(clippy::unused_async)]
+async fn set_php_pool_settings(
+    _version: yerd_core::PhpVersion,
+    _settings: std::collections::BTreeMap<String, String>,
+    _state: &DaemonState,
+) -> Response {
+    Response::Error {
+        code: ErrorCode::Unsupported,
+        message: "PHP pool sizing is not available on Windows: php-cgi has no worker pool, \
+                  so one request per PHP version is served at a time"
+            .to_owned(),
+    }
+}
+
+#[cfg(not(windows))]
 async fn set_php_pool_settings(
     version: yerd_core::PhpVersion,
     settings: std::collections::BTreeMap<String, String>,
@@ -2371,6 +2485,14 @@ async fn add_php_extension(
     zend: bool,
     state: &DaemonState,
 ) -> Response {
+    // PHP cannot open a Windows verbatim (`\\?\`) path, and tools the user is
+    // likely to have copied the path from (PowerShell `Resolve-Path`, anything
+    // built on `fs::canonicalize`) emit that form. Settle it here, at the one
+    // edge that persists the entry, so a stored path is always loadable. No-op
+    // off Windows and for a path that is already plain.
+    let path = yerd_core::path_norm::strip_verbatim(std::path::Path::new(&path))
+        .to_string_lossy()
+        .into_owned();
     let php_bin = crate::php_install::cli_binary_path(&state.dirs, version);
     if !php_bin.exists() {
         return Response::Error {
@@ -2837,6 +2959,7 @@ fn detect_web_subpath(doc_root: &Path) -> String {
 /// **linked** site stores the chosen subpath on its `Site`; a **parked** site
 /// stores it in `overrides[doc_root].web_root`. `path = None` resets to
 /// auto-detect: re-detect now for linked, clear the override for parked.
+#[cfg_attr(windows, allow(clippy::result_large_err))]
 fn resolve_web_root_mutation(
     new: &mut yerd_config::Config,
     router: &yerd_core::SiteRouter,
@@ -2900,6 +3023,7 @@ fn web_root_summary(name: &str, rel: &str) -> String {
 /// before comparison so a `\\?\` verbatim prefix from `fs::canonicalize` on
 /// Windows doesn't spuriously fail the containment check against the
 /// non-verbatim stored `document_root`.
+#[cfg_attr(windows, allow(clippy::result_large_err))]
 fn resolve_web_root_within(doc_root: &Path, input: &str) -> Result<String, Response> {
     let candidate = {
         let p = Path::new(input);
@@ -2930,8 +3054,9 @@ fn resolve_web_root_within(doc_root: &Path, input: &str) -> Result<String, Respo
 
 /// Canonicalise `path` and require it to be an existing directory, or return a
 /// ready-made `InvalidPath` error response.
+#[cfg_attr(windows, allow(clippy::result_large_err))]
 fn canonicalize_dir(path: &Path) -> Result<PathBuf, Response> {
-    match std::fs::canonicalize(path) {
+    match std::fs::canonicalize(path).map(|p| yerd_core::path_norm::strip_verbatim(&p)) {
         Ok(p) if p.is_dir() => Ok(p),
         Ok(p) => Err(invalid_path(format!("not a directory: {}", p.display()))),
         Err(e) => Err(invalid_path(format!(
@@ -3919,6 +4044,9 @@ Subject: Captured\r\n\r\nhi\r\n";
     }
 
     /// Like `fake_install` but records a specific installed patch in the marker.
+    /// Lays down the per-OS server binary `discover_bundled` keys off (`sbin/
+    /// php-fpm` on Unix, `php-cgi.exe` in the version root on Windows) plus the
+    /// CLI binary, so discovery finds the version on every platform.
     fn fake_install_patch(dirs: &PlatformDirs, v: PhpVersion, full: &str) {
         let base = dirs
             .data
@@ -3928,6 +4056,11 @@ Subject: Captured\r\n\r\nhi\r\n";
         std::fs::create_dir_all(base.join("bin")).unwrap();
         std::fs::write(base.join("sbin").join("php-fpm"), b"x").unwrap();
         std::fs::write(base.join("bin").join("php"), b"x").unwrap();
+        #[cfg(windows)]
+        {
+            std::fs::write(base.join("php.exe"), b"x").unwrap();
+            std::fs::write(base.join("php-cgi.exe"), b"x").unwrap();
+        }
         std::fs::write(base.join(".yerd-version"), full).unwrap();
     }
 
@@ -3950,7 +4083,8 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
-    #[cfg(unix)]
+    // The handler is `#[cfg(any(unix, windows))]`, so the test covers both.
+    #[cfg(any(unix, windows))]
     #[tokio::test]
     async fn dispatch_restart_daemon_arms_flag_and_oks() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3983,6 +4117,8 @@ Subject: Captured\r\n\r\nhi\r\n";
     }
 
     #[tokio::test]
+    /// The managed `php` shim is a symlink, which is Unix-only, so the shim half
+    /// of the assertion is gated: `set_default_shim` is a no-op off Unix.
     async fn dispatch_set_default_php_sets_config_and_shim() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
@@ -3996,11 +4132,14 @@ Subject: Captured\r\n\r\nhi\r\n";
         .await;
         assert!(matches!(resp, Response::Ok), "got {resp:?}");
         assert_eq!(state.config.lock().await.php.default, PhpVersion::new(8, 4));
-        let shim = state.dirs.data.join("bin").join("php");
-        assert_eq!(
-            std::fs::read_link(shim).unwrap(),
-            yerd_sibling().expect("yerd sibling resolves in tests")
-        );
+        #[cfg(unix)]
+        {
+            let shim = state.dirs.data.join("bin").join("php");
+            assert_eq!(
+                std::fs::read_link(shim).unwrap(),
+                yerd_sibling().expect("yerd sibling resolves in tests")
+            );
+        }
     }
 
     #[tokio::test]
@@ -4450,6 +4589,9 @@ Subject: Captured\r\n\r\nhi\r\n";
         .await
     }
 
+    /// Windows refuses pool sizing outright (see `set_php_pool_settings`), so the
+    /// persistence/validation behaviour this asserts is Unix-only.
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn set_php_pool_settings_persists_validates_and_removes() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4533,6 +4675,30 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
+    /// Windows must *refuse* pool sizing rather than accept a value php-cgi
+    /// cannot honour: it has no worker pool, so a stored `max_children` would
+    /// change nothing while the client reported success.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn set_php_pool_settings_is_refused_on_windows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let v83 = PhpVersion::new(8, 3);
+        fake_install(&state.dirs, v83);
+
+        assert!(matches!(
+            set_pool(&state, v83, "max_children", "32").await,
+            Response::Error {
+                code: ErrorCode::Unsupported,
+                ..
+            }
+        ));
+        assert!(
+            state.config.lock().await.php.pool.is_empty(),
+            "a refused request must not persist anything"
+        );
+    }
+
     /// The `pm.` prefix is now reserved out of the free-form directives path,
     /// so the workaround from issue #200 is refused at set time with a pointer
     /// at the pool command instead of rendering a broken `php_value` line.
@@ -4547,7 +4713,15 @@ Subject: Captured\r\n\r\nhi\r\n";
             Response::Error {
                 code: ErrorCode::InvalidPath,
                 message,
-            } => assert!(message.contains("yerd php pool"), "got: {message}"),
+            } => {
+                #[cfg(not(windows))]
+                assert!(message.contains("yerd php pool"), "got: {message}");
+                #[cfg(windows)]
+                {
+                    assert!(!message.contains("yerd php pool"), "got: {message}");
+                    assert!(message.contains("no worker pool"), "got: {message}");
+                }
+            }
             other => panic!("expected InvalidPath, got {other:?}"),
         }
         assert!(state.config.lock().await.php.directives.is_empty());
@@ -4774,18 +4948,30 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
-    /// A `php.json` body with the given `(php, minor, revision)` builds for the
-    /// host platform. Tarball shas are placeholders (`"00"`) - the poll /
-    /// available paths never download tarballs.
+    /// A signed-listing body with the given `(php, minor, revision)` builds for
+    /// the host platform: cli/fpm rows on Unix, bundle rows on Windows (matching
+    /// the per-OS manifest families). Payload shas are placeholders (`"00"`) -
+    /// the poll / available paths never download tarballs.
     fn listing_body(builds: &[(&str, &str, u32)]) -> String {
         let (os, arch) = yerd_php::current_os_arch().unwrap();
         let entries: Vec<String> = builds
             .iter()
             .map(|(php, minor, rev)| {
+                #[cfg(not(windows))]
+                let payload = format!(
+                    r#""cli": {{ "file": "php-{php}-{rev}-cli-{os}-{arch}.tar.gz", "sha256": "00", "size": 1 }},
+                       "fpm": {{ "file": "php-{php}-{rev}-fpm-{os}-{arch}.tar.gz", "sha256": "00", "size": 1 }}"#,
+                    os = os.as_str(),
+                    arch = arch.as_str(),
+                );
+                #[cfg(windows)]
+                let payload = format!(
+                    r#""bundle": {{ "file": "php-{php}-{rev}-bundle-{os}-{arch}.tar.gz", "sha256": "00", "size": 1 }}"#,
+                    os = os.as_str(),
+                    arch = arch.as_str(),
+                );
                 format!(
-                    r#"{{ "php": "{php}", "minor": "{minor}", "os": "{os}", "arch": "{arch}", "revision": {rev},
-                       "cli": {{ "file": "php-{php}-{rev}-cli-{os}-{arch}.tar.gz", "sha256": "00", "size": 1 }},
-                       "fpm": {{ "file": "php-{php}-{rev}-fpm-{os}-{arch}.tar.gz", "sha256": "00", "size": 1 }} }}"#,
+                    r#"{{ "php": "{php}", "minor": "{minor}", "os": "{os}", "arch": "{arch}", "revision": {rev}, {payload} }}"#,
                     os = os.as_str(),
                     arch = arch.as_str(),
                 )
@@ -4794,7 +4980,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         format!("{{ \"schema\": 1, \"builds\": [{}] }}", entries.join(","))
     }
 
-    /// Build + sign a `php.json` for the host platform (see [`listing_body`]).
+    /// Build + sign a listing for the host platform (see [`listing_body`]).
     fn signed_listing(builds: &[(&str, &str, u32)]) -> crate::test_support::SignedManifest {
         crate::test_support::sign_manifest(&listing_body(builds))
     }
@@ -4808,7 +4994,7 @@ Subject: Captured\r\n\r\nhi\r\n";
     #[async_trait::async_trait]
     impl yerd_php::Downloader for TwoChannelDl {
         async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
-            if url.contains("php-legacy.json") {
+            if url.contains("legacy") {
                 self.legacy.download(url).await
             } else {
                 self.stable.download(url).await
@@ -4837,16 +5023,16 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
-    /// Serves a valid legacy `php-legacy.json` but errors on every stable
-    /// `php.json` request, modelling a reachable legacy manifest behind an
-    /// unreachable stable one.
+    /// Serves a valid legacy manifest but errors on every stable-channel
+    /// request, modelling a reachable legacy manifest behind an unreachable
+    /// stable one.
     struct LegacyOnlyDl {
         legacy: ListingDl,
     }
     #[async_trait::async_trait]
     impl yerd_php::Downloader for LegacyOnlyDl {
         async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
-            if url.contains("php-legacy.json") {
+            if url.contains("legacy") {
                 self.legacy.download(url).await
             } else {
                 Err(yerd_php::DownloadError::Transport {
@@ -5769,10 +5955,27 @@ Subject: Captured\r\n\r\nhi\r\n";
     fn path_needs_setup_no_tools_is_some_false() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        #[cfg(unix)]
-        assert_eq!(path_needs_setup(&state), Some(false));
-        #[cfg(not(unix))]
+        #[cfg(any(unix, windows))]
+        assert_eq!(
+            path_needs_setup(&state),
+            Some(false),
+            "no tool and no PHP installed: nothing needs a PATH entry"
+        );
+        #[cfg(not(any(unix, windows)))]
         assert_eq!(path_needs_setup(&state), None);
+    }
+
+    /// With PHP installed but the (tempdir) shim dir absent from the real user
+    /// `HKCU\Environment\Path`, the Windows probe reports setup needed. The
+    /// tempdir path can never coincide with a real PATH entry, so this is
+    /// deterministic despite reading the live user PATH.
+    #[cfg(windows)]
+    #[test]
+    fn path_needs_setup_true_when_php_installed_and_shim_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install(&state.dirs, PhpVersion::new(8, 4));
+        assert_eq!(path_needs_setup(&state), Some(true));
     }
 
     // ---------- additional `dispatch` arms ----------

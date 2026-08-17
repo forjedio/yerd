@@ -383,6 +383,16 @@ impl Config {
 }
 
 /// Default loopback port for the embedded DNS responder (see [`Config::dns_port`]).
+///
+/// Windows uses 53, not 1053: the OS resolver is pointed at Yerd through an NRPT
+/// rule, whose `NameServers` value carries no port, so queries always go to
+/// `<ip>:53`. Binding 53 on loopback is unprivileged on Windows. macOS
+/// (`/etc/resolver` port line) and Linux (systemd-resolved `DNS=ip:port`) can
+/// express a custom port, so they keep 1053.
+#[cfg(windows)]
+pub const DEFAULT_DNS_PORT: u16 = 53;
+/// Default loopback port for the embedded DNS responder (see [`Config::dns_port`]).
+#[cfg(not(windows))]
 pub const DEFAULT_DNS_PORT: u16 = 1053;
 
 /// Default self-update channel (see [`Config::update_channel`]).

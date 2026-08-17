@@ -28,6 +28,7 @@
 //! misparsed. Integrity rests on HTTPS to the host.
 
 use serde::Deserialize;
+use yerd_core::target::UnsupportedTarget;
 
 use crate::error::ServiceError;
 use crate::version::ServiceVersion;
@@ -76,7 +77,7 @@ fn parse_listing(listing: &str) -> Result<Listing, ServiceError> {
 /// Base URL of yerd's hosted service-binary distribution.
 ///
 /// Hosted on GitHub Releases of the **separate** `forjedio/yerd-services` build
-/// project (see `@docs/yerd-services-build-repo.md`): a single rolling `services`
+/// project: a single rolling `services`
 /// release holds every `<service>-<version>-<os>-<arch>.tar.gz` asset plus the
 /// generated `services.json` listing (a human-facing `index.html` is published
 /// alongside but is not consumed here). Asset URLs 302-redirect to the blob; the
@@ -85,45 +86,10 @@ fn parse_listing(listing: &str) -> Result<Listing, ServiceError> {
 pub const SERVICES_BASE_URL: &str =
     "https://github.com/forjedio/yerd-services/releases/download/services";
 
-/// Target operating system for a prebuilt artifact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Os {
-    /// Linux.
-    Linux,
-    /// macOS.
-    Macos,
-}
-
-impl Os {
-    /// The token used in artifact filenames.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Os::Linux => "linux",
-            Os::Macos => "macos",
-        }
-    }
-}
-
-/// Target CPU architecture for a prebuilt artifact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Arch {
-    /// 64-bit x86.
-    X86_64,
-    /// 64-bit ARM.
-    Aarch64,
-}
-
-impl Arch {
-    /// The token used in artifact filenames.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Arch::X86_64 => "x86_64",
-            Arch::Aarch64 => "aarch64",
-        }
-    }
-}
+/// Host-target vocabulary, re-exported so `yerd_services::{Os, Arch}` keeps
+/// working for its existing consumers. The definitions live in
+/// [`yerd_core::target`], shared with every other managed download.
+pub use yerd_core::target::{Arch, Os};
 
 /// A resolved download plan for one service + version + platform.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,28 +199,19 @@ pub fn available_versions(listing: &str, service: &str, os: Os, arch: Arch) -> V
     out
 }
 
-/// Detect the running platform, erroring on anything yerd can't install for
-/// (Windows, 32-bit). Call this **before** any download.
+/// Detect the running platform, erroring on anything yerd has no prebuilt
+/// services for (a 32-bit or unknown OS). Thin wrapper over
+/// [`yerd_core::target::current_os_arch`] that renders the failure in this
+/// crate's error vocabulary. Call this **before** any download.
 pub fn current_os_arch() -> Result<(Os, Arch), ServiceError> {
-    let os = match std::env::consts::OS {
-        "linux" => Os::Linux,
-        "macos" => Os::Macos,
-        other => {
-            return Err(ServiceError::UnsupportedPlatform {
-                detail: format!("no prebuilt services for OS {other:?}"),
-            })
-        }
-    };
-    let arch = match std::env::consts::ARCH {
-        "x86_64" => Arch::X86_64,
-        "aarch64" => Arch::Aarch64,
-        other => {
-            return Err(ServiceError::UnsupportedPlatform {
-                detail: format!("no prebuilt services for architecture {other:?}"),
-            })
-        }
-    };
-    Ok((os, arch))
+    yerd_core::target::current_os_arch().map_err(|e| ServiceError::UnsupportedPlatform {
+        detail: match e {
+            UnsupportedTarget::Os(os) => format!("no prebuilt services for OS {os:?}"),
+            UnsupportedTarget::Arch(arch) => {
+                format!("no prebuilt services for architecture {arch:?}")
+            }
+        },
+    })
 }
 
 #[cfg(test)]
@@ -281,7 +238,7 @@ mod tests {
           { "version": "17.10", "platforms": ["linux-x86_64"] }
         ] },
         "mysql": { "versions": [
-          { "version": "8.4.9", "platforms": ["linux-x86_64", "macos-aarch64"] }
+          { "version": "8.4.9", "platforms": ["linux-x86_64", "macos-aarch64", "windows-x86_64"] }
         ] }
       }
     }"#;
@@ -299,6 +256,41 @@ mod tests {
             format!("{SERVICES_BASE_URL}/redis-9.1.0-linux-x86_64.tar.gz")
         );
         assert_eq!(a.service, "redis");
+    }
+
+    #[test]
+    fn artifact_filename_pins_the_windows_contract_string() {
+        assert_eq!(
+            artifact_filename("mysql", &v("8.4.9"), Os::Windows, Arch::X86_64),
+            "mysql-8.4.9-windows-x86_64.tar.gz"
+        );
+    }
+
+    #[test]
+    fn resolve_present_windows_artifact_builds_url() {
+        let a =
+            resolve_from_listing(LISTING, "mysql", &v("8.4.9"), Os::Windows, Arch::X86_64).unwrap();
+        assert_eq!(
+            a.url,
+            format!("{SERVICES_BASE_URL}/mysql-8.4.9-windows-x86_64.tar.gz")
+        );
+        assert_eq!(a.service, "mysql");
+    }
+
+    #[test]
+    fn available_versions_anchors_windows() {
+        assert_eq!(
+            available_versions(LISTING, "mysql", Os::Windows, Arch::X86_64),
+            vec![v("8.4.9")]
+        );
+        assert!(available_versions(LISTING, "redis", Os::Windows, Arch::X86_64).is_empty());
+    }
+
+    /// Only meaningful on the Windows CI leg.
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn current_os_arch_is_windows_x86_64() {
+        assert_eq!(current_os_arch().unwrap(), (Os::Windows, Arch::X86_64));
     }
 
     #[test]

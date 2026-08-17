@@ -35,6 +35,7 @@ pub mod services;
 pub mod signals;
 pub mod single_instance;
 pub mod site_domains;
+pub mod spawn;
 pub mod startup;
 pub mod state;
 pub mod tools;
@@ -69,6 +70,12 @@ pub enum Outcome {
     /// A restart was requested - `main` should re-exec the binary.
     Restart,
 }
+
+/// Env var marking a console-mode restart handoff (Windows). `main` sets it on
+/// the freshly spawned successor daemon so [`startup`] knows to bounded-retry the
+/// instance-lock/pipe bind while the outgoing process finishes releasing them.
+/// Unix restarts `exec` in place and never use it.
+pub const RESTART_HANDOFF_ENV: &str = "YERD_RESTART_HANDOFF";
 
 /// Build the reverse-proxy client-TLS bundle injected into the proxy: a
 /// no-verify config for local/`.test` upstreams (self-signed dev backends), and

@@ -12,6 +12,46 @@ vi.mock("@/ipc/client", () => ({
   pickExtensionFile,
 }));
 
+// The modal's placeholders and success toast follow the host OS, so the
+// platform singleton is mocked with a settable value rather than left unloaded.
+const hostPlatform = vi.hoisted(() => ({ value: "macos" }));
+vi.mock("@/composables/usePlatform", async () => {
+  const { computed, ref } = await import("vue");
+  const platform = ref(hostPlatform.value);
+  return {
+    loadPlatform: () => Promise.resolve(),
+    usePlatform: () => {
+      platform.value = hostPlatform.value;
+      return {
+        platform,
+        isMac: computed(() => platform.value === "macos"),
+        isLinux: computed(() => platform.value === "linux"),
+        isWindows: computed(() => platform.value === "windows"),
+        vocab: computed(() =>
+          platform.value === "windows"
+            ? {
+                runtime: "php-cgi",
+                pool: "FastCGI process",
+                pools: "FastCGI processes",
+                poolShort: "php-cgi",
+                extSuffix: ".dll",
+                extExample: "C:\\php\\ext\\php_scrypt.dll",
+              }
+            : {
+                runtime: "PHP-FPM",
+                pool: "FPM pool",
+                pools: "FPM pools",
+                poolShort: "FPM",
+                extSuffix: ".so",
+                extExample: "/opt/homebrew/lib/php/pecl/20250925/scrypt.so",
+              },
+        ),
+        supportsPathInstall: computed(() => true),
+      };
+    },
+  };
+});
+
 const SO = "/opt/homebrew/lib/php/pecl/20250925/scrypt.so";
 
 function mountModal() {
@@ -29,6 +69,37 @@ describe("AddExtensionModal", () => {
   beforeEach(() => {
     addPhpExtension.mockReset();
     pickExtensionFile.mockReset();
+    hostPlatform.value = "macos";
+  });
+
+  // The field asks the user to type a real path, so a macOS-shaped `.so`
+  // example on Windows is actively misleading.
+  it("shows an OS-appropriate extension path and suffix", () => {
+    const unix = mountModal();
+    expect((unix.find("#ext-path").element as HTMLInputElement).placeholder).toBe(SO);
+    expect((unix.find("#ext-name").element as HTMLInputElement).placeholder).toContain(".so");
+
+    hostPlatform.value = "windows";
+    const win = mountModal();
+    const path = (win.find("#ext-path").element as HTMLInputElement).placeholder;
+    expect(path).toBe("C:\\php\\ext\\php_scrypt.dll");
+    expect(path).not.toContain("/opt/homebrew");
+    expect((win.find("#ext-name").element as HTMLInputElement).placeholder).toContain(".dll");
+  });
+
+  // The picker filter used to be hard-coded to `so`, so on Windows the Browse
+  // button could not select the `.dll` the placeholder asks for.
+  it("filters the picker by the host's extension suffix", async () => {
+    pickExtensionFile.mockResolvedValue(null);
+
+    const unix = mountModal();
+    await byText(unix, "Browse…")!.trigger("click");
+    expect(pickExtensionFile).toHaveBeenCalledWith(".so");
+
+    hostPlatform.value = "windows";
+    const win = mountModal();
+    await byText(win, "Browse…")!.trigger("click");
+    expect(pickExtensionFile).toHaveBeenCalledWith(".dll");
   });
 
   it("fills the path from the native picker", async () => {

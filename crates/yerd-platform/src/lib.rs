@@ -3,10 +3,11 @@
 //! The core traits live here - [`Paths`], [`TrustStore`], [`ResolverInstaller`],
 //! [`PortBinder`], [`PortRedirector`], [`TerminalLauncher`], [`IdeLauncher`], and
 //! [`SystemOpener`] - each with a single thin
-//! implementation per OS selected by `#[cfg(target_os = ...)]`. macOS and Linux
-//! ship in Phase 1;
-//! Windows compiles against the [`os::unsupported`] stub that returns
-//! [`PlatformError::Unsupported`] for every method.
+//! implementation per OS selected by `#[cfg(target_os = ...)]`. macOS, Linux and
+//! Windows all have full implementations: `os::windows` provides real `Windows*`
+//! types for every trait, so no trait aliases the [`os::unsupported`] stub there
+//! any more. That stub - which returns [`PlatformError::Unsupported`] for every
+//! method - stays compiled on Windows and is the active set on any other host.
 //!
 //! ## Privilege boundary
 //!
@@ -65,4 +66,43 @@ pub use os::active::{
     ActiveIdeLauncher, ActivePaths, ActivePortBinder, ActivePortRedirector,
     ActiveResolverInstaller, ActiveSystemMetrics, ActiveSystemOpener, ActiveTerminalLauncher,
     ActiveTrustStore,
+};
+
+/// Windows IPC identity helpers: the current user's SID and the derived daemon
+/// pipe name, shared by the daemon listener and every client.
+#[cfg(target_os = "windows")]
+pub use os::active::{current_user_sid, daemon_pipe_name};
+
+/// Windows privilege + NRPT helpers: the elevated-token probe (shared by the CLI
+/// and the helper) and the `.test` NRPT rule-GUID discovery (used by the helper
+/// through this crate so `winreg` stays out of its own dependency graph).
+#[cfg(target_os = "windows")]
+pub use os::active::{is_token_elevated, nrpt_guids_for_tld};
+
+/// Windows doctor-depth probes: which servers the `.tld` NRPT rule forwards to,
+/// and the image name squatting a UDP port. Both are read-only, unprivileged,
+/// and exist so the daemon can put a name in a diagnosis the bare
+/// `is_installed`/bind-failure booleans cannot supply.
+#[cfg(target_os = "windows")]
+pub use os::active::{nrpt_servers_for_tld, udp_port_owner};
+
+/// Windows user-`PATH` (`HKCU\Environment`) helpers: read the current value,
+/// write a new one (preserving the `REG_EXPAND_SZ` type), and broadcast the
+/// change so fresh shells see it. Used by the CLI's `yerd path`/tool-install PATH
+/// wiring and the daemon's shim-dir-on-PATH doctor probe. Keeps `winreg` a
+/// single-crate dependency (this crate), off the binaries' own graphs.
+#[cfg(target_os = "windows")]
+pub use os::active::{broadcast_user_env_marker, set_user_path, user_path};
+
+/// Windows process-spawning primitives: the two process-creation flags, the
+/// `%SystemRoot%`-derived paths that keep a tool lookup off `PATH`, and a
+/// [`std::process::Command`] constructor that already carries
+/// `CREATE_NO_WINDOW`. These are the canonical definitions for the workspace;
+/// every binary and the GUI bridge import them rather than re-declaring the
+/// magic numbers. (`yerd-service-ctl` and `yerd-supervise` are the deliberate
+/// exceptions: neither depends on any `yerd-*` crate, so each keeps its own
+/// copy.)
+#[cfg(target_os = "windows")]
+pub use os::active::{
+    hidden_command, system32_exe, system_root, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
 };

@@ -28,11 +28,15 @@ impl Clock for SystemClock {
 /// it can `wait()` - a daemon shutting down mid-init - call this to reap the
 /// whole subtree. Requires the leader to have been spawned into its own process
 /// group (`process_group(0)`), so its PID doubles as the group id. No-op off
-/// Unix (Windows worker teardown is a Phase 2 job-object ticket, as for `kill`).
+/// Unix, where the Job Object handles teardown (see below).
 ///
 /// A `leader_pid` of 0 is ignored: `killpg(0, ..)` targets the *caller's* own
 /// process group, so it would signal the daemon itself. A real spawned child PID
 /// is never 0; this only guards a future or mistaken caller.
+///
+/// On Windows the Job Object supersedes this: dropping the [`TokioChild`] (and
+/// hence its job) reaps the whole tree, so the non-Unix stub is a deliberate
+/// no-op.
 #[cfg(unix)]
 pub fn kill_process_group(leader_pid: u32) {
     use nix::sys::signal::{killpg, Signal};
@@ -53,13 +57,32 @@ fn group_signal_target(leader_pid: u32) -> Option<i32> {
     i32::try_from(leader_pid).ok()
 }
 
-/// Non-Unix stub: process-group reaping is a Phase 2 job-object ticket, so this
-/// is a no-op (see the Unix impl for the semantics).
+/// Non-Unix stub: on Windows the per-child Job Object reaps the tree when the
+/// [`TokioChild`] is dropped/killed, so explicit process-group reaping is
+/// unnecessary and this is a no-op (see the Unix impl for the semantics).
 #[cfg(not(unix))]
 pub fn kill_process_group(_leader_pid: u32) {}
 
+/// `CREATE_NO_WINDOW` process-creation flag: a console child runs with no
+/// console window at all.
+///
+/// Declared here rather than imported from `yerd-platform` so this crate keeps
+/// its no-`yerd-*`-dependencies shape (the same deliberate exception
+/// `yerd-service-ctl` makes). Safe std `creation_flags`, no FFI.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// Spawns commands via `tokio::process::Command`, sets `kill_on_drop(true)` so
-/// unexpected crashes of the daemon take the child down with them.
+/// unexpected crashes of the daemon take the direct child down with them, and on
+/// Windows assigns each child to a kill-on-close Job Object so the **whole tree**
+/// (workers, init-tool grandchildren) dies with the child - the Windows
+/// equivalent of the Unix process-group reaping.
+///
+/// Windows children additionally get `CREATE_NO_WINDOW`. Every supervised
+/// program (php-cgi, mysqld, postgres, redis, meilisearch, the init tools,
+/// cloudflared) is console-subsystem and `yerdd` has no console of its own, so
+/// an unflagged spawn makes Windows allocate a fresh console *window* per child.
+/// Applying it in the single spawn seam means no call site has to remember it.
 pub struct TokioProcessSpawner;
 
 impl ProcessSpawner for TokioProcessSpawner {
@@ -68,12 +91,54 @@ impl ProcessSpawner for TokioProcessSpawner {
     fn spawn(&self, cmd: StdCommand) -> Result<TokioChild, io::Error> {
         let mut tokio_cmd = tokio::process::Command::from(cmd);
         tokio_cmd.kill_on_drop(true);
-        let child = spawn_retrying_text_file_busy(&mut tokio_cmd)?;
+        #[cfg(windows)]
+        tokio_cmd.creation_flags(CREATE_NO_WINDOW);
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut child = spawn_retrying_text_file_busy(&mut tokio_cmd)?;
         let pid = child
             .id()
             .ok_or_else(|| io::Error::other("child has no pid"))?;
-        Ok(TokioChild { inner: child, pid })
+        #[cfg(windows)]
+        let job = match assign_to_job(&child) {
+            Ok(job) => Some(job),
+            Err(e) => {
+                let _ = child.start_kill();
+                return Err(e);
+            }
+        };
+        Ok(TokioChild {
+            inner: child,
+            pid,
+            #[cfg(windows)]
+            job,
+        })
     }
+}
+
+/// Assign `child` to a fresh Job Object set to terminate its whole process tree
+/// when the job handle is closed (an explicit drop, or a `yerdd` crash). The
+/// child's raw handle comes from the safe `tokio::process::Child::raw_handle()`;
+/// a missing handle means the child already exited or was reaped, treated as a
+/// job-setup failure so a child we cannot contain never runs (fail closed).
+///
+/// Residual risk: a child could `CreateProcess` a grandchild in the microseconds
+/// between spawn and `assign_process`, and that grandchild would escape the job.
+/// None of yerd's workloads (php-cgi, mysqld, postgres, init tools, cloudflared)
+/// spawn children before finishing their own image/DLL load, so this window is
+/// accepted. Closing it fully would need `CREATE_SUSPENDED` + resume, which is
+/// raw `unsafe` FFI not exposed by std/tokio.
+#[cfg(windows)]
+fn assign_to_job(child: &tokio::process::Child) -> Result<win32job::Job, io::Error> {
+    let handle = child
+        .raw_handle()
+        .ok_or_else(|| io::Error::other("child has no raw handle for job assignment"))?;
+    let mut info = win32job::ExtendedLimitInfo::new();
+    info.limit_kill_on_job_close();
+    let job = win32job::Job::create_with_limit_info(&info)
+        .map_err(|e| io::Error::other(format!("create job object: {e}")))?;
+    job.assign_process(handle as isize)
+        .map_err(|e| io::Error::other(format!("assign process to job object: {e}")))?;
+    Ok(job)
 }
 
 /// Spawn `cmd`, retrying on `ETXTBSY` ("text file busy").
@@ -116,9 +181,26 @@ fn is_text_file_busy(_e: &io::Error) -> bool {
 }
 
 /// Production [`ChildHandle`] wrapping `tokio::process::Child`.
+///
+/// On Windows it also owns the [`win32job::Job`] the child is assigned to;
+/// dropping the job (on `kill` or when the handle is dropped) closes the job
+/// handle and terminates the whole process tree via `KILL_ON_JOB_CLOSE`.
 pub struct TokioChild {
     inner: tokio::process::Child,
     pid: u32,
+    #[cfg(windows)]
+    job: Option<win32job::Job>,
+}
+
+#[cfg(windows)]
+impl TokioChild {
+    /// Terminate the whole tree: dropping the job closes its handle, and
+    /// `KILL_ON_JOB_CLOSE` reaps every process in it. Written once so no stop
+    /// arm can accidentally skip the job drop.
+    async fn force(&mut self) -> Result<(), io::Error> {
+        drop(self.job.take());
+        self.inner.kill().await
+    }
 }
 
 #[async_trait]
@@ -135,6 +217,16 @@ impl ChildHandle for TokioChild {
         Ok(ExitReason::from_status(self.inner.wait().await?))
     }
 
+    /// On Windows, dropping the job closes its handle; with `KILL_ON_JOB_CLOSE`
+    /// the OS terminates the whole tree (workers plus init-tool grandchildren).
+    ///
+    /// Windows cannot deliver a graceful *request* from safe Rust, so `protocol`
+    /// selects between forcing now and letting an already-requested graceful
+    /// stop finish. Under [`StopProtocol::MasterInterrupt`] the engine's own
+    /// admin command has already been issued a layer up, so the child is given a
+    /// bounded wait to exit on its own; every other combination forces
+    /// immediately. Both arms end in the job-object teardown, so no worker can
+    /// outlive the call either way.
     async fn kill(&mut self, signal: KillSignal, protocol: StopProtocol) -> Result<(), io::Error> {
         #[cfg(unix)]
         {
@@ -152,9 +244,23 @@ impl ChildHandle for TokioChild {
         }
         #[cfg(windows)]
         {
-            // TODO(Phase 2): worker leak on Windows - needs job-object teardown via yerd-helper.
-            let _ = (signal, protocol);
-            self.inner.kill().await
+            match crate::pure::windows_stop_action(signal, protocol) {
+                crate::pure::WindowsStop::Force => self.force().await,
+                crate::pure::WindowsStop::AwaitThenForce { grace } => {
+                    match tokio::time::timeout(grace, self.inner.wait()).await {
+                        // The master exited on its own, but a wedged worker or
+                        // logger can still be sitting in the job, and the
+                        // contract is that no worker outlives this call. Drop
+                        // the job rather than calling `force`: `inner` has been
+                        // reaped, and tokio's `kill` errors on an exited child.
+                        Ok(_) => {
+                            drop(self.job.take());
+                            Ok(())
+                        }
+                        Err(_) => self.force().await,
+                    }
+                }
+            }
         }
     }
 }
@@ -184,5 +290,27 @@ mod tests {
             nix::libc::ENOENT
         )));
         assert!(!is_text_file_busy(&io::Error::other("not an os error")));
+    }
+}
+
+#[cfg(all(test, windows))]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod windows_tests {
+    use super::TokioProcessSpawner;
+    use crate::error::ExitReason;
+    use crate::traits::{ChildHandle, ProcessSpawner};
+    use std::process::Command as StdCommand;
+
+    #[tokio::test]
+    async fn spawned_child_carries_a_job_and_reaps() {
+        let mut cmd = StdCommand::new("cmd");
+        cmd.args(["/C", "exit", "0"]);
+        let mut child = TokioProcessSpawner.spawn(cmd).unwrap();
+        assert!(
+            child.job.is_some(),
+            "a Windows child should be assigned to a job"
+        );
+        let reason = child.wait().await.unwrap();
+        assert!(matches!(reason, ExitReason::Code(0)), "got {reason:?}");
     }
 }

@@ -24,8 +24,11 @@ pub struct PoolConfig {
     pub pid_file: PathBuf,
     /// File FPM writes worker stdout/stderr + its own error log to.
     pub error_log: PathBuf,
-    /// File the manager writes the rendered FPM config to (so FPM can
-    /// read it back via `--fpm-config`).
+    /// File the manager writes the pool's config to. On Unix this is the
+    /// rendered FPM config FPM reads back via `--fpm-config`. On Windows there is
+    /// no FPM: this is instead the supplemental php-cgi ini (settings +
+    /// directives + CA lines) loaded via `PHP_INI_SCAN_DIR` (its parent dir), and
+    /// the FPM template is never rendered.
     pub config_path: PathBuf,
     /// FPM process manager mode (`static`, `dynamic`, or `ondemand`).
     pub pm: ProcessManagerMode,
@@ -94,6 +97,11 @@ impl PoolConfig {
     /// - Pid + log under `dirs.state`, config under `dirs.config`.
     /// - All basenames embed `version` AND `instance_id` so concurrent
     ///   Yerd daemons on the same host don't clobber each other.
+    ///
+    /// `config_path` differs per host: on Unix it is the FPM config file; on
+    /// Windows it is the supplemental php-cgi ini in a per-pool directory that
+    /// becomes `PHP_INI_SCAN_DIR`, isolated per pool so the scan dir holds only
+    /// this pool's ini.
     #[must_use]
     pub fn dev_defaults(
         version: PhpVersion,
@@ -101,14 +109,22 @@ impl PoolConfig {
         dirs: &PlatformDirs,
         instance_id: u32,
     ) -> Self {
+        #[cfg(not(windows))]
+        let config_path = dirs
+            .config
+            .join(format!("php-fpm-{version}-{instance_id}.conf"));
+        #[cfg(windows)]
+        let config_path = dirs
+            .state
+            .join("php")
+            .join(format!("fpm-{version}-{instance_id}"))
+            .join("zz-yerd.ini");
         Self {
             version,
             listen,
             pid_file: dirs.state.join(format!("fpm-{version}-{instance_id}.pid")),
             error_log: dirs.state.join(format!("fpm-{version}-{instance_id}.log")),
-            config_path: dirs
-                .config
-                .join(format!("php-fpm-{version}-{instance_id}.conf")),
+            config_path,
             pm: ProcessManagerMode::OnDemand,
             max_children: yerd_core::php_pool::DEFAULT_MAX_CHILDREN,
             ini: Vec::new(),
@@ -145,7 +161,13 @@ mod tests {
         let cfg = PoolConfig::dev_defaults(v, listen, &dirs, 4242);
         assert_eq!(cfg.pid_file, PathBuf::from("/state/fpm-8.3-4242.pid"));
         assert_eq!(cfg.error_log, PathBuf::from("/state/fpm-8.3-4242.log"));
+        #[cfg(not(windows))]
         assert_eq!(cfg.config_path, PathBuf::from("/cfg/php-fpm-8.3-4242.conf"));
+        #[cfg(windows)]
+        assert_eq!(
+            cfg.config_path,
+            PathBuf::from("/state/php/fpm-8.3-4242/zz-yerd.ini")
+        );
         assert_eq!(cfg.pm, ProcessManagerMode::OnDemand);
         assert_eq!(cfg.max_children, 16);
     }

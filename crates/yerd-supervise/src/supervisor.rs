@@ -225,9 +225,11 @@ pub enum ErrorTag {
 /// Which signal `Action::Kill` requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KillSignal {
-    /// SIGTERM (graceful). On Windows: maps to `Child::kill`.
+    /// SIGTERM (graceful). On Windows this forces the job-object teardown too,
+    /// except under [`StopProtocol::MasterInterrupt`], where the child is first
+    /// given a bounded wait to finish the shutdown already requested of it.
     Term,
-    /// SIGKILL (forced). On Windows: maps to `Child::kill`.
+    /// SIGKILL (forced). On Windows this always forces the job-object teardown.
     Kill,
 }
 

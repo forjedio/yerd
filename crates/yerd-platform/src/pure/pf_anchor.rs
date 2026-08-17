@@ -2,7 +2,7 @@
 //! 80/443 while binding only rootless ports.
 //!
 //! macOS has no `setcap`; instead a privileged helper installs a pf `rdr`
-//! redirect. The empirically-validated rule (see the plan's Step 0 spike) is:
+//! redirect. The empirically-validated rule is:
 //!
 //! ```text
 //! rdr pass on lo0 inet proto tcp from any to any port 80  -> 127.0.0.1 port <http_to>

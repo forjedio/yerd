@@ -855,9 +855,10 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
         </CardContent>
       </Card>
 
-      <!-- Terminal CLI (macOS + Linux). `yerd` itself is already on PATH on a
-           packaged Linux install, but this also puts the PHP/tool shims dir on
-           PATH, so it's still useful there. -->
+      <!-- Terminal CLI (macOS, Linux, Windows). `yerd` itself is already on PATH
+           on a packaged Linux install, but this also puts the PHP/tool shims dir
+           on PATH, so it's still useful there. On Windows it copies the CLI and
+           adds it plus the shim dir to the user PATH. -->
       <Card v-if="supportsPathInstall">
         <CardHeader>
           <CardTitle>Terminal CLI</CardTitle>
@@ -870,7 +871,7 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
               <p class="text-xs text-muted-foreground">
                 {{ cli?.installed
                   ? "Installed - run `yerd` in a new terminal window."
-                  : "Adds yerd and your installed tools (php, composer, ...) to your shell PATH." }}
+                  : "Adds yerd and your installed tools (php, composer, ...) to your PATH." }}
               </p>
             </div>
             <Button
@@ -938,8 +939,6 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
             />
           </div>
 
-          <!-- Same macOS-or-Linux predicate as the PATH install: host editor
-               launching has no Windows adapter either. -->
           <div v-if="supportsPathInstall" class="flex items-center justify-between gap-4">
             <div>
               <p class="text-sm font-medium">Preferred editor</p>

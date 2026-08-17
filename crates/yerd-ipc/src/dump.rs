@@ -55,7 +55,8 @@ pub struct DumpEvent {
     pub site: String,
     /// Stable per-PHP-request id, so the GUI can group rows by request.
     pub request_id: String,
-    /// Category-specific payload, opaque to the daemon. See `architecture.md`.
+    /// Category-specific payload, opaque to the daemon; its shape is the
+    /// cross-repo contract with yerd-php-ext.
     pub payload: serde_json::Value,
 }
 

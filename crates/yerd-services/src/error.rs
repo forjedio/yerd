@@ -17,7 +17,7 @@ use crate::version::ServiceVersion;
 #[non_exhaustive]
 pub enum ServiceError {
     /// The operation is not supported for this service on this platform yet
-    /// (e.g. a non-Redis engine in the Phase 1 build, or Windows).
+    /// (e.g. an engine this build has no prebuilt artifact for, or Windows).
     #[error("{service} is not supported yet: {detail}")]
     Unsupported {
         /// The service in question.

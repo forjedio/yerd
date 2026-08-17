@@ -19,15 +19,16 @@ pub mod version;
 
 pub use error::{DownloadError, ExitReason, PhpError, SpawnFailureReason};
 pub use listen::{AllocatedListen, Listen};
-pub use manager::{DumpExtSettings, PhpManager, PoolRunState, PoolSnapshot};
+pub use manager::{DumpExtSettings, PhpManager, PoolRunState, PoolSnapshot, WORKERS_PER_VERSION};
 pub use pool::{ExtLoad, PoolConfig, ProcessManagerMode};
 pub use probe::{probe_extension, CommandRunner, ProbeOutput, TokioCommandRunner};
 pub use pure::ext_probe::{interpret_probe, ExtLoadError};
 pub use real::{SystemClock, TokioChild, TokioProcessSpawner};
 pub use release::{
     available_minors, current_os_arch, display_build, is_newer_build, is_safe_member,
-    listing_sig_url, listing_url, patch_of, resolve_from_listing, Arch, Artifact, BinaryKind,
-    Channel, Os, MIN_SUPPORTED, PHP_LISTING_BASE_URL, PHP_LISTING_SCHEMA,
+    listing_sig_url, listing_url, patch_of, resolve_build, resolve_bundle_from_listing,
+    resolve_from_listing, Arch, Artifact, BinaryKind, BundleArtifact, Channel, Os, MIN_SUPPORTED,
+    PHP_LISTING_BASE_URL, PHP_LISTING_SCHEMA,
 };
 pub use traits::{ChildHandle, Clock, Downloader, HealthProbe, ProcessSpawner};
 pub use version::discover_bundled;

@@ -38,13 +38,19 @@ pub enum Platform {
     LinuxX86_64,
     /// `aarch64` Linux - the arm64 `.deb` package.
     LinuxAarch64,
+    /// `x86_64` Windows - the NSIS `.exe` installer.
+    WindowsX86_64,
+    /// `aarch64` Windows - no self-update artifact is published yet (no arm64
+    /// Windows runner/artifact in MVP, mirroring Intel macOS).
+    WindowsAarch64,
     /// Any platform without a published self-update artifact.
     Unsupported,
 }
 
 impl Platform {
-    /// The platform this binary was built for. `Unsupported` for anything we
-    /// don't publish a self-update artifact for (incl. Windows and other arches).
+    /// The platform this binary was built for. `x86_64` Windows resolves to
+    /// `WindowsX86_64` (the NSIS installer); `WindowsAarch64` has no artifact
+    /// yet; `Unsupported` covers any other arch we don't build for.
     #[must_use]
     pub fn current() -> Self {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -63,11 +69,21 @@ impl Platform {
         {
             Self::LinuxAarch64
         }
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            Self::WindowsX86_64
+        }
+        #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+        {
+            Self::WindowsAarch64
+        }
         #[cfg(not(any(
             all(target_os = "macos", target_arch = "aarch64"),
             all(target_os = "macos", target_arch = "x86_64"),
             all(target_os = "linux", target_arch = "x86_64"),
             all(target_os = "linux", target_arch = "aarch64"),
+            all(target_os = "windows", target_arch = "x86_64"),
+            all(target_os = "windows", target_arch = "aarch64"),
         )))]
         {
             Self::Unsupported
@@ -86,6 +102,8 @@ pub enum ArtifactKind {
     Pacman,
     /// A Red Hat package (reinstalled via `rpm -U`).
     Rpm,
+    /// A Windows NSIS installer (run silently with `/S /UPDATE`).
+    NsisExe,
 }
 
 /// The Linux package format a build self-updates with.
@@ -154,7 +172,8 @@ pub struct ArtifactSelection<'a> {
 /// Why [`select_asset`] could not resolve a download set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssetError {
-    /// No artifact is published for this platform (e.g. Intel macOS, Windows).
+    /// No artifact is published for this platform (e.g. Intel macOS, arm64
+    /// Windows).
     NoArtifactForPlatform(Platform),
     /// The artifact is present but neither its `.minisig` nor its legacy `.sig`
     /// is attached.
@@ -210,7 +229,8 @@ pub fn select_asset(
         }
         (Platform::LinuxX86_64, PkgFormat::Rpm) => (ArtifactKind::Rpm, is_linux_x86_64_rpm),
         (Platform::LinuxAarch64, PkgFormat::Rpm) => (ArtifactKind::Rpm, is_linux_aarch64_rpm),
-        (p @ (Platform::MacOsX86_64 | Platform::Unsupported), _) => {
+        (Platform::WindowsX86_64, _) => (ArtifactKind::NsisExe, is_windows_x86_64_artifact),
+        (p @ (Platform::MacOsX86_64 | Platform::Unsupported | Platform::WindowsAarch64), _) => {
             return Err(AssetError::NoArtifactForPlatform(p));
         }
     };
@@ -294,6 +314,17 @@ fn is_linux_x86_64_rpm(name: &str) -> bool {
 fn is_linux_aarch64_rpm(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower.ends_with(".rpm") && (lower.contains("aarch64") || lower.contains("arm64"))
+}
+
+// The Windows installer is named `Yerd_Windows_x86_64_*.exe`. The `.exe` suffix is
+// checked case-insensitively but must not match the detached `.exe.minisig`
+// signature: the `ends_with(".exe")` guard rejects `.exe.minisig` outright, so the
+// signature file is never mis-selected as the artifact.
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
+fn is_windows_x86_64_artifact(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".exe")
+        && (lower.contains("x86_64") || lower.contains("x64") || lower.contains("amd64"))
 }
 
 /// Why verification failed.
@@ -781,8 +812,93 @@ mod tests {
             all(target_os = "macos", target_arch = "aarch64"),
             all(target_os = "linux", target_arch = "x86_64"),
             all(target_os = "linux", target_arch = "aarch64"),
+            all(target_os = "windows", target_arch = "x86_64"),
+            all(target_os = "windows", target_arch = "aarch64"),
         ))]
         assert_ne!(p, Platform::Unsupported);
         let _ = p;
+    }
+
+    #[test]
+    fn selects_windows_x86_64_nsis_installer() {
+        let r = release_with(&[
+            "Yerd_Windows_x86_64_v2-0-5.exe",
+            "Yerd_Windows_x86_64_v2-0-5.exe.minisig",
+            "SHA256SUMS",
+        ]);
+        let sel = select_asset(&r, Platform::WindowsX86_64, PkgFormat::Deb).unwrap();
+        assert_eq!(sel.kind, ArtifactKind::NsisExe);
+        assert!(sel.artifact.name.ends_with(".exe"));
+        assert!(sel.signature.name.ends_with(".exe.minisig"));
+        assert_eq!(sel.checksums.name, "SHA256SUMS");
+    }
+
+    /// The Windows selection ignores `PkgFormat` (like macOS): a `pacman`/`rpm`
+    /// build running on Windows would never happen, but the arm is format-agnostic.
+    #[test]
+    fn windows_selection_ignores_pkg_format() {
+        let r = release_with(&[
+            "Yerd_Windows_x86_64_v2-0-5.exe",
+            "Yerd_Windows_x86_64_v2-0-5.exe.minisig",
+            "SHA256SUMS",
+        ]);
+        for fmt in [PkgFormat::Deb, PkgFormat::Pacman, PkgFormat::Rpm] {
+            let sel = select_asset(&r, Platform::WindowsX86_64, fmt).unwrap();
+            assert_eq!(sel.kind, ArtifactKind::NsisExe);
+        }
+    }
+
+    /// The `.exe` matcher is disjoint from the deb/pacman/rpm/mac matchers, and the
+    /// detached `.exe.minisig` signature is never selected as the artifact.
+    #[test]
+    /// A release carrying only the `.exe` plus `.minisig` must resolve the
+    /// artifact to the `.exe` and its signature to the `.exe.minisig`, not the
+    /// reverse.
+    fn windows_matcher_is_disjoint_and_skips_minisig() {
+        assert!(is_windows_x86_64_artifact("Yerd_Windows_x86_64_v2.exe"));
+        assert!(is_windows_x86_64_artifact("Yerd_Windows_X64_v2.exe"));
+        assert!(!is_windows_x86_64_artifact(
+            "Yerd_Windows_x86_64_v2.exe.minisig"
+        ));
+        assert!(!is_windows_x86_64_artifact("Yerd_Linux_x86_64_v2.deb"));
+        assert!(!is_windows_x86_64_artifact(
+            "Yerd_Linux_x86_64_v2.pkg.tar.zst"
+        ));
+        assert!(!is_windows_x86_64_artifact("Yerd_Linux_x86_64_v2.rpm"));
+        assert!(!is_macos_aarch64_artifact("Yerd_Windows_x86_64_v2.exe"));
+        assert!(!is_linux_x86_64_artifact("Yerd_Windows_x86_64_v2.exe"));
+
+        let r = release_with(&[
+            "Yerd_Windows_x86_64_v2.exe",
+            "Yerd_Windows_x86_64_v2.exe.minisig",
+            "SHA256SUMS",
+        ]);
+        let sel = select_asset(&r, Platform::WindowsX86_64, PkgFormat::Deb).unwrap();
+        assert_eq!(sel.artifact.name, "Yerd_Windows_x86_64_v2.exe");
+        assert_eq!(sel.signature.name, "Yerd_Windows_x86_64_v2.exe.minisig");
+    }
+
+    #[test]
+    fn windows_aarch64_still_has_no_artifact() {
+        let release = release_with(&[
+            "Yerd_Windows_x86_64_v2-0-5.exe",
+            "Yerd_Windows_x86_64_v2-0-5.exe.minisig",
+            "SHA256SUMS",
+        ]);
+        assert!(matches!(
+            select_asset(&release, Platform::WindowsAarch64, PkgFormat::Deb),
+            Err(AssetError::NoArtifactForPlatform(Platform::WindowsAarch64))
+        ));
+    }
+
+    /// An `x86_64` Windows release with no `.exe` attached still errors
+    /// `NoArtifactForPlatform` (the arm is wired, but the release is incomplete).
+    #[test]
+    fn windows_x86_64_errors_when_release_has_no_exe() {
+        let release = release_with(&["SHA256SUMS"]);
+        assert!(matches!(
+            select_asset(&release, Platform::WindowsX86_64, PkgFormat::Deb),
+            Err(AssetError::NoArtifactForPlatform(Platform::WindowsX86_64))
+        ));
     }
 }

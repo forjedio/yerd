@@ -14,7 +14,7 @@ import Modal from "@/components/ui/Modal.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
-import { privilegedFallback, portsElevated } from "@/lib/elevation";
+import { privilegedFallback, portsElevated, portsNeedElevation } from "@/lib/elevation";
 import {
   elevate,
   elevateAll,
@@ -46,7 +46,10 @@ const platform = ref<string>("");
 // Cleared once the CA actually reads not-trusted again - see the watcher below.
 const systemTrustRemains = ref(false);
 const canElevate = computed(
-  () => platform.value === "linux" || platform.value === "macos",
+  () =>
+    platform.value === "linux" ||
+    platform.value === "macos" ||
+    platform.value === "windows",
 );
 
 // ── tri-state OS privileges ──
@@ -82,6 +85,7 @@ const envItems = computed<EnvItem[]>(() => {
   const r = report.value;
   if (!r) return [];
   const mac = platform.value === "macos";
+  const win = platform.value === "windows";
   return [
     {
       key: "trust",
@@ -119,25 +123,29 @@ const envItems = computed<EnvItem[]>(() => {
       // the fallback ports - it's the correct degraded recovery, so keep it
       // offered there.
       value: r.web_unbound ? false : portsElevated(r),
-      fixable: r.web_unbound ? !mac : !portsElevated(r),
+      fixable: portsNeedElevation(r, mac, win),
       unelevatable: r.port_redirect === true && mac,
       target: "ports",
       yes: r.port_redirect === true && privilegedFallback(r) ? "redirected" : "bound",
       no: r.web_unbound
         ? mac
           ? "not serving - set working ports first"
-          : "not serving - elevate to bind 80/443"
+          : win
+            ? "not serving - another process holds 80/443"
+            : "not serving - elevate to bind 80/443"
         : "fell back to high ports",
       note:
         r.web_unbound && mac
           ? "Yerd couldn't bind its web ports. Set working ports in Settings, then elevate."
-          : undefined,
+          : win && (r.web_unbound || !portsElevated(r))
+            ? "Windows binds 80/443 without elevation, so there's nothing to grant here. Another process (IIS, or the World Wide Web Publishing Service) holds the port - stop it, or set different ports in Settings."
+            : undefined,
     },
   ];
 });
 
 onMounted(() => {
-  hostPlatform().then((p) => (platform.value = p));
+  hostPlatform().then((p) => (platform.value = p.os));
 });
 
 // Once the CA actually reads not-trusted again (e.g. the user removed the
@@ -240,9 +248,20 @@ const UNELEVATE_COPY: Record<ElevateTarget, { title: string; body: string }> = {
     body: "Removes the 80/443 → Yerd redirect. Sites stay reachable on Yerd's high ports until you re-enable it.",
   },
 };
-const unelevateCopy = computed(() =>
-  pendingUnelevate.value ? UNELEVATE_COPY[pendingUnelevate.value] : null,
-);
+const unelevateCopy = computed(() => {
+  const t = pendingUnelevate.value;
+  if (!t) return null;
+  const base = UNELEVATE_COPY[t];
+  // Windows has no system-wide trust: the CA lives only in the CurrentUser
+  // store, so drop the residual system-wide caveat from the untrust body.
+  if (t === "trust" && platform.value === "windows") {
+    return {
+      title: base.title,
+      body: "Removes Yerd's local CA trust from your Windows user certificate store. HTTPS .test sites will show certificate warnings until you trust it again.",
+    };
+  }
+  return base;
+});
 function openUnelevate(target: ElevateTarget): void {
   pendingUnelevate.value = target;
   unelevateOpen.value = true;

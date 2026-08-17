@@ -378,7 +378,6 @@ fn gather_diagnostics(
     let dirs = ActivePaths::new().resolve().ok();
     let show = |p: &std::path::Path| p.display().to_string();
 
-    let socket = dirs.as_ref().map(|d| d.runtime.join("yerd.sock"));
     let cache = dirs.as_ref().map(|d| d.cache.clone());
     let gui_log = cache.as_ref().map(|c| c.join("yerd-gui.log"));
     let daemon_log = cache
@@ -386,14 +385,32 @@ fn gather_diagnostics(
         .and_then(|c| crate::daemon::newest_rolling_log(c));
     let spawn_log = cache.as_ref().map(|c| c.join("yerdd-spawn.log"));
 
+    // Unix: the daemon socket is a filesystem path whose presence is meaningful.
+    // Windows: it is a named pipe, not filesystem-visible, so `socket_exists`
+    // is always false and `socket` shows the derived pipe name.
+    #[cfg(unix)]
+    let (socket_exists, socket) = {
+        let s = dirs.as_ref().map(|d| d.runtime.join("yerd.sock"));
+        (
+            s.as_ref().map(|p| p.exists()).unwrap_or(false),
+            s.as_ref().map(|p| show(p)),
+        )
+    };
+    #[cfg(windows)]
+    let (socket_exists, socket) = (
+        false,
+        dirs.as_ref()
+            .and_then(|d| yerd_platform::daemon_pipe_name(d).ok()),
+    );
+
     let paths = DiagPaths {
         config: dirs.as_ref().map(|d| show(&d.config)),
         data: dirs.as_ref().map(|d| show(&d.data)),
         state: dirs.as_ref().map(|d| show(&d.state)),
         cache: cache.as_ref().map(|c| show(c)),
         runtime: dirs.as_ref().map(|d| show(&d.runtime)),
-        socket_exists: socket.as_ref().map(|s| s.exists()).unwrap_or(false),
-        socket: socket.as_ref().map(|s| show(s)),
+        socket_exists,
+        socket,
         yerdd: crate::daemon::resolve_yerdd().as_ref().map(|p| show(p)),
         gui_log: gui_log.as_ref().map(|p| show(p)),
         daemon_log: daemon_log.as_ref().map(|p| show(p)),

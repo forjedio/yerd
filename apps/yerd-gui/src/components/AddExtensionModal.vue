@@ -7,6 +7,7 @@ import Input from "@/components/ui/Input.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
+import { usePlatform } from "@/composables/usePlatform";
 import { useToast } from "@/composables/useToast";
 import {
   addPhpExtension,
@@ -29,6 +30,11 @@ const emit = defineEmits<{
 }>();
 
 const toast = useToast();
+
+// No `loadPlatform()` call: the always-mounted SideNav loads the platform
+// singleton long before this modal can be opened.
+const { vocab } = usePlatform();
+
 const path = ref("");
 const name = ref("");
 const zend = ref(false);
@@ -49,7 +55,7 @@ watch(
 );
 
 async function browse(): Promise<void> {
-  const picked = await pickExtensionFile();
+  const picked = await pickExtensionFile(vocab.value.extSuffix);
   if (picked === null) return;
   path.value = picked;
   problem.value = null;
@@ -70,7 +76,7 @@ async function add(): Promise<void> {
       zend.value,
       name.value.trim() || undefined,
     );
-    toast.success("Extension registered", "Loaded into the FPM pool and CLI.");
+    toast.success("Extension registered", `Loaded into the ${vocab.value.pool} and CLI.`);
     emit("added", map);
     emit("update:open", false);
   } catch (e) {
@@ -94,7 +100,7 @@ async function add(): Promise<void> {
           <Input
             id="ext-path"
             v-model="path"
-            placeholder="/opt/homebrew/lib/php/pecl/20250925/scrypt.so"
+            :placeholder="vocab.extExample"
             class="flex-1"
           />
           <Button variant="outline" @click="browse">
@@ -110,7 +116,7 @@ async function add(): Promise<void> {
         <Input
           id="ext-name"
           v-model="name"
-          placeholder="defaults to the .so filename"
+          :placeholder="`defaults to the ${vocab.extSuffix} filename`"
           class="mt-1"
         />
       </div>

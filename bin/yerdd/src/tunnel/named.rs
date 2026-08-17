@@ -1,4 +1,4 @@
-//! Named Tunnel (Phase 2) handlers: Cloudflare account login, tunnel
+//! Named-tunnel handlers: Cloudflare account login, tunnel
 //! create/list/route, per-site hostname persistence, and named-tunnel start.
 //!
 //! Account-mutating `cloudflared` subcommands (login/create/route) run as
@@ -141,7 +141,7 @@ async fn run_oneshot(
     binary: &Path,
     args: Vec<OsString>,
 ) -> Result<std::process::Output, String> {
-    let mut cmd = tokio::process::Command::new(binary);
+    let mut cmd = super::cloudflared_command(binary);
     cmd.args(&args)
         .env("HOME", install::tunnel_dir(dirs))
         .env("TUNNEL_ORIGIN_CERT", origincert(dirs))
@@ -184,7 +184,7 @@ pub async fn login_streamed(state: Arc<DaemonState>) -> Response {
             .await;
         let binary = resolved.binary;
         let args = yerd_tunnel::args::login_args(&origincert(&state.dirs));
-        let mut cmd = tokio::process::Command::new(&binary);
+        let mut cmd = super::cloudflared_command(&binary);
         cmd.args(&args)
             .env("HOME", install::tunnel_dir(&state.dirs))
             .env("TUNNEL_ORIGIN_CERT", origincert(&state.dirs))

@@ -108,7 +108,7 @@ async fn run_user_list(
     let Some((boot_dir, boot_name, args)) = user_list_invocation(boot_fs, served_root) else {
         return Err(format!("{}: not a valid file path", boot_fs.display()));
     };
-    let mut cmd = tokio::process::Command::new(php_cli);
+    let mut cmd = crate::spawn::hidden_command(php_cli);
     cmd.args(crate::tools::wp_cli::QUIET_DEPRECATIONS)
         .args(["-d", "display_errors=stderr"])
         .arg(&boot_name)

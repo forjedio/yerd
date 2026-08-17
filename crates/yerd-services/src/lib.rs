@@ -34,10 +34,11 @@ pub use release::{
     resolve_from_listing, Arch, Artifact, Os, LISTING_SCHEMA, SERVICES_BASE_URL,
 };
 pub use service::{
-    DatadirScope, LaunchContext, LaunchPlan, MariaDb, Meilisearch, Multiplicity, MySql, Postgres,
-    ReadinessKind, Redis, Reverb, ServiceDefinition, ServiceKind, ServiceRegistry, SqlEngine,
+    display_name_for_host, server_binary_for_host, DatadirScope, LaunchContext, LaunchPlan,
+    MariaDb, Meilisearch, Multiplicity, MySql, Postgres, ReadinessKind, Redis, Reverb,
+    ServiceDefinition, ServiceKind, ServiceRegistry, SqlEngine,
 };
-pub use version::{discover_installed, ServiceVersion};
+pub use version::{binary_name, discover_installed, host_binary_name, ServiceVersion};
 
 // Compile-time `Send + 'static` guard for the production instantiation.
 const _: () = {

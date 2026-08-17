@@ -1,7 +1,6 @@
 //! OS-elevated invocation of the existing `yerd elevate` CLI.
 //!
-//! Invariants (see the plan's elevation section, grounded in
-//! `bin/yerd/src/elevate.rs`):
+//! Invariants, grounded in `bin/yerd/src/elevate.rs`:
 //!   1. Elevate the CLI, not the GUI - the GUI process never becomes root.
 //!   2. Resolve the trusted `yerd` path as a sibling of our own `current_exe`,
 //!      never from `PATH` or the daemon (anti-forgery, like the CLI does).
@@ -10,8 +9,8 @@
 //!      and owner-checks the CA from `SUDO_UID`.
 //!
 //! Linux uses `pkexec`; macOS uses `osascript … with administrator privileges`.
-//! Windows returns an explanatory error (the frontend gates the in-app "Fix"
-//! to Linux/macOS, so that path is not reached there).
+//! Windows runs `yerd <verb> [target]` unelevated (the CLI's helper raises its
+//! own per-op UAC prompt), so the GUI never pre-elevates on Windows.
 
 use std::path::PathBuf;
 
@@ -81,6 +80,9 @@ fn trusted_yerd() -> Result<PathBuf, GuiError> {
     let dir = exe
         .parent()
         .ok_or_else(|| GuiError::internal("app executable has no parent directory"))?;
+    #[cfg(windows)]
+    let cand = dir.join("yerd.exe");
+    #[cfg(not(windows))]
     let cand = dir.join("yerd");
     if cand.is_file() {
         Ok(cand)
@@ -214,7 +216,34 @@ fn applescript_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+/// Windows: run `yerd <verb> [target]` **unelevated** (no console window). The
+/// CLI's helper raises its own UAC prompt per privileged op, so the GUI must not
+/// pre-elevate. Stderr is captured for the error path.
+///
+/// [`yerd_platform::hidden_command`] keeps the console-subsystem CLI from
+/// flashing a window under the GUI; the helper's UAC dialog is a separate,
+/// deliberately visible prompt.
+#[cfg(windows)]
+fn spawn_elevated(yerd: &std::path::Path, verb: &str, target: &str) -> Result<(), GuiError> {
+    let mut cmd = yerd_platform::hidden_command(yerd);
+    cmd.arg(verb);
+    if !target.is_empty() {
+        cmd.arg(target);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| GuiError::internal(format!("failed to launch yerd {verb}: {e}")))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(GuiError::internal(format!(
+            "yerd {verb} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )))
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn spawn_elevated(_yerd: &std::path::Path, _verb: &str, _target: &str) -> Result<(), GuiError> {
     Err(GuiError::internal(
         "in-app elevation is not supported on this platform; run `yerd elevate` in a terminal",

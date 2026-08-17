@@ -330,7 +330,7 @@ pub async fn set_update_channel(channel: String) -> Result<Response, GuiError> {
 /// relaunches the GUI when it finishes.
 ///
 /// On macOS this needs `/Applications/Yerd.app` to be user-writable (the common
-/// admin case); elevated self-update is a follow-up. On Linux the applier uses
+/// admin case); elevated self-update is not wired up. On Linux the applier uses
 /// `pkexec dpkg -i` (`.deb`) or `pkexec pacman -U` (`.pkg.tar.zst`), which prompt
 /// via the desktop polkit agent. The `kind_str` mapping below must stay in sync
 /// with the `YERD_APPLY_KIND` parser in `bin/yerd/src/apply.rs`.
@@ -348,6 +348,7 @@ pub async fn apply_update(app: tauri::AppHandle, channel: Option<String>) -> Res
         yerd_ipc::StagedArtifact::Deb => "deb",
         yerd_ipc::StagedArtifact::Pacman => "pacman",
         yerd_ipc::StagedArtifact::Rpm => "rpm",
+        yerd_ipc::StagedArtifact::NsisExe => "nsis_exe",
         _ => {
             return Err(GuiError::internal(
                 "unknown staged artifact kind from the daemon",
@@ -388,7 +389,33 @@ fn spawn_applier(yerd: &std::path::Path, path: &str, kind: &str) -> Result<(), G
         .map_err(|e| GuiError::internal(format!("could not launch the updater: {e}")))
 }
 
-#[cfg(not(unix))]
+/// Windows applier launch: detached, hidden, no console. Never sets
+/// `YERD_APPLY_GUI_OWNS_DAEMON` (that is a macOS `SMAppService` concern); the
+/// applier restarts the daemon itself via `yerd-service-ctl`.
+///
+/// `CREATE_NO_WINDOW` gives it a hidden console that still receives shutdown
+/// control events; `CREATE_NEW_PROCESS_GROUP` puts it in a fresh process group
+/// so the exiting GUI's console signals don't reach it.
+#[cfg(windows)]
+fn spawn_applier(yerd: &std::path::Path, path: &str, kind: &str) -> Result<(), GuiError> {
+    use std::os::windows::process::CommandExt as _;
+    use yerd_platform::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
+
+    std::process::Command::new(yerd)
+        .env("YERD_APPLY_UPDATE", "1")
+        .env("YERD_APPLY_PATH", path)
+        .env("YERD_APPLY_KIND", kind)
+        .env("YERD_APPLY_RELAUNCH_GUI", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| GuiError::internal(format!("could not launch the updater: {e}")))
+}
+
+#[cfg(not(any(unix, windows)))]
 fn spawn_applier(_yerd: &std::path::Path, _path: &str, _kind: &str) -> Result<(), GuiError> {
     Err(GuiError::internal(
         "self-update is not supported on this platform",
@@ -779,15 +806,64 @@ pub fn protocol_version() -> u32 {
     yerd_ipc::PROTOCOL_VERSION
 }
 
-/// The host OS string (`"linux"`, `"macos"`, `"windows"`), to gate platform UI.
-#[tauri::command]
-pub fn host_platform() -> &'static str {
-    std::env::consts::OS
+/// Host-appropriate nouns for the supervised PHP web runtime, as the frontend
+/// renders them. Built from [`yerd_core::php_vocab`], which is the single
+/// definition; the GUI holds no table of its own.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhpVocab {
+    /// The supervised web runtime's name, for prose about the daemon itself.
+    pub runtime: &'static str,
+    /// The per-version serving unit, singular.
+    pub pool: &'static str,
+    /// The plural of `pool`, which is not `pool` plus an `s` on Windows.
+    pub pools: &'static str,
+    /// Short form for a table column header or a progress label.
+    pub pool_short: &'static str,
+    /// The host's dynamic-extension file suffix, including the leading dot.
+    pub ext_suffix: &'static str,
+    /// A realistic example extension path, for an input placeholder.
+    pub ext_example: String,
 }
 
-/// Run `yerd elevate <target>` under OS elevation. See the plan's elevation
-/// section: the GUI never elevates itself; it elevates the audited CLI and
-/// threads the real uid through (`pkexec` clears `SUDO_UID`).
+/// The host OS plus the vocabulary that goes with it.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostPlatform {
+    /// `"linux"`, `"macos"` or `"windows"`, to gate platform UI.
+    pub os: &'static str,
+    /// The nouns to render for this host.
+    pub vocab: PhpVocab,
+}
+
+/// The host OS and its PHP vocabulary, to gate platform UI and render
+/// host-appropriate wording.
+#[tauri::command]
+pub fn host_platform() -> HostPlatform {
+    use yerd_core::php_vocab;
+    HostPlatform {
+        os: std::env::consts::OS,
+        vocab: PhpVocab {
+            runtime: php_vocab::RUNTIME,
+            pool: php_vocab::POOL,
+            pools: php_vocab::POOL_PLURAL,
+            pool_short: php_vocab::POOL_SHORT,
+            ext_suffix: php_vocab::EXT_SUFFIX,
+            ext_example: php_vocab::example_ext_path(
+                if cfg!(windows) {
+                    "php_scrypt"
+                } else {
+                    "scrypt"
+                },
+                php_vocab::EXT_SUFFIX,
+            ),
+        },
+    }
+}
+
+/// Run `yerd elevate <target>` under OS elevation. The GUI never elevates
+/// itself; it elevates the audited CLI and threads the real uid through
+/// (`pkexec` clears `SUDO_UID`).
 #[tauri::command]
 pub async fn elevate(target: String) -> Result<(), GuiError> {
     crate::elevate::run("elevate", &target).await

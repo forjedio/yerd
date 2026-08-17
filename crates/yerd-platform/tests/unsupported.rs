@@ -1,7 +1,8 @@
-//! Stub-only test: every trait method returns `Unsupported` on
-//! non-Linux, non-macOS targets (Phase 1: Windows).
+//! Stub-only test: every trait method returns `Unsupported` on targets with no
+//! real OS impl (i.e. not Linux, macOS, or Windows). Windows has a real `Paths`
+//! impl, so it is covered by `windows_smoke.rs` instead.
 
-#![cfg(not(any(target_os = "linux", target_os = "macos")))]
+#![cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

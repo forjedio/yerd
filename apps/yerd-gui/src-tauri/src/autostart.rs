@@ -19,6 +19,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -379,7 +380,11 @@ fn service_registered() -> bool {
     {
         unit_path().map(|p| p.exists()).unwrap_or(false)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    {
+        yerd_service_ctl::autostart_enabled()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         false
     }
@@ -411,6 +416,7 @@ pub fn mark_onboarded() -> Result<(), GuiError> {
 
 // ── command helpers ──────────────────────────────────────────────────────────
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn run_ok(program: &str, args: &[&str]) -> Result<(), GuiError> {
     let out = Command::new(program)
         .args(args)
@@ -572,7 +578,11 @@ pub(crate) fn manager_available() -> bool {
     {
         true
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        true
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         false
     }
@@ -1227,6 +1237,7 @@ pub(crate) struct StartStep {
 }
 
 /// Writing a unit/plist + service-manager start.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const INSTALL_BUDGET: std::time::Duration = std::time::Duration::from_secs(12);
 /// The macOS SMAppService ensure/register step: unregister + register_repairing +
 /// kickstart is the slowest single action (XPC), so it gets the largest slice
@@ -1234,7 +1245,8 @@ const INSTALL_BUDGET: std::time::Duration = std::time::Duration::from_secs(12);
 /// start plan never uses it.
 #[cfg(target_os = "macos")]
 const REGISTER_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
-/// A plain service-manager start/kickstart.
+/// A plain service-manager start/kickstart (Windows: a detached `yerdd serve`).
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const START_BUDGET: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// Map the macOS daemon-registration state to the phase *label* to show. Pure +
@@ -1355,7 +1367,22 @@ pub(crate) fn plan_start(nudge: bool) -> Result<Vec<StartStep>, GuiError> {
             ])
         }
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        let _ = nudge;
+        let yerdd = crate::daemon::resolve_yerdd()
+            .ok_or_else(|| GuiError::internal("yerdd is not installed"))?;
+        Ok(vec![StartStep {
+            phase: StartPhase::Starting,
+            budget: START_BUDGET,
+            run: Box::new(move || {
+                yerd_service_ctl::ServiceCtl::new(yerdd)
+                    .start()
+                    .map_err(|e| GuiError::internal(format!("could not start the daemon: {e}")))
+            }),
+        }])
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = nudge;
         Err(GuiError::internal(
@@ -1366,6 +1393,12 @@ pub(crate) fn plan_start(nudge: bool) -> Result<Vec<StartStep>, GuiError> {
 
 /// Stop the daemon via the service manager (best-effort; the caller adds a
 /// universal SIGTERM-of-pid fallback for daemons not under the service).
+///
+/// The Windows arm passes a path it does not need: `ServiceCtl::stop` reaps by
+/// image name (`taskkill /IM yerdd.exe`) and never reads `yerdd_path`, which
+/// only the start path uses. So the stop must not be skipped when the sidecar
+/// cannot be located - that is exactly the broken-install case where it is the
+/// only mechanism that still works.
 pub(crate) fn daemon_stop() {
     #[cfg(target_os = "linux")]
     {
@@ -1376,6 +1409,11 @@ pub(crate) fn daemon_stop() {
     #[cfg(target_os = "macos")]
     {
         let _ = run_ok("launchctl", &["kill", "SIGTERM", &service_target()]);
+    }
+    #[cfg(windows)]
+    {
+        yerd_service_ctl::ServiceCtl::new(crate::daemon::resolve_yerdd().unwrap_or_default())
+            .stop();
     }
 }
 
@@ -1431,7 +1469,20 @@ fn daemon_set_login(on: bool, nudge: bool) -> Result<(), GuiError> {
             )
         }
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        let _ = nudge;
+        if on {
+            let yerdd = crate::daemon::resolve_yerdd()
+                .ok_or_else(|| GuiError::internal("yerdd is not installed"))?;
+            yerd_service_ctl::enable_at_login(&yerdd)
+                .map_err(|e| GuiError::internal(format!("could not enable daemon autostart: {e}")))
+        } else {
+            yerd_service_ctl::disable_at_login()
+                .map_err(|e| GuiError::internal(format!("could not disable daemon autostart: {e}")))
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = (on, nudge);
         Err(GuiError::internal(
@@ -1477,7 +1528,15 @@ fn daemon_enabled(settings: &GuiSettings, supported: bool) -> bool {
         let legacy = plist_path().map(|p| p.exists()).unwrap_or(false);
         return smapp_registered() || legacy;
     }
-    supported && settings.daemon_autostart
+    #[cfg(windows)]
+    {
+        let _ = settings;
+        supported && yerd_service_ctl::autostart_enabled()
+    }
+    #[cfg(not(windows))]
+    {
+        supported && settings.daemon_autostart
+    }
 }
 
 /// macOS SMAppService `requiresApproval` - registered but pending the user's

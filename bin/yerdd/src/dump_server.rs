@@ -681,7 +681,7 @@ mod tests {
 
     #[test]
     fn incoming_frame_accepts_canonical_wire_shape() {
-        // The cross-repo contract with yerd-php-ext (architecture.md §2.2).
+        // The cross-repo wire contract with yerd-php-ext.
         let f: IncomingFrame = serde_json::from_str(
             r#"{"category":"query","ts":1718360452123,"site":"blog.test","request_id":"abc","payload":{"sql":"select 1"}}"#,
         )
@@ -700,7 +700,7 @@ mod tests {
 
     #[test]
     fn state_file_byte_shape() {
-        // The contract the extension reads each request (architecture.md §2.3).
+        // The contract the extension reads each request.
         let body = StateFile {
             enabled: true,
             port: 2304,

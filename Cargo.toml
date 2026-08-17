@@ -41,6 +41,26 @@ hickory-server     = { version = "=0.24.4", default-features = false }
 hickory-client     = "=0.24.4"
 async-trait        = "0.1"
 nix                = { version = "0.29", default-features = false, features = ["process", "signal"] }
+# Safe wrapper over Windows Job Objects (no `unsafe` in our code); used only by
+# yerd-supervise on Windows to kill a whole process tree on drop/kill. Transitive
+# deps (`windows 0.61`, `thiserror 1`) already resolve in Cargo.lock.
+win32job            = "2"
+# Safe CurrentUser/LocalMachine cert-store access for the Windows `TrustStore`
+# (install/probe/uninstall the Yerd CA, enumerate host roots for the PHP CA
+# bundle). Cert-store modules only, NEVER its TLS stack, so the rustls-only rule
+# and yerd-platform's no_runtime_deps guard stay intact. Sole transitive dep
+# (`windows-sys 0.61`) already resolves in Cargo.lock. No `unsafe` in our code.
+schannel            = "0.1"
+# HKCU/HKLM registry access on Windows (yerd-platform and yerd-service-ctl).
+# Read-only for the NRPT probe (the DnsPolicyConfig key backing
+# ResolverInstaller::is_installed and the helper's `.test` rule-GUID discovery).
+# Read+write for HKCU only, never a write outside the user's own hive (no
+# privilege boundary, same trust level as editing ~/.zshrc): yerd-platform's
+# user_path / set_user_path manage the CLI's PATH entries under HKCU\Environment,
+# and yerd-service-ctl manages the daemon's HKCU\...\Run autostart entry plus its
+# StartupApproved override. Already resolved in Cargo.lock via the tauri chain
+# (0.55.0); unsafe lives inside the crate, none in ours (win32job/schannel precedent).
+winreg              = "0.55"
 reqwest            = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 hyper              = { version = "1", default-features = false, features = ["http1", "server", "client"] }
 hyper-util         = { version = "0.1", default-features = false, features = ["http1", "server", "client", "tokio"] }
@@ -58,10 +78,23 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["s
 tracing-appender   = { version = "0.2", default-features = false }
 http               = "1"
 interprocess       = { version = "2", features = ["tokio"] }
+# Windows-only: wide-string (UTF-16) helper for the named-pipe SDDL security
+# descriptor. Already a transitive dep of `interprocess` (Cargo.lock at 1.x);
+# reused directly, not bumped.
+widestring         = "1"
 fs4                = { version = "0.13", default-features = false, features = ["sync"] }
 # Pure-Rust MIME parser for the mail-capture viewer. `full_encoding` pulls
 # `encoding_rs` for non-UTF-8 charsets; the `serde` feature is deliberately off.
 mail-parser        = { version = "0.11", default-features = false, features = ["full_encoding"] }
+# Windows-only: UAC-elevated one-shot launch of yerd-helper (ShellExecuteExW +
+# "runas" verb). EXACT-pinned: a bump MUST re-audit src/impl_windows.rs, whose
+# arg-quoting doubles backslashes inside quoted args - which is exactly why every
+# helper argv element must stay free of space/tab/quote/backslash (enforced by a
+# guard unit test in bin/yerd). A declined prompt or launch failure surfaces as
+# exit code -1, not Err. unsafe lives inside the crate; none in ours. Brings
+# `which 4.3` (unconditional transitive dep, accepted) and windows-sys 0.48
+# (already resolves in Cargo.lock).
+runas              = "=1.2.0"
 
 [workspace.lints.rust]
 unsafe_code  = "forbid"

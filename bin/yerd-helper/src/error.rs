@@ -25,9 +25,10 @@ pub enum HelperError {
     #[error("argv data: {0}")]
     ArgvData(#[from] ArgvParseError),
 
-    /// Effective UID is not 0. Daemon should retry under elevation.
-    /// Surfaces as `EX_NOPERM` (77).
-    #[error("not running privileged (effective uid != 0)")]
+    /// Not running privileged (Unix: effective UID != 0; Windows: token is not
+    /// elevated). Caller should retry under elevation. Surfaces as `EX_NOPERM`
+    /// (77).
+    #[error("not running privileged (elevated token / effective uid required)")]
     NotPrivileged,
 
     /// This OS does not implement the requested operation. Surfaces as
@@ -47,7 +48,9 @@ pub enum HelperError {
     },
 
     /// The PEM body's SHA-256 did not match the fingerprint argv said
-    /// it would. Surfaces as `EX_DATAERR` (65).
+    /// it would. Surfaces as `EX_DATAERR` (65). Unused on Windows (CA trust is
+    /// unelevated there, so the helper runs no PEM-consuming op).
+    #[cfg_attr(windows, allow(dead_code))]
     #[error("fingerprint mismatch: argv says {expected}, PEM hashes to {actual}")]
     FingerprintMismatch {
         /// Argv-claimed fingerprint, as 64-char lowercase hex.
@@ -56,7 +59,10 @@ pub enum HelperError {
         actual: String,
     },
 
-    /// I/O error against a known path. Surfaces as `EX_IOERR` (74).
+    /// I/O error against a known path. Surfaces as `EX_IOERR` (74). Unused on
+    /// Windows (the NRPT ops shell out and report `Command` errors; the result
+    /// file is best-effort with its own `io::Error`).
+    #[cfg_attr(windows, allow(dead_code))]
     #[error("I/O at {path}: {source}", path = path.display())]
     Io {
         /// The path the I/O was directed at.
@@ -106,12 +112,15 @@ pub enum ValidationReason {
     BadFingerprintHex,
     /// Path must be absolute (we never canonicalise; relative paths
     /// resolve unpredictably under elevation).
+    #[cfg_attr(windows, allow(dead_code))]
     #[error("path must be absolute: {}", .0.display())]
     PathNotAbsolute(PathBuf),
     /// Path does not exist.
+    #[cfg_attr(windows, allow(dead_code))]
     #[error("path does not exist: {}", .0.display())]
     PathMissing(PathBuf),
     /// Path exists but is not a regular file.
+    #[cfg_attr(windows, allow(dead_code))]
     #[error("path is not a regular file: {}", .0.display())]
     PathNotFile(PathBuf),
     /// `setcap --binary` basename was not `yerdd`. Linux-only (`setcap` is
@@ -123,18 +132,21 @@ pub enum ValidationReason {
     #[error("tld invalid: {0}")]
     TldInvalid(String),
     /// PEM had ≠ 1 CERTIFICATE blocks.
+    #[cfg_attr(windows, allow(dead_code))]
     #[error("expected exactly 1 CERTIFICATE block, got {count}")]
     ExpectedSingleCertPem {
         /// Number of CERTIFICATE blocks found.
         count: usize,
     },
     /// PEM could not be parsed.
+    #[cfg_attr(windows, allow(dead_code))]
     #[error("PEM could not be parsed")]
     PemParseFailed,
     /// A cert matched the fingerprint to uninstall, but it is not yerd's CA
     /// (its Subject CN is not `yerd_core::CA_COMMON_NAME`). The helper refuses
-    /// to remove a certificate it can't confirm yerd installed. Not gated:
-    /// both the Linux and macOS uninstall paths can raise it.
+    /// to remove a certificate it can't confirm yerd installed. Constructed on
+    /// the Unix uninstall paths only; unused on Windows (CA trust is unelevated).
+    #[cfg_attr(windows, allow(dead_code))]
     #[error("certificate is not yerd's CA (subject CN {found_cn:?}); refusing to remove it")]
     CertNotYerdOwned {
         /// The Subject CN actually found (if any), for diagnostics.
@@ -156,6 +168,13 @@ pub enum ValidationReason {
     #[cfg(target_os = "macos")]
     #[error("--lan-ip must be a routable address, not loopback/unspecified")]
     LanIpInvalid,
+    /// The Windows `install-resolver --addr` was not loopback IPv4 on port 53.
+    /// An NRPT rule carries no port and Yerd's Windows resolver listens only on
+    /// `127.0.0.1:53`, so any other address would silently blackhole `.test`.
+    /// Windows-only (the NRPT resolver op is `#[cfg(windows)]`).
+    #[cfg(windows)]
+    #[error("--addr must be loopback IPv4 on port 53 (Windows NRPT targets 127.0.0.1:53)")]
+    ResolverAddrUnsupported,
 }
 
 /// Specific failure modes for [`HelperError::Command`].

@@ -24,9 +24,9 @@ use yerd_ipc::{
 };
 use yerd_platform::{ActivePortBinder, PlatformDirs, PortBinder};
 use yerd_services::{
-    available_versions, candidate_ports, current_os_arch, listing_url, version as svc_version,
-    Multiplicity, ServiceDefinition, ServiceError, ServiceManager, ServiceProbes, ServiceRegistry,
-    ServiceRunState as MgrRunState, ServiceVersion,
+    available_versions, candidate_ports, current_os_arch, display_name_for_host, listing_url,
+    version as svc_version, Multiplicity, ServiceDefinition, ServiceError, ServiceManager,
+    ServiceProbes, ServiceRegistry, ServiceRunState as MgrRunState, ServiceVersion,
 };
 use yerd_supervise::{Downloader, SystemClock, TokioProcessSpawner};
 
@@ -171,7 +171,7 @@ pub async fn addable_service_types(state: &DaemonState, dl: &dyn Downloader) -> 
                 pick_free_port(d.default_port(), &reserved).unwrap_or(d.default_port());
             AddableServiceType {
                 type_id: d.id().to_string(),
-                display_name: d.display_name().to_string(),
+                display_name: display_name_for_host(d.as_ref()).to_string(),
                 multiplicity: match d.multiplicity() {
                     Multiplicity::Single => "single".to_string(),
                     Multiplicity::PerSite => "per_site".to_string(),
@@ -207,8 +207,14 @@ pub async fn install_service(
         Ok(v) => v,
         Err(e) => return service_error_response(&e),
     };
-    if let Err(e) =
-        service_install::install(def.id(), def.server_binary(), &version, &state.dirs, dl).await
+    if let Err(e) = service_install::install(
+        def.id(),
+        yerd_services::server_binary_for_host(&*def),
+        &version,
+        &state.dirs,
+        dl,
+    )
+    .await
     {
         return service_error_response(&e);
     }
@@ -307,8 +313,14 @@ pub async fn change_service_version(
         .filter(|v| v != &new_version)
         .collect();
 
-    if let Err(e) =
-        service_install::install(def.id(), def.server_binary(), &new_version, &state.dirs, dl).await
+    if let Err(e) = service_install::install(
+        def.id(),
+        yerd_services::server_binary_for_host(&*def),
+        &new_version,
+        &state.dirs,
+        dl,
+    )
+    .await
     {
         return service_error_response(&e);
     }
@@ -349,7 +361,7 @@ pub async fn change_service_version(
     for old in superseded {
         if let Err(e) = service_install::uninstall(
             def.id(),
-            def.server_binary(),
+            yerd_services::server_binary_for_host(&*def),
             def.datadir_scope(),
             &old,
             &state.dirs,
@@ -380,7 +392,7 @@ pub async fn uninstall_service(
     let _ = state.service_manager.lock().await.stop(def.id()).await;
     match service_install::uninstall(
         def.id(),
-        def.server_binary(),
+        yerd_services::server_binary_for_host(&*def),
         def.datadir_scope(),
         &version,
         &state.dirs,
@@ -490,8 +502,14 @@ pub async fn add_service(
             Ok(v) => v,
             Err(e) => return service_error_response(&e),
         };
-        if let Err(e) =
-            service_install::install(def.id(), def.server_binary(), &v, &state.dirs, dl).await
+        if let Err(e) = service_install::install(
+            def.id(),
+            yerd_services::server_binary_for_host(&*def),
+            &v,
+            &state.dirs,
+            dl,
+        )
+        .await
         {
             return service_error_response(&e);
         }
@@ -1030,7 +1048,7 @@ fn build_status(
     };
     ServiceStatus {
         service: wire.to_string(),
-        display_name: def.display_name().to_string(),
+        display_name: display_name_for_host(def.as_ref()).to_string(),
         installed_versions: versions.iter().map(ToString::to_string).collect(),
         selected_version: inst.and_then(|i| i.version.clone()),
         state: run_state,
@@ -1246,6 +1264,7 @@ fn installed_versions(type_id: &str, dirs: &PlatformDirs) -> Vec<ServiceVersion>
 
 /// Resolve the version to run: the configured one if installed, else the latest
 /// installed; error if nothing is installed.
+#[cfg_attr(windows, allow(clippy::result_large_err))]
 pub(crate) fn resolve_version(
     def: &Arc<dyn ServiceDefinition>,
     configured: Option<&str>,
@@ -1263,7 +1282,7 @@ pub(crate) fn resolve_version(
         code: ErrorCode::NotFound,
         message: format!(
             "no {} version installed - run `yerd service install {}` first",
-            def.display_name(),
+            display_name_for_host(def.as_ref()),
             def.id()
         ),
     })
@@ -1341,7 +1360,7 @@ fn no_override_support(def: &Arc<dyn ServiceDefinition>) -> Response {
         ErrorCode::InvalidPath,
         &format!(
             "{} does not support configuration overrides",
-            def.display_name()
+            display_name_for_host(def.as_ref())
         ),
     )
 }
@@ -1457,7 +1476,8 @@ mod tests {
         let ver: ServiceVersion = version.parse().unwrap();
         let bin = svc_version::install_dir(dirs, def.id(), &ver).join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join(def.server_binary().unwrap()), b"#!fake").unwrap();
+        let server = yerd_services::server_binary_for_host(&*def).unwrap();
+        std::fs::write(bin.join(yerd_services::host_binary_name(server)), b"#!fake").unwrap();
     }
 
     /// Lay down a *runnable* server binary that fails the way an engine fails on
@@ -1486,6 +1506,7 @@ mod tests {
 
     /// Grab a currently-free loopback port so `ensure`'s port pre-flight passes
     /// on a machine that may already run the real service.
+    #[cfg(unix)]
     fn free_port() -> u16 {
         let l = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         l.local_addr().unwrap().port()

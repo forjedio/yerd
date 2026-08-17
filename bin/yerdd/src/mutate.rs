@@ -1222,6 +1222,10 @@ mod tests {
         assert_eq!(cfg.proxy_rules.parked.get("/srv/app").unwrap().len(), 1);
     }
 
+    /// `is_under_root` matches on the native `MAIN_SEPARATOR`, so this fixture's
+    /// Unix-style `/srv/app` keys only nest under `/srv` on a Unix host. Real
+    /// Windows configs use `\` docroots, where the same logic holds. Unix-scoped.
+    #[cfg(unix)]
     #[test]
     fn unpark_drops_proxy_rules_under_root() {
         let mut cfg = Config::default();
@@ -1426,6 +1430,10 @@ mod tests {
         assert_eq!(cfg.route_rules.parked.get("/srv/app").unwrap().len(), 1);
     }
 
+    /// Unix-scoped for the same reason as [`unpark_drops_proxy_rules_under_root`]:
+    /// `is_under_root` matches on the native `MAIN_SEPARATOR`, so this fixture's
+    /// Unix-style `/srv/app` key only nests under `/srv` on a Unix host.
+    #[cfg(unix)]
     #[test]
     fn unpark_drops_route_rules_under_root() {
         let mut cfg = Config::default();

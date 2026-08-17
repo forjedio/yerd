@@ -31,7 +31,7 @@ function guessPlatform(): string {
 const platform = ref(guessPlatform());
 onMounted(() => {
   hostPlatform()
-    .then((p) => (platform.value = p))
+    .then((p) => (platform.value = p.os))
     .catch(() => {});
 });
 

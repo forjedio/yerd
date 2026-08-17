@@ -36,6 +36,11 @@ tempfile       = { workspace = true }
 # here — the workspace already enables it for other crates anyway).
 nix            = { workspace = true, features = ["user"] }
 
+[target.'cfg(windows)'.dependencies]
+# UAC-elevated launch of yerd-helper for `yerd elevate resolver` and the full
+# uninstall's NRPT teardown. See the root Cargo.toml comment for the pin/audit.
+runas          = { workspace = true }
+
 [dev-dependencies]
 yerdd          = { path = "../yerdd" }
 minisign       = { workspace = true }

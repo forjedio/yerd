@@ -15,8 +15,12 @@ tokio          = { workspace = true, features = ["process", "net", "rt", "time",
 [target.'cfg(unix)'.dependencies]
 nix            = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+win32job       = { workspace = true }
+
 [dev-dependencies]
 tokio          = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+tempfile       = { workspace = true }
 
 [lints]
 workspace = true

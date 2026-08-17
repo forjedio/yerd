@@ -5,8 +5,6 @@
 //! when `XDG_RUNTIME_DIR` is unset. Privileged ops return
 //! `NeedsHelper`; probes are read-only.
 
-#![allow(clippy::similar_names)]
-
 use std::fs;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
@@ -28,14 +26,13 @@ use crate::pure::ide_spec::{
 use crate::pure::opener_spec::linux_default_openers;
 use crate::pure::terminal_spec::{working_dir_flags, TERMINAL_SPECS};
 use crate::pure::{
-    networkmanager_dnsmasq, pem_match, port_plan, proc_metrics, resolved_drop_in, system_roots,
+    networkmanager_dnsmasq, pem_match, proc_metrics, resolved_drop_in, system_roots,
 };
 use crate::resolver::ResolverInstaller;
 use crate::terminal::TerminalLauncher;
 use crate::trust_store::{BrowserCaTrust, CaFingerprint, NssOutcome, TrustStore};
 use crate::{
-    BindPairErrorReason, IdeErrorReason, PlatformError, ResolverErrorReason, TerminalErrorReason,
-    TrustStoreErrorReason,
+    IdeErrorReason, PlatformError, ResolverErrorReason, TerminalErrorReason, TrustStoreErrorReason,
 };
 
 /// Linux terminal launcher.
@@ -685,12 +682,8 @@ impl LinuxPortBinder {
     }
 }
 
-fn bind_at(ip: Ipv4Addr, port: u16) -> std::io::Result<TcpListener> {
-    TcpListener::bind(SocketAddr::from((ip, port)))
-}
-
 fn bind_loopback(port: u16) -> std::io::Result<TcpListener> {
-    bind_at(Ipv4Addr::LOCALHOST, port)
+    super::port_bind::bind_at(Ipv4Addr::LOCALHOST, port)
 }
 
 impl PortBinder for LinuxPortBinder {
@@ -706,102 +699,7 @@ impl PortBinder for LinuxPortBinder {
         desired: (u16, u16),
         fallback: (u16, u16),
     ) -> Result<PortPair, PlatformError> {
-        bind_pair_impl(lan, desired, fallback)
-    }
-}
-
-pub(crate) fn bind_pair_impl(
-    lan: bool,
-    desired: (u16, u16),
-    fallback: (u16, u16),
-) -> Result<PortPair, PlatformError> {
-    let ip = if lan {
-        Ipv4Addr::UNSPECIFIED
-    } else {
-        Ipv4Addr::LOCALHOST
-    };
-    let http_attempt = bind_at(ip, desired.0);
-    let https_attempt = bind_at(ip, desired.1);
-
-    let http_outcome = http_attempt
-        .as_ref()
-        .map(|_| ())
-        .map_err(std::io::Error::kind);
-    let https_outcome = https_attempt
-        .as_ref()
-        .map(|_| ())
-        .map_err(std::io::Error::kind);
-
-    match port_plan::classify_desired(http_outcome, https_outcome) {
-        port_plan::DesiredPairAction::KeepDesired => Ok(PortPair {
-            http: BoundPort {
-                listener: http_attempt.map_err(|e| PlatformError::Bind {
-                    port: desired.0,
-                    source: e,
-                })?,
-            },
-            https: BoundPort {
-                listener: https_attempt.map_err(|e| PlatformError::Bind {
-                    port: desired.1,
-                    source: e,
-                })?,
-            },
-        }),
-        port_plan::DesiredPairAction::HardFail(_) => {
-            if let Err(e) = http_attempt {
-                return Err(PlatformError::Bind {
-                    port: desired.0,
-                    source: e,
-                });
-            }
-            if let Err(e) = https_attempt {
-                return Err(PlatformError::Bind {
-                    port: desired.1,
-                    source: e,
-                });
-            }
-            Err(PlatformError::Bind {
-                port: desired.0,
-                source: std::io::Error::from(std::io::ErrorKind::Other),
-            })
-        }
-        port_plan::DesiredPairAction::UseFallback => {
-            let desired_http_kind = http_outcome.err().unwrap_or(std::io::ErrorKind::Other);
-            let desired_https_kind = https_outcome.err().unwrap_or(std::io::ErrorKind::Other);
-            drop(http_attempt);
-            drop(https_attempt);
-
-            let fb_http = bind_at(ip, fallback.0);
-            let fb_https = bind_at(ip, fallback.1);
-
-            let fb_http_outcome = fb_http.as_ref().map(|_| ()).map_err(std::io::Error::kind);
-            let fb_https_outcome = fb_https.as_ref().map(|_| ()).map_err(std::io::Error::kind);
-
-            match port_plan::classify_fallback(fb_http_outcome, fb_https_outcome) {
-                port_plan::FallbackPairAction::KeepFallback => Ok(PortPair {
-                    http: BoundPort {
-                        listener: fb_http.map_err(|e| PlatformError::Bind {
-                            port: fallback.0,
-                            source: e,
-                        })?,
-                    },
-                    https: BoundPort {
-                        listener: fb_https.map_err(|e| PlatformError::Bind {
-                            port: fallback.1,
-                            source: e,
-                        })?,
-                    },
-                }),
-                port_plan::FallbackPairAction::BothFailed => Err(PlatformError::BindPair {
-                    reason: BindPairErrorReason::BothPairsFailed {
-                        desired_http: desired_http_kind,
-                        desired_https: desired_https_kind,
-                        fallback_http: fb_http_outcome.err().unwrap_or(std::io::ErrorKind::Other),
-                        fallback_https: fb_https_outcome.err().unwrap_or(std::io::ErrorKind::Other),
-                    },
-                }),
-            }
-        }
+        super::port_bind::bind_pair_impl(false, lan, desired, fallback)
     }
 }
 
@@ -1027,36 +925,5 @@ mod tests {
         assert!(directories.contains(&data_home.join("applications")));
         assert!(directories.contains(&home.join(".local/share/applications")));
         assert!(directories.contains(&system_data.join("applications")));
-    }
-
-    #[test]
-    #[allow(clippy::unwrap_used)]
-    fn bind_pair_impl_lan_binds_wildcard() {
-        let pair = bind_pair_impl(true, (0, 0), (0, 0)).unwrap();
-        assert_eq!(
-            pair.http.listener.local_addr().unwrap().ip(),
-            std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED)
-        );
-        assert_eq!(
-            pair.https.listener.local_addr().unwrap().ip(),
-            std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED)
-        );
-    }
-
-    #[test]
-    #[allow(clippy::unwrap_used)]
-    fn bind_pair_impl_lan_fallback_still_binds_wildcard() {
-        let occupied = bind_at(Ipv4Addr::UNSPECIFIED, 0).unwrap();
-        let taken = occupied.local_addr().unwrap().port();
-        let pair = bind_pair_impl(true, (taken, 0), (0, 0)).unwrap();
-        assert_eq!(
-            pair.http.listener.local_addr().unwrap().ip(),
-            std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED)
-        );
-        assert_eq!(
-            pair.https.listener.local_addr().unwrap().ip(),
-            std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED)
-        );
-        assert_ne!(pair.http.port().unwrap(), taken);
     }
 }

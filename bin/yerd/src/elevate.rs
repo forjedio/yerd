@@ -8,17 +8,23 @@
 //! `current_exe` sibling - never from the daemon - and (b) owner-checks the CA
 //! path before trusting it. The daemon itself is never restarted as root.
 
-#[cfg(not(unix))]
+/// Non-Unix, non-Windows stub: privileged setup is unavailable on other OSes.
+/// Kept `async` to match the Unix entry point the CLI dispatch awaits.
+#[cfg(not(any(unix, windows)))]
+#[allow(clippy::unused_async)]
 pub async fn run_elevate(
     _target: Option<crate::cli::ElevateTarget>,
     _undo: bool,
 ) -> std::process::ExitCode {
-    eprintln!("yerd: elevate is only supported on Unix (macOS/Linux)");
+    eprintln!("yerd: elevate is only supported on Unix (macOS/Linux) and Windows");
     std::process::ExitCode::from(78)
 }
 
 #[cfg(unix)]
 pub use unix_impl::run_elevate;
+
+#[cfg(windows)]
+pub use windows_impl::run_elevate;
 
 // Small Unix helpers reused by `crate::uninstall` (root detection, the invoking
 // user's uid under sudo, sibling-binary resolution, and the audited helper
@@ -26,6 +32,12 @@ pub use unix_impl::run_elevate;
 // without a running daemon.
 #[cfg(unix)]
 pub(crate) use unix_impl::{is_root, sibling_binaries, spawn_helper, sudo_uid};
+
+// Reused by `crate::uninstall` on Windows: the sibling-helper locator and the
+// blocking UAC-elevated one-shot spawn, so the (sync) full-uninstall flow can
+// tear down the NRPT rule.
+#[cfg(windows)]
+pub(crate) use windows_impl::{sibling_binaries, spawn_helper_elevated_blocking};
 
 #[cfg(unix)]
 mod unix_impl {
@@ -748,6 +760,616 @@ mod unix_impl {
                 targets(Some(ElevateTarget::Resolver)),
                 vec![ElevateTarget::Resolver]
             );
+        }
+    }
+}
+
+/// Windows `yerd elevate` / `yerd unelevate`.
+///
+/// `Trust`: `CurrentUser`-Root trust needs no admin/UAC, so the CLI (an
+/// interactive process) performs the store mutation directly - no helper. The
+/// daemon must never do this: the Root store mutation pops an OS confirmation
+/// dialog needing an interactive desktop, which a session-0 service does not
+/// have.
+///
+/// `Resolver`: the `.test` NRPT wildcard rule. Writing NRPT requires an elevated
+/// token, so this arm launches `yerd-helper.exe` **once, elevated via UAC**
+/// (`runas`), passing the frozen resolver argv plus a transport-only
+/// `--result-token`. The helper prompts UAC itself, so `yerd elevate` is run
+/// unelevated.
+///
+/// `Ports`/`Lan`: not applicable (Windows direct-binds 80/443); those targets
+/// print a note and skip.
+#[cfg(windows)]
+mod windows_impl {
+    use std::ffi::OsString;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::path::{Path, PathBuf};
+    use std::process::ExitCode;
+
+    use yerd_ipc::{Request, Response};
+    use yerd_platform::pure::helper_result;
+    use yerd_platform::{ActiveTrustStore, CaFingerprint, HelperInvocation, TrustStore};
+
+    use crate::cli::ElevateTarget;
+    use crate::transport;
+
+    /// Expand an optional target into the concrete list (None = all, in
+    /// trust → resolver → ports order, mirroring the Unix shape). `Ports` and
+    /// `Lan` are skips on Windows (see [`run_one`]).
+    fn targets(target: Option<ElevateTarget>) -> Vec<ElevateTarget> {
+        match target {
+            Some(t) => vec![t],
+            None => vec![
+                ElevateTarget::Trust,
+                ElevateTarget::Resolver,
+                ElevateTarget::Ports,
+            ],
+        }
+    }
+
+    /// Entry point. `Trust` needs no admin; `Resolver` raises UAC via the helper.
+    pub async fn run_elevate(target: Option<ElevateTarget>, undo: bool) -> ExitCode {
+        let mut any_failed = false;
+        for t in targets(target) {
+            if !run_one(t, undo).await {
+                any_failed = true;
+            }
+        }
+        if any_failed {
+            ExitCode::from(1)
+        } else {
+            ExitCode::SUCCESS
+        }
+    }
+
+    /// Handle one target; returns whether it succeeded (a deliberate skip counts
+    /// as success).
+    async fn run_one(target: ElevateTarget, undo: bool) -> bool {
+        match target {
+            ElevateTarget::Trust => run_trust(undo).await,
+            ElevateTarget::Resolver => run_resolver(undo).await,
+            ElevateTarget::Ports | ElevateTarget::Lan => {
+                println!(
+                    "==> {target:?}: not needed on Windows (Yerd binds 80/443 directly); skipping."
+                );
+                true
+            }
+        }
+    }
+
+    /// Read-only resolver facts from the running daemon.
+    struct ResolverFacts {
+        dns_addr: SocketAddr,
+        dns_unbound: Option<u16>,
+        dns_health_error: Option<String>,
+        tld: String,
+    }
+
+    /// Fetch the resolver facts: `DaemonInfo` for `dns_addr`/`tld`, then `Status`
+    /// for the DNS-bound health (scoped so it only blocks a resolver install).
+    async fn fetch_resolver_facts() -> Result<ResolverFacts, String> {
+        match transport::exchange(&Request::DaemonInfo).await {
+            Ok(Response::Info { dns_addr, tld, .. }) => {
+                let (dns_unbound, dns_health_error) =
+                    match transport::exchange(&Request::Status).await {
+                        Ok(Response::Status { report }) => (report.dns_unbound, None),
+                        Ok(other) => (None, Some(format!("unexpected Status response: {other:?}"))),
+                        Err(e) => (None, Some(e.to_string())),
+                    };
+                Ok(ResolverFacts {
+                    dns_addr,
+                    dns_unbound,
+                    dns_health_error,
+                    tld,
+                })
+            }
+            Ok(other) => Err(format!("unexpected response to DaemonInfo: {other:?}")),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Drive the `.test` NRPT rule install/remove through the elevated helper.
+    async fn run_resolver(undo: bool) -> bool {
+        let facts = match fetch_resolver_facts().await {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("yerd: {e}");
+                return false;
+            }
+        };
+        let inv = match build_resolver_invocation(&facts, undo) {
+            Ok(inv) => inv,
+            Err(msg) => {
+                eprintln!("yerd: {msg}");
+                return false;
+            }
+        };
+        let helper = match sibling_binaries() {
+            Ok((helper, _yerdd)) => helper,
+            Err(e) => {
+                eprintln!("yerd: {e}");
+                return false;
+            }
+        };
+
+        println!("==> {}", describe_resolver(&facts, undo));
+        if !yerd_platform::is_token_elevated() {
+            println!(
+                "    Windows will ask for administrator approval (UAC); approve it to continue."
+            );
+        }
+
+        let token = generate_result_token();
+        let mut argv = inv.to_argv();
+        argv.push(OsString::from("--result-token"));
+        argv.push(OsString::from(&token));
+
+        let code = spawn_helper_elevated(helper, argv).await;
+        let detail = take_result_detail(&token);
+        match classify_helper_exit(code) {
+            Ok(()) => {
+                if undo {
+                    println!("    ok - the .{} NRPT rule has been removed.", facts.tld);
+                } else {
+                    println!(
+                        "    ok - any https://<name>.{} now resolves, with no per-site setup.",
+                        facts.tld
+                    );
+                }
+                true
+            }
+            Err(msg) => {
+                match detail {
+                    Some(d) => eprintln!("    failed: {msg} ({d})"),
+                    None => eprintln!("    failed: {msg}"),
+                }
+                false
+            }
+        }
+    }
+
+    /// Pure: build the resolver `HelperInvocation`. Install runs the preflight
+    /// (DNS health + port-53) first; uninstall needs only the tld.
+    fn build_resolver_invocation(
+        facts: &ResolverFacts,
+        undo: bool,
+    ) -> Result<HelperInvocation, String> {
+        if undo {
+            return Ok(HelperInvocation::UninstallResolver {
+                tld: facts.tld.clone(),
+            });
+        }
+        let addr = resolver_preflight(
+            facts.dns_unbound,
+            facts.dns_health_error.as_deref(),
+            facts.dns_addr,
+        )?;
+        Ok(HelperInvocation::InstallResolver {
+            tld: facts.tld.clone(),
+            addr,
+        })
+    }
+
+    /// Pure preflight for a resolver install. Refuses an unhealthy or unbound
+    /// DNS responder and a non-53 / non-loopback DNS address (Windows NRPT can
+    /// only target `127.0.0.1:53`), normalising an unspecified `0.0.0.0` to
+    /// loopback. Returns the concrete `127.0.0.1:53` the rule will carry.
+    fn resolver_preflight(
+        dns_unbound: Option<u16>,
+        dns_health_error: Option<&str>,
+        dns_addr: SocketAddr,
+    ) -> Result<SocketAddr, String> {
+        if let Some(error) = dns_health_error {
+            return Err(format!(
+                "could not verify Yerd's DNS health before resolver elevation: {error}"
+            ));
+        }
+        if let Some(port) = dns_unbound {
+            return Err(format!(
+                "Yerd isn't serving DNS because it couldn't bind port {port} — free that port or change dns_port, then restart Yerd before elevating the resolver"
+            ));
+        }
+        if dns_addr.port() != 53 {
+            return Err(format!(
+                "Yerd's DNS is on port {} — set dns_port to 53 (`yerd doctor` explains) and restart Yerd; Windows NRPT can only target port 53",
+                dns_addr.port()
+            ));
+        }
+        let ip = match dns_addr.ip() {
+            IpAddr::V4(v4) if v4.is_unspecified() => Ipv4Addr::LOCALHOST,
+            IpAddr::V4(v4) if v4.is_loopback() => v4,
+            _ => {
+                return Err(format!(
+                    "Yerd's DNS address {dns_addr} is not loopback IPv4; Windows NRPT can only target 127.0.0.1:53"
+                ))
+            }
+        };
+        Ok(SocketAddr::from((ip, 53)))
+    }
+
+    fn describe_resolver(facts: &ResolverFacts, undo: bool) -> String {
+        if undo {
+            format!("resolver: removing the .{} NRPT rule", facts.tld)
+        } else {
+            format!(
+                "resolver: routing *.{} → 127.0.0.1:53 (NRPT wildcard rule)",
+                facts.tld
+            )
+        }
+    }
+
+    /// Classify the helper's exit code into ok/refused/declined outcomes. A
+    /// declined UAC prompt or a failed launch surfaces as `Some(-1)` (the
+    /// `runas` crate maps both to `0xFFFFFFFF`) or `None`.
+    fn classify_helper_exit(code: Option<i32>) -> Result<(), String> {
+        match code {
+            Some(0) => Ok(()),
+            Some(65) => Err("yerd-helper refused the request (the DNS address was not \
+                             loopback:53, or an argument failed validation)"
+                .to_owned()),
+            Some(77) => {
+                Err("the helper did not receive an elevated token (UAC was denied)".to_owned())
+            }
+            Some(78) => Err("resolver setup is not supported on this host".to_owned()),
+            Some(-1) | None => {
+                Err("the elevation prompt was declined or the helper failed to launch".to_owned())
+            }
+            Some(other) => Err(format!("yerd-helper exited with status {other}")),
+        }
+    }
+
+    /// A 32-lowercase-hex-char advisory result-file token.
+    ///
+    /// Not security-critical: the helper's `create_new` refuses a pre-planted
+    /// file, so this only needs to be collision-free. Derived from `RandomState`
+    /// (OS-seeded, no new dependency) mixed with a high-resolution timestamp.
+    /// The two halves come from successive `RandomState::new()` values, which
+    /// share one process-wide seed plus a counter - so this is 32 hex chars of
+    /// collision resistance, not 128 bits of independent entropy. Uniqueness is
+    /// all the protocol asks of it.
+    fn generate_result_token() -> String {
+        use std::collections::hash_map::RandomState;
+        use std::fmt::Write as _;
+        use std::hash::{BuildHasher, Hasher};
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        let mut token = String::with_capacity(helper_result::TOKEN_LEN);
+        for i in 0..2u64 {
+            let mut hasher = RandomState::new().build_hasher();
+            hasher.write_u64(nanos);
+            hasher.write_u64(i);
+            let _ = write!(token, "{:016x}", hasher.finish());
+        }
+        token
+    }
+
+    /// Read (then delete) the advisory result file for `token`, returning the
+    /// helper's error detail if it recorded one.
+    ///
+    /// Advisory only, and same-user by design: elevation keeps the invoking
+    /// user's profile, so the helper resolves the same `%TEMP%\yerd`. A
+    /// cross-user (different-admin-credential) UAC instead writes to that admin's
+    /// `%TEMP%`, so the file may be absent here - the op still succeeds and the
+    /// caller degrades to the generic message.
+    fn take_result_detail(token: &str) -> Option<String> {
+        use yerd_platform::{ActivePaths, Paths};
+
+        let dirs = ActivePaths::new().resolve().ok()?;
+        let path = dirs.runtime.join(helper_result::result_file_name(token));
+        let body = std::fs::read_to_string(&path).ok();
+        let _ = std::fs::remove_file(&path);
+        match body.as_deref().and_then(helper_result::parse) {
+            Some(helper_result::HelperResult::Error(detail)) if !detail.is_empty() => Some(detail),
+            _ => None,
+        }
+    }
+
+    /// Spawn `helper` elevated (UAC) with `argv`, blocking the calling thread on
+    /// the prompt and the helper (`ShellExecuteExW` + `WaitForSingleObject`).
+    /// Returns the helper's exit code; `Some(-1)`/`None` mean the prompt was
+    /// declined or the launch failed. Every `argv` element must be free of
+    /// space/tab/quote/backslash (the `runas` quoting bug corrupts otherwise) -
+    /// guaranteed by the closed charsets of the resolver argv and guarded by a
+    /// unit test. Reused synchronously by the (sync) full-uninstall flow.
+    pub(crate) fn spawn_helper_elevated_blocking(helper: &Path, argv: &[OsString]) -> Option<i32> {
+        runas::Command::new(helper)
+            .args(argv)
+            .show(false)
+            .status()
+            .ok()
+            .and_then(|status| status.code())
+    }
+
+    /// Async wrapper over [`spawn_helper_elevated_blocking`] that moves the
+    /// blocking UAC wait off the runtime worker for the `yerd elevate` path.
+    async fn spawn_helper_elevated(helper: PathBuf, argv: Vec<OsString>) -> Option<i32> {
+        tokio::task::spawn_blocking(move || spawn_helper_elevated_blocking(&helper, &argv))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Locate `yerd-helper.exe` in the install dir. Deriving the candidates from
+    /// the trusted `current_exe` and `%LOCALAPPDATA%` (never from IPC) keeps the
+    /// elevated launch pointed at a real install dir. `yerdd.exe` is returned too
+    /// for symmetry with the Unix locator, though the resolver flow does not need
+    /// it.
+    ///
+    /// The exe's own directory is not enough: `yerd path install` copies only
+    /// `yerd.exe` into `%LOCALAPPDATA%\Programs\yerd\bin`, and that copy is what
+    /// PATH resolves, so a terminal-invoked `yerd elevate` runs from a directory
+    /// holding no helper. `%LOCALAPPDATA%\Yerd` (the NSIS install dir) is the
+    /// fallback, mirroring `apply::install_dir_candidates`.
+    pub(crate) fn sibling_binaries() -> Result<(PathBuf, PathBuf), String> {
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        if let Ok(exe) = std::env::current_exe() {
+            let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+            if let Some(dir) = exe.parent() {
+                candidates.push(dir.to_path_buf());
+            }
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty()) {
+            candidates.push(PathBuf::from(local).join("Yerd"));
+        }
+        for dir in &candidates {
+            let helper = dir.join("yerd-helper.exe");
+            if helper.is_file() {
+                return Ok((helper, dir.join("yerdd.exe")));
+            }
+        }
+        let searched = candidates
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(format!(
+            "yerd-helper.exe was not found (looked in: {searched}) - reinstall Yerd from the \
+             installer"
+        ))
+    }
+
+    /// Trust (or untrust) the local CA in the `CurrentUser` Root store. Fetches the
+    /// CA facts from the running daemon, re-verifies the fingerprint against the
+    /// PEM on disk (inside `install_system`), then adds/removes the cert. The add
+    /// and delete both block on a Windows confirmation dialog, so the store call
+    /// runs on a blocking thread.
+    async fn run_trust(undo: bool) -> bool {
+        let (ca_path, ca_fingerprint) = match fetch_ca_facts().await {
+            Ok(facts) => facts,
+            Err(msg) => {
+                eprintln!("yerd: {msg}");
+                return false;
+            }
+        };
+        let fp = match CaFingerprint::from_hex(&ca_fingerprint) {
+            Ok(fp) => fp,
+            Err(e) => {
+                eprintln!("yerd: the daemon reported a malformed CA fingerprint: {e}");
+                return false;
+            }
+        };
+        let pem = match std::fs::read_to_string(&ca_path) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("yerd: cannot read the CA at {}: {e}", ca_path.display());
+                return false;
+            }
+        };
+
+        if undo {
+            println!("==> trust: removing the local CA from the Windows user Root store");
+        } else {
+            println!("==> trust: trusting the local CA in the Windows user Root store");
+        }
+        println!("    Windows will show a security-confirmation dialog; approve it to continue.");
+
+        let outcome = tokio::task::spawn_blocking(move || {
+            let ts = ActiveTrustStore::new();
+            if undo {
+                ts.uninstall_system(&fp)
+            } else {
+                ts.install_system(&pem, &fp)
+            }
+        })
+        .await;
+
+        match outcome {
+            Ok(Ok(())) => {
+                if undo {
+                    println!("    ok - the local CA is no longer trusted.");
+                } else {
+                    println!(
+                        "    ok - the local CA is now trusted; .test HTTPS sites will validate."
+                    );
+                }
+                true
+            }
+            Ok(Err(e)) => {
+                eprintln!("    failed: {e}");
+                false
+            }
+            Err(e) => {
+                eprintln!("    failed: the trust task did not complete: {e}");
+                false
+            }
+        }
+    }
+
+    /// Fetch `(ca_path, ca_fingerprint)` from the running daemon over the Windows
+    /// named-pipe transport.
+    async fn fetch_ca_facts() -> Result<(PathBuf, String), String> {
+        match transport::exchange(&Request::DaemonInfo).await {
+            Ok(Response::Info {
+                ca_path,
+                ca_fingerprint,
+                ..
+            }) => Ok((ca_path, ca_fingerprint)),
+            Ok(other) => Err(format!("unexpected response to DaemonInfo: {other:?}")),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn targets_none_expands_to_trust_resolver_ports_in_order() {
+            assert_eq!(
+                targets(None),
+                vec![
+                    ElevateTarget::Trust,
+                    ElevateTarget::Resolver,
+                    ElevateTarget::Ports
+                ]
+            );
+        }
+
+        #[test]
+        fn targets_some_is_a_singleton() {
+            assert_eq!(
+                targets(Some(ElevateTarget::Trust)),
+                vec![ElevateTarget::Trust]
+            );
+            assert_eq!(targets(Some(ElevateTarget::Lan)), vec![ElevateTarget::Lan]);
+        }
+
+        fn facts(dns_addr: &str) -> ResolverFacts {
+            ResolverFacts {
+                dns_addr: dns_addr.parse().unwrap(),
+                dns_unbound: None,
+                dns_health_error: None,
+                tld: "test".to_owned(),
+            }
+        }
+
+        #[test]
+        fn preflight_accepts_loopback_53_and_returns_it() {
+            let addr = resolver_preflight(None, None, "127.0.0.1:53".parse().unwrap()).unwrap();
+            assert_eq!(addr, "127.0.0.1:53".parse().unwrap());
+        }
+
+        #[test]
+        fn preflight_normalises_unspecified_to_loopback() {
+            let addr = resolver_preflight(None, None, "0.0.0.0:53".parse().unwrap()).unwrap();
+            assert_eq!(addr, "127.0.0.1:53".parse().unwrap());
+        }
+
+        #[test]
+        fn preflight_refuses_unbound_dns_naming_the_port() {
+            let msg =
+                resolver_preflight(Some(53), None, "127.0.0.1:53".parse().unwrap()).unwrap_err();
+            assert!(msg.contains("couldn't bind port 53"), "{msg}");
+            assert!(msg.contains("restart Yerd"), "{msg}");
+        }
+
+        #[test]
+        fn preflight_refuses_non_53_port_with_remedy() {
+            let msg =
+                resolver_preflight(None, None, "127.0.0.1:1053".parse().unwrap()).unwrap_err();
+            assert!(msg.contains("set dns_port to 53"), "{msg}");
+            assert!(msg.contains("NRPT can only target port 53"), "{msg}");
+        }
+
+        #[test]
+        fn preflight_refuses_health_error() {
+            let msg = resolver_preflight(
+                None,
+                Some("status timed out"),
+                "127.0.0.1:53".parse().unwrap(),
+            )
+            .unwrap_err();
+            assert!(msg.contains("DNS health"), "{msg}");
+        }
+
+        #[test]
+        fn preflight_refuses_non_loopback() {
+            let msg = resolver_preflight(None, None, "10.0.0.5:53".parse().unwrap()).unwrap_err();
+            assert!(msg.contains("not loopback"), "{msg}");
+        }
+
+        #[test]
+        fn build_invocation_uninstall_needs_only_tld() {
+            let inv = build_resolver_invocation(&facts("127.0.0.1:1053"), true).unwrap();
+            assert!(matches!(inv, HelperInvocation::UninstallResolver { .. }));
+        }
+
+        #[test]
+        fn build_invocation_install_runs_preflight() {
+            assert!(build_resolver_invocation(&facts("127.0.0.1:1053"), false).is_err());
+            let inv = build_resolver_invocation(&facts("127.0.0.1:53"), false).unwrap();
+            match inv {
+                HelperInvocation::InstallResolver { tld, addr } => {
+                    assert_eq!(tld, "test");
+                    assert_eq!(addr, "127.0.0.1:53".parse().unwrap());
+                }
+                _ => panic!("wrong variant"),
+            }
+        }
+
+        #[test]
+        fn classify_maps_exit_codes() {
+            assert!(classify_helper_exit(Some(0)).is_ok());
+            assert!(classify_helper_exit(Some(65)).is_err());
+            assert!(classify_helper_exit(Some(77))
+                .unwrap_err()
+                .contains("elevated token"));
+            let declined = classify_helper_exit(Some(-1)).unwrap_err();
+            assert!(declined.contains("declined"), "{declined}");
+            assert!(classify_helper_exit(None).unwrap_err().contains("declined"));
+            assert!(classify_helper_exit(Some(42))
+                .unwrap_err()
+                .contains("status 42"));
+        }
+
+        #[test]
+        fn generate_result_token_is_valid_and_fresh() {
+            let a = generate_result_token();
+            assert!(helper_result::valid_token(&a), "{a}");
+            assert_ne!(a, generate_result_token());
+        }
+
+        /// The standing guard for the `runas 1.2.0` quoting bug: it doubles
+        /// backslashes in any argv element containing a space, tab or quote, so
+        /// no Windows-reachable helper invocation may contain one. Every new
+        /// Windows-reachable `HelperInvocation` variant must be added to the
+        /// array below. See the `HelperInvocation` item docs in `yerd-platform`
+        /// for the full constraint, including the owner-SID check a path
+        /// argument would additionally require.
+        #[test]
+        fn windows_helper_argv_is_runas_quoting_safe() {
+            let token = generate_result_token();
+            let invocations = [
+                HelperInvocation::InstallResolver {
+                    tld: "test".to_owned(),
+                    addr: "127.0.0.1:53".parse().unwrap(),
+                },
+                HelperInvocation::UninstallResolver {
+                    tld: "dev.local".to_owned(),
+                },
+            ];
+            for inv in &invocations {
+                let mut argv = inv.to_argv();
+                argv.push(OsString::from("--result-token"));
+                argv.push(OsString::from(&token));
+                for element in &argv {
+                    let s = element.to_string_lossy();
+                    assert!(
+                        !s.contains([' ', '\t', '"', '\\']),
+                        "argv element {s:?} contains a char the runas quoting bug corrupts"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn take_result_detail_missing_file_is_none() {
+            let token = generate_result_token();
+            assert_eq!(take_result_detail(&token), None);
         }
     }
 }

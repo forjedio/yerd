@@ -169,6 +169,15 @@ pub trait ServiceDefinition: Send + Sync + 'static {
     /// Human-facing label for the GUI/CLI.
     fn display_name(&self) -> &'static str;
 
+    /// Human-facing label on Windows, when it diverges from
+    /// [`display_name`](Self::display_name). Defaults to `display_name`; Redis
+    /// overrides it because the Windows build is the native MSVC Redis port, not
+    /// Valkey (which has no Windows build). Read it through
+    /// [`display_name_for_host`].
+    fn windows_display_name(&self) -> &'static str {
+        self.display_name()
+    }
+
     /// Cache / database / app-server classification.
     fn kind(&self) -> ServiceKind;
 
@@ -191,9 +200,18 @@ pub trait ServiceDefinition: Send + Sync + 'static {
         matches!(self.multiplicity(), Multiplicity::PerSite)
     }
 
-    /// The server executable's file name inside the install's `bin/` dir, or
-    /// `None` for a type with no installed server binary (app servers).
+    /// The server executable's base file name inside the install's `bin/` dir, or
+    /// `None` for a type with no installed server binary (app servers). The host
+    /// `.exe` suffix is applied at the path layer (`version::host_binary_name`).
     fn server_binary(&self) -> Option<&'static str>;
+
+    /// The server executable's base name on Windows, when it diverges from the
+    /// Unix name. Defaults to [`server_binary`](Self::server_binary); Redis
+    /// overrides it because the native MSVC port ships `redis-server`, not
+    /// `valkey-server`. The `.exe` suffix is still applied at the path layer.
+    fn windows_server_binary(&self) -> Option<&'static str> {
+        self.server_binary()
+    }
 
     /// Compatibility scope used to select the service's mutable datadir.
     fn datadir_scope(&self) -> DatadirScope {
@@ -223,6 +241,20 @@ pub trait ServiceDefinition: Send + Sync + 'static {
     /// Postgres overrides to `MasterInterrupt` (SIGINT "fast shutdown").
     fn stop_protocol(&self) -> StopProtocol {
         StopProtocol::GroupTerm
+    }
+
+    /// A Windows-only graceful-stop command to run **before** forced termination,
+    /// since Windows has no SIGINT. Postgres returns `pg_ctl stop -D <datadir> -m
+    /// fast`; other engines return `None` and go straight to the job-object kill.
+    /// Pure: this returns the command spec only; the manager spawns it (through
+    /// the injected `ProcessSpawner`) and the child inherits the daemon env.
+    fn graceful_stop_plan(
+        &self,
+        install_dir: &std::path::Path,
+        datadir: &std::path::Path,
+    ) -> Option<StdCommand> {
+        let _ = (install_dir, datadir);
+        None
     }
 
     /// A reverse-proxy path prefix to auto-manage on the instance's linked site
@@ -398,6 +430,11 @@ pub struct Postgres;
 /// data. The trade-off is that dumps taken before a version change stay behind
 /// with the old version's data, which matches how Yerd already retains the rest
 /// of that version's state.
+///
+/// The three path args keep native separators on every OS, backslashes included:
+/// they are passed as argv elements straight to `Command`, never through a shell
+/// or a config parser, so nothing re-interprets them and no normalisation is
+/// wanted.
 pub struct Meilisearch;
 
 impl ServiceDefinition for Redis {
@@ -406,6 +443,9 @@ impl ServiceDefinition for Redis {
     }
     fn display_name(&self) -> &'static str {
         "Redis (Valkey)"
+    }
+    fn windows_display_name(&self) -> &'static str {
+        "Redis"
     }
     fn kind(&self) -> ServiceKind {
         ServiceKind::Cache
@@ -424,6 +464,9 @@ impl ServiceDefinition for Redis {
     }
     fn server_binary(&self) -> Option<&'static str> {
         Some("valkey-server")
+    }
+    fn windows_server_binary(&self) -> Option<&'static str> {
+        Some("redis-server")
     }
     fn supervisor_policy(&self) -> SupervisorPolicy {
         SupervisorPolicy::database()
@@ -523,7 +566,11 @@ impl ServiceDefinition for MySql {
         _preload_libraries: &[&str],
     ) -> Option<String> {
         Some(config_render::render_my_cnf(
-            port, datadir, socket, log_path, init_file,
+            port,
+            datadir,
+            cfg!(unix).then_some(socket),
+            log_path,
+            init_file,
         ))
     }
     fn plan_launch(&self, ctx: &LaunchContext<'_>) -> Result<LaunchPlan, ServiceError> {
@@ -598,7 +645,11 @@ impl ServiceDefinition for MariaDb {
         _preload_libraries: &[&str],
     ) -> Option<String> {
         Some(config_render::render_my_cnf(
-            port, datadir, socket, log_path, init_file,
+            port,
+            datadir,
+            cfg!(unix).then_some(socket),
+            log_path,
+            init_file,
         ))
     }
     fn plan_launch(&self, ctx: &LaunchContext<'_>) -> Result<LaunchPlan, ServiceError> {
@@ -645,6 +696,27 @@ impl ServiceDefinition for Postgres {
     }
     fn stop_protocol(&self) -> StopProtocol {
         StopProtocol::MasterInterrupt
+    }
+    /// `pg_ctl stop -D <datadir> -m fast` - the Windows analogue of the Unix
+    /// SIGINT fast shutdown, run before the forced job-object kill so the
+    /// postmaster flushes cleanly. `-t` bounds `pg_ctl`'s own wait.
+    fn graceful_stop_plan(
+        &self,
+        install_dir: &std::path::Path,
+        datadir: &std::path::Path,
+    ) -> Option<StdCommand> {
+        let pg_ctl = install_dir
+            .join("bin")
+            .join(crate::version::host_binary_name("pg_ctl"));
+        let mut cmd = StdCommand::new(pg_ctl);
+        cmd.arg("stop")
+            .arg("-D")
+            .arg(datadir)
+            .arg("-m")
+            .arg("fast")
+            .arg("-t")
+            .arg("10");
+        Some(cmd)
     }
     fn as_database(&self) -> Option<SqlEngine> {
         Some(SqlEngine::Postgres)
@@ -809,6 +881,33 @@ impl ServiceDefinition for Reverb {
     }
 }
 
+/// The server-binary base name to use on the host OS: the Windows override on
+/// Windows, otherwise the Unix name. The `.exe` suffix is applied separately by
+/// `version::host_binary_name` at the path layer. On Unix this is exactly
+/// [`ServiceDefinition::server_binary`], so Unix behaviour is unchanged.
+#[must_use]
+pub fn server_binary_for_host(def: &dyn ServiceDefinition) -> Option<&'static str> {
+    if cfg!(windows) {
+        def.windows_server_binary()
+    } else {
+        def.server_binary()
+    }
+}
+
+/// The human-facing label to use on the host OS: the Windows override on
+/// Windows, otherwise the Unix label. Every user-visible surface reads the name
+/// through this, so `Redis (Valkey)` does not claim Valkey on a host that runs
+/// the MSVC Redis port. On Unix this is exactly
+/// [`ServiceDefinition::display_name`], so Unix behaviour is unchanged.
+#[must_use]
+pub fn display_name_for_host(def: &dyn ServiceDefinition) -> &'static str {
+    if cfg!(windows) {
+        def.windows_display_name()
+    } else {
+        def.display_name()
+    }
+}
+
 /// Start a server command from the program + layered geo env. Shared by the
 /// database/cache engines (app servers build their own from scratch).
 fn base_command(ctx: &LaunchContext<'_>) -> StdCommand {
@@ -930,6 +1029,45 @@ mod tests {
         assert!(d.as_database().is_none());
     }
 
+    /// Redis is the only type whose Windows label diverges: the Windows artifact
+    /// is the native MSVC Redis port, so claiming Valkey there would be wrong.
+    #[test]
+    fn only_redis_relabels_itself_on_windows() {
+        for (id, unix, windows) in [
+            ("redis", "Redis (Valkey)", "Redis"),
+            ("mysql", "MySQL", "MySQL"),
+            ("mariadb", "MariaDB", "MariaDB"),
+            ("postgres", "PostgreSQL", "PostgreSQL"),
+            ("meilisearch", "Meilisearch", "Meilisearch"),
+            ("reverb", "Reverb", "Reverb"),
+        ] {
+            let d = reg().get(id).unwrap();
+            assert_eq!(d.display_name(), unix, "{id} unix label");
+            assert_eq!(d.windows_display_name(), windows, "{id} windows label");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn display_name_for_host_keeps_the_valkey_label_on_unix() {
+        let d = reg().get("redis").unwrap();
+        assert_eq!(display_name_for_host(d.as_ref()), "Redis (Valkey)");
+    }
+
+    /// The Windows counterpart of
+    /// [`display_name_for_host_keeps_the_valkey_label_on_unix`].
+    #[cfg(windows)]
+    #[test]
+    fn display_name_for_host_drops_the_valkey_label_on_windows() {
+        let d = reg().get("redis").unwrap();
+        assert_eq!(display_name_for_host(d.as_ref()), "Redis");
+    }
+
+    /// The launch args pin `--dump-dir`/`--snapshot-dir` via `datadir.join(...)`,
+    /// which emits `\` on Windows; these goldens pin Unix separators. The
+    /// Windows form is pinned separately by
+    /// [`meilisearch_launch_args_keep_native_separators_on_windows`].
+    #[cfg(unix)]
     #[test]
     fn meilisearch_metadata_and_launch_are_safe_for_local_development() {
         let d = reg().get("meilisearch").unwrap();
@@ -971,8 +1109,55 @@ mod tests {
         assert!(plan.capture_output_to_log);
     }
 
+    /// The Windows counterpart of
+    /// [`meilisearch_metadata_and_launch_are_safe_for_local_development`]: the
+    /// three path args keep native separators, unquoted and unescaped, because
+    /// they go straight into argv with no shell and no config parser in between.
+    #[cfg(windows)]
+    #[test]
+    fn meilisearch_launch_args_keep_native_separators_on_windows() {
+        let d = reg().get("meilisearch").unwrap();
+        let ctx = LaunchContext {
+            port: 7701,
+            program: std::path::Path::new(r"C:\yerd\bin\meilisearch.exe"),
+            config_path: std::path::Path::new(""),
+            datadir: std::path::Path::new(r"C:\Users\a b\AppData\Local\yerd\data\meili"),
+            log_path: std::path::Path::new(r"C:\Users\a b\AppData\Local\yerd\logs\meili.log"),
+            geo_env: &[],
+            cwd: None,
+        };
+        let plan = d.plan_launch(&ctx).unwrap();
+        let args: Vec<_> = plan
+            .command
+            .get_args()
+            .map(|a| a.to_string_lossy())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "--http-addr",
+                "127.0.0.1:7701",
+                "--db-path",
+                r"C:\Users\a b\AppData\Local\yerd\data\meili",
+                "--dump-dir",
+                r"C:\Users\a b\AppData\Local\yerd\data\meili\dumps",
+                "--snapshot-dir",
+                r"C:\Users\a b\AppData\Local\yerd\data\meili\snapshots",
+                "--env",
+                "development",
+                "--no-analytics"
+            ]
+        );
+        assert!(plan.capture_output_to_log);
+    }
+
     /// Regression: both dirs default to cwd-relative, and the daemon's cwd is the
     /// read-only `/` on macOS, so neither may be left to Meilisearch's default.
+    /// Unix-scoped for the same `datadir.join` separator reason as
+    /// [`meilisearch_metadata_and_launch_are_safe_for_local_development`];
+    /// [`meilisearch_pins_dump_and_snapshot_dirs_under_the_datadir_on_windows`]
+    /// is the Windows half.
+    #[cfg(unix)]
     #[test]
     fn meilisearch_pins_dump_and_snapshot_dirs_under_the_datadir() {
         let ctx = LaunchContext {
@@ -994,6 +1179,38 @@ mod tests {
         for (flag, expected) in [
             ("--dump-dir", "/data/meili/dumps"),
             ("--snapshot-dir", "/data/meili/snapshots"),
+        ] {
+            let Some(at) = args.iter().position(|a| a == flag) else {
+                panic!("{flag} must be passed explicitly")
+            };
+            assert_eq!(args.get(at + 1).map(String::as_str), Some(expected));
+        }
+    }
+
+    /// The same pinning on Windows, where the daemon's inherited cwd is no more
+    /// suitable a dump target than macOS' `/`. The goldens carry native `\`.
+    #[cfg(windows)]
+    #[test]
+    fn meilisearch_pins_dump_and_snapshot_dirs_under_the_datadir_on_windows() {
+        let ctx = LaunchContext {
+            port: 7700,
+            program: std::path::Path::new(r"C:\yerd\bin\meilisearch.exe"),
+            config_path: std::path::Path::new(""),
+            datadir: std::path::Path::new(r"C:\yerd\data\meili"),
+            log_path: std::path::Path::new(r"C:\yerd\logs\meili.log"),
+            geo_env: &[],
+            cwd: None,
+        };
+        let plan = reg().get("meilisearch").unwrap().plan_launch(&ctx).unwrap();
+        let args: Vec<_> = plan
+            .command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        for (flag, expected) in [
+            ("--dump-dir", r"C:\yerd\data\meili\dumps"),
+            ("--snapshot-dir", r"C:\yerd\data\meili\snapshots"),
         ] {
             let Some(at) = args.iter().position(|a| a == flag) else {
                 panic!("{flag} must be passed explicitly")
@@ -1232,6 +1449,30 @@ mod tests {
                 .unwrap();
             assert!(rendered.contains("6543"), "{id} config missing port");
         }
+    }
+
+    #[test]
+    fn postgres_graceful_stop_plan_is_pg_ctl_fast_and_others_none() {
+        let install = std::path::Path::new("/i/pg");
+        let datadir = std::path::Path::new("/d/data-17");
+        let cmd = Postgres
+            .graceful_stop_plan(install, datadir)
+            .expect("postgres has a graceful stop plan");
+
+        let program = std::path::Path::new(cmd.get_program());
+        assert_eq!(
+            program.file_name().and_then(|s| s.to_str()),
+            Some(crate::version::host_binary_name("pg_ctl").as_str())
+        );
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["stop", "-D", "/d/data-17", "-m", "fast", "-t", "10"]);
+
+        assert!(MySql.graceful_stop_plan(install, datadir).is_none());
+        assert!(MariaDb.graceful_stop_plan(install, datadir).is_none());
+        assert!(Redis.graceful_stop_plan(install, datadir).is_none());
     }
 
     /// The capability must track "has a config file" exactly: an engine with no

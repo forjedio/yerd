@@ -11,19 +11,21 @@ use yerd_platform::PlatformDirs;
 
 use crate::error::PhpError;
 
-/// Filename of the FPM binary inside each per-version install dir.
+/// Filename of the server binary inside each per-version install dir. Unix has
+/// a real `php-fpm` SAPI; Windows has no FPM binary at all, so discovery keys
+/// off the bundle's `FastCGI` server `php-cgi.exe` (a single-threaded NTS build).
 #[cfg(unix)]
 const FPM_BINARY_PATH: &[&str] = &["sbin", "php-fpm"];
 #[cfg(not(unix))]
-const FPM_BINARY_PATH: &[&str] = &["php-fpm.exe"];
+const FPM_BINARY_PATH: &[&str] = &["php-cgi.exe"];
 
-/// Walk `dirs.data / "php"` looking for per-version FPM binaries.
+/// Walk `dirs.data / "php"` looking for per-version server binaries.
 ///
-/// Layout the caller is expected to ship (produced by `xtask` Phase 2):
+/// Layout the caller is expected to ship:
 ///
 /// ```text
 /// {dirs.data}/php/php-8.3/sbin/php-fpm        (Unix)
-/// {dirs.data}\php\php-8.3\php-fpm.exe         (Windows)
+/// {dirs.data}\php\php-8.3\php-cgi.exe         (Windows, from the bundle)
 /// ```
 ///
 /// Error policy:
@@ -106,19 +108,30 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    /// Lay down a per-OS server binary for `version` so `discover_bundled` finds
+    /// it: `sbin/php-fpm` on Unix, `php-cgi.exe` in the version root on Windows.
+    fn fake_server_binary(dirs: &PlatformDirs, version: PhpVersion) {
+        let base = dirs
+            .data
+            .join("php")
+            .join(format!("php-{}.{}", version.major, version.minor));
+        let mut binary = base;
+        for seg in FPM_BINARY_PATH {
+            binary.push(seg);
+        }
+        if let Some(parent) = binary.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(binary, b"#!/bin/sh\n").unwrap();
+    }
+
     #[test]
     fn discover_bundled_finds_versions_and_sorts() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = make_dirs(tmp.path());
 
-        let v83 = dirs.data.join("php").join("php-8.3").join("sbin");
-        std::fs::create_dir_all(&v83).unwrap();
-        std::fs::write(v83.join("php-fpm"), b"#!/bin/sh\n").unwrap();
-
-        let v74 = dirs.data.join("php").join("php-7.4").join("sbin");
-        std::fs::create_dir_all(&v74).unwrap();
-        std::fs::write(v74.join("php-fpm"), b"#!/bin/sh\n").unwrap();
+        fake_server_binary(&dirs, PhpVersion::new(8, 3));
+        fake_server_binary(&dirs, PhpVersion::new(7, 4));
 
         let bogus = dirs.data.join("php").join("php-bogus");
         std::fs::create_dir_all(bogus).unwrap();

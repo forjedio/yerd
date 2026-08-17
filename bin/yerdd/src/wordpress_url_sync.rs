@@ -119,7 +119,7 @@ async fn run_option_update(
     else {
         return Err(format!("{}: not a valid file path", boot_fs.display()));
     };
-    let mut cmd = tokio::process::Command::new(php_cli);
+    let mut cmd = crate::spawn::hidden_command(php_cli);
     cmd.args(crate::tools::wp_cli::QUIET_DEPRECATIONS)
         .arg(&boot_name)
         .args(&args)

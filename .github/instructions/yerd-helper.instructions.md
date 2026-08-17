@@ -17,6 +17,18 @@ A separate binary that does exactly one operation and exits.
 - Keep dependencies minimal and the code auditable.
 - Check the effective UID; only the documented debug-build bypass field
   (compiled out of release via `cfg(debug_assertions)`) may skip it.
+- **Windows argv must be quoting-safe.** Elevation goes through `runas 1.2.0`,
+  which doubles backslashes in any argv element containing a space, tab or
+  quote, so every op reachable on Windows must have an argv free of `' '`,
+  `'\t'`, `'"'` and `'\\'` — which means a path argument is not representable
+  today. Guarded by `windows_helper_argv_is_runas_quoting_safe` in
+  `bin/yerd/src/elevate.rs`; add new Windows-reachable invocations to its array.
+- **A Windows op that takes a path must check the owner SID first.** The Unix
+  `require_user_owned` gate was deliberately not ported because the only Windows
+  op today (the NRPT resolver) takes no path. The moment one does, it must
+  verify the path's owner SID equals the invoking user's SID, or an elevated
+  helper writing through a junction the unprivileged user planted becomes a
+  privilege-escalation primitive.
 
 ## Owns
 

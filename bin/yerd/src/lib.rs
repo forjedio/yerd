@@ -10,29 +10,21 @@
 
 pub mod apply;
 pub mod cli;
-#[cfg(unix)]
-pub mod cli_shim;
-#[cfg(unix)]
-pub mod composer_shim;
-#[cfg(unix)]
-pub mod cover_shim;
+pub(crate) mod cli_shim;
+pub(crate) mod composer_shim;
+pub(crate) mod cover_shim;
 pub mod elevate;
 pub mod error;
-#[cfg(unix)]
 pub mod exec_cmd;
-#[cfg(unix)]
-pub mod laravel_shim;
+pub(crate) mod laravel_shim;
 pub mod map;
 pub mod mcp_cmd;
 pub mod path_cmd;
-#[cfg(unix)]
 pub mod shim;
-#[cfg(unix)]
 pub mod site_scope;
 pub mod transport;
 pub mod uninstall;
-#[cfg(unix)]
-pub mod wp_shim;
+pub(crate) mod wp_shim;
 
 use std::process::ExitCode;
 
@@ -51,41 +43,12 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Unelevate { target } => return elevate::run_elevate(*target, true).await,
         Command::Path { action } => return path_cmd::run(*action),
         Command::Mcp => return mcp_cmd::run().await,
-        #[cfg_attr(not(unix), allow(unused_variables))]
-        Command::Coverage { args } => {
-            #[cfg(unix)]
-            {
-                return cover_shim::run_coverage(args);
-            }
-            #[cfg(not(unix))]
-            {
-                eprintln!("yerd: coverage is only available on macOS and Linux");
-                return ExitCode::from(2);
-            }
-        }
-        #[cfg_attr(not(unix), allow(unused_variables))]
+        Command::Coverage { args } => return cover_shim::run_coverage(args),
         Command::Exec { site, tool, args } => {
-            #[cfg(unix)]
-            {
-                return exec_cmd::run_exec(*tool, site.as_deref(), args).await;
-            }
-            #[cfg(not(unix))]
-            {
-                eprintln!("yerd: exec is only available on macOS and Linux");
-                return ExitCode::from(2);
-            }
+            return exec_cmd::run_exec(*tool, site.as_deref(), args).await
         }
-        #[cfg_attr(not(unix), allow(unused_variables))]
         Command::Which { tool, site } => {
-            #[cfg(unix)]
-            {
-                return exec_cmd::run_which(*tool, site.as_deref(), cli.json).await;
-            }
-            #[cfg(not(unix))]
-            {
-                eprintln!("yerd: which is only available on macOS and Linux");
-                return ExitCode::from(2);
-            }
+            return exec_cmd::run_which(*tool, site.as_deref(), cli.json).await
         }
         Command::Domain {
             action: crate::cli::DomainAction::List { site },
@@ -828,7 +791,9 @@ fn canonicalize_unpark(req: yerd_ipc::Request) -> yerd_ipc::Request {
     if let yerd_ipc::Request::Unpark { path } = &req {
         if let Ok(canon) = std::fs::canonicalize(path) {
             return yerd_ipc::Request::Unpark {
-                path: canon.to_string_lossy().into_owned(),
+                path: yerd_core::path_norm::strip_verbatim(&canon)
+                    .to_string_lossy()
+                    .into_owned(),
             };
         }
     }
@@ -850,9 +815,11 @@ fn canonicalize_db_paths(req: yerd_ipc::Request) -> Result<yerd_ipc::Request, Cl
             name,
             path,
         } => {
-            let path = std::fs::canonicalize(&path).map_err(|e| {
-                ClientError::Usage(format!("cannot read backup file {}: {e}", path.display()))
-            })?;
+            let path = std::fs::canonicalize(&path)
+                .map(|p| yerd_core::path_norm::strip_verbatim(&p))
+                .map_err(|e| {
+                    ClientError::Usage(format!("cannot read backup file {}: {e}", path.display()))
+                })?;
             Ok(Request::RestoreDatabase {
                 service,
                 name,
@@ -880,9 +847,11 @@ fn canonicalize_park_path(req: yerd_ipc::Request) -> Result<yerd_ipc::Request, C
     match req {
         Request::Park { path } => {
             let abs = absolutise(&path)?;
-            let canon = std::fs::canonicalize(&abs).map_err(|e| {
-                ClientError::Usage(format!("cannot resolve {}: {e}", path.display()))
-            })?;
+            let canon = std::fs::canonicalize(&abs)
+                .map(|p| yerd_core::path_norm::strip_verbatim(&p))
+                .map_err(|e| {
+                    ClientError::Usage(format!("cannot resolve {}: {e}", path.display()))
+                })?;
             Ok(Request::Park { path: canon })
         }
         other => Ok(other),
@@ -1060,8 +1029,12 @@ mod tests {
         let Request::Unpark { path } = out else {
             panic!("expected Unpark");
         };
-        let canon = std::fs::canonicalize(&nested).unwrap();
+        let canon = yerd_core::path_norm::strip_verbatim(&std::fs::canonicalize(&nested).unwrap());
         assert_eq!(path, canon.to_string_lossy());
+        assert!(
+            !path.starts_with(r"\\?\"),
+            "an unpark path must not be verbatim, or it won't match the stored one: {path}"
+        );
     }
 
     #[test]
@@ -1095,10 +1068,15 @@ mod tests {
         let Request::Park { path } = out else {
             panic!("expected Park");
         };
-        assert_eq!(path, std::fs::canonicalize(".").unwrap());
+        assert_eq!(
+            path,
+            yerd_core::path_norm::strip_verbatim(&std::fs::canonicalize(".").unwrap())
+        );
     }
 
     #[test]
+    /// A verbatim root is what PHP answers "No input file specified." to, so it
+    /// must never be what gets persisted.
     fn canonicalize_park_path_canonicalises_absolute_path() {
         let tmp = tempfile::tempdir().unwrap();
         let out = canonicalize_park_path(Request::Park {
@@ -1108,7 +1086,14 @@ mod tests {
         let Request::Park { path } = out else {
             panic!("expected Park");
         };
-        assert_eq!(path, std::fs::canonicalize(tmp.path()).unwrap());
+        assert_eq!(
+            path,
+            yerd_core::path_norm::strip_verbatim(&std::fs::canonicalize(tmp.path()).unwrap())
+        );
+        assert!(
+            !path.to_string_lossy().starts_with(r"\\?\"),
+            "a parked path must never be stored verbatim"
+        );
     }
 
     #[test]
@@ -1151,7 +1136,10 @@ mod tests {
         };
         assert_eq!(service, "mysql");
         assert_eq!(name, "app");
-        assert_eq!(path, std::fs::canonicalize(&file).unwrap());
+        assert_eq!(
+            path,
+            yerd_core::path_norm::strip_verbatim(&std::fs::canonicalize(&file).unwrap())
+        );
     }
 
     #[test]
@@ -1184,9 +1172,21 @@ mod tests {
         assert!(path.ends_with("rel/app.sql"));
     }
 
+    /// A host-absolute path, so `is_absolute()` holds on Windows too (where a
+    /// leading `/` is drive-relative, not absolute).
+    #[cfg(windows)]
+    fn absolute_sql_path() -> PathBuf {
+        PathBuf::from(r"C:\var\tmp\app.sql")
+    }
+
+    #[cfg(not(windows))]
+    fn absolute_sql_path() -> PathBuf {
+        PathBuf::from("/var/tmp/app.sql")
+    }
+
     #[test]
     fn canonicalize_db_paths_backup_absolute_is_unchanged() {
-        let abs = PathBuf::from("/var/tmp/app.sql");
+        let abs = absolute_sql_path();
         let req = Request::BackupDatabase {
             service: "mysql".into(),
             name: "app".into(),
@@ -1209,8 +1209,8 @@ mod tests {
 
     #[test]
     fn absolutise_returns_absolute_path_unchanged() {
-        let abs = Path::new("/etc/hosts");
-        assert_eq!(absolutise(abs).unwrap(), abs.to_path_buf());
+        let abs = absolute_sql_path();
+        assert_eq!(absolutise(&abs).unwrap(), abs.clone());
     }
 
     #[test]

@@ -22,9 +22,13 @@ pub(super) async fn register(
     spec: &CreateSiteSpec,
     state: &Arc<DaemonState>,
 ) -> Result<(), String> {
-    let parent_canon = tokio::fs::canonicalize(parent_dir)
-        .await
-        .unwrap_or_else(|_| parent_dir.to_path_buf());
+    // `Request::Park` stores the verbatim-stripped form (see
+    // `ipc_server::canonicalize_dir`), so strip here too or the parked-path
+    // lookup below never matches on Windows. No-op on Unix.
+    let parent_canon = tokio::fs::canonicalize(parent_dir).await.map_or_else(
+        |_| parent_dir.to_path_buf(),
+        |p| yerd_core::path_norm::strip_verbatim(&p),
+    );
     let (is_parked, default_php) = {
         let cfg = state.config.lock().await;
         let parked = cfg

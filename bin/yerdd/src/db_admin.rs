@@ -14,12 +14,14 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
 
 use yerd_ipc::{DatabaseSummary, ErrorCode, Response};
-use yerd_services::{database, version, ServiceRegistry, ServiceRunState, SqlEngine};
+use yerd_services::{
+    database, display_name_for_host, version, ServiceRegistry, ServiceRunState, SqlEngine,
+};
 
 use crate::services::resolve_version;
+use crate::spawn::hidden_command;
 use crate::state::DaemonState;
 
 /// `list databases <svc>` - the user databases (system schemas filtered out).
@@ -93,7 +95,7 @@ pub async fn backup(service_id: &str, name: &str, path: &Path, state: &DaemonSta
         return invalid_name(&e.to_string());
     }
     let dump_bin = ctx.engine.dump_binary();
-    let dump_path = ctx.bin_dir.join(dump_bin);
+    let dump_path = ctx.bin_dir.join(yerd_services::host_binary_name(dump_bin));
     if !dump_path.is_file() {
         return internal(format!(
             "this {} build does not include {dump_bin}",
@@ -108,7 +110,7 @@ pub async fn backup(service_id: &str, name: &str, path: &Path, state: &DaemonSta
         Err(e) => return internal(format!("create {}: {e}", tmp.display())),
     };
 
-    let mut child = match Command::new(&dump_path)
+    let mut child = match hidden_command(&dump_path)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -179,7 +181,7 @@ pub async fn restore(service_id: &str, name: &str, path: &Path, state: &DaemonSt
     };
     let args = database::restore_args(ctx.engine, &ctx.socket, ctx.port, name);
 
-    let mut child = match Command::new(&ctx.client_path)
+    let mut child = match hidden_command(&ctx.client_path)
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -240,7 +242,10 @@ async fn prepare(service_id: &str, state: &DaemonState) -> Result<DbCtx, Respons
     let Some(engine) = def.as_database() else {
         return Err(Response::Error {
             code: ErrorCode::InvalidPath,
-            message: format!("{} does not host SQL databases", def.display_name()),
+            message: format!(
+                "{} does not host SQL databases",
+                display_name_for_host(def.as_ref())
+            ),
         });
     };
     let client = engine.client_binary();
@@ -254,13 +259,13 @@ async fn prepare(service_id: &str, state: &DaemonState) -> Result<DbCtx, Respons
     };
     let ver = resolve_version(&def, configured.as_deref(), &state.dirs)?;
     let bin_dir = version::install_dir(&state.dirs, def.id(), &ver).join("bin");
-    let client_path = bin_dir.join(client);
+    let client_path = bin_dir.join(yerd_services::host_binary_name(client));
     if !client_path.is_file() {
         return Err(Response::Error {
             code: ErrorCode::Internal,
             message: format!(
                 "this {} build does not include {client}",
-                def.display_name()
+                display_name_for_host(def.as_ref())
             ),
         });
     }
@@ -291,7 +296,7 @@ async fn prepare(service_id: &str, state: &DaemonState) -> Result<DbCtx, Respons
     };
     Ok(DbCtx {
         engine,
-        display_name: def.display_name().to_owned(),
+        display_name: display_name_for_host(def.as_ref()).to_owned(),
         bin_dir,
         client_path,
         socket: version::socket_path(&state.dirs, def.id()),
@@ -303,7 +308,7 @@ async fn prepare(service_id: &str, state: &DaemonState) -> Result<DbCtx, Respons
 /// exit or a mapped [`Response::Error`] otherwise.
 async fn run_client(ctx: &DbCtx, sql: &str) -> Result<String, Response> {
     let args = database::client_args(ctx.engine, &ctx.socket, ctx.port, sql);
-    let output = Command::new(&ctx.client_path)
+    let output = hidden_command(&ctx.client_path)
         .args(&args)
         .output()
         .await

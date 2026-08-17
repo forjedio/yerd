@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use yerd_core::PhpVersion;
 use yerd_ipc::PhpUpdate;
 use yerd_php::{
-    current_os_arch, discover_bundled, display_build, is_newer_build, resolve_from_listing,
-    Channel, Downloader,
+    current_os_arch, discover_bundled, display_build, is_newer_build, resolve_build, Channel,
+    Downloader, Os,
 };
 
 use crate::php_install::{fetch_verified_listing, installed_patch, installed_revision};
@@ -32,8 +32,13 @@ pub(crate) fn installed_minors(state: &DaemonState) -> Vec<PhpVersion> {
 /// `None` with a `debug` log. Returning `None` (rather than aborting the whole
 /// poll) lets one unreachable channel be skipped while the other still refreshes,
 /// and lets the caller preserve the failed channel's previously-cached updates.
-async fn fetch_channel(dl: &dyn Downloader, public_key: &str, channel: Channel) -> Option<String> {
-    match fetch_verified_listing(dl, public_key, channel).await {
+async fn fetch_channel(
+    dl: &dyn Downloader,
+    public_key: &str,
+    channel: Channel,
+    os: Os,
+) -> Option<String> {
+    match fetch_verified_listing(dl, public_key, channel, os).await {
         Ok(body) => Some(body),
         Err(e) => {
             tracing::debug!(error = %e, ?channel, "php update poll: listing fetch/verify failed, keeping cached updates for this channel");
@@ -63,12 +68,12 @@ pub async fn poll_and_refresh(state: &DaemonState, dl: &dyn Downloader, public_k
         }
     };
     let stable = if minors.iter().any(|v| !v.is_legacy()) {
-        fetch_channel(dl, public_key, Channel::Stable).await
+        fetch_channel(dl, public_key, Channel::Stable, os).await
     } else {
         None
     };
     let legacy = if minors.iter().any(|v| v.is_legacy()) {
-        fetch_channel(dl, public_key, Channel::Legacy).await
+        fetch_channel(dl, public_key, Channel::Legacy, os).await
     } else {
         None
     };
@@ -87,8 +92,8 @@ pub async fn poll_and_refresh(state: &DaemonState, dl: &dyn Downloader, public_k
             }
             continue;
         };
-        let artifact = match resolve_from_listing(listing, minor, os, arch, channel) {
-            Ok(a) => a,
+        let (full_version, revision) = match resolve_build(listing, minor, os, arch, channel) {
+            Ok(b) => b,
             Err(yerd_php::PhpError::VersionUnavailable { .. }) => continue,
             Err(e) => {
                 tracing::debug!(error = %e, "php update poll aborted: manifest unusable, keeping cache");
@@ -97,21 +102,16 @@ pub async fn poll_and_refresh(state: &DaemonState, dl: &dyn Downloader, public_k
         };
         if let Some(installed) = installed_patch(&state.dirs, minor) {
             let installed_rev = installed_revision(&state.dirs, minor);
-            if is_newer_build(
-                &installed,
-                installed_rev,
-                &artifact.full_version,
-                artifact.revision,
-            ) {
+            if is_newer_build(&installed, installed_rev, &full_version, revision) {
                 tracing::info!(
                     version = %minor,
                     installed = %display_build(&installed, installed_rev),
-                    latest = %display_build(&artifact.full_version, artifact.revision),
+                    latest = %display_build(&full_version, revision),
                     "a newer PHP build is available (run `yerd update php`)"
                 );
             }
         }
-        latest.insert(minor, (artifact.full_version, artifact.revision));
+        latest.insert(minor, (full_version, revision));
     }
     *state.php_updates.write().await = latest;
 }

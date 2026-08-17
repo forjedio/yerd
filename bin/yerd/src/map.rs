@@ -2821,13 +2821,21 @@ mod tests {
         );
     }
 
+    /// The client-side validation is host-relative (an extension path names a
+    /// file on this machine), so the fixture has to be a path this host would
+    /// actually accept.
     #[test]
     fn php_ext_add_maps_and_defaults_name() {
+        let ext_path = if cfg!(windows) {
+            "C:\\php\\ext\\php_scrypt.dll"
+        } else {
+            "/opt/php/pecl/scrypt.so"
+        };
         let req = to_request(&Command::Php {
             action: crate::cli::PhpAction::Ext {
                 action: crate::cli::PhpExtAction::Add {
                     version: "8.5".into(),
-                    path: "/opt/php/pecl/scrypt.so".into(),
+                    path: ext_path.into(),
                     zend: false,
                     name: None,
                 },
@@ -2838,7 +2846,7 @@ mod tests {
             req,
             Request::AddPhpExtension {
                 version: PhpVersion::new(8, 5),
-                path: "/opt/php/pecl/scrypt.so".to_string(),
+                path: ext_path.to_string(),
                 name: None,
                 zend: false,
             }
@@ -3114,6 +3122,8 @@ mod tests {
             lan_setup_bound: None,
             port_redirect_targets: None,
             lan_redirect_targets: None,
+            resolver_rule_servers: vec![],
+            dns_port_owner: None,
         }
     }
 
@@ -3715,7 +3725,7 @@ mod tests {
     /// A customized proxy whose primary is still its apex reports
     /// `primary_domain: None` (the daemon omits a primary equal to the apex), and
     /// the renderer has no TLD to rebuild that apex from, so no domain carries the
-    /// marker. Pinned so the behaviour and `docs/reference/cli/proxies.md` agree.
+    /// marker. Pinned so the rendered output cannot drift.
     #[test]
     fn format_proxies_marks_nothing_when_the_primary_is_the_apex() {
         let apex_primary = yerd_ipc::ProxyEntry {

@@ -21,7 +21,7 @@ pub fn setcap(binary: &Path) -> Result<(), HelperError> {
     .map(|_| ())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(not(target_os = "linux"))]
 pub fn setcap(_binary: &Path) -> Result<(), HelperError> {
     Err(HelperError::Unsupported {
         operation: yerd_platform::error::ops::SETCAP,

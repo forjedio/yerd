@@ -14,6 +14,13 @@ use std::collections::BTreeSet;
 use yerd_config::{Config, ServiceInstance, SiteOverride};
 use yerd_core::{PhpVersion, RouteRule, Site, Tld};
 
+/// An extension path this host accepts. `validate_ext_path` is host-relative
+/// (the path names a file on the machine the daemon runs on), so a hard-coded
+/// Unix path fails validation on Windows and vice versa.
+fn host_ext_path(stem: &str) -> String {
+    yerd_core::php_vocab::example_ext_path(stem, yerd_core::php_vocab::EXT_SUFFIX)
+}
+
 fn populated() -> Config {
     let mut c = Config::default();
     c.tld = Tld::new("test").unwrap();
@@ -61,16 +68,21 @@ fn default_config_starts_with_version_line() {
 
 #[test]
 fn default_config_emits_dns_port_scalar_before_tables() {
+    // Windows defaults dns_port to 53 (NRPT carries no port); other OSes use 1053.
+    #[cfg(windows)]
+    let default_port = 53;
+    #[cfg(not(windows))]
+    let default_port = 1053;
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.contains("dns_port = 1053\n"),
-        "expected `dns_port = 1053` scalar; got: {s}"
+        s.contains(&format!("dns_port = {default_port}\n")),
+        "expected `dns_port = {default_port}` scalar; got: {s}"
     );
     let dns_at = s.find("dns_port = ").expect("dns_port present");
     let first_table = s.find("\n[").expect("at least one table");
     assert!(dns_at < first_table, "dns_port must precede tables in: {s}");
     let back = Config::from_toml(&s).unwrap();
-    assert_eq!(back.dns_port, 1053);
+    assert_eq!(back.dns_port, default_port);
 }
 
 #[test]
@@ -471,7 +483,7 @@ fn populated_version_settings_and_directives_emit_between_settings_and_extension
         v83,
         vec![yerd_config::ExtEntry {
             name: "xdebug".to_string(),
-            path: "/a/xdebug.so".to_string(),
+            path: host_ext_path("xdebug"),
             zend: true,
         }],
     );
@@ -519,7 +531,7 @@ fn populated_pool_emits_between_directives_and_extensions() {
         v84,
         vec![yerd_config::ExtEntry {
             name: "xdebug".to_string(),
-            path: "/a/xdebug.so".to_string(),
+            path: host_ext_path("xdebug"),
             zend: true,
         }],
     );

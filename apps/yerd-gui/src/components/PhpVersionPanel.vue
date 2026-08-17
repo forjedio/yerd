@@ -29,6 +29,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { usePlatform } from "@/composables/usePlatform";
 import { useToast } from "@/composables/useToast";
 import {
   IpcError,
@@ -156,7 +157,7 @@ async function saveSettings(): Promise<void> {
     seed(r.version_settings?.[props.version] ?? {});
     toast.success(
       `PHP ${props.version} settings updated`,
-      "The pool restarts to apply the changes.",
+      `The ${vocab.value.pool} restarts to apply the changes.`,
     );
     emit("updated", r);
   } catch (e) {
@@ -169,6 +170,11 @@ async function saveSettings(): Promise<void> {
 // ── FPM pool sizing ──
 // Same pristine/seed discipline as the settings grid: an empty field means the
 // built-in default, and server refreshes only reseed while the field is clean.
+//
+// Hidden on Windows: there is no FPM there, and php-cgi has no worker pool to
+// size (the daemon refuses the request with `unsupported`), so showing the
+// control would offer a setting that cannot take effect.
+const { isWindows, vocab } = usePlatform();
 const poolMaxChildren = ref("");
 const poolSeeded = ref("");
 
@@ -221,7 +227,7 @@ const dirNameInput = useTemplateRef<{ focus: () => void }>("dirNameInput");
 // name (from an extension's menu) doesn't greet the user with a red error.
 const dirProblem = computed(() => {
   if (!dirName.value && !dirValue.value) return null;
-  const nameProblem = directiveNameProblem(dirName.value);
+  const nameProblem = directiveNameProblem(dirName.value, isWindows.value);
   if (nameProblem) return nameProblem;
   return dirValue.value === "" ? null : directiveValueProblem(dirValue.value);
 });
@@ -230,7 +236,7 @@ async function addDirective(): Promise<void> {
   if (isBusy.value) return;
   const name = dirName.value.trim();
   const value = dirValue.value.trim();
-  if (directiveNameProblem(name) || directiveValueProblem(value)) {
+  if (directiveNameProblem(name, isWindows.value) || directiveValueProblem(value)) {
     toast.error("Invalid directive", dirProblem.value ?? "check the name and value");
     return;
   }
@@ -410,8 +416,9 @@ function discard(): void {
       </TooltipProvider>
 
       <!-- FPM pool sizing. Web (FPM) only: these are pool-block settings, so
-           they never reach this version's CLI ini. -->
-      <div class="mt-5 border-t border-border pt-4">
+           they never reach this version's CLI ini. Windows has no FPM pool at
+           all - see `isWindows` above. -->
+      <div v-if="!isWindows" class="mt-5 border-t border-border pt-4">
         <TooltipProvider :delay-duration="0">
           <div class="flex items-center gap-1">
             <label class="text-xs font-medium" :for="`pool-${version}-max-children`">

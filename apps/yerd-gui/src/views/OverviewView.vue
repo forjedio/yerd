@@ -35,6 +35,7 @@ import {
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
 import { useOnboarding } from "@/composables/useOnboarding";
+import { usePlatform } from "@/composables/usePlatform";
 import { usePoll } from "@/composables/usePoll";
 import { useResource } from "@/composables/useResource";
 import {
@@ -100,6 +101,9 @@ async function confirmRestartDaemon(close: () => void): Promise<void> {
 // First paint, before the poll has resolved either way.
 const connecting = computed(() => connected.value === null && !report.value);
 const tld = computed(() => r.value?.tld ?? "test");
+
+// No loadPlatform() call: the always-mounted SideNav loads the singleton.
+const { vocab } = usePlatform();
 
 // ── live site list (for the console chips) ──
 // Shared "sites" cache (same key + fetcher as the Sites view and the command
@@ -483,7 +487,7 @@ const emptyEnvironment = computed(
                 <StatusPill tone="ok" label="Running" />
               </div>
               <p class="mt-1 text-xs text-muted-foreground">
-                <code>yerdd</code> supervises PHP-FPM, serves your
+                <code>yerdd</code> supervises {{ vocab.runtime }}, serves your
                 <code>.{{ tld }}</code> sites, answers DNS, and runs databases.
               </p>
             </div>

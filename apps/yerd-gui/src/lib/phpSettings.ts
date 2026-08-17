@@ -104,8 +104,15 @@ const RESERVED_DIRECTIVES = new Map<string, string>([
  * Client-side hint for an invalid or reserved custom-directive name; `null`
  * when it looks fine. Mirrors the daemon's `yerd-core` rules loosely - the
  * daemon remains the authority.
+ *
+ * `isWindows` is required rather than defaulted so no caller can silently keep
+ * Unix wording: the `pm.` hint's Windows form must stay in step with the
+ * daemon's own hint (`php_directives::reserved`), or pre-validation and the
+ * authoritative answer would contradict each other for one user action. On
+ * Windows that hint names no pool field, because the control is hidden there
+ * and the daemon refuses pool sizing outright.
  */
-export function directiveNameProblem(name: string): string | null {
+export function directiveNameProblem(name: string, isWindows: boolean): string | null {
   if (name === "") return "enter a directive name";
   if (SETTING_KEYS.includes(name)) {
     return "this setting has its own field in the settings form above";
@@ -113,7 +120,9 @@ export function directiveNameProblem(name: string): string | null {
   const reserved = RESERVED_DIRECTIVES.get(name);
   if (reserved) return reserved;
   if (name.startsWith("pm.")) {
-    return "FPM pool settings are set in the FPM pool field above";
+    return isWindows
+      ? "pm. settings are FPM pool settings; php-cgi on Windows has no worker pool, so they do not apply"
+      : "FPM pool settings are set in the FPM pool field above";
   }
   if (!/^[A-Za-z_][A-Za-z0-9._-]*$/.test(name) || name.length > 128) {
     return "names start with a letter or _ and use letters, digits, '.', '_' or '-'";

@@ -19,6 +19,46 @@ vi.mock("@/ipc/client", () => ({
   setPhpVersionSettings: vi.fn(),
 }));
 
+// The panel gates the FPM pool control on the host OS, so the platform
+// singleton is mocked with a settable ref rather than left at its unloaded "".
+const hostPlatform = vi.hoisted(() => ({ value: "linux" }));
+vi.mock("@/composables/usePlatform", async () => {
+  const { computed, ref } = await import("vue");
+  const platform = ref(hostPlatform.value);
+  return {
+    loadPlatform: () => Promise.resolve(),
+    usePlatform: () => {
+      platform.value = hostPlatform.value;
+      return {
+        platform,
+        isMac: computed(() => platform.value === "macos"),
+        isLinux: computed(() => platform.value === "linux"),
+        isWindows: computed(() => platform.value === "windows"),
+        vocab: computed(() =>
+          platform.value === "windows"
+            ? {
+                runtime: "php-cgi",
+                pool: "FastCGI process",
+                pools: "FastCGI processes",
+                poolShort: "php-cgi",
+                extSuffix: ".dll",
+                extExample: "C:\\php\\ext\\php_scrypt.dll",
+              }
+            : {
+                runtime: "PHP-FPM",
+                pool: "FPM pool",
+                pools: "FPM pools",
+                poolShort: "FPM",
+                extSuffix: ".so",
+                extExample: "/opt/homebrew/lib/php/pecl/20250925/scrypt.so",
+              },
+        ),
+        supportsPathInstall: computed(() => true),
+      };
+    },
+  };
+});
+
 // The row actions live in a reka-ui dropdown, which needs a real pointer stack
 // to open; stub the parts so the items render inline (as SiteCard.spec does).
 const DropdownStub = { template: "<div><slot /></div>" };
@@ -238,6 +278,19 @@ describe("PhpVersionPanel FPM pool size", () => {
   it("is hidden for a version that is no longer installed", () => {
     const w = mountPanel({ installedVersion: false, extensions: [XDEBUG] });
     expect(w.find(poolInput).exists()).toBe(false);
+  });
+
+  // php-cgi has no worker pool, and the daemon refuses the request with
+  // `unsupported`, so offering the control on Windows would promise a setting
+  // that cannot take effect.
+  it("is hidden on Windows, where there is no pool to size", () => {
+    hostPlatform.value = "windows";
+    try {
+      expect(mountPanel().find(poolInput).exists()).toBe(false);
+    } finally {
+      hostPlatform.value = "linux";
+    }
+    expect(mountPanel().find(poolInput).exists()).toBe(true);
   });
 });
 

@@ -224,7 +224,10 @@ pub fn browser_trust(
 /// then `certutil` under each of `path_dirs`. The absolute list wins because a
 /// service manager hands the daemon a stripped `PATH` that hides the tool. The
 /// existence probe is injected so the walk is unit-tested against the real
-/// candidate lists on any host, without touching the filesystem.
+/// candidate lists on any host, without touching the filesystem. Only the
+/// `#[cfg(unix)]` edge calls it, but the pure walk stays compiled (and tested)
+/// everywhere.
+#[cfg_attr(windows, allow(dead_code))]
 fn resolve_certutil(
     candidates: &[PathBuf],
     path_dirs: &[PathBuf],

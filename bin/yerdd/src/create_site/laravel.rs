@@ -248,7 +248,7 @@ fn composed_path(job_bin: &Path, data_bin: &Path, user_dirs: &[PathBuf]) -> std:
 
 /// `git --version` resolves on the composed PATH.
 async fn git_available(path_env: &std::ffi::OsString) -> bool {
-    tokio::process::Command::new("git")
+    crate::spawn::hidden_command("git")
         .arg("--version")
         .env("PATH", path_env)
         .stdin(Stdio::null())
@@ -267,12 +267,38 @@ fn sh_quote(p: &Path) -> String {
     format!("'{}'", p.to_string_lossy().replace('\'', "'\\''"))
 }
 
-/// Build `{job_dir}/bin` containing a `php` symlink to the chosen version and,
-/// when `composer_phar` is `Some` (Yerd-managed Composer), a `composer` wrapper
-/// that runs that same PHP so the installer's nested `composer create-project`
-/// uses the requested runtime (Composer derives its child PHP from `PHP_BINARY`).
-/// When `None` (external Composer), no wrapper is written - Composer is found on
-/// the composed PATH and runs under the managed `php` via its shebang. Unix-only.
+/// Render a Windows `.cmd` wrapper that forwards all its arguments to `exe`,
+/// optionally with a fixed `first_arg` inserted before them. The leading `@`
+/// suppresses the command echo without a separate `@echo off`; for a
+/// single-command batch file `cmd.exe` propagates the child's exit code as the
+/// file's own. Paths are double-quoted so spaces survive, and the line ends in
+/// CRLF because `.cmd` is a Windows text format. Pure so the quoting and
+/// argument forwarding are table-tested on every OS.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn cmd_wrapper(exe: &Path, first_arg: Option<&Path>) -> String {
+    match first_arg {
+        Some(arg) => format!(
+            "@\"{}\" \"{}\" %*\r\n",
+            exe.to_string_lossy(),
+            arg.to_string_lossy()
+        ),
+        None => format!("@\"{}\" %*\r\n", exe.to_string_lossy()),
+    }
+}
+
+/// Build `{job_dir}/bin` pinning `php` (and, when `composer_phar` is `Some`,
+/// `composer`) to the chosen PHP version for the installer's *nested*
+/// invocations, which derive their child PHP from `PHP_BINARY` / the composed
+/// PATH.
+///
+/// Unix writes a `php` symlink plus a `#!/bin/sh` `composer` wrapper. Windows
+/// writes `php.cmd` and `composer.cmd` instead: nested `php`/`composer` calls
+/// inside `laravel new` go through PHP's `proc_open` → `cmd.exe`, which resolves
+/// `.cmd` via `PATHEXT` (unlike Rust's `Command::new`, which is why the *outer*
+/// spawn stays a real `php.exe <installer.phar>`). When `composer_phar` is
+/// `None` (external Composer) no composer wrapper is written - it is found on the
+/// composed PATH and runs under the managed `php`. This bin is job-local and
+/// independent of the `{data}/bin` shim mechanism.
 #[cfg(unix)]
 fn build_job_bin(
     job_dir: &Path,
@@ -302,7 +328,31 @@ fn build_job_bin(
     Ok(bin)
 }
 
-#[cfg(not(unix))]
+/// Windows counterpart of [`build_job_bin`]: `php.cmd` and (with a managed
+/// Composer) `composer.cmd`. See the shared doc above for why `.cmd` wrappers,
+/// not symlinks, are the right shape here.
+#[cfg(windows)]
+fn build_job_bin(
+    job_dir: &Path,
+    php_cli: &Path,
+    composer_phar: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let bin = job_dir.join("bin");
+    std::fs::create_dir_all(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+
+    let php_cmd = bin.join("php.cmd");
+    std::fs::write(&php_cmd, cmd_wrapper(php_cli, None))
+        .map_err(|e| format!("write php.cmd: {e}"))?;
+
+    if let Some(phar) = composer_phar {
+        let composer_cmd = bin.join("composer.cmd");
+        std::fs::write(&composer_cmd, cmd_wrapper(php_cli, Some(phar)))
+            .map_err(|e| format!("write composer.cmd: {e}"))?;
+    }
+    Ok(bin)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn build_job_bin(
     _job_dir: &Path,
     _php_cli: &Path,
@@ -531,5 +581,55 @@ mod tests {
         let bin = build_job_bin(&job_dir, &php, None).unwrap();
         assert!(bin.join("php").exists());
         assert!(!bin.join("composer").exists());
+    }
+
+    #[test]
+    fn cmd_wrapper_forwards_args_and_quotes_paths() {
+        let php = Path::new(r"C:\Program Files\yerd\php.exe");
+        let plain = cmd_wrapper(php, None);
+        assert_eq!(plain, "@\"C:\\Program Files\\yerd\\php.exe\" %*\r\n");
+        assert!(plain.ends_with("\r\n"), "must use CRLF endings");
+
+        let phar = Path::new(r"C:\yerd\composer.phar");
+        let with_arg = cmd_wrapper(php, Some(phar));
+        assert_eq!(
+            with_arg,
+            "@\"C:\\Program Files\\yerd\\php.exe\" \"C:\\yerd\\composer.phar\" %*\r\n"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn build_job_bin_writes_php_and_composer_cmd_with_phar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job_dir = tmp.path().join("job");
+        let php = tmp.path().join("php.exe");
+        std::fs::write(&php, b"fake-php").unwrap();
+        let phar = tmp.path().join("composer.phar");
+        std::fs::write(&phar, b"phar").unwrap();
+
+        let bin = build_job_bin(&job_dir, &php, Some(phar.as_path())).unwrap();
+
+        let php_cmd = std::fs::read_to_string(bin.join("php.cmd")).unwrap();
+        assert!(php_cmd.starts_with("@\""));
+        assert!(php_cmd.contains(&php.to_string_lossy().into_owned()));
+        assert!(php_cmd.trim_end().ends_with("%*"));
+
+        let composer_cmd = std::fs::read_to_string(bin.join("composer.cmd")).unwrap();
+        assert!(composer_cmd.contains(&php.to_string_lossy().into_owned()));
+        assert!(composer_cmd.contains(&phar.to_string_lossy().into_owned()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn build_job_bin_without_phar_writes_only_php_cmd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job_dir = tmp.path().join("job");
+        let php = tmp.path().join("php.exe");
+        std::fs::write(&php, b"fake-php").unwrap();
+
+        let bin = build_job_bin(&job_dir, &php, None).unwrap();
+        assert!(bin.join("php.cmd").exists());
+        assert!(!bin.join("composer.cmd").exists());
     }
 }

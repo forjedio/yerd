@@ -1,8 +1,10 @@
 //! `PhpManager` - drives the pure state machine through real I/O.
 //!
-//! The manager holds one `Pool<S::Child>` per supervised PHP version. Each
-//! pool tracks its current [`PoolState`], the wall-clock baseline used to
-//! compute [`Elapsed`], the rendered [`PoolConfig`], and the live child
+//! The manager holds one `Pool<S::Child>` per supervised PHP version, and each
+//! pool holds [`WORKERS_PER_VERSION`] lazily spawned `Worker<S::Child>`s plus
+//! the round-robin cursor [`PhpManager::ensure`] hands their addresses out
+//! with. Each worker tracks its current [`PoolState`], the wall-clock baseline
+//! used to compute [`Elapsed`], the rendered [`PoolConfig`], and the live child
 //! (when one exists).
 //!
 //! ## Driver invariants
@@ -22,10 +24,10 @@
 //!
 //! ## Unix socket cleanup
 //!
-//! `ensure` removes any leftover Unix socket file under the planned path
-//! before spawning (ignoring `ENOENT`), and `stop` removes it on the way
-//! out. These are the only two serialisation points against stale
-//! sockets; if you add a third, document it here.
+//! `ensure_worker_once` removes any leftover Unix socket file under the
+//! planned path before spawning (ignoring `ENOENT`), and `stop_worker`
+//! removes it on the way out. These are the only two serialisation points
+//! against stale sockets; if you add a third, document it here.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -52,27 +54,73 @@ use crate::traits::{ChildHandle, Clock, HealthProbe, ProcessSpawner};
 /// TCP port is briefly claimed by another process. On Unix this is a
 /// no-op (no binding happens), so the planner runs at most once.
 const MAX_BIND_ATTEMPTS: usize = 5;
+/// On-disk dump-extension file name for the host OS. Must match what
+/// `bin/yerdd`'s `ext_install` writes (`yerd-dump.dll` on Windows, `.so`
+/// elsewhere); a filename-pinning test on each side keeps them in lockstep, as
+/// the two live in different crates and can't share a constant.
+#[cfg(windows)]
+const DUMP_EXT_FILE: &str = "yerd-dump.dll";
+#[cfg(not(windows))]
+const DUMP_EXT_FILE: &str = "yerd-dump.so";
 /// Per-attempt `FastCGI` probe timeout.
 const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 /// Floor between probe attempts - prevents hot-spin when the listener
 /// briefly returns connection-refused.
 const HEALTH_PROBE_GAP: Duration = Duration::from_millis(100);
 
-/// Where the pool is in its lifecycle.
-struct Pool<Ch: ChildHandle> {
+/// How many server processes are supervised per PHP version.
+///
+/// Windows has no FPM SAPI: a pool is a `php-cgi.exe`, a single-request NTS
+/// `FastCGI` server with no pre-fork, so one process serves exactly one request
+/// at a time. Four of them cover a page plus its sub-requests and a second tab,
+/// at roughly 4x the idle RSS of a single interpreter. Everywhere else FPM
+/// pre-forks its own workers and [`AllocatedListen::plan`] hands out one socket
+/// path per version, so a second worker would only collide on it: the count
+/// stays 1 and a pool degenerates to a single supervised child.
+///
+/// Fixed at compile time on purpose. There is deliberately no `yerd.toml`, IPC
+/// or GUI surface for pool sizing; changing it is a one-line edit here.
+pub const WORKERS_PER_VERSION: usize = if cfg!(windows) { 4 } else { 1 };
+
+/// One supervised server process inside a version's pool.
+struct Worker<Ch: ChildHandle> {
     state: PoolState,
     state_since: Instant,
     cfg: PoolConfig,
     child: Option<Ch>,
 }
 
+impl<Ch: ChildHandle> Worker<Ch> {
+    /// This worker's PID while it is `Running` with a still-live child.
+    /// A `try_wait` error counts as not alive, which is what a status report
+    /// should show for a handle it can no longer interrogate.
+    fn live_pid(&mut self) -> Option<u32> {
+        let PoolState::Running { pid } = self.state else {
+            return None;
+        };
+        let child = self.child.as_mut()?;
+        matches!(child.try_wait(), Ok(None)).then_some(pid)
+    }
+}
+
+/// Every worker supervised for one PHP version, plus the round-robin cursor.
+///
+/// A slot stays `None` until the worker at that index has come up healthy, and
+/// the pool itself only exists because at least one of them did: see
+/// [`PhpManager::store_worker`].
+struct Pool<Ch: ChildHandle> {
+    workers: Vec<Option<Worker<Ch>>>,
+    cursor: usize,
+}
+
 /// Live run state of a supervised pool, as reported by
 /// [`PhpManager::snapshots`].
 ///
-/// The manager only ever *stores* pools that were healthy at insert time, so a
-/// snapshot is either `Running` (the master process is still alive) or `Failed`
-/// (the master has since exited). "No pool at all" - installed but never started
-/// - is not represented here; the daemon fills that in as `Stopped`.
+/// The manager only ever *stores* a pool once one of its workers came up
+/// healthy, so a snapshot is either `Running` (at least one worker is still
+/// alive) or `Failed` (every stored worker has since exited). The "no pool at
+/// all" case, installed but never started, is deliberately not represented
+/// here; the daemon fills that in as `Stopped`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoolRunState {
     /// The FPM master process is alive.
@@ -284,12 +332,16 @@ where
         self.ca_bundle = path;
     }
 
-    /// Ensure FPM is running for `v` and return its listen address.
+    /// Ensure a PHP server for `v` is running and return the address the caller
+    /// should send this request to.
     ///
-    /// Idempotent: if the pool is already `Running` and the child is
-    /// still alive, returns the cached listen address immediately. Else
-    /// plans an address, renders the config, spawns FPM, and waits for
-    /// a healthy probe before returning.
+    /// Every version is served by [`WORKERS_PER_VERSION`] workers on their own
+    /// addresses, handed out round-robin: each call advances the pool's cursor
+    /// and returns the worker it lands on. That worker is spawned lazily, so a
+    /// version that only ever serves one request at a time never starts more
+    /// than one process. Landing on a worker that is already `Running` with a
+    /// live child returns its cached address immediately; otherwise the worker
+    /// is planned, rendered, spawned and health-checked before returning.
     pub async fn ensure(&mut self, v: PhpVersion) -> Result<Listen, PhpError> {
         let binary = self
             .binaries
@@ -297,10 +349,99 @@ where
             .cloned()
             .ok_or(PhpError::VersionNotInstalled { version: v })?;
 
-        if let Some(listen) = self.running_listen(v)? {
+        let index = self.next_worker_index(v);
+        if let Some(listen) = self.running_listen(v, index)? {
             return Ok(listen);
         }
+        self.ensure_worker(v, index, &binary).await
+    }
 
+    /// The worker index this `ensure` serves, advancing the pool's round-robin
+    /// cursor past it. A version with no pool yet always starts at worker 0;
+    /// its cursor is seeded when that first worker is stored.
+    ///
+    /// Off Windows `WORKERS_PER_VERSION` is 1, so the rotation collapses to a
+    /// constant 0 and clippy's `modulo_one` fires on what is, there, a
+    /// deliberately trivial modulo. The lint is allowed only on the platforms
+    /// where the divisor really is 1.
+    fn next_worker_index(&mut self, v: PhpVersion) -> usize {
+        let Some(pool) = self.pools.get_mut(&v) else {
+            return 0;
+        };
+        #[cfg_attr(not(windows), allow(clippy::modulo_one))]
+        let index = pool.cursor % WORKERS_PER_VERSION;
+        pool.cursor = pool.cursor.wrapping_add(1);
+        index
+    }
+
+    /// Bring worker `i` of `v` up, replanning its address and retrying once on
+    /// Windows.
+    ///
+    /// [`AllocatedListen::plan`] binds `127.0.0.1:0`, reads the port and drops
+    /// the listener before php-cgi ever sees it, so another process can claim
+    /// that port in the gap. Once it has, the address baked into the worker's
+    /// config is dead and every restart attempt inside [`Self::drive`] burns on
+    /// it, so a second [`Self::ensure_worker_once`] with a freshly planned
+    /// address is the only thing that recovers. Unix plans a socket path rather
+    /// than a port and has no such window, so it never retries.
+    ///
+    /// The retry means one `ensure` can drive the state machine twice, i.e. up
+    /// to `2 * policy.max_restart_attempts` spawns.
+    /// `ensure_surfaces_permanent_failure` in `tests/supervisor_states.rs`
+    /// provisions exactly two drives' worth of spawn plans, which is what keeps
+    /// it ending in `PermanentFailure` rather than in `PhpError::Spawn` from an
+    /// exhausted fake queue. Trimming that plan count, or raising
+    /// `max_restart_attempts`, would make this retry surface the wrong error.
+    async fn ensure_worker(
+        &mut self,
+        v: PhpVersion,
+        i: usize,
+        binary: &std::path::Path,
+    ) -> Result<Listen, PhpError> {
+        #[cfg(not(windows))]
+        {
+            self.ensure_worker_once(v, i, binary).await
+        }
+        #[cfg(windows)]
+        {
+            let first = self.ensure_worker_once(v, i, binary).await;
+            if !matches!(
+                first,
+                Err(PhpError::HealthCheckTimedOut { .. } | PhpError::PermanentFailure { .. })
+            ) {
+                return first;
+            }
+            tracing::warn!(
+                version = %v,
+                worker = i,
+                "php-cgi worker did not come up; replanning its port and retrying once"
+            );
+            self.drop_worker(v, i);
+            self.ensure_worker_once(v, i, binary).await
+        }
+    }
+
+    /// Forget the worker stored at `i`, so a retry starts from an empty slot.
+    #[cfg(windows)]
+    fn drop_worker(&mut self, v: PhpVersion, i: usize) {
+        if let Some(slot) = self.pools.get_mut(&v).and_then(|p| p.workers.get_mut(i)) {
+            *slot = None;
+        }
+    }
+
+    /// One start attempt for worker `i` of `v`: plan an address, render the
+    /// config, spawn, and health-check. Stores the worker only once it is
+    /// `Running`.
+    ///
+    /// Unix renders the FPM pool config; Windows has no FPM, so it renders the
+    /// supplemental php-cgi ini instead, loaded via `PHP_INI_SCAN_DIR`.
+    #[allow(clippy::too_many_lines)]
+    async fn ensure_worker_once(
+        &mut self,
+        v: PhpVersion,
+        i: usize,
+        binary: &std::path::Path,
+    ) -> Result<Listen, PhpError> {
         let listen = self.plan_listen(v)?;
 
         if let Listen::UnixSocket(ref path) = listen {
@@ -324,7 +465,7 @@ where
         cfg.ca_bundle = self.ca_bundle.clone();
 
         if let Some(ext) = &self.dump_ext {
-            let so = ext.so_dir.join(format!("php-{v}")).join("yerd-dump.so");
+            let so = ext.so_dir.join(format!("php-{v}")).join(DUMP_EXT_FILE);
             if so.is_file() {
                 cfg.extension = Some(so);
                 cfg.ini_defines = ext.ini_defines.clone();
@@ -342,7 +483,10 @@ where
             }
         }
 
+        #[cfg(not(windows))]
         let rendered = fpm_conf::render_fpm_conf(&cfg);
+        #[cfg(windows)]
+        let rendered = fpm_conf::render_win_ini(&cfg);
         atomic_write::write(&cfg.config_path, rendered.as_bytes()).map_err(|source| {
             PhpError::ConfigWrite {
                 path: cfg.config_path.clone(),
@@ -354,15 +498,23 @@ where
         let extension = cfg.extension.clone();
         let ini_defines = cfg.ini_defines.clone();
         let user_extensions = cfg.user_extensions.clone();
+        let listen = cfg.listen.clone();
+        #[cfg(windows)]
+        let error_log = cfg.error_log.clone();
         let cmd_builder = || {
-            build_cmd(
-                &binary,
+            #[cfg_attr(not(windows), allow(unused_mut))]
+            let mut cmd = build_cmd(
+                binary,
                 &cfg.config_path,
+                &listen,
                 &env,
                 extension.as_deref(),
                 &ini_defines,
                 &user_extensions,
-            )
+            );
+            #[cfg(windows)]
+            attach_child_log(&mut cmd, &error_log);
+            cmd
         };
 
         let initial_state = PoolState::Stopped;
@@ -382,9 +534,10 @@ where
         match result.outcome {
             Outcome::Running { child, pid } => {
                 let listen = cfg.listen.clone();
-                self.pools.insert(
+                self.store_worker(
                     v,
-                    Pool {
+                    i,
+                    Worker {
                         state: PoolState::Running { pid },
                         state_since: result.state_since,
                         cfg,
@@ -401,16 +554,36 @@ where
         }
     }
 
-    /// Fast path for [`Self::ensure`]: if pool `v` is `Running` with a still-live
-    /// child, return its cached listen address; otherwise `None`.
-    fn running_listen(&mut self, v: PhpVersion) -> Result<Option<Listen>, PhpError> {
-        let Some(pool) = self.pools.get_mut(&v) else {
+    /// Record a healthy worker at index `i`, creating the version's pool if this
+    /// is its first live worker.
+    ///
+    /// The pool is created here and nowhere else. A version that has never
+    /// started must stay absent from `pools`, because the daemon renders "no
+    /// pool" as `Stopped` while an empty pool would read as
+    /// [`PoolRunState::Failed`] and start the snapshot-driven restart loops
+    /// against a version that was never asked to run.
+    fn store_worker(&mut self, v: PhpVersion, i: usize, worker: Worker<S::Child>) {
+        let pool = self.pools.entry(v).or_insert_with(|| Pool {
+            workers: std::iter::repeat_with(|| None)
+                .take(WORKERS_PER_VERSION)
+                .collect(),
+            cursor: i.wrapping_add(1),
+        });
+        if let Some(slot) = pool.workers.get_mut(i) {
+            *slot = Some(worker);
+        }
+    }
+
+    /// Fast path for [`Self::ensure`]: if worker `i` of pool `v` is `Running`
+    /// with a still-live child, return its cached listen address; else `None`.
+    fn running_listen(&mut self, v: PhpVersion, i: usize) -> Result<Option<Listen>, PhpError> {
+        let Some(Some(worker)) = self.pools.get_mut(&v).and_then(|p| p.workers.get_mut(i)) else {
             return Ok(None);
         };
-        if !matches!(pool.state, PoolState::Running { .. }) {
+        if !matches!(worker.state, PoolState::Running { .. }) {
             return Ok(None);
         }
-        let still_alive = match pool.child.as_mut() {
+        let still_alive = match worker.child.as_mut() {
             Some(ch) => ch
                 .try_wait()
                 .map_err(|source| PhpError::Spawn {
@@ -421,18 +594,28 @@ where
                 .is_none(),
             None => false,
         };
-        Ok(still_alive.then(|| pool.cfg.listen.clone()))
+        Ok(still_alive.then(|| worker.cfg.listen.clone()))
     }
 
     /// Plan a listen address, retrying up to `MAX_BIND_ATTEMPTS` to absorb the
-    /// Windows port-pair race.
+    /// Windows port-pair race. On Windows a short, per-daemon-varying backoff
+    /// between attempts de-synchronises two planners colliding on the same
+    /// ephemeral port instead of retrying hot.
     fn plan_listen(&self, v: PhpVersion) -> Result<Listen, PhpError> {
         let mut last_err: Option<PhpError> = None;
-        for _ in 0..MAX_BIND_ATTEMPTS {
+        for attempt in 0..MAX_BIND_ATTEMPTS {
             match AllocatedListen::plan(v, &self.dirs, self.instance_id, &self.binder) {
                 Ok(p) => return Ok(p.listen),
                 Err(e) => last_err = Some(e),
             }
+            #[cfg(windows)]
+            if attempt + 1 < MAX_BIND_ATTEMPTS {
+                let jitter =
+                    10 + (u64::from(self.instance_id).wrapping_mul(attempt as u64 + 1) % 40);
+                std::thread::sleep(Duration::from_millis(jitter));
+            }
+            #[cfg(not(windows))]
+            let _ = attempt;
         }
         Err(last_err.unwrap_or(PhpError::Bind {
             source: yerd_platform::PlatformError::Unsupported {
@@ -442,24 +625,50 @@ where
     }
 
     /// Restart the pool: stop it cleanly, then `ensure` again.
+    ///
+    /// Every worker is stopped. The `ensure` brings the first one back, and the
+    /// rest are respawned lazily as later calls rotate onto their indices.
     pub async fn restart(&mut self, v: PhpVersion) -> Result<Listen, PhpError> {
         let _ = self.stop(v).await;
         self.ensure(v).await
     }
 
-    /// Stop the pool for `v`. No-op if there is no pool.
+    /// Stop every worker of the pool for `v`. No-op if there is no pool.
+    ///
+    /// The pool is dropped whatever happens, and the first worker error (if
+    /// any) is returned once they have all been driven down.
     pub async fn stop(&mut self, v: PhpVersion) -> Result<(), PhpError> {
-        let Some(mut pool) = self.pools.remove(&v) else {
+        let Some(pool) = self.pools.remove(&v) else {
             return Ok(());
         };
 
-        let child = pool.child.take();
-        let cfg = pool.cfg.clone();
+        let mut first_err: Option<PhpError> = None;
+        for worker in pool.workers.into_iter().flatten() {
+            if let Err(e) = self.stop_worker(v, worker).await {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// Drive one worker down to `Stopped` and remove its Unix socket.
+    async fn stop_worker(
+        &mut self,
+        v: PhpVersion,
+        mut worker: Worker<S::Child>,
+    ) -> Result<(), PhpError> {
+        let child = worker.child.take();
+        let cfg = worker.cfg;
         let result = self
             .drive(
                 v,
-                pool.state,
-                pool.state_since,
+                worker.state,
+                worker.state_since,
                 child,
                 Event::StopRequested,
                 &cfg,
@@ -491,24 +700,38 @@ where
         }
     }
 
-    /// Report a live snapshot of every supervised pool.
+    /// Report a live snapshot of every supervised pool, aggregated to **one row
+    /// per PHP version** rather than one per worker.
     ///
     /// Read-only intent, but takes `&mut self` because liveness uses
-    /// [`ChildHandle::try_wait`] (which needs `&mut` on the handle). A pool whose
-    /// child has exited - or whose stored state is somehow non-`Running` - is
-    /// reported as [`PoolRunState::Failed`]; an alive child is `Running` with its
-    /// PID. This does **not** reconcile the pool set (no insert/remove); the next
-    /// `ensure`/`restart` does that.
+    /// [`ChildHandle::try_wait`] (which needs `&mut` on the handle). A pool with
+    /// at least one live worker is [`PoolRunState::Running`], carrying that
+    /// worker's PID and address; a pool whose stored workers have all exited (or
+    /// whose stored state is somehow non-`Running`) is
+    /// [`PoolRunState::Failed`] with no PID and the first stored worker's
+    /// address. Reporting `Running` while any worker still serves matches what
+    /// the user observes, and a dead worker is repaired by the next `ensure`
+    /// that lands on its index. This does **not** reconcile the pool set (no
+    /// insert/remove); the next `ensure`/`restart` does that.
     pub fn snapshots(&mut self) -> Vec<PoolSnapshot> {
         let mut out = Vec::with_capacity(self.pools.len());
         for (version, pool) in &mut self.pools {
-            let listen = Some(pool.cfg.listen.clone());
-            let (state, pid) = match (&pool.state, pool.child.as_mut()) {
-                (PoolState::Running { pid }, Some(child)) => match child.try_wait() {
-                    Ok(None) => (PoolRunState::Running, Some(*pid)),
-                    _ => (PoolRunState::Failed, None),
-                },
-                _ => (PoolRunState::Failed, None),
+            let mut first_listen: Option<Listen> = None;
+            let mut live: Option<(u32, Listen)> = None;
+            for worker in pool.workers.iter_mut().flatten() {
+                if first_listen.is_none() {
+                    first_listen = Some(worker.cfg.listen.clone());
+                }
+                if live.is_some() {
+                    continue;
+                }
+                if let Some(pid) = worker.live_pid() {
+                    live = Some((pid, worker.cfg.listen.clone()));
+                }
+            }
+            let (state, pid, listen) = match live {
+                Some((pid, listen)) => (PoolRunState::Running, Some(pid), Some(listen)),
+                None => (PoolRunState::Failed, None, first_listen),
             };
             out.push(PoolSnapshot {
                 version: *version,
@@ -764,9 +987,74 @@ async fn wait_after_kill<Ch: ChildHandle>(
     }
 }
 
+/// Point php-cgi's stdio at the pool's instance log.
+///
+/// Unix needs no equivalent: FPM opens `error_log` itself, from the pool config
+/// [`fpm_conf::render_fpm_conf`] renders. Windows has no FPM, so without this
+/// the child's stdio is inherited from a daemon that usually has no console and
+/// PHP's startup diagnostics - a `.dll` that won't load, a malformed ini - are
+/// discarded, leaving a crash loop with no recorded cause.
+///
+/// **Both streams are captured, and stdout is the one that matters.** Verified
+/// against the bundled 8.5 build: a bad `-d extension=` writes its
+/// "Unable to load dynamic library" warning to *stdout*, not stderr, and
+/// `display_errors=stderr` does not move it. Capturing stdout is safe precisely
+/// because this is `FastCGI` mode: responses travel over the `-b` socket, so
+/// nothing but these diagnostics is ever written there. stderr is captured too,
+/// since a hard failure below the PHP layer can still land on it.
+///
+/// Best-effort by design: a log that cannot be opened must not stop the pool
+/// from starting, so the failure is warned about and the child runs without
+/// capture. Appends, so restarts accumulate rather than truncating the evidence.
+#[cfg(windows)]
+fn attach_child_log(cmd: &mut StdCommand, error_log: &std::path::Path) {
+    let file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(error_log)
+    {
+        Ok(file) => file,
+        Err(source) => {
+            tracing::warn!(
+                path = %error_log.display(),
+                error = %source,
+                "could not open the pool log; php-cgi output will not be captured"
+            );
+            return;
+        }
+    };
+    match file.try_clone() {
+        Ok(dup) => {
+            cmd.stdout(std::process::Stdio::from(file));
+            cmd.stderr(std::process::Stdio::from(dup));
+        }
+        Err(source) => {
+            tracing::warn!(
+                path = %error_log.display(),
+                error = %source,
+                "could not duplicate the pool log handle; capturing php-cgi stdout only"
+            );
+            cmd.stdout(std::process::Stdio::from(file));
+        }
+    }
+}
+
+/// Build the pool's server command.
+///
+/// Unix runs `php-fpm --fpm-config <conf>` in its own process group. Windows has
+/// no FPM SAPI: it runs `php-cgi.exe -b <host:port>` (the `FastCGI` server),
+/// pointing `PHP_INI_SCAN_DIR` at the supplemental ini's directory (`config_path`
+/// is that ini file). `-c` is deliberately **not** passed on Windows: it would
+/// drop the bundle's own `php.ini` (which carries `extension_dir`, the enabled
+/// extension set, and the install-time CA lines). `PHP_FCGI_MAX_REQUESTS=0`
+/// stops php-cgi from exiting after N requests (the supervisor would count that
+/// as a crash), and `PHP_FCGI_CHILDREN` is cleared (fork-based, unsupported on
+/// Windows).
+#[allow(clippy::too_many_lines)]
 fn build_cmd(
-    binary: &PathBuf,
-    config_path: &PathBuf,
+    binary: &std::path::Path,
+    config_path: &std::path::Path,
+    listen: &Listen,
     env: &[(String, String)],
     extension: Option<&std::path::Path>,
     ini_defines: &[(String, String)],
@@ -788,15 +1076,35 @@ fn build_cmd(
         cmd.arg("-d")
             .arg(format!("{directive}={}", ext.path.display()));
     }
-    cmd.arg("--fpm-config").arg(config_path);
-    cmd.env_clear();
-    for (k, val) in env {
-        cmd.env(k, val);
-    }
-    #[cfg(unix)]
+
+    #[cfg(not(windows))]
     {
         use std::os::unix::process::CommandExt;
+
+        let _ = listen;
+        cmd.arg("--fpm-config").arg(config_path);
+        cmd.env_clear();
+        for (k, val) in env {
+            cmd.env(k, val);
+        }
         cmd.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        let addr = match listen {
+            Listen::TcpLoopback(a) => a.to_string(),
+            Listen::UnixSocket(_) => format!("{}:0", std::net::Ipv4Addr::LOCALHOST),
+        };
+        cmd.arg("-b").arg(addr);
+        cmd.env_clear();
+        for (k, val) in env {
+            cmd.env(k, val);
+        }
+        cmd.env("PHP_FCGI_MAX_REQUESTS", "0");
+        cmd.env_remove("PHP_FCGI_CHILDREN");
+        if let Some(scan_dir) = config_path.parent() {
+            cmd.env("PHP_INI_SCAN_DIR", scan_dir);
+        }
     }
     cmd
 }
@@ -836,16 +1144,35 @@ mod pure_helper_tests {
             .collect()
     }
 
+    /// The trailing args after the shared `-d ...` block: `--fpm-config <conf>`
+    /// on Unix, `-b <addr>` on Windows (php-cgi has no `--fpm-config`).
+    fn tail(config: &str, addr: &str) -> Vec<String> {
+        #[cfg(not(windows))]
+        {
+            let _ = addr;
+            vec!["--fpm-config".to_owned(), config.to_owned()]
+        }
+        #[cfg(windows)]
+        {
+            let _ = config;
+            vec!["-b".to_owned(), addr.to_owned()]
+        }
+    }
+
+    fn tcp_listen() -> Listen {
+        Listen::TcpLoopback("127.0.0.1:9000".parse().unwrap())
+    }
+
     #[test]
-    fn build_cmd_without_extension_only_passes_fpm_config() {
+    fn build_cmd_without_extension_passes_no_defines() {
         let binary = PathBuf::from("/opt/php/bin/php");
         let config = PathBuf::from("/run/yerd/fpm-8.3.conf");
         let env = vec![("PATH".to_owned(), "/usr/bin".to_owned())];
-        let cmd = build_cmd(&binary, &config, &env, None, &[], &[]);
+        let cmd = build_cmd(&binary, &config, &tcp_listen(), &env, None, &[], &[]);
 
         assert_eq!(cmd.get_program(), OsStr::new("/opt/php/bin/php"));
         let args = args_of(&cmd);
-        assert_eq!(args, vec!["--fpm-config", "/run/yerd/fpm-8.3.conf"]);
+        assert_eq!(args, tail("/run/yerd/fpm-8.3.conf", "127.0.0.1:9000"));
         assert!(!args.iter().any(|a| a == "-d"));
 
         let envs: Vec<_> = cmd
@@ -858,35 +1185,50 @@ mod pure_helper_tests {
             })
             .collect();
         assert!(envs.contains(&("PATH".to_owned(), Some("/usr/bin".to_owned()))));
+        #[cfg(windows)]
+        {
+            assert!(
+                envs.contains(&("PHP_FCGI_MAX_REQUESTS".to_owned(), Some("0".to_owned()))),
+                "{envs:?}"
+            );
+            assert!(
+                envs.iter().any(|(k, _)| k == "PHP_INI_SCAN_DIR"),
+                "{envs:?}"
+            );
+        }
     }
 
     #[test]
-    fn build_cmd_with_extension_emits_defines_before_fpm_config() {
+    fn build_cmd_with_extension_emits_defines_first() {
         let binary = PathBuf::from("/opt/php/bin/php");
         let config = PathBuf::from("/run/yerd/fpm-8.3.conf");
         let env: Vec<(String, String)> = vec![];
         let so = Path::new("/lib/yerd-dump.so");
         let defines = vec![("yerd_dump.state_path".to_owned(), "/var/state".to_owned())];
-        let cmd = build_cmd(&binary, &config, &env, Some(so), &defines, &[]);
+        let cmd = build_cmd(
+            &binary,
+            &config,
+            &tcp_listen(),
+            &env,
+            Some(so),
+            &defines,
+            &[],
+        );
 
         let args = args_of(&cmd);
-        assert_eq!(
-            args,
-            vec![
-                "-d",
-                "extension=/lib/yerd-dump.so",
-                "-d",
-                "yerd_dump.state_path=/var/state",
-                "--fpm-config",
-                "/run/yerd/fpm-8.3.conf",
-            ]
-        );
+        let mut want = vec![
+            "-d".to_owned(),
+            "extension=/lib/yerd-dump.so".to_owned(),
+            "-d".to_owned(),
+            "yerd_dump.state_path=/var/state".to_owned(),
+        ];
+        want.extend(tail("/run/yerd/fpm-8.3.conf", "127.0.0.1:9000"));
+        assert_eq!(args, want);
         let ext_pos = args
             .iter()
             .position(|a| a.starts_with("extension="))
             .unwrap();
-        let conf_pos = args.iter().position(|a| a == "--fpm-config").unwrap();
-        assert!(ext_pos < conf_pos);
+        assert!(ext_pos < args.len() - 1, "defines come before the tail");
     }
 
     #[test]
@@ -904,36 +1246,30 @@ mod pure_helper_tests {
                 zend: true,
             },
         ];
-        let cmd = build_cmd(&binary, &config, &env, None, &[], &user);
+        let cmd = build_cmd(&binary, &config, &tcp_listen(), &env, None, &[], &user);
         let args = args_of(&cmd);
-        assert_eq!(
-            args,
-            vec![
-                "-d",
-                "extension=/lib/scrypt.so",
-                "-d",
-                "zend_extension=/lib/xdebug.so",
-                "--fpm-config",
-                "/run/yerd/fpm-8.5.conf",
-            ]
-        );
+        let mut want = vec![
+            "-d".to_owned(),
+            "extension=/lib/scrypt.so".to_owned(),
+            "-d".to_owned(),
+            "zend_extension=/lib/xdebug.so".to_owned(),
+        ];
+        want.extend(tail("/run/yerd/fpm-8.5.conf", "127.0.0.1:9000"));
+        assert_eq!(args, want);
 
         let so = Path::new("/lib/yerd-dump.so");
-        let cmd = build_cmd(&binary, &config, &env, Some(so), &[], &user);
+        let cmd = build_cmd(&binary, &config, &tcp_listen(), &env, Some(so), &[], &user);
         let args = args_of(&cmd);
-        assert_eq!(
-            args,
-            vec![
-                "-d",
-                "extension=/lib/yerd-dump.so",
-                "-d",
-                "extension=/lib/scrypt.so",
-                "-d",
-                "zend_extension=/lib/xdebug.so",
-                "--fpm-config",
-                "/run/yerd/fpm-8.5.conf",
-            ]
-        );
+        let mut want = vec![
+            "-d".to_owned(),
+            "extension=/lib/yerd-dump.so".to_owned(),
+            "-d".to_owned(),
+            "extension=/lib/scrypt.so".to_owned(),
+            "-d".to_owned(),
+            "zend_extension=/lib/xdebug.so".to_owned(),
+        ];
+        want.extend(tail("/run/yerd/fpm-8.5.conf", "127.0.0.1:9000"));
+        assert_eq!(args, want);
     }
 
     #[test]

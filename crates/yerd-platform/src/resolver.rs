@@ -6,17 +6,18 @@ use crate::PlatformError;
 
 /// OS resolver redirection abstraction.
 ///
-/// `install` and `uninstall` always return `NeedsHelper` in Phase 1; the
-/// daemon materialises a `HelperInvocation::InstallResolver` /
+/// `install` and `uninstall` always return `NeedsHelper` (on every OS, Windows
+/// included); the daemon materialises a `HelperInvocation::InstallResolver` /
 /// `UninstallResolver` from the same `tld` and `addr` it passed here.
-/// `is_installed` reads public files and is unprivileged.
+/// `is_installed` is unprivileged: it reads public resolver files on Unix and
+/// the read-only HKLM NRPT registry on Windows.
 ///
 /// Both `uninstall(tld)` for an absent TLD and `is_installed(tld)` for an
 /// absent TLD return `Ok(())` / `Ok(false)` - idempotent.
 pub trait ResolverInstaller {
     /// Request resolver redirection for `tld` to `addr`.
     ///
-    /// `addr` is the IP+port the OS resolver should forward to. Phase 1
+    /// `addr` is the IP+port the OS resolver should forward to. The daemon
     /// daemon always passes `127.0.0.1:<port>`; the trait accepts
     /// `SocketAddr` so v2 can move the DNS responder elsewhere without a
     /// breaking change.

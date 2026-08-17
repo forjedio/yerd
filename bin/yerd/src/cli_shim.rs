@@ -7,62 +7,45 @@
 //! settings **and** that version's registered extensions), and `exec`s PHP.
 //! Pointing `PHPRC` per version is what lets a custom extension load in the CLI,
 //! and `PHPRC` (rather than `-d`) is inherited by any child PHP the exec'd one
-//! spawns. Unix-only: these wrappers are never created on other platforms.
+//! spawns. On Unix these shims are symlinks read from `argv[0]`; on Windows they
+//! are `.cmd` wrappers that re-invoke `yerd.exe __shim <name>`.
 
-use std::os::unix::process::CommandExt as _;
-use std::path::Path;
+use std::ffi::OsString;
 use std::process::ExitCode;
 
-use yerd_platform::{ActivePaths, Paths, PlatformDirs};
+use yerd_platform::PlatformDirs;
 
-use crate::shim::{cli_binary, cli_phprc, fail, resolve_default_php};
+use crate::shim::{
+    cli_binary, cli_phprc, default_php_or_message, dirs_or_fail, exec_php, fail,
+    parse_version_affix, ShimVersion,
+};
 
-/// Which PHP a clean CLI shim targets.
-enum CliSpec {
-    /// `php` - the default version (resolved at run time).
-    Default,
-    /// `php<major>.<minor>` - an explicit version.
-    Version(u8, u8),
-}
-
-/// If `argv[0]` is a clean CLI shim name (`php` / `php<M>.<N>`), run that PHP with
-/// the version's `PHPRC` set and return its exit code (on success `exec` replaces
-/// the process and never returns); otherwise `None`, so `main` falls through to
-/// the normal CLI. Runs *after* the cover-shim dispatch so `php<ver>cover` is
-/// never routed here.
+/// If the shim name is a clean CLI shim name (`php` / `php<M>.<N>`), run that PHP
+/// with the version's `PHPRC` set and return its exit code (on success `exec`
+/// replaces the process and never returns); otherwise `None`, so dispatch falls
+/// through to the next shim. Runs *after* the cover-shim dispatch so
+/// `php<ver>cover` is never routed here.
 #[must_use]
-pub fn dispatch() -> Option<ExitCode> {
-    let arg0 = std::env::args_os().next()?;
-    let name = Path::new(&arg0).file_name()?.to_str()?;
+pub(crate) fn dispatch(name: &str, forward: &[OsString]) -> Option<ExitCode> {
     let spec = parse_cli_name(name)?;
-    Some(run(&spec))
+    Some(run(&spec, forward))
 }
 
 /// Parse a clean CLI shim basename. Matches `php` and `php<MAJOR>.<MINOR>`
 /// exactly, and **rejects a trailing `cover`** so `php<ver>cover` can never be
 /// misrouted here even if dispatch order changed. Returns `None` for `yerd`,
 /// `composer`, and anything else.
-fn parse_cli_name(name: &str) -> Option<CliSpec> {
-    let rest = name.strip_prefix("php")?;
-    if rest.ends_with("cover") {
+fn parse_cli_name(name: &str) -> Option<ShimVersion> {
+    if name.ends_with("cover") {
         return None;
     }
-    if rest.is_empty() {
-        return Some(CliSpec::Default);
-    }
-    let (maj, min) = rest.split_once('.')?;
-    if maj.is_empty() || min.is_empty() {
-        return None;
-    }
-    let major: u8 = maj.parse().ok()?;
-    let minor: u8 = min.parse().ok()?;
-    Some(CliSpec::Version(major, minor))
+    parse_version_affix(name, "php", "")
 }
 
-fn run(spec: &CliSpec) -> ExitCode {
-    let dirs = match ActivePaths::new().resolve() {
+fn run(spec: &ShimVersion, forward: &[OsString]) -> ExitCode {
+    let dirs = match dirs_or_fail() {
         Ok(d) => d,
-        Err(e) => return fail(format!("cannot resolve yerd directories: {e}")),
+        Err(code) => return code,
     };
     let (php_bin, minor) = match resolve_target(&dirs, spec) {
         Ok(t) => t,
@@ -73,23 +56,17 @@ fn run(spec: &CliSpec) -> ExitCode {
     if let Some(phprc) = cli_phprc(&dirs, &minor) {
         cmd.env("PHPRC", phprc);
     }
-    let err = cmd.args(std::env::args_os().skip(1)).exec();
-    if err.kind() == std::io::ErrorKind::NotFound {
-        return fail(format!(
-            "PHP binary not found at {} ({err}) — reinstall with `yerd install php {minor}`",
-            php_bin.display()
-        ));
-    }
-    fail(format!("failed to exec {}: {err}", php_bin.display()))
+    cmd.args(forward);
+    exec_php(cmd, &php_bin, Some(&minor))
 }
 
 /// Resolve `(php_binary, "major.minor")` for the spec.
 fn resolve_target(
     dirs: &PlatformDirs,
-    spec: &CliSpec,
+    spec: &ShimVersion,
 ) -> Result<(std::path::PathBuf, String), String> {
     match spec {
-        CliSpec::Version(maj, min) => {
+        ShimVersion::Version(maj, min) => {
             let minor = format!("{maj}.{min}");
             let php = cli_binary(dirs, &minor);
             if php.is_file() {
@@ -100,9 +77,7 @@ fn resolve_target(
                 ))
             }
         }
-        CliSpec::Default => {
-            resolve_default_php(dirs).ok_or_else(|| crate::shim::no_default_php_message(dirs))
-        }
+        ShimVersion::Default => default_php_or_message(dirs),
     }
 }
 
@@ -112,10 +87,10 @@ mod tests {
 
     #[test]
     fn accepts_plain_and_versioned_php_names() {
-        assert!(matches!(parse_cli_name("php"), Some(CliSpec::Default)));
+        assert!(matches!(parse_cli_name("php"), Some(ShimVersion::Default)));
         assert!(matches!(
             parse_cli_name("php8.5"),
-            Some(CliSpec::Version(8, 5))
+            Some(ShimVersion::Version(8, 5))
         ));
     }
 

@@ -37,18 +37,20 @@
 //! The bundle-swap mechanics ([`swap_bundle`]) are unit-tested on temp dirs. The
 //! live elevation, the real Gatekeeper/SMAppService behaviour, and whether a
 //! bundle swap preserves the `SMAppService` Login-Item registration are **not**
-//! exercisable in CI - they are the Phase B hardware-spike preconditions.
+//! exercisable in CI - they have to be validated on real hardware.
 //!
 //! ## Atomicity note
 //!
 //! The macOS swap uses rename-aside → rename-in (safe `std::fs::rename`), which
 //! has a sub-millisecond window where the bundle path does not exist. An atomic
 //! `renamex_np(RENAME_SWAP)` would close that window but needs `unsafe` FFI;
-//! `bin/yerd` forbids `unsafe`, so that is a documented hardening follow-up
-//! (move the swap into a small unsafe-permitting module or `yerd-helper`).
+//! `bin/yerd` forbids `unsafe`, so closing that window would mean moving the
+//! swap into a small unsafe-permitting module or `yerd-helper`.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::process::Command;
+use std::process::ExitCode;
 
 use yerd_ipc::StagedArtifact;
 use yerd_update::{verify_minisign, UPDATE_PUBLIC_KEY};
@@ -59,7 +61,8 @@ use yerd_update::{verify_minisign, UPDATE_PUBLIC_KEY};
 pub const APPLY_ENV: &str = "YERD_APPLY_UPDATE";
 /// Env var carrying the staged artifact path.
 pub const APPLY_PATH_ENV: &str = "YERD_APPLY_PATH";
-/// Env var carrying the artifact kind: `"deb"`, `"pacman"`, `"rpm"`, or `"app_tar_gz"`.
+/// Env var carrying the artifact kind: `"deb"`, `"pacman"`, `"rpm"`,
+/// `"app_tar_gz"`, or `"nsis_exe"`.
 pub const APPLY_KIND_ENV: &str = "YERD_APPLY_KIND";
 /// Env var: `"1"` to relaunch the GUI after the install.
 pub const APPLY_RELAUNCH_GUI_ENV: &str = "YERD_APPLY_RELAUNCH_GUI";
@@ -200,9 +203,10 @@ pub fn run_from_env() -> Option<ExitCode> {
         Ok("pacman") => StagedArtifact::Pacman,
         Ok("rpm") => StagedArtifact::Rpm,
         Ok("app_tar_gz") => StagedArtifact::AppTarGz,
+        Ok("nsis_exe") => StagedArtifact::NsisExe,
         other => {
             eprintln!(
-                "yerd: invalid {APPLY_KIND_ENV}={other:?} (expected \"deb\", \"pacman\", \"rpm\" or \"app_tar_gz\")"
+                "yerd: invalid {APPLY_KIND_ENV}={other:?} (expected \"deb\", \"pacman\", \"rpm\", \"app_tar_gz\" or \"nsis_exe\")"
             );
             return Some(ExitCode::from(2));
         }
@@ -243,6 +247,7 @@ pub fn run(
         StagedArtifact::Deb => apply_linux(staged, relaunch_gui),
         StagedArtifact::Pacman => apply_linux_pacman(staged, relaunch_gui),
         StagedArtifact::Rpm => apply_linux_rpm(staged, relaunch_gui),
+        StagedArtifact::NsisExe => apply_windows(staged, relaunch_gui),
         _ => Err("unknown staged artifact kind from the daemon".to_owned()),
     };
     match result {
@@ -287,6 +292,7 @@ fn sibling_minisig(staged: &Path) -> PathBuf {
 
 /// The `yerdd` binary beside the running `yerd` (same bundle / install dir),
 /// used by the restart step.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn sibling_yerdd() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
@@ -295,6 +301,7 @@ fn sibling_yerdd() -> Option<PathBuf> {
 }
 
 /// Restart the daemon and (optionally) relaunch the GUI after an install.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn restart_services(relaunch_gui: bool) {
     restart_daemon();
     if relaunch_gui {
@@ -304,6 +311,7 @@ fn restart_services(relaunch_gui: bool) {
 
 /// Restart the daemon so it picks up the freshly-swapped binary. Best-effort: a
 /// failure is logged, and launchd's `KeepAlive`/`RunAtLoad` may still bring it up.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn restart_daemon() {
     if let Some(yerdd) = sibling_yerdd() {
         let ctl = yerd_service_ctl::ServiceCtl::new(yerdd);
@@ -820,14 +828,249 @@ fn sibling_gui() -> Option<PathBuf> {
         .find(|c| c.exists())
 }
 
+// ── Windows: run the NSIS installer silently ─────────────────────────────────
+//
+// One artifact, the NSIS installer. The applier rename-asides the in-use exes,
+// runs the installer `/S /UPDATE` (silent + update-mode, so the NSIS uninstall
+// hook is skipped - see `nsis/hooks.nsh`), then restarts via `yerd-service-ctl`.
+// The `.old` images are kept one cycle for rollback and cleared on the next
+// update. Rename-aside works because Windows lets a running executable be
+// renamed (the process keeps running from the renamed image).
+
+/// The install-dir images to rename aside before running the installer:
+/// the GUI (`yerd-gui.exe`, the Tauri `MAINBINARYNAME`), the CLI, the daemon,
+/// and the privileged helper. Missing entries are skipped (a dev tree may lack
+/// `yerd-helper.exe`).
+///
+/// The GUI name is confirmed against the generated
+/// `target/release/nsis/x64/installer.nsi`, which reads
+/// `!define MAINBINARYNAME "yerd-gui"` and installs it with a bare
+/// `File "${MAINBINARYSRCPATH}"` (no `/oname=`), so the installed name is the
+/// Cargo `[[bin]]` name rather than the `productName`. Setting
+/// `mainBinaryName` in `apps/yerd-gui/src-tauri/tauri.conf.json` would move it,
+/// and this list would have to move with it.
+#[cfg(windows)]
+const WINDOWS_IMAGES: &[&str] = &["yerd-gui.exe", "yerd.exe", "yerdd.exe", "yerd-helper.exe"];
+
+/// A record of the files [`rename_aside`] moved to `<name>.old`, so the whole
+/// set can be restored as a unit if a later step fails. Each entry is
+/// `(original, aside)`.
+#[derive(Debug, Default)]
+pub struct RenamedSet {
+    renamed: Vec<(PathBuf, PathBuf)>,
+}
+
+impl RenamedSet {
+    /// Rename every aside file back to its original name (best-effort - a
+    /// failure to restore one entry does not stop the rest).
+    pub fn rollback(&self) {
+        for (original, aside) in &self.renamed {
+            let _ = std::fs::rename(aside, original);
+        }
+    }
+}
+
+/// Rename each of `names` present in `dir` to `<name>.old`. A missing source is
+/// skipped, not fatal. On the first rename failure the already-renamed entries
+/// are rolled back and the error is returned, so `dir` is never left half
+/// renamed. Cross-platform (the mechanics are the same everywhere) so it is
+/// unit-tested on every OS; only the Windows applier calls it.
+pub fn rename_aside(dir: &Path, names: &[&str]) -> std::io::Result<RenamedSet> {
+    let mut set = RenamedSet::default();
+    for &name in names {
+        let from = dir.join(name);
+        if !from.exists() {
+            continue;
+        }
+        let to = dir.join(format!("{name}.old"));
+        match std::fs::rename(&from, &to) {
+            Ok(()) => set.renamed.push((from, to)),
+            Err(e) => {
+                set.rollback();
+                return Err(e);
+            }
+        }
+    }
+    Ok(set)
+}
+
+/// The first candidate directory for which `has_daemon` is true, or `None`.
+/// Pure but for the injected probe, so the candidate-scan order is table-tested
+/// on every OS; the Windows applier passes real candidates + a filesystem probe.
+pub fn find_install_dir<F: Fn(&Path) -> bool>(
+    candidates: &[PathBuf],
+    has_daemon: F,
+) -> Option<PathBuf> {
+    candidates.iter().find(|c| has_daemon(c)).cloned()
+}
+
+/// Candidate install dirs, in priority order: the directory of the running exe
+/// (when it holds `yerdd.exe`), then `%LOCALAPPDATA%\Yerd` (the per-user NSIS
+/// default). The programs-bin `yerd.exe` on PATH falls through to the second.
+#[cfg(windows)]
+fn install_dir_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            out.push(dir.to_path_buf());
+        }
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty()) {
+        out.push(PathBuf::from(local).join("Yerd"));
+    }
+    out
+}
+
+/// Whether `dir` holds the daemon image (the install-dir marker).
+#[cfg(windows)]
+fn dir_has_yerdd(dir: &Path) -> bool {
+    dir.join("yerdd.exe").is_file()
+}
+
+/// `%LOCALAPPDATA%\Programs\yerd\bin` - the PATH copy of `yerd.exe` (kept in
+/// sync with `path_cmd::windows::programs_bin`; duplicated rather than shared to
+/// keep the modules decoupled).
+#[cfg(windows)]
+fn programs_bin_dir() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .filter(|v| !v.is_empty())
+        .map(|l| PathBuf::from(l).join("Programs").join("yerd").join("bin"))
+}
+
+/// Delete any leftover `<name>.old` from a previous update cycle (closing the
+/// prior rollback window before opening a new one).
+#[cfg(windows)]
+fn delete_old_images(dir: &Path, names: &[&str]) {
+    for &name in names {
+        let _ = std::fs::remove_file(dir.join(format!("{name}.old")));
+    }
+}
+
+/// Run the staged NSIS installer silently in update mode and wait for it to
+/// exit. `/S` = silent; `/UPDATE` tells the NSIS template this is an update so
+/// its uninstall hook is skipped (see `nsis/hooks.nsh`). Defender can briefly
+/// lock the freshly-written file, so a spawn failure is retried once after a
+/// short pause.
+#[cfg(windows)]
+fn run_nsis_installer(staged: &Path) -> Result<(), String> {
+    use std::process::Command;
+
+    let spawn = || Command::new(staged).args(["/S", "/UPDATE"]).status();
+    let status = if let Ok(s) = spawn() {
+        s
+    } else {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        spawn().map_err(|e| format!("spawning the installer: {e}"))?
+    };
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the installer exited with status {}",
+            status
+                .code()
+                .map_or_else(|| "unknown".to_owned(), |c| c.to_string())
+        ))
+    }
+}
+
+/// Refresh the PATH copy of `yerd.exe` (step 7): rename the current
+/// `%LOCALAPPDATA%\Programs\yerd\bin\yerd.exe` aside and copy the freshly
+/// installed `install_dir\yerd.exe` in, also clearing a stale `yerd.exe.new`
+/// left by `path_cmd`'s locked-swap staging. Best-effort throughout.
+#[cfg(windows)]
+fn refresh_programs_bin_copy(install_dir: &Path) {
+    let Some(programs_bin) = programs_bin_dir() else {
+        return;
+    };
+    let _ = std::fs::remove_file(programs_bin.join("yerd.exe.new"));
+    let dest = programs_bin.join("yerd.exe");
+    if !dest.exists() {
+        return;
+    }
+    let src = install_dir.join("yerd.exe");
+    if !src.is_file() {
+        return;
+    }
+    let old = programs_bin.join("yerd.exe.old");
+    let _ = std::fs::remove_file(&old);
+    if std::fs::rename(&dest, &old).is_ok() {
+        if std::fs::copy(&src, &dest).is_ok() {
+            let _ = std::fs::remove_file(&old);
+        } else {
+            let _ = std::fs::rename(&old, &dest);
+        }
+    }
+}
+
+/// Relaunch the GUI from `install_dir` after an update. Prefers the Tauri main
+/// binary (`yerd-gui.exe`), falling back to `Yerd.exe`. Plain detached spawn: a
+/// GUI-subsystem exe needs no `CREATE_NO_WINDOW`.
+#[cfg(windows)]
+fn relaunch_gui_app_windows(install_dir: &Path) -> bool {
+    use std::process::Command;
+    for name in ["yerd-gui.exe", "Yerd.exe"] {
+        let gui = install_dir.join(name);
+        if gui.is_file() {
+            return Command::new(&gui).spawn().is_ok();
+        }
+    }
+    false
+}
+
+/// Apply the staged NSIS installer: resolve the install dir, stop the daemon,
+/// rename the in-use exes aside, run the installer `/S /UPDATE`, refresh the
+/// PATH copy, then restart the daemon and (optionally) the GUI. On installer
+/// failure the renames are rolled back and the daemon restarted before erroring.
+#[cfg(windows)]
+fn apply_windows(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
+    let install_dir =
+        find_install_dir(&install_dir_candidates(), dir_has_yerdd).ok_or_else(|| {
+            "not an installed copy of Yerd (yerdd.exe was not found beside the running \
+             executable or in %LOCALAPPDATA%\\Yerd) - reinstall from the installer"
+                .to_owned()
+        })?;
+
+    delete_old_images(&install_dir, WINDOWS_IMAGES);
+
+    let ctl = yerd_service_ctl::ServiceCtl::new(install_dir.join("yerdd.exe"));
+    if !ctl.stop_and_wait() {
+        return Err("the daemon did not exit in time; not replacing files".to_owned());
+    }
+
+    let renamed = rename_aside(&install_dir, WINDOWS_IMAGES)
+        .map_err(|e| format!("renaming the running executables aside: {e}"))?;
+
+    if let Err(e) = run_nsis_installer(staged) {
+        renamed.rollback();
+        let _ = ctl.start();
+        return Err(e);
+    }
+
+    refresh_programs_bin_copy(&install_dir);
+
+    if let Err(e) = ctl.start() {
+        eprintln!("yerd: daemon restart reported: {e} (it may auto-start)");
+    }
+    if relaunch_gui {
+        let _ = relaunch_gui_app_windows(&install_dir);
+    }
+    Ok(())
+}
+
 // ── cross-platform stubs ─────────────────────────────────────────────────────
-// `run`'s match references both installers regardless of target, so each needs a
+// `run`'s match references every installer regardless of target, so each needs a
 // definition on the *other* OS. The daemon only ever stages the artifact kind
 // matching the running platform, so these stubs are defence-in-depth.
 
 #[cfg(not(target_os = "macos"))]
 fn apply_macos(_staged: &Path, _relaunch_gui: bool, _gui_owns_daemon: bool) -> Result<(), String> {
     Err("a macOS .app bundle cannot be installed on this platform".to_owned())
+}
+
+#[cfg(not(windows))]
+fn apply_windows(_staged: &Path, _relaunch_gui: bool) -> Result<(), String> {
+    Err("a Windows installer cannot be installed on this platform".to_owned())
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -845,7 +1088,17 @@ fn apply_linux_rpm(_staged: &Path, _relaunch_gui: bool) -> Result<(), String> {
     Err("a Fedora .rpm cannot be installed on this platform".to_owned())
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+/// Windows relaunch used by `run`'s error path: re-resolve the install dir and
+/// relaunch the GUI from it.
+#[cfg(windows)]
+fn relaunch_gui_app() -> bool {
+    match find_install_dir(&install_dir_candidates(), dir_has_yerdd) {
+        Some(dir) => relaunch_gui_app_windows(&dir),
+        None => false,
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn relaunch_gui_app() -> bool {
     false
 }
@@ -971,12 +1224,63 @@ mod tests {
     /// Two reads differ because of the process-lifetime counter (not the clock,
     /// which may be coarse), and the value carries this process's pid so
     /// concurrent stagers can't collide.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn unique_suffix_is_per_call_distinct() {
         let a = unique_suffix();
         let b = unique_suffix();
         assert_ne!(a, b);
         assert!(a.starts_with(&format!("{}-", std::process::id())));
+    }
+
+    #[test]
+    fn find_install_dir_returns_first_matching_candidate() {
+        let a = PathBuf::from("/one");
+        let b = PathBuf::from("/two");
+        let c = PathBuf::from("/three");
+        let cands = vec![a.clone(), b.clone(), c.clone()];
+        let found = find_install_dir(&cands, |p| p == b || p == c);
+        assert_eq!(found, Some(b));
+        assert_eq!(find_install_dir(&cands, |_| false), None);
+        assert_eq!(find_install_dir(&[], |_| true), None);
+    }
+
+    #[test]
+    fn rename_aside_renames_existing_and_skips_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("yerd.exe"), b"cli").unwrap();
+        std::fs::write(dir.join("yerdd.exe"), b"daemon").unwrap();
+        let set = rename_aside(dir, &["yerd.exe", "yerdd.exe", "yerd-helper.exe"]).unwrap();
+        assert!(dir.join("yerd.exe.old").exists());
+        assert!(dir.join("yerdd.exe.old").exists());
+        assert!(!dir.join("yerd.exe").exists());
+        assert!(
+            !dir.join("yerd-helper.exe.old").exists(),
+            "a missing source must be skipped, not created"
+        );
+        set.rollback();
+        assert!(dir.join("yerd.exe").exists());
+        assert!(dir.join("yerdd.exe").exists());
+        assert!(!dir.join("yerd.exe.old").exists());
+    }
+
+    /// A mid-set failure (renaming onto an existing directory fails on every OS)
+    /// rolls back the entries already renamed, leaving the directory untouched.
+    #[test]
+    fn rename_aside_rolls_back_on_partial_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("a.exe"), b"a").unwrap();
+        std::fs::write(dir.join("b.exe"), b"b").unwrap();
+        std::fs::create_dir(dir.join("b.exe.old")).unwrap();
+        std::fs::write(dir.join("b.exe.old").join("keep"), b"x").unwrap();
+
+        let err = rename_aside(dir, &["a.exe", "b.exe"]);
+        assert!(err.is_err(), "renaming onto a directory should fail");
+        assert!(dir.join("a.exe").exists(), "a.exe should be rolled back");
+        assert!(!dir.join("a.exe.old").exists());
+        assert!(dir.join("b.exe").exists());
     }
 
     #[test]

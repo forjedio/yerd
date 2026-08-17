@@ -750,6 +750,12 @@ mod tests {
         );
     }
 
+    /// Extension paths are validated host-relatively, so a fixture has to be
+    /// a path this host accepts (see `yerd_core::php_extensions`).
+    fn host_ext_path(stem: &str) -> String {
+        yerd_core::php_vocab::example_ext_path(stem, yerd_core::php_vocab::EXT_SUFFIX)
+    }
+
     #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn php_extensions_emit_array_of_tables_and_round_trip() {
@@ -760,12 +766,12 @@ mod tests {
             vec![
                 crate::ExtEntry {
                     name: "scrypt".to_owned(),
-                    path: "/opt/homebrew/lib/php/pecl/20250925/scrypt.so".to_owned(),
+                    path: host_ext_path("scrypt"),
                     zend: false,
                 },
                 crate::ExtEntry {
                     name: "xdebug".to_owned(),
-                    path: "/opt/homebrew/lib/php/pecl/20250925/xdebug.so".to_owned(),
+                    path: host_ext_path("xdebug"),
                     zend: true,
                 },
             ],

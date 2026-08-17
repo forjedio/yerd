@@ -28,7 +28,7 @@ function asText(): string {
     "Yerd daemon diagnostics",
     "=======================",
     `service manager : ${d.serviceManager || "(unknown)"}`,
-    `socket          : ${d.socketPath} (${d.socketResponding ? "responding" : "not responding"})`,
+    `endpoint        : ${d.socketPath} (${d.socketResponding ? "responding" : "not responding"})`,
     `yerdd binary    : ${d.yerddPath ?? "(not found)"}`,
     `translocated    : ${d.translocated}`,
     `pending approval: ${d.pendingApproval}`,

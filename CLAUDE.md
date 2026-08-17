@@ -24,9 +24,10 @@ These agree with one another by design. If anything here ever conflicts with the
 
 ## What Yerd is
 
-A fast, rootless, open-source **local PHP development environment** for macOS and
-Linux (Windows is planned; its OS adapters don't exist yet — don't assume Windows
-code paths). It serves projects on `.test` domains over HTTP/HTTPS, runs a
+A fast, rootless, open-source **local PHP development environment** for macOS,
+Linux, and Windows (early access: a real `Windows*` adapter subset ships;
+remaining pieces alias the `unsupported` stub, so check before assuming a Windows
+code path). It serves projects on `.test` domains over HTTP/HTTPS, runs a
 different PHP version per site, and supervises databases, caches, mail capture,
 and dumps — no Docker, no `sudo` for everyday work.
 

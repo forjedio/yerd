@@ -111,6 +111,35 @@ pub fn ide_cli_candidates_macos(home: Option<&Path>) -> Vec<PathBuf> {
     candidates
 }
 
+/// Return extra Windows CLI directories used when an editor's launcher is not
+/// on `PATH`.
+///
+/// Only the `JetBrains` Toolbox scripts directory, the direct analogue of the
+/// entry both sibling functions already carry. Empty when `%LOCALAPPDATA%` is
+/// unset. Windows installers otherwise put their launcher on `PATH`, and a
+/// Windows GUI process inherits the full user and machine `PATH`, so the
+/// stripped-`PATH` problem that motivates the longer Unix lists barely applies.
+#[must_use]
+pub fn ide_cli_candidates_windows(local_app_data: Option<&Path>) -> Vec<PathBuf> {
+    local_app_data
+        .map(|d| vec![d.join("JetBrains").join("Toolbox").join("scripts")])
+        .unwrap_or_default()
+}
+
+/// Filenames to probe for an editor CLI called `cli_name` on Windows.
+///
+/// `.exe` first so a native executable wins over a shim that has to route
+/// through `cmd.exe`. [`IdeSpec::cli_names`] needs no Windows column because
+/// every supported editor's Windows launcher is one of these three extensions
+/// over the same stem.
+#[must_use]
+pub fn windows_executable_names(cli_name: &str) -> Vec<String> {
+    ["exe", "cmd", "bat"]
+        .iter()
+        .map(|ext| format!("{cli_name}.{ext}"))
+        .collect()
+}
+
 /// Return extra Linux CLI directories used when the GUI has no shell `PATH`.
 /// Covers the Flatpak, Snap, Nix, and `JetBrains` Toolbox export directories a
 /// desktop-launched process does not inherit.
@@ -511,6 +540,41 @@ mod tests {
                 PathBuf::from("/System/Applications"),
                 PathBuf::from("/Network/Applications")
             ]
+        );
+    }
+
+    /// Built with `join` on both sides so the assertion holds on every host:
+    /// the separator this un-gated test sees is the *host's*, not Windows'.
+    #[test]
+    fn windows_candidates_are_the_toolbox_scripts_dir() {
+        let local = Path::new("local-app-data");
+        let dirs = ide_cli_candidates_windows(Some(local));
+        assert_eq!(
+            dirs,
+            vec![local.join("JetBrains").join("Toolbox").join("scripts")]
+        );
+    }
+
+    #[test]
+    fn windows_candidates_are_empty_without_local_app_data() {
+        assert!(ide_cli_candidates_windows(None).is_empty());
+    }
+
+    /// `.exe` must come first: a native launcher beats a `.cmd` shim that has to
+    /// route through `cmd.exe`.
+    #[test]
+    fn windows_executable_names_prefer_exe() {
+        assert_eq!(
+            windows_executable_names("code"),
+            vec!["code.exe", "code.cmd", "code.bat"]
+        );
+        assert_eq!(
+            windows_executable_names("phpstorm"),
+            vec!["phpstorm.exe", "phpstorm.cmd", "phpstorm.bat"]
+        );
+        assert_eq!(
+            windows_executable_names("subl"),
+            vec!["subl.exe", "subl.cmd", "subl.bat"]
         );
     }
 }

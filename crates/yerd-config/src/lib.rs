@@ -104,7 +104,4 @@ pub use schema::{
 /// v23 added the optional `[domains.proxy]` table ([`Config::domains`]) for
 /// whole-host proxy domain deltas; it defaults (empty) when absent, so v22→v23
 /// is a bare bump too.
-///
-/// The per-version detail, including how to hand-edit a file back down for an
-/// older binary, lives in `docs/developer/config-schema-history.md`.
 pub const CURRENT_VERSION: u32 = 23;

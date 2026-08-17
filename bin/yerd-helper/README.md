@@ -81,11 +81,16 @@ security find-certificate -Z /Library/Keychains/System.keychain \
 sudo target/debug/yerd-helper uninstall-ca --fingerprint <64hex>
 ```
 
+## Windows
+
+The Windows arm ships the NRPT resolver ops, elevated via UAC rather than
+`sudo`. Because a UAC-elevated process cannot write to the caller's stdout, it
+writes an advisory result file instead: the caller passes `--result-token` and
+reads the outcome back from it.
+
 ## Deferred
 
-- Windows: a stub `main` exits 78. Real Windows behaviour lands in
-  Phase 2 with `yerd-platform`'s Windows impls.
-- macOS Authorization Services entitlements wrapper (Phase 2).
+- macOS Authorization Services entitlements wrapper.
 - Linux distro variants outside Debian/Ubuntu/Alpine/RHEL/Fedora/Arch
   (anchor-dir auto-detect returns `Unsupported` for unknown layouts).
 - `tracing` subscriber - `eprintln!` to stderr is enough for a

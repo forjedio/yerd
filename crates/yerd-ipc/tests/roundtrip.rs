@@ -268,6 +268,8 @@ fn encode_then_decode_response_roundtrip() {
             lan_setup_bound: Some(true),
             port_redirect_targets: None,
             lan_redirect_targets: None,
+            resolver_rule_servers: vec!["127.0.0.1".into()],
+            dns_port_owner: Some("dnscrypt-proxy.exe".into()),
         }),
     });
     assert_response_roundtrips(Response::Diagnoses {

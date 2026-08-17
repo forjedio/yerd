@@ -41,8 +41,8 @@ fn meta_url() -> String {
 pub async fn available_versions(state: &DaemonState, dl: &dyn Downloader) -> Response {
     {
         let cache = state.wordpress_versions.read().await;
-        if let Some((fetched_at, versions)) = cache.as_ref() {
-            if fetched_at.elapsed() < CACHE_TTL {
+        if let Some((expires_at, versions)) = cache.as_ref() {
+            if Instant::now() < *expires_at {
                 return Response::WordpressVersions {
                     versions: versions.clone(),
                 };
@@ -52,7 +52,7 @@ pub async fn available_versions(state: &DaemonState, dl: &dyn Downloader) -> Res
 
     match fetch_and_parse(dl).await {
         Ok(versions) => {
-            *state.wordpress_versions.write().await = Some((Instant::now(), versions.clone()));
+            *state.wordpress_versions.write().await = Some((expiry(), versions.clone()));
             Response::WordpressVersions { versions }
         }
         Err(e) => {
@@ -68,6 +68,18 @@ pub async fn available_versions(state: &DaemonState, dl: &dyn Downloader) -> Res
             }
         }
     }
+}
+
+/// When a list fetched now stops being fresh. The cache stores this deadline
+/// rather than the fetch time so a test can construct an already-expired entry
+/// without subtracting [`CACHE_TTL`] from `Instant::now()` - on Windows
+/// `Instant` is a counter since boot, so that subtraction is `None` on a
+/// freshly-booted machine (a CI runner) and `unwrap`ping it fails there.
+/// Saturates to "already expired" on the overflow that can't happen in practice.
+fn expiry() -> Instant {
+    Instant::now()
+        .checked_add(CACHE_TTL)
+        .unwrap_or_else(Instant::now)
 }
 
 async fn fetch_and_parse(dl: &dyn Downloader) -> Result<Vec<WordPressVersionInfo>, String> {
@@ -199,7 +211,7 @@ mod tests {
     async fn available_versions_serves_fresh_cache_without_fetching() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        *state.wordpress_versions.write().await = Some((Instant::now(), sample_versions()));
+        *state.wordpress_versions.write().await = Some((expiry(), sample_versions()));
 
         let dl = FakeDl(Err("must not be called"));
         let versions = versions_of(available_versions(&state, &dl).await);
@@ -216,8 +228,13 @@ mod tests {
         assert_eq!(versions, sample_versions());
 
         let cached = state.wordpress_versions.read().await;
-        let (fetched_at, cached_versions) = cached.as_ref().unwrap();
-        assert!(fetched_at.elapsed() < Duration::from_secs(1));
+        let (expires_at, cached_versions) = cached.as_ref().unwrap();
+        let remaining = expires_at.saturating_duration_since(Instant::now());
+        assert!(remaining <= CACHE_TTL, "{remaining:?}");
+        assert!(
+            remaining > CACHE_TTL.saturating_sub(Duration::from_secs(1)),
+            "{remaining:?}"
+        );
         assert_eq!(*cached_versions, sample_versions());
     }
 
@@ -225,10 +242,10 @@ mod tests {
     async fn available_versions_falls_back_to_stale_cache_on_fetch_error() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        let stale_at = Instant::now()
-            .checked_sub(CACHE_TTL + Duration::from_secs(1))
-            .unwrap();
-        *state.wordpress_versions.write().await = Some((stale_at, sample_versions()));
+        let expired = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        *state.wordpress_versions.write().await = Some((expired, sample_versions()));
 
         let dl = FakeDl(Err("network down"));
         let versions = versions_of(available_versions(&state, &dl).await);

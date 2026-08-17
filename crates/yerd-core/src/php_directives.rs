@@ -66,14 +66,34 @@ pub fn reserved(name: &str) -> Option<&'static str> {
         return Some("this setting is managed with `yerd set php` (add --only <version> for a per-version value)");
     }
     if name.starts_with("pm.") {
-        return Some(
-            "FPM pool settings are managed with `yerd php pool` (or the GUI pool-size control)",
-        );
+        return Some(pm_hint());
     }
     RESERVED
         .iter()
         .find(|(n, _)| *n == name)
         .map(|(_, hint)| *hint)
+}
+
+/// The `pm.`-prefix hint, which differs by host in substance and not just
+/// vocabulary, so it is a whole-sentence pair rather than an interpolation of
+/// [`crate::php_vocab`]. On Unix it points at the command and GUI control that
+/// own pool sizing. On Windows neither exists: `yerd php pool set` is refused
+/// with `ErrorCode::Unsupported` and the GUI's pool control is hidden, because
+/// `php-cgi` has no worker pool. Kept in step *in substance* with the
+/// client-side mirror in `apps/yerd-gui/src/lib/phpSettings.ts` so
+/// pre-validation and the daemon's authoritative answer agree; the two are not
+/// the same sentence, because the daemon's caller prefixes the directive name
+/// (`"{key} is managed by Yerd: {hint}"`) and the GUI's stands alone.
+///
+/// [`reserved`] returns `Option<&'static str>`, so this returns a literal:
+/// widening it to `String` would ripple through five call sites for a wording
+/// change.
+fn pm_hint() -> &'static str {
+    if cfg!(windows) {
+        "these are FPM pool settings, and php-cgi on Windows has no worker pool"
+    } else {
+        "FPM pool settings are managed with `yerd php pool` (or the GUI pool-size control)"
+    }
 }
 
 /// Validate a free-form directive name: non-empty, bounded, first character
@@ -306,8 +326,11 @@ mod tests {
         assert!(reserved("opcache.enable").is_none());
     }
 
+    /// Unix points the user at the command that owns pool sizing. Windows must
+    /// not: `yerd php pool set` is refused there and the GUI control is hidden,
+    /// so naming either would send the user to a dead end.
     #[test]
-    fn pool_prefix_is_reserved_and_points_at_the_pool_command() {
+    fn pool_prefix_is_reserved_and_its_hint_is_os_appropriate() {
         for name in [
             "pm.max_children",
             "pm.start_servers",
@@ -316,7 +339,13 @@ mod tests {
             "pm.",
         ] {
             let hint = reserved(name).unwrap_or_default();
+            #[cfg(not(windows))]
             assert!(hint.contains("yerd php pool"), "{name}: {hint:?}");
+            #[cfg(windows)]
+            {
+                assert!(!hint.contains("yerd php pool"), "{name}: {hint:?}");
+                assert!(hint.contains("no worker pool"), "{name}: {hint:?}");
+            }
         }
     }
 

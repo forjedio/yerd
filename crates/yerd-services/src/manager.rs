@@ -168,12 +168,12 @@ where
                 service: wire_id.to_owned(),
                 detail: "a versioned service requires a version".to_owned(),
             })?;
-            let bin = def
-                .server_binary()
-                .ok_or_else(|| ServiceError::Unsupported {
+            let bin = crate::service::server_binary_for_host(def.as_ref()).ok_or_else(|| {
+                ServiceError::Unsupported {
                     service: wire_id.to_owned(),
                     detail: "type has no server binary".to_owned(),
-                })?;
+                }
+            })?;
             let program = version::server_path(&self.dirs, id, bin, v);
             if !program.is_file() {
                 return Err(ServiceError::VersionNotInstalled {
@@ -432,6 +432,9 @@ where
         let listen = inst.listen.clone();
         let policy = def.supervisor_policy();
         let stop_protocol = def.stop_protocol();
+        #[cfg(windows)]
+        self.graceful_pre_stop(wire_id, def.as_ref(), inst.version.as_ref())
+            .await;
         self.drive(
             wire_id,
             inst.state,
@@ -446,6 +449,61 @@ where
         )
         .await
         .map(|_| ())
+    }
+
+    /// Windows-only: run the engine's graceful-stop command (Postgres
+    /// `pg_ctl stop -m fast`) and wait for it, before the manager forcibly kills
+    /// the tree via the job object. A missing plan, a spawn failure, or a
+    /// non-zero exit is logged (tracing + the service log) and falls through to
+    /// the forced kill - the stop still completes. On Unix this is never called;
+    /// the SIGINT/SIGTERM path handles graceful stop.
+    #[cfg(windows)]
+    async fn graceful_pre_stop(
+        &self,
+        wire_id: &str,
+        def: &dyn ServiceDefinition,
+        version: Option<&ServiceVersion>,
+    ) {
+        let Some(version) = version else {
+            return;
+        };
+        let install_dir = version::install_dir(&self.dirs, def.id(), version);
+        let datadir = version::datadir(&self.dirs, def.id(), def.datadir_scope(), version);
+        let Some(cmd) = def.graceful_stop_plan(&install_dir, &datadir) else {
+            return;
+        };
+        match self.spawner.spawn(cmd) {
+            Ok(mut child) => match child.wait().await {
+                Ok(ExitReason::Code(0)) => {}
+                other => self.note_forced_stop(
+                    wire_id,
+                    &format!("graceful stop did not exit cleanly ({other:?}); forcing termination"),
+                ),
+            },
+            Err(e) => self.note_forced_stop(
+                wire_id,
+                &format!("could not run graceful stop ({e}); forcing termination"),
+            ),
+        }
+    }
+
+    /// Log a forced-stop notice to tracing and append it to the instance's
+    /// service log (the file `yerd service logs <svc>` reads). Best-effort.
+    #[cfg(windows)]
+    fn note_forced_stop(&self, wire_id: &str, message: &str) {
+        use std::io::Write as _;
+        tracing::warn!(service = wire_id, "{message}");
+        let log = version::instance_log_path(&self.dirs, wire_id);
+        if let Some(parent) = log.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+        {
+            let _ = writeln!(file, "[yerd] {message}");
+        }
     }
 
     /// Stop every supervised instance in deterministic order.
@@ -530,7 +588,7 @@ where
             return Ok(());
         };
         let install_dir = version::install_dir(&self.dirs, def.id(), version);
-        let init_bin = install_dir.join("bin").join(init_bin_name);
+        let init_bin = resolve_init_binary(def, &install_dir.join("bin"), init_bin_name);
         if !init_bin.is_file() {
             return Err(ServiceError::Init {
                 service: wire_id.to_owned(),
@@ -1028,6 +1086,31 @@ impl Drop for InitGroupReaper {
             yerd_supervise::kill_process_group(pid);
         }
     }
+}
+
+/// The init-tool path inside `bin_dir`, with the host `.exe` suffix applied.
+///
+/// On Windows the `MariaDB` producer ships the init tool under one of two names
+/// (`mariadb-install-db.exe` or `mysql_install_db.exe`), so probe both and return
+/// the first that exists; if neither does, fall through to the suffixed default
+/// name so the caller's `is_file` check reports a clear "missing bin/..." error.
+fn resolve_init_binary(
+    def: &dyn ServiceDefinition,
+    bin_dir: &std::path::Path,
+    init_bin_name: &str,
+) -> PathBuf {
+    #[cfg(windows)]
+    if def.id() == "mariadb" {
+        for candidate in ["mariadb-install-db.exe", "mysql_install_db.exe"] {
+            let path = bin_dir.join(candidate);
+            if path.is_file() {
+                return path;
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = def;
+    bin_dir.join(version::host_binary_name(init_bin_name))
 }
 
 /// Environment to inject into the postmaster for a `PostGIS`-bearing postgres

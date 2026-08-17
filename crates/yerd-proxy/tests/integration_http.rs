@@ -279,6 +279,7 @@ async fn proxy_forwards_to_fcgi_backend() {
     assert!(params
         .get("SCRIPT_FILENAME")
         .unwrap()
+        .replace('\\', "/")
         .ends_with("/index.php"));
     assert_eq!(params.get("PATH_INFO").map(String::as_str), Some("/foo"));
     assert_eq!(
@@ -336,6 +337,10 @@ async fn valid_login_token_adds_auto_prepend_and_strips_token_from_query() {
         consumed: std::sync::atomic::AtomicBool::new(false),
     });
     let prepend_path = PathBuf::from("/opt/yerd/wordpress-autologin-prepend.php");
+    let want_prepend = format!(
+        "auto_prepend_file={}",
+        yerd_core::path_norm::php_path(&prepend_path).display()
+    );
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
@@ -367,7 +372,7 @@ async fn valid_login_token_adds_auto_prepend_and_strips_token_from_query() {
     let params = captured.lock().await.clone();
     assert_eq!(
         params.get("PHP_VALUE").map(String::as_str),
-        Some("auto_prepend_file=/opt/yerd/wordpress-autologin-prepend.php")
+        Some(want_prepend.as_str())
     );
     assert_eq!(
         params.get("YERD_LOGIN_USER").map(String::as_str),
@@ -846,7 +851,8 @@ async fn subdirectory_index_php_wins_over_root_index_php() {
     );
     assert_eq!(
         params.get("SCRIPT_FILENAME").map(String::as_str),
-        Some(docroot.path().join("wp-admin/index.php").to_str().unwrap())
+        yerd_core::path_norm::php_path(&docroot.path().join("wp-admin/index.php")).to_str(),
+        "SCRIPT_FILENAME must be the host-native normalised path, separators included"
     );
 
     let _ = tx_shutdown.send(());
@@ -1151,6 +1157,10 @@ async fn directory_redirect_preserves_login_token_unconsumed() {
     });
     let login_tokens_for_assert = login_tokens.clone();
     let prepend_path = PathBuf::from("/opt/yerd/wordpress-autologin-prepend.php");
+    let want_prepend = format!(
+        "auto_prepend_file={}",
+        yerd_core::path_norm::php_path(&prepend_path).display()
+    );
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
@@ -1207,7 +1217,7 @@ async fn directory_redirect_preserves_login_token_unconsumed() {
     let params = captured.lock().await.clone();
     assert_eq!(
         params.get("PHP_VALUE").map(String::as_str),
-        Some("auto_prepend_file=/opt/yerd/wordpress-autologin-prepend.php"),
+        Some(want_prepend.as_str()),
         "autologin must actually engage on the slashed request"
     );
     assert_eq!(
@@ -1619,6 +1629,168 @@ async fn symlink_escaping_document_root_returns_403() {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
 }
 
+/// Create a directory junction at `link` pointing at `target`, via
+/// `cmd.exe /C mklink /J` resolved from the absolute `%SystemRoot%\System32`
+/// path. `mklink /J` needs neither elevation nor Developer Mode (unlike
+/// `mklink /D`, which needs `SeCreateSymbolicLinkPrivilege`), so the two
+/// junction fixtures below run on an ordinary unprivileged Windows test host.
+/// The target is always stored absolute, so callers pass an absolute path, and
+/// it must use native separators throughout: `mklink` is a `cmd.exe` builtin,
+/// which reads a `/`-prefixed path segment as a switch.
+#[cfg(windows)]
+fn make_junction(link: &std::path::Path, target: &std::path::Path) {
+    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_owned());
+    let cmd = PathBuf::from(system_root).join("System32").join("cmd.exe");
+    let out = std::process::Command::new(cmd)
+        .arg("/C")
+        .arg("mklink")
+        .arg("/J")
+        .arg(link)
+        .arg(target)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "mklink /J {} {} failed: {}{}",
+        link.display(),
+        target.display(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+/// Windows counterpart of
+/// `symlink_within_document_root_outside_served_root_is_served`: the Laravel
+/// `public/storage` shape built as a **directory junction** instead of a
+/// symlink. Laravel's `Filesystem::link` is believed to produce a junction on
+/// Windows (unverified against Laravel's source), but the coverage holds
+/// either way: the proxy has no symlink-specific code path, and containment is
+/// `tokio::fs::canonicalize` + `starts_with` (`forward/static_file.rs`), which
+/// follows a junction exactly as it follows a symlink. Unlike the Unix
+/// fixture's relative `../storage/app/public` target, a junction records an
+/// absolute target, so this one passes the resolved path.
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn junction_within_document_root_outside_served_root_is_served() {
+    let docroot = tempfile::tempdir().unwrap();
+    let storage_dir = docroot.path().join("storage").join("app").join("public");
+    std::fs::create_dir_all(&storage_dir).unwrap();
+    std::fs::write(storage_dir.join("logo.png"), b"logo-bytes").unwrap();
+
+    let public_dir = docroot.path().join("public");
+    std::fs::create_dir_all(&public_dir).unwrap();
+    make_junction(&public_dir.join("storage"), &storage_dir);
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+
+    let tld = Tld::new("test").unwrap();
+    let cfg = RouterConfig::with_tld(tld);
+    let mut router = SiteRouter::new(cfg);
+    let mut site =
+        Site::linked("app", docroot.path().to_path_buf(), PhpVersion::new(8, 3)).unwrap();
+    site.set_web_subpath("public");
+    router.insert(site).unwrap();
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+
+    let resolver = Arc::new(StaticResolver {
+        backend: Backend::PhpFpmTcp {
+            addr: "127.0.0.1:1".parse().unwrap(),
+        },
+    });
+
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
+            proxy_listener,
+            None,
+            router,
+            resolver,
+            Arc::new(NoLoginTokens),
+            None,
+            Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
+            false,
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
+        .await;
+    });
+
+    let (status, _content_type, body) =
+        client_get_response(proxy_addr, "app.test", "/storage/logo.png").await;
+    assert_eq!(status, 200);
+    assert_eq!(body, b"logo-bytes");
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
+/// Windows counterpart of `symlink_escaping_document_root_returns_403`: a
+/// junction under the document root pointing at a directory outside it must be
+/// refused with a `403` that leaks neither the secret bytes nor the local
+/// absolute paths. This pins `Containment::Escaped` on Windows without needing
+/// `SeCreateSymbolicLinkPrivilege`. A junction is a directory link, so the
+/// escape is one level deeper than the Unix fixture's file symlink.
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn junction_escaping_document_root_returns_403() {
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.txt"), b"leaked-secret").unwrap();
+
+    let docroot = tempfile::tempdir().unwrap();
+    make_junction(&docroot.path().join("evil"), outside.path());
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+
+    let tld = Tld::new("test").unwrap();
+    let cfg = RouterConfig::with_tld(tld);
+    let mut router = SiteRouter::new(cfg);
+    let site = Site::linked("app", docroot.path().to_path_buf(), PhpVersion::new(8, 3)).unwrap();
+    router.insert(site).unwrap();
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+
+    let resolver = Arc::new(StaticResolver {
+        backend: Backend::PhpFpmTcp {
+            addr: "127.0.0.1:1".parse().unwrap(),
+        },
+    });
+
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
+            proxy_listener,
+            None,
+            router,
+            resolver,
+            Arc::new(NoLoginTokens),
+            None,
+            Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
+            false,
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
+        .await;
+    });
+
+    let (status, _content_type, body) =
+        client_get_response(proxy_addr, "app.test", "/evil/secret.txt").await;
+    assert_eq!(status, 403);
+    assert!(!body
+        .windows(b"leaked-secret".len())
+        .any(|w| w == b"leaked-secret"));
+    let body_str = String::from_utf8_lossy(&body);
+    assert!(body_str.contains("/evil/secret.txt"));
+    assert!(!body_str.contains(&docroot.path().to_string_lossy().into_owned()));
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
 /// Issue #112: with `symlink_protection` off, an asset reached through a symlink
 /// that resolves outside the site's document root (e.g. a shared theme kept
 /// beside the site) is served normally instead of the `403` above - the
@@ -1839,10 +2011,14 @@ async fn post_under_rule_prefix_reaches_nested_front_controller() {
         Some("/api/index.php"),
         "the nested front controller must be the executed script"
     );
-    assert!(params
-        .get("SCRIPT_FILENAME")
-        .unwrap()
-        .ends_with("api/index.php"));
+    let want_tail = yerd_core::path_norm::php_path(std::path::Path::new("api/index.php"));
+    assert!(
+        params
+            .get("SCRIPT_FILENAME")
+            .unwrap()
+            .ends_with(want_tail.to_str().unwrap()),
+        "a route-rule target must land in the host's own separator form"
+    );
     assert_eq!(
         params.get("REQUEST_URI").map(String::as_str),
         Some("/api/user/login"),

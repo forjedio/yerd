@@ -1,11 +1,12 @@
-//! Yerd self-update version checking (notify-only, Phase A).
+//! Yerd self-update version checking: notify-only, the half that detects an
+//! available update without applying it.
 //!
 //! The daemon reads a signed release manifest from the Yerd CDN
 //! (`https://files.yerd.app/latest.json`), caches the parsed releases
 //! (`DaemonState::yerd_update`), and answers `CheckUpdate` by running the pure
 //! [`yerd_update::select_target`] decision over them. Like the PHP checker this
-//! is **notify-only**: it never installs anything (apply is a CLI/GUI-initiated,
-//! interactively-elevated path - see the feature plan).
+//! is **notify-only**: it never installs anything. Applying an update is a
+//! separate CLI/GUI-initiated, interactively-elevated path.
 //!
 //! The manifest's detached minisign signature is verified against
 //! [`yerd_update::UPDATE_PUBLIC_KEY`] before it is trusted, so an attacker
@@ -435,6 +436,7 @@ pub async fn stage_update(
         ArtifactKind::Deb => StagedArtifact::Deb,
         ArtifactKind::Pacman => StagedArtifact::Pacman,
         ArtifactKind::Rpm => StagedArtifact::Rpm,
+        ArtifactKind::NsisExe => StagedArtifact::NsisExe,
     };
     tracing::info!(version = %target_ver, path = %path.display(), "staged verified update artifact");
     Response::Staged {

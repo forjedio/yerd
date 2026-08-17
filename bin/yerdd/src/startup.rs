@@ -123,7 +123,8 @@ pub async fn bring_up_with_dirs(
     config: yerd_config::Config,
     config_path: PathBuf,
 ) -> Result<Daemon, DaemonError> {
-    let lock = InstanceLock::acquire(&dirs)?;
+    let handoff = take_restart_handoff();
+    let lock = acquire_instance_lock(&dirs, handoff).await?;
 
     let bundled = discover_bundled(&dirs).map_err(DaemonError::from)?;
     let binaries: BTreeMap<PhpVersion, PathBuf> = bundled.into_iter().collect();
@@ -262,7 +263,7 @@ pub async fn bring_up_with_dirs(
     let service_manager = Arc::new(Mutex::new(crate::services::new_manager(dirs.clone())));
     let tunnel_manager = Arc::new(Mutex::new(crate::tunnel::new_manager()));
 
-    let ipc_listener = build_ipc_listener(&dirs)?;
+    let ipc_listener = bind_ipc_listener(&dirs, handoff).await?;
 
     // LAN mode: discover the host's routable IPv4 (fail-closed - a discovery
     // error leaves `lan_ip = None`, so DNS answers fall back to loopback while
@@ -803,6 +804,73 @@ fn into_tokio_listener(
     })
 }
 
+/// Retry budget for a restart handoff: the successor daemon can start before the
+/// outgoing one has finished releasing its instance lock and pipe, so it retries
+/// both. ~10s total, well past the teardown-latency window (the outgoing daemon
+/// has already returned from `run_with_daemon`, so the wait is only OS cleanup).
+const HANDOFF_RETRIES: u32 = 40;
+/// Delay between handoff retries.
+const HANDOFF_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Whether this process was spawned as a restart handoff (the console-mode
+/// restart on Windows). Consumes the marker env var so it never leaks to child
+/// processes (php-cgi, or a later restart's grandchild daemon).
+fn take_restart_handoff() -> bool {
+    if std::env::var_os(crate::RESTART_HANDOFF_ENV).is_some() {
+        std::env::remove_var(crate::RESTART_HANDOFF_ENV);
+        true
+    } else {
+        false
+    }
+}
+
+/// Acquire the single-instance lock. Without a handoff this is a straight
+/// fail-fast [`InstanceLock::acquire`] (today's behaviour, unchanged). During a
+/// handoff, a still-held lock ([`DaemonError::AlreadyRunning`]) is retried up to
+/// [`HANDOFF_RETRIES`] times so the successor daemon waits out the outgoing one.
+async fn acquire_instance_lock(
+    dirs: &PlatformDirs,
+    handoff: bool,
+) -> Result<InstanceLock, DaemonError> {
+    let mut attempts = 0u32;
+    loop {
+        match InstanceLock::acquire(dirs) {
+            Ok(lock) => return Ok(lock),
+            Err(DaemonError::AlreadyRunning { path }) if handoff && attempts < HANDOFF_RETRIES => {
+                attempts += 1;
+                tracing::debug!(
+                    ?path,
+                    attempts,
+                    "restart handoff: waiting for instance lock"
+                );
+                tokio::time::sleep(HANDOFF_RETRY_DELAY).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Bind the IPC listener. Without a handoff this is a straight fail-fast
+/// [`build_ipc_listener`] (unchanged). During a handoff, a bind failure (the
+/// outgoing daemon's pipe/socket not yet released) is retried up to
+/// [`HANDOFF_RETRIES`] times; the pipe's first-instance exclusivity makes "bind
+/// succeeds" exactly equal to "the old pipe is gone", the readiness signal the
+/// waiting CLI polls for via `boot_id`.
+async fn bind_ipc_listener(dirs: &PlatformDirs, handoff: bool) -> Result<IpcListener, DaemonError> {
+    let mut attempts = 0u32;
+    loop {
+        match build_ipc_listener(dirs) {
+            Ok(listener) => return Ok(listener),
+            Err(e) if handoff && attempts < HANDOFF_RETRIES => {
+                attempts += 1;
+                tracing::debug!(error = %e, attempts, "restart handoff: waiting for pipe to free");
+                tokio::time::sleep(HANDOFF_RETRY_DELAY).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 fn build_ipc_listener(dirs: &PlatformDirs) -> Result<IpcListener, DaemonError> {
     #[cfg(unix)]
     let socket_path = dirs.runtime.join("yerd.sock");
@@ -820,16 +888,22 @@ fn build_ipc_listener(dirs: &PlatformDirs) -> Result<IpcListener, DaemonError> {
             })?
     };
     #[cfg(windows)]
-    let name = {
+    let (name, sddl) = {
         use interprocess::local_socket::{GenericNamespaced, ToNsName};
-        let pipe = format!("yerd-{}", std::process::id());
-        pipe.clone()
+        let sid = yerd_platform::current_user_sid()?;
+        let pipe = yerd_platform::pure::win_pipe::pipe_name(&sid, &dirs.runtime);
+        let sddl = yerd_platform::pure::win_pipe::pipe_sddl(&sid);
+        let name = pipe
+            .clone()
             .to_ns_name::<GenericNamespaced>()
             .map_err(|source| DaemonError::Io {
                 path: PathBuf::from(&pipe),
                 source,
-            })?
+            })?;
+        (name, sddl)
     };
+
+    #[cfg(unix)]
     let listener = ListenerOptions::new()
         .name(name)
         .create_tokio()
@@ -837,6 +911,28 @@ fn build_ipc_listener(dirs: &PlatformDirs) -> Result<IpcListener, DaemonError> {
             path: dirs.runtime.clone(),
             source,
         })?;
+    #[cfg(windows)]
+    let listener = {
+        use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
+        use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+        let wide = widestring::U16CString::from_str(&sddl).map_err(|e| DaemonError::Io {
+            path: dirs.runtime.clone(),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()),
+        })?;
+        let sd = SecurityDescriptor::deserialize(&wide).map_err(|source| DaemonError::Io {
+            path: dirs.runtime.clone(),
+            source,
+        })?;
+        ListenerOptions::new()
+            .name(name)
+            .security_descriptor(sd)
+            .create_tokio()
+            .map_err(|source| DaemonError::Io {
+                path: dirs.runtime.clone(),
+                source,
+            })?
+    };
+
     #[cfg(unix)]
     crate::secure_fs::restrict_to_owner(&socket_path).map_err(|source| DaemonError::Io {
         path: socket_path,
@@ -1338,6 +1434,55 @@ mod tests {
         assert!(
             build_php_ca_bundle(&dirs, ca.cert_pem(), None).is_none(),
             "a bundle missing the current CA must not be reused"
+        );
+    }
+
+    /// `build_ipc_listener` binds on a tempdir `PlatformDirs`, and a second
+    /// listener on the same dirs fails (the pipe name is already taken) - proof
+    /// the SID + runtime-dir hash yields a stable, unique name.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn build_ipc_listener_binds_and_is_unique_per_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = make_dirs(tmp.path());
+        let _listener = build_ipc_listener(&dirs).expect("first listener binds");
+        assert!(
+            build_ipc_listener(&dirs).is_err(),
+            "a second listener on the same dirs must fail (name already in use)"
+        );
+    }
+
+    /// Contingency probe: prove `interprocess`'s `security_descriptor` is
+    /// actually applied to the pipe by binding one with a DACL that DENIES the
+    /// current user, then asserting a client connect is refused. If the SD were
+    /// ignored, the default (owner-allowed) DACL would let the connect succeed.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn deny_sddl_is_applied_to_the_pipe() {
+        use interprocess::local_socket::tokio::Stream as IpcStream;
+        use interprocess::local_socket::traits::tokio::Stream as _;
+        use interprocess::local_socket::{GenericNamespaced, ToNsName};
+        use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
+        use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+
+        let sid = yerd_platform::current_user_sid().expect("resolve SID");
+        let pipe = format!("yerd-denyprobe-{}", std::process::id());
+        let deny_sddl = format!("D:P(D;;GA;;;{sid})");
+        let wide = widestring::U16CString::from_str(&deny_sddl).unwrap();
+        let sd = SecurityDescriptor::deserialize(&wide).expect("parse deny SDDL");
+        let name = pipe.clone().to_ns_name::<GenericNamespaced>().unwrap();
+        let _listener = ListenerOptions::new()
+            .name(name)
+            .security_descriptor(sd)
+            .create_tokio()
+            .expect("bind deny-SDDL listener");
+
+        let connect_name = pipe.to_ns_name::<GenericNamespaced>().unwrap();
+        let result = IpcStream::connect(connect_name).await;
+        assert!(
+            result.is_err(),
+            "the deny-everyone DACL must refuse the connect; if this passes, the \
+             security descriptor was NOT applied)"
         );
     }
 }

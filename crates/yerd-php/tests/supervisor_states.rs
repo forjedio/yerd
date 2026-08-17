@@ -3,8 +3,11 @@
 //! drives the supervisor through the happy path, crash + recovery,
 //! permanent failure, and clean stop.
 //!
-//! Live FPM coverage lands in `bin/yerdd`'s integration suite; this
-//! test stays fakes-only so it passes on every CI target.
+//! Live FPM coverage lands in `bin/yerdd`'s integration suite; this test stays
+//! fakes-only for the process/clock/probe edges. It still uses the *real*
+//! `ActivePortBinder`, which every supported OS now implements: Unix ignores it
+//! (the planner takes the Unix-socket path) and Windows binds a loopback port
+//! for the php-cgi `-b` address, so the file runs on both.
 
 #![allow(
     clippy::unwrap_used,
@@ -26,7 +29,7 @@ use yerd_core::PhpVersion;
 use yerd_php::pure::supervisor::{KillSignal, StopProtocol, SupervisorPolicy};
 use yerd_php::{
     ChildHandle, Clock, ExitReason, HealthProbe, Listen, PhpError, PhpManager, PoolRunState,
-    ProcessSpawner,
+    ProcessSpawner, WORKERS_PER_VERSION,
 };
 use yerd_platform::{ActivePortBinder, PlatformDirs};
 
@@ -105,7 +108,8 @@ struct SpawnPlan {
 
 struct FakeSpawner {
     plans: Mutex<std::collections::VecDeque<SpawnPlan>>,
-    spawn_count: Mutex<usize>,
+    spawn_count: Arc<Mutex<usize>>,
+    spawned_args: Arc<Mutex<Vec<Vec<String>>>>,
     last_kills: Arc<Mutex<Vec<KillSignal>>>,
 }
 
@@ -113,13 +117,24 @@ impl FakeSpawner {
     fn new(plans: Vec<SpawnPlan>) -> Self {
         Self {
             plans: Mutex::new(plans.into()),
-            spawn_count: Mutex::new(0),
+            spawn_count: Arc::new(Mutex::new(0)),
+            spawned_args: Arc::new(Mutex::new(Vec::new())),
             last_kills: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
-    async fn spawn_count(&self) -> usize {
-        *self.spawn_count.lock().await
+    /// Shared spawn counter, still readable once the spawner has been moved
+    /// into the manager.
+    fn count_handle(&self) -> Arc<Mutex<usize>> {
+        Arc::clone(&self.spawn_count)
+    }
+
+    /// Argv of every spawned command, in spawn order. Windows bakes the planned
+    /// address into `-b <host:port>`, which is how a test sees which port a
+    /// worker was started on.
+    #[cfg(windows)]
+    fn args_handle(&self) -> Arc<Mutex<Vec<Vec<String>>>> {
+        Arc::clone(&self.spawned_args)
     }
 
     fn kills_handle(&self) -> Arc<Mutex<Vec<KillSignal>>> {
@@ -130,7 +145,7 @@ impl FakeSpawner {
 impl ProcessSpawner for FakeSpawner {
     type Child = FakeChild;
 
-    fn spawn(&self, _cmd: std::process::Command) -> Result<FakeChild, io::Error> {
+    fn spawn(&self, cmd: std::process::Command) -> Result<FakeChild, io::Error> {
         let mut plans = self
             .plans
             .try_lock()
@@ -139,10 +154,19 @@ impl ProcessSpawner for FakeSpawner {
             .spawn_count
             .try_lock()
             .map_err(|_| io::Error::other("spawn: count lock contended"))?;
+        let mut args = self
+            .spawned_args
+            .try_lock()
+            .map_err(|_| io::Error::other("spawn: args lock contended"))?;
         let plan = plans
             .pop_front()
             .ok_or_else(|| io::Error::other("spawn: no more plans"))?;
         *counter += 1;
+        args.push(
+            cmd.get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect(),
+        );
         Ok(FakeChild {
             pid: plan.pid,
             behavior: Arc::new(Mutex::new(plan.behavior)),
@@ -164,6 +188,12 @@ impl Clock for FakeClock {
 struct FakeProbe {
     sequence: Mutex<std::collections::VecDeque<Result<(), io::ErrorKind>>>,
     tail: Result<(), io::ErrorKind>,
+    /// When set, every probe is refused until the shared spawn counter reaches
+    /// the threshold and succeeds from then on, overriding `sequence`/`tail`.
+    /// Keying off spawns rather than probe calls keeps a test deterministic: the
+    /// driver races the probe against the child's exit, so how many probes a
+    /// failing attempt actually issues is not fixed.
+    ok_after_spawns: Option<(Arc<Mutex<usize>>, usize)>,
 }
 
 impl FakeProbe {
@@ -171,6 +201,7 @@ impl FakeProbe {
         Self {
             sequence: Mutex::new(std::collections::VecDeque::new()),
             tail: Ok(()),
+            ok_after_spawns: None,
         }
     }
 
@@ -178,6 +209,17 @@ impl FakeProbe {
         Self {
             sequence: Mutex::new(std::collections::VecDeque::new()),
             tail: Err(io::ErrorKind::ConnectionRefused),
+            ok_after_spawns: None,
+        }
+    }
+
+    /// Refuse until `spawns` has reached `threshold`, then accept.
+    #[cfg(windows)]
+    fn ok_after_spawns(spawns: Arc<Mutex<usize>>, threshold: usize) -> Self {
+        Self {
+            sequence: Mutex::new(std::collections::VecDeque::new()),
+            tail: Ok(()),
+            ok_after_spawns: Some((spawns, threshold)),
         }
     }
 }
@@ -185,6 +227,13 @@ impl FakeProbe {
 #[async_trait]
 impl HealthProbe for FakeProbe {
     async fn probe(&self, _listen: &Listen) -> Result<(), io::Error> {
+        if let Some((spawns, threshold)) = &self.ok_after_spawns {
+            let spawned = *spawns.lock().await;
+            if spawned >= *threshold {
+                return Ok(());
+            }
+            return Err(io::Error::from(io::ErrorKind::ConnectionRefused));
+        }
         let mut seq = self.sequence.lock().await;
         let outcome = seq.pop_front().unwrap_or(self.tail);
         match outcome {
@@ -194,13 +243,25 @@ impl HealthProbe for FakeProbe {
     }
 }
 
+/// A private directory tree per call, under the platform temp dir.
+///
+/// These were once a fixed `/tmp/yerd-test`, shared by every test in this file.
+/// That survived while each test drove a single spawn, but a Windows pool now
+/// renders one `zz-yerd.ini` per worker, so `cargo test` running these in
+/// parallel had several tests writing the same file and CI failed with
+/// `PermissionDenied`. The readback tests below already used `tempfile`; this
+/// brings the shared helper in line with them.
 fn make_dirs() -> PlatformDirs {
+    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let pid = std::process::id();
+    let root = std::env::temp_dir().join(format!("yerd-test-{pid}-{n}"));
     PlatformDirs {
-        config: PathBuf::from("/tmp/yerd-test/cfg"),
-        data: PathBuf::from("/tmp/yerd-test/data"),
-        state: PathBuf::from("/tmp/yerd-test/state"),
-        cache: PathBuf::from("/tmp/yerd-test/cache"),
-        runtime: PathBuf::from("/tmp/yerd-test/run"),
+        config: root.join("cfg"),
+        data: root.join("data"),
+        state: root.join("state"),
+        cache: root.join("cache"),
+        runtime: root.join("run"),
     }
 }
 
@@ -230,15 +291,33 @@ fn make_manager(
     )
 }
 
+/// One spawn plan per worker of a version, with consecutive PIDs from
+/// `first_pid`. Sized off `WORKERS_PER_VERSION` so a test that drives a whole
+/// rotation holds at both N=1 and N=4.
+fn worker_plans(first_pid: u32, behavior: &ChildBehavior) -> Vec<SpawnPlan> {
+    (0..WORKERS_PER_VERSION)
+        .map(|i| SpawnPlan {
+            pid: first_pid + u32::try_from(i).unwrap(),
+            behavior: behavior.clone(),
+        })
+        .collect()
+}
+
+/// The `-b <host:port>` address a php-cgi command was spawned with.
+#[cfg(windows)]
+fn bind_addr(args: &[String]) -> Option<String> {
+    let at = args.iter().position(|a| a == "-b")?;
+    args.get(at + 1).cloned()
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────
 
+/// A full set of spawn plans, because the second `ensure` rotates onto worker 1
+/// wherever `WORKERS_PER_VERSION` is more than one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn ensure_happy_path_returns_listen() {
     let v = PhpVersion::new(8, 3);
-    let spawner = FakeSpawner::new(vec![SpawnPlan {
-        pid: 101,
-        behavior: ChildBehavior::Lives,
-    }]);
+    let spawner = FakeSpawner::new(worker_plans(101, &ChildBehavior::Lives));
     let mut mgr = make_manager(spawner, FakeProbe::always_ok(), v);
 
     let listen = mgr.ensure(v).await.unwrap();
@@ -250,6 +329,59 @@ async fn ensure_happy_path_returns_listen() {
     let _ = mgr.ensure(v).await.unwrap();
 }
 
+/// Each `ensure` hands out the next worker, and the cursor wraps back to worker
+/// 0 on the `WORKERS_PER_VERSION + 1`-th call without spawning again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn ensure_rotates_across_workers() {
+    let v = PhpVersion::new(8, 3);
+    let spawner = FakeSpawner::new(worker_plans(701, &ChildBehavior::Lives));
+    let spawns = spawner.count_handle();
+    let mut mgr = make_manager(spawner, FakeProbe::always_ok(), v);
+
+    let mut listens = Vec::new();
+    for _ in 0..=WORKERS_PER_VERSION {
+        listens.push(mgr.ensure(v).await.unwrap());
+    }
+
+    assert_eq!(*spawns.lock().await, WORKERS_PER_VERSION);
+    assert_eq!(
+        listens[0], listens[WORKERS_PER_VERSION],
+        "the cursor must wrap back onto worker 0"
+    );
+    for a in 0..WORKERS_PER_VERSION {
+        for b in (a + 1)..WORKERS_PER_VERSION {
+            assert_ne!(
+                listens[a], listens[b],
+                "workers {a} and {b} must not share an address"
+            );
+        }
+    }
+    assert_eq!(
+        mgr.snapshots().len(),
+        1,
+        "one row per version, not per worker"
+    );
+}
+
+/// A version whose very first `ensure` fails must leave `pools` untouched: the
+/// daemon renders "no pool" as `Stopped`, whereas an empty pool would read as
+/// `Failed` and start the snapshot-driven restart loops against a version that
+/// never ran.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn failed_first_ensure_leaves_no_pool() {
+    let v = PhpVersion::new(8, 3);
+    let spawner = FakeSpawner::new(vec![]);
+    let mut mgr = make_manager(spawner, FakeProbe::always_refused(), v);
+
+    assert!(mgr.ensure(v).await.is_err());
+    assert!(mgr.snapshots().is_empty());
+}
+
+/// Both hosts write the CA bundle, in different files and different syntax, so
+/// the assertions are cfg-branched rather than gated. Unix renders an FPM pool
+/// file under `config/`; Windows renders the php-cgi supplemental
+/// `zz-yerd.ini` under `state/php/fpm-<v>-<id>/`, with the path double-quoted
+/// and backslash-doubled by `sanitize_quoted_ca_bundle_path`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn set_ca_bundle_is_rendered_into_pool_config() {
     let v = PhpVersion::new(8, 3);
@@ -282,24 +414,52 @@ async fn set_ca_bundle_is_rendered_into_pool_config() {
 
     mgr.ensure(v).await.unwrap();
 
-    let cfg_path = dirs.config.join("php-fpm-8.3-5150.conf");
-    let on_disk = std::fs::read_to_string(&cfg_path).unwrap();
-    assert!(
-        on_disk.contains(&format!(
-            "php_admin_value[openssl.cafile] = {}\n",
-            bundle.display()
-        )),
-        "got: {on_disk}"
-    );
-    assert!(
-        on_disk.contains(&format!(
-            "php_admin_value[curl.cainfo] = {}\n",
-            bundle.display()
-        )),
-        "got: {on_disk}"
-    );
+    #[cfg(not(windows))]
+    {
+        let cfg_path = dirs.config.join("php-fpm-8.3-5150.conf");
+        let on_disk = std::fs::read_to_string(&cfg_path).unwrap();
+        assert!(
+            on_disk.contains(&format!(
+                "php_admin_value[openssl.cafile] = {}\n",
+                bundle.display()
+            )),
+            "got: {on_disk}"
+        );
+        assert!(
+            on_disk.contains(&format!(
+                "php_admin_value[curl.cainfo] = {}\n",
+                bundle.display()
+            )),
+            "got: {on_disk}"
+        );
+    }
+    #[cfg(windows)]
+    {
+        let cfg_path = dirs
+            .state
+            .join("php")
+            .join("fpm-8.3-5150")
+            .join("zz-yerd.ini");
+        let on_disk = std::fs::read_to_string(&cfg_path).unwrap();
+        let quoted = yerd_core::php_settings::sanitize_quoted_ca_bundle_path(&bundle).unwrap();
+        assert!(
+            on_disk.contains(&format!("openssl.cafile = \"{quoted}\"\n")),
+            "got: {on_disk}"
+        );
+        assert!(
+            on_disk.contains(&format!("curl.cainfo = \"{quoted}\"\n")),
+            "got: {on_disk}"
+        );
+    }
 }
 
+/// Unix-only: `pm.max_children` is an FPM pool directive with no Windows
+/// counterpart. `pure::fpm_conf::render_win_ini` emits no `pm.*` line at all,
+/// and `build_cmd`'s Windows arm clears `PHP_FCGI_CHILDREN` because php-cgi has
+/// no fork-based worker pool, which is why the pool-size setting is hidden and
+/// `yerd php pool set` is refused on Windows. Gated rather than weakened: the
+/// Unix assertions below stay exactly as they were.
+#[cfg(not(windows))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn set_pool_overrides_is_rendered_into_pool_config() {
     let v = PhpVersion::new(8, 3);
@@ -342,6 +502,11 @@ async fn set_pool_overrides_is_rendered_into_pool_config() {
 /// An override that no longer validates leaves the built-in default alone
 /// rather than breaking the pool: `override_max_children` returns `None` and
 /// `ensure` never touches `cfg.max_children`.
+///
+/// Unix-only for the same reason as
+/// `set_pool_overrides_is_rendered_into_pool_config`: Windows renders no
+/// `pm.*` directive, so there is no default to fall back to on that host.
+#[cfg(not(windows))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn invalid_pool_override_falls_back_to_the_default() {
     let v = PhpVersion::new(8, 3);
@@ -456,21 +621,22 @@ async fn snapshots_empty_when_nothing_started() {
     assert!(mgr.snapshots().is_empty());
 }
 
+/// A fully populated pool still reports exactly one row, carrying the first
+/// live worker's PID.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn snapshots_report_running_pool_with_pid() {
     let v = PhpVersion::new(8, 3);
-    let spawner = FakeSpawner::new(vec![SpawnPlan {
-        pid: 101,
-        behavior: ChildBehavior::Lives,
-    }]);
+    let spawner = FakeSpawner::new(worker_plans(101, &ChildBehavior::Lives));
     let mut mgr = make_manager(spawner, FakeProbe::always_ok(), v);
-    mgr.ensure(v).await.unwrap();
+    for _ in 0..WORKERS_PER_VERSION {
+        mgr.ensure(v).await.unwrap();
+    }
 
     let snaps = mgr.snapshots();
-    assert_eq!(snaps.len(), 1);
+    assert_eq!(snaps.len(), 1, "one row per version, not per worker");
     assert_eq!(snaps[0].version, v);
     assert_eq!(snaps[0].state, PoolRunState::Running);
-    assert_eq!(snaps[0].pid, Some(101));
+    assert_eq!(snaps[0].pid, Some(101), "the first live worker's pid");
     assert!(snaps[0].listen.is_some());
 }
 
@@ -554,11 +720,85 @@ async fn ensure_unknown_version_errors() {
     );
 }
 
-// Silences `dead_code` for `FakeSpawner::spawn_count` so a future test can
-// assert spawn counts directly.
-#[allow(dead_code)]
-async fn _spawn_count_helper(s: &FakeSpawner) -> usize {
-    s.spawn_count().await
+/// R2: the port baked into a worker's config can go stale between
+/// `AllocatedListen::plan` dropping its probe listener and php-cgi binding it,
+/// so a failed start is replanned onto a fresh port and retried exactly once.
+/// The probe refuses everything until the retry's spawn, so the first drive
+/// cannot succeed on the original port however its `select!` races resolve.
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn ensure_replans_the_port_after_a_failed_start() {
+    let v = PhpVersion::new(8, 3);
+    let max = usize::try_from(SupervisorPolicy::fpm().max_restart_attempts).unwrap();
+    let mut plans: Vec<SpawnPlan> = (0..max)
+        .map(|i| SpawnPlan {
+            pid: 801 + u32::try_from(i).unwrap(),
+            behavior: ChildBehavior::Crashes(ExitReason::Code(1)),
+        })
+        .collect();
+    plans.push(SpawnPlan {
+        pid: 901,
+        behavior: ChildBehavior::Lives,
+    });
+    let spawner = FakeSpawner::new(plans);
+    let spawns = spawner.count_handle();
+    let args = spawner.args_handle();
+    let probe = FakeProbe::ok_after_spawns(spawner.count_handle(), max + 1);
+    let mut mgr = make_manager(spawner, probe, v);
+
+    let listen = mgr.ensure(v).await.unwrap();
+
+    assert_eq!(
+        *spawns.lock().await,
+        max + 1,
+        "one whole drive, then one replanned retry"
+    );
+    let bound: Vec<String> = args
+        .lock()
+        .await
+        .iter()
+        .filter_map(|a| bind_addr(a))
+        .collect();
+    assert_eq!(bound.len(), max + 1, "every php-cgi spawn carries -b");
+    assert!(
+        bound[..max].iter().all(|a| *a == bound[0]),
+        "the first drive retries on one port: {bound:?}"
+    );
+    assert_ne!(bound[max], bound[0], "the retry must plan a fresh port");
+    match listen {
+        Listen::TcpLoopback(addr) => assert_eq!(addr.to_string(), bound[max]),
+        other @ Listen::UnixSocket(_) => panic!("expected TcpLoopback, got {other:?}"),
+    }
+}
+
+/// Exactly one drive's worth of spawn plans. Windows replans and spends a
+/// second drive, which finds the plan queue empty and surfaces `Spawn`;
+/// everywhere else there is no retry, so the drive's own `PermanentFailure`
+/// reaches the caller off the same plan count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn failed_start_is_replanned_only_on_windows() {
+    let v = PhpVersion::new(8, 3);
+    let max = usize::try_from(SupervisorPolicy::fpm().max_restart_attempts).unwrap();
+    let plans: Vec<SpawnPlan> = (0..max)
+        .map(|i| SpawnPlan {
+            pid: 851 + u32::try_from(i).unwrap(),
+            behavior: ChildBehavior::Crashes(ExitReason::Code(1)),
+        })
+        .collect();
+    let spawner = FakeSpawner::new(plans);
+    let spawns = spawner.count_handle();
+    let mut mgr = make_manager(spawner, FakeProbe::always_refused(), v);
+
+    let err = mgr.ensure(v).await.unwrap_err();
+
+    assert_eq!(*spawns.lock().await, max);
+    #[cfg(windows)]
+    assert!(matches!(err, PhpError::Spawn { .. }), "got: {err:?}");
+    #[cfg(not(windows))]
+    assert!(
+        matches!(err, PhpError::PermanentFailure { .. }),
+        "got: {err:?}"
+    );
 }
 
 // ─── Added coverage: restart / shutdown / Failed snapshots / idempotency ──
@@ -635,37 +875,48 @@ async fn shutdown_stops_every_running_pool() {
     );
 }
 
+/// Every worker of the pool has died, so the version's single row is `Failed`
+/// with no PID.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn snapshots_report_failed_when_master_exited() {
     let v = PhpVersion::new(8, 3);
-    let spawner = FakeSpawner::new(vec![SpawnPlan {
-        pid: 401,
-        behavior: ChildBehavior::LivesButTryWaitReportsExited(ExitReason::Code(1)),
-    }]);
+    let spawner = FakeSpawner::new(worker_plans(
+        401,
+        &ChildBehavior::LivesButTryWaitReportsExited(ExitReason::Code(1)),
+    ));
     let mut mgr = make_manager(spawner, FakeProbe::always_ok(), v);
 
-    mgr.ensure(v).await.unwrap();
+    for _ in 0..WORKERS_PER_VERSION {
+        mgr.ensure(v).await.unwrap();
+    }
+
     let snaps = mgr.snapshots();
-    assert_eq!(snaps.len(), 1);
+    assert_eq!(snaps.len(), 1, "one row per version, not per worker");
     assert_eq!(snaps[0].state, PoolRunState::Failed);
     assert_eq!(snaps[0].pid, None);
     assert!(snaps[0].listen.is_some());
 }
 
-/// A second ensure on a still-live pool must reuse the cached listen and not
-/// pull a second spawn plan; only one plan is provided.
+/// An `ensure` that lands on a still-live worker must reuse its cached listen
+/// rather than pull another spawn plan. One full rotation puts the cursor back
+/// on worker 0, so the `WORKERS_PER_VERSION + 1`-th call returns the first
+/// call's address with no extra spawn. The single-row snapshot with the first
+/// worker's PID is the per-version aggregation check.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn ensure_is_idempotent_without_respawning() {
     let v = PhpVersion::new(8, 3);
-    let spawner = FakeSpawner::new(vec![SpawnPlan {
-        pid: 501,
-        behavior: ChildBehavior::Lives,
-    }]);
+    let spawner = FakeSpawner::new(worker_plans(501, &ChildBehavior::Lives));
+    let spawns = spawner.count_handle();
     let mut mgr = make_manager(spawner, FakeProbe::always_ok(), v);
 
     let first = mgr.ensure(v).await.unwrap();
-    let second = mgr.ensure(v).await.unwrap();
-    assert_eq!(first, second);
+    let mut last = first.clone();
+    for _ in 0..WORKERS_PER_VERSION {
+        last = mgr.ensure(v).await.unwrap();
+    }
+
+    assert_eq!(first, last);
+    assert_eq!(*spawns.lock().await, WORKERS_PER_VERSION);
     let snaps = mgr.snapshots();
     assert_eq!(snaps.len(), 1);
     assert_eq!(snaps[0].pid, Some(501));

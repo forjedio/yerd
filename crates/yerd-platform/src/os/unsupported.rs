@@ -1,8 +1,10 @@
-//! Stub implementations for unsupported OSes (Phase 1: Windows).
+//! Stub implementations for OSes without a real impl.
 //!
 //! Every trait method returns `Err(PlatformError::Unsupported { operation })`.
-//! This lets `cargo check --workspace` stay green on every host while the
-//! macOS + Linux impls are the only ones with behaviour.
+//! This lets `cargo check --workspace` stay green on every host, while macOS,
+//! Linux and Windows each carry the full behaviour. Windows reuses none of these
+//! stubs - `os::windows` has a real `Windows*` type for every trait - but the
+//! module stays compiled there, hence the `dead_code` allows below.
 
 use std::net::SocketAddr;
 use std::path::Path;
@@ -11,6 +13,7 @@ use crate::error::ops;
 use crate::ide::{DetectedIde, IdeLauncher};
 use crate::metrics::SystemMetrics;
 use crate::opener::SystemOpener;
+#[cfg(not(target_os = "windows"))]
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::PortRedirector;
@@ -19,10 +22,14 @@ use crate::terminal::TerminalLauncher;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
 use crate::PlatformError;
 
-/// Stub terminal launcher for unsupported OSes.
+/// Stub terminal launcher for unsupported OSes. Windows now has a real
+/// [`super::windows::WindowsTerminalLauncher`], so this stub is unused there (but
+/// the module stays compiled on Windows for the other still-stubbed traits).
+#[cfg_attr(windows, allow(dead_code))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnsupportedTerminalLauncher;
 
+#[cfg_attr(windows, allow(dead_code))]
 impl UnsupportedTerminalLauncher {
     /// Construct.
     #[must_use]
@@ -41,8 +48,10 @@ impl TerminalLauncher for UnsupportedTerminalLauncher {
 
 /// Stub IDE launcher for unsupported OSes.
 #[derive(Debug, Default, Clone, Copy)]
+#[cfg_attr(windows, allow(dead_code))]
 pub struct UnsupportedIdeLauncher;
 
+#[cfg_attr(windows, allow(dead_code))]
 impl UnsupportedIdeLauncher {
     /// Construct.
     #[must_use]
@@ -65,8 +74,10 @@ impl IdeLauncher for UnsupportedIdeLauncher {
 
 /// Stub system opener for unsupported OSes.
 #[derive(Debug, Default, Clone, Copy)]
+#[cfg_attr(windows, allow(dead_code))]
 pub struct UnsupportedSystemOpener;
 
+#[cfg_attr(windows, allow(dead_code))]
 impl UnsupportedSystemOpener {
     /// Construct.
     #[must_use]
@@ -83,10 +94,23 @@ impl SystemOpener for UnsupportedSystemOpener {
     }
 }
 
-/// Stub `Paths` for unsupported OSes.
+/// Stub `Paths` for OSes with no real path resolution. Windows has a real
+/// `Paths` impl (`os::windows::WindowsPaths`), so this stub is not compiled
+/// there.
+#[cfg(not(target_os = "windows"))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnsupportedPaths;
 
+#[cfg(not(target_os = "windows"))]
+impl UnsupportedPaths {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
 impl Paths for UnsupportedPaths {
     fn resolve(&self) -> Result<PlatformDirs, PlatformError> {
         Err(PlatformError::Unsupported {
@@ -95,10 +119,14 @@ impl Paths for UnsupportedPaths {
     }
 }
 
-/// Stub `TrustStore` for unsupported OSes.
+/// Stub `TrustStore` for unsupported OSes. Windows now has a real
+/// [`super::windows::WindowsTrustStore`], so this stub is unused there (but the
+/// module stays compiled on Windows for the other still-stubbed traits).
+#[cfg_attr(windows, allow(dead_code))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnsupportedTrustStore;
 
+#[cfg_attr(windows, allow(dead_code))]
 impl UnsupportedTrustStore {
     /// Construct.
     #[must_use]
@@ -146,10 +174,14 @@ impl TrustStore for UnsupportedTrustStore {
     }
 }
 
-/// Stub `ResolverInstaller` for unsupported OSes.
+/// Stub `ResolverInstaller` for unsupported OSes. Windows now has a real
+/// [`super::windows::WindowsResolverInstaller`], so this stub is unused there
+/// (but the module stays compiled on Windows for the other still-stubbed traits).
+#[cfg_attr(windows, allow(dead_code))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnsupportedResolverInstaller;
 
+#[cfg_attr(windows, allow(dead_code))]
 impl UnsupportedResolverInstaller {
     /// Construct.
     #[must_use]
@@ -178,9 +210,21 @@ impl ResolverInstaller for UnsupportedResolverInstaller {
     }
 }
 
-/// Stub `PortBinder` for unsupported OSes.
+/// Stub `PortBinder` for unsupported OSes. Windows now has a real
+/// [`super::windows::WindowsPortBinder`], so this stub is unused there (but the
+/// module stays compiled on Windows for the other still-stubbed traits).
+#[cfg_attr(windows, allow(dead_code))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnsupportedPortBinder;
+
+#[cfg_attr(windows, allow(dead_code))]
+impl UnsupportedPortBinder {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
 
 impl PortBinder for UnsupportedPortBinder {
     fn bind(&self, _: u16) -> Result<BoundPort, PlatformError> {
@@ -199,8 +243,10 @@ impl PortBinder for UnsupportedPortBinder {
 /// Stub `SystemMetrics` for unsupported OSes - metrics are best-effort, so this
 /// returns `None` (no metrics) rather than an error.
 #[derive(Debug, Default, Clone, Copy)]
+#[cfg_attr(windows, allow(dead_code))]
 pub struct UnsupportedSystemMetrics;
 
+#[cfg_attr(windows, allow(dead_code))]
 impl UnsupportedSystemMetrics {
     /// Construct.
     #[must_use]
@@ -219,10 +265,15 @@ impl SystemMetrics for UnsupportedSystemMetrics {
     }
 }
 
-/// Unsupported-OS `PortRedirector`: always `None` (not applicable).
+/// Unsupported-OS `PortRedirector`: always `None` (not applicable). Windows now
+/// has a real [`super::windows::WindowsPortRedirector`], so this stub is unused
+/// there (but the module stays compiled on Windows for the other still-stubbed
+/// traits).
+#[cfg_attr(windows, allow(dead_code))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnsupportedPortRedirector;
 
+#[cfg_attr(windows, allow(dead_code))]
 impl UnsupportedPortRedirector {
     /// Construct.
     #[must_use]

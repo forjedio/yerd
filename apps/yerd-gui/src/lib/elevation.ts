@@ -24,16 +24,31 @@ export function portsElevated(r: StatusReport): boolean {
 }
 
 /**
+ * Whether the privileged-ports row still needs a fix that elevation can actually
+ * deliver. The answer depends on the host: when the daemon bound no web ports at
+ * all (`web_unbound`), elevation only helps on Linux (setcap binds 80/443
+ * directly); macOS needs working ports set first, so it isn't fixable yet.
+ *
+ * Windows is never fixable: sub-1024 binds are unprivileged there, so
+ * `yerd elevate ports` deliberately prints a skip note and exits 0. Offering the
+ * fix would report success, change nothing, and leave the attention marker lit.
+ * A Windows fallback means another process holds the port, which no privilege
+ * can resolve.
+ */
+export function portsNeedElevation(r: StatusReport, isMac: boolean, isWindows: boolean): boolean {
+  if (isWindows) return false;
+  return r.web_unbound ? !isMac : !portsElevated(r);
+}
+
+/**
  * True when any OS privilege still needs a fix: CA trust, the .test resolver, or
  * privileged ports. Mirrors EnvironmentCard's per-row `fixable` (its `anyFixable`
- * aggregate). The ports branch depends on the host: when the daemon bound no web
- * ports at all (`web_unbound`), elevation can only help on Linux (setcap binds
- * 80/443 directly); macOS needs working ports set first, so it isn't fixable yet.
+ * aggregate).
  */
-export function needsElevation(r: StatusReport, isMac: boolean): boolean {
+export function needsElevation(r: StatusReport, isMac: boolean, isWindows = false): boolean {
   return (
     r.ca.trusted_system !== true ||
     r.resolver_installed !== true ||
-    (r.web_unbound ? !isMac : !portsElevated(r))
+    portsNeedElevation(r, isMac, isWindows)
   );
 }

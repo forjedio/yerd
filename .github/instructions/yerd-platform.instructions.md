@@ -14,9 +14,12 @@ the edge. This crate is itself **unprivileged** — it never elevates.
 
 - The core traits: `Paths`, `TrustStore`, `ResolverInstaller`, `PortBinder`,
   `PortRedirector`, and system metrics.
-- One impl per OS in `os/`: `linux`, `macos`, and `unsupported`. Exactly one is
-  active per build; `os/mod.rs` re-exports the active set as `Active*` aliases.
-  **Windows currently compiles against the `unsupported` stub**, which returns
+- One impl per OS in `os/`: `linux`, `macos`, `windows`, and `unsupported`.
+  Exactly one of `linux`/`macos`/`windows`/`unsupported` is active per build;
+  `os/mod.rs` re-exports the active set as `Active*` aliases. **Windows has a
+  real `Windows*` type for every trait, so nothing there aliases the
+  `unsupported` stub** — though that module stays compiled on Windows, and it
+  is the active set on any other host. It returns
   `PlatformError::Unsupported` for every method — keep that stub total.
 - Pure decision helpers in `pure/`: `firefox` profile discovery, `pem_match`,
   `pf_anchor`, `port_plan`, `resolv_conf`, `resolved_drop_in`, `resolver_file`,
@@ -48,8 +51,8 @@ the edge. This crate is itself **unprivileged** — it never elevates.
 
 ## Tests / invariants
 
-- `tests/linux_smoke.rs`, `tests/macos_smoke.rs`, `tests/unsupported.rs` —
-  per-OS smoke of the non-privileged paths.
+- `tests/linux_smoke.rs`, `tests/macos_smoke.rs`, `tests/windows_smoke.rs`,
+  `tests/unsupported.rs` — per-OS smoke of the non-privileged paths.
 - `tests/helper_argv_shape.rs` — the `HelperInvocation` ↔ argv contract.
 - `tests/no_runtime_deps.rs` — forbidden crates absent; single tokio/time.
 - Pure parsers (`profiles.ini`, `resolv.conf`, port plans, PEM match) are
@@ -59,6 +62,6 @@ the edge. This crate is itself **unprivileged** — it never elevates.
 
 - [ ] No elevation / helper-spawn added here; privileged ops return
       `NeedsHelper` with a typed invocation.
-- [ ] Per-OS change mirrored across `linux`/`macos`/`unsupported`.
+- [ ] Per-OS change mirrored across `linux`/`macos`/`windows`/`unsupported`.
 - [ ] Decision logic lives in `pure/` and is table-tested.
 - [ ] `unsupported` stub stays total; argv-shape test still passes.

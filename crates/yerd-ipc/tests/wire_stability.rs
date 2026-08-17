@@ -1003,6 +1003,7 @@ fn response_error_each_code_byte_shape() {
         (ErrorCode::PortInUse, "port_in_use"),
         (ErrorCode::ExtensionLoadFailed, "extension_load_failed"),
         (ErrorCode::LegacyRestricted, "legacy_restricted"),
+        (ErrorCode::Unsupported, "unsupported"),
         (ErrorCode::Internal, "internal"),
     ] {
         let r = Response::Error {
@@ -1078,6 +1079,8 @@ fn response_status_byte_shape() {
             lan_setup_bound: None,
             port_redirect_targets: None,
             lan_redirect_targets: None,
+            resolver_rule_servers: vec![],
+            dns_port_owner: None,
         }),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -1130,6 +1133,37 @@ fn status_redirect_targets_appear_only_when_some() {
     report.lan_redirect_targets = None;
     let s = serde_json::to_string(&report).unwrap();
     assert!(!s.contains("redirect_targets"), "{s}");
+}
+
+#[test]
+fn status_resolver_rule_servers_appear_only_when_non_empty() {
+    let mut report = sample_status_report();
+    report.resolver_rule_servers = vec!["127.0.0.1".into(), "10.0.0.53".into()];
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(
+        s.contains(r#""resolver_rule_servers":["127.0.0.1","10.0.0.53"]"#),
+        "{s}"
+    );
+
+    report.resolver_rule_servers = vec![];
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(!s.contains("resolver_rule_servers"), "{s}");
+}
+
+#[test]
+fn status_dns_port_owner_appears_only_when_some() {
+    let mut report = sample_status_report();
+    report.dns_unbound = Some(53);
+    report.dns_port_owner = Some("dnscrypt-proxy.exe".into());
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(
+        s.contains(r#""dns_port_owner":"dnscrypt-proxy.exe""#),
+        "{s}"
+    );
+
+    report.dns_port_owner = None;
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(!s.contains("dns_port_owner"), "{s}");
 }
 
 #[test]
@@ -1213,6 +1247,8 @@ fn sample_status_report() -> StatusReport {
         lan_setup_bound: None,
         port_redirect_targets: None,
         lan_redirect_targets: None,
+        resolver_rule_servers: vec![],
+        dns_port_owner: None,
     }
 }
 
@@ -1361,6 +1397,10 @@ fn diagnosis_code_each_variant_byte_shape() {
         (DiagnosisCode::PortRedirectStale, r#""port_redirect_stale""#),
         (DiagnosisCode::LanRedirectStale, r#""lan_redirect_stale""#),
         (
+            DiagnosisCode::DaemonAutostartDisabled,
+            r#""daemon_autostart_disabled""#,
+        ),
+        (
             DiagnosisCode::ServiceOverrideInvalid,
             r#""service_override_invalid""#,
         ),
@@ -1391,6 +1431,7 @@ fn error_code_each_variant_byte_shape() {
         ),
         (ErrorCode::LanNotReady, r#""lan_not_ready""#),
         (ErrorCode::LegacyRestricted, r#""legacy_restricted""#),
+        (ErrorCode::Unsupported, r#""unsupported""#),
         (ErrorCode::Internal, r#""internal""#),
     ];
     for (code, expected) in cases {
@@ -2833,6 +2874,14 @@ fn staged_artifact_each_variant_byte_shape() {
     assert_eq!(
         serde_json::from_str::<StagedArtifact>(r#""rpm""#).unwrap(),
         StagedArtifact::Rpm
+    );
+    assert_eq!(
+        serde_json::to_string(&StagedArtifact::NsisExe).unwrap(),
+        r#""nsis_exe""#
+    );
+    assert_eq!(
+        serde_json::from_str::<StagedArtifact>(r#""nsis_exe""#).unwrap(),
+        StagedArtifact::NsisExe
     );
 }
 

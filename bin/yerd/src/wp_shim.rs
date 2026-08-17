@@ -1,7 +1,8 @@
 //! `wp` multi-call shim.
 //!
-//! `{data}/bin/wp` is a symlink to *this* `yerd` binary. When invoked under
-//! that name (detected from `argv[0]` before clap), yerd execs WP-CLI's
+//! `{data}/bin/wp` invokes *this* `yerd` binary (a symlink on Unix read from
+//! `argv[0]`, a `.cmd` wrapper passing `__shim wp` on Windows). When invoked
+//! under that name, yerd execs WP-CLI's
 //! filesystem entry point - `php …/tools/wp-cli/vendor/wp-cli/wp-cli/php/
 //! boot-fs.php <args…>` - rather than upstream's `bin/wp` shell wrapper, which
 //! exists only to locate a `php` on `PATH`; we already know which PHP to use.
@@ -12,16 +13,25 @@
 //! option get siteurl` and friends behave the way the site itself is served.
 //! The resolution itself lives in [`crate::site_scope`], shared with `yerd
 //! exec` / `yerd which`; see that module for the fallback and failure rules.
-//! Unix-only.
 
-use std::os::unix::process::CommandExt;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use yerd_platform::{ActivePaths, Paths, PlatformDirs};
+use yerd_platform::PlatformDirs;
 
-use crate::shim::{cli_phprc, fail, resolve_default_php};
+use crate::shim::{
+    cli_phprc, default_php_or_message, dirs_or_fail, dispatch_named, exec_php, fail, managed_tool,
+};
 use crate::site_scope::{site_scope, ScopeResolution};
+
+/// The `PHP_INI_SCAN_DIR` list separator: `;` on Windows, `:` on Unix. Prefixing
+/// the drop-in directory with it makes PHP scan its compiled-in default ini
+/// directory first, then ours, rather than replacing the default scan directory.
+#[cfg(windows)]
+const INI_SCAN_SEP: char = ';';
+#[cfg(not(windows))]
+const INI_SCAN_SEP: char = ':';
 
 /// Silences PHP-engine `E_DEPRECATED` notices from WP-CLI's own bundled
 /// Composer dependencies (`react/promise`, `wp-cli/php-cli-tools`), which
@@ -61,30 +71,24 @@ fn ensure_quiet_deprecations_scan_dir(dirs: &PlatformDirs) -> std::io::Result<Pa
 }
 
 /// The `PHP_INI_SCAN_DIR` value for [`ensure_quiet_deprecations_scan_dir`]'s
-/// directory - prefixed with the Unix path-list separator (`:`) so PHP scans
-/// its compiled-in default ini directory first, then this one, rather than
-/// replacing the default scan directory outright.
+/// directory - prefixed with the host path-list separator (see [`INI_SCAN_SEP`])
+/// so PHP scans its compiled-in default ini directory first, then this one,
+/// rather than replacing the default scan directory outright.
 fn quiet_deprecations_scan_dir_env(dir: &Path) -> String {
-    format!(":{}", dir.display())
+    format!("{INI_SCAN_SEP}{}", dir.display())
 }
 
-/// If `argv[0]` is `wp`, exec WP-CLI and return its exit code (on success
-/// `exec` replaces the process and never returns); otherwise `None`, so
-/// `main` falls through to the next shim / CLI.
+/// If the shim name is `wp`, exec WP-CLI and return its exit code; otherwise
+/// `None`, so dispatch falls through to the next shim.
 #[must_use]
-pub fn dispatch() -> Option<ExitCode> {
-    let arg0 = std::env::args_os().next()?;
-    let name = Path::new(&arg0).file_name()?.to_str()?;
-    if name != "wp" {
-        return None;
-    }
-    Some(run())
+pub(crate) fn dispatch(name: &str, forward: &[OsString]) -> Option<ExitCode> {
+    dispatch_named("wp", name, forward, run)
 }
 
-fn run() -> ExitCode {
-    let dirs = match ActivePaths::new().resolve() {
+fn run(forward: &[OsString]) -> ExitCode {
+    let dirs = match dirs_or_fail() {
         Ok(d) => d,
-        Err(e) => return fail(format!("cannot resolve yerd directories: {e}")),
+        Err(code) => return code,
     };
     let cwd = std::env::current_dir()
         .ok()
@@ -118,28 +122,21 @@ fn run() -> ExitCode {
     };
     let (php_bin, minor, scope) = match scoped {
         Some(s) => (s.php_bin.clone(), s.php_minor.clone(), Some(s)),
-        None => match resolve_default_php(&dirs) {
-            Some((php, minor)) => (php, minor, None),
-            None => return fail(crate::shim::no_default_php_message(&dirs)),
+        None => match default_php_or_message(&dirs) {
+            Ok((php, minor)) => (php, minor, None),
+            Err(msg) => return fail(msg),
         },
     };
 
-    let boot_fs = dirs
-        .data
-        .join("tools")
-        .join("wp-cli")
-        .join("vendor")
-        .join("wp-cli")
-        .join("wp-cli")
-        .join("php")
-        .join("boot-fs.php");
-    if !boot_fs.is_file() {
-        return fail(
-            "WP-CLI is not installed — install it from the Tooling page \
-             (or run `yerd install tool wp-cli`)"
-                .to_owned(),
-        );
-    }
+    let boot_fs = match managed_tool(
+        &dirs,
+        "WP-CLI",
+        "wp-cli",
+        &["wp-cli", "vendor", "wp-cli", "wp-cli", "php", "boot-fs.php"],
+    ) {
+        Ok(p) => p,
+        Err(msg) => return fail(msg),
+    };
     let Some((boot_dir, boot_name)) = split_boot_fs(&boot_fs) else {
         return fail(format!("{}: not a valid file path", boot_fs.display()));
     };
@@ -147,7 +144,7 @@ fn run() -> ExitCode {
     let mut cmd = Command::new(&php_bin);
     cmd.args(QUIET_DEPRECATIONS)
         .arg(boot_name)
-        .args(std::env::args_os().skip(1))
+        .args(forward)
         .current_dir(boot_dir);
     if let Ok(dir) = ensure_quiet_deprecations_scan_dir(&dirs) {
         cmd.env("PHP_INI_SCAN_DIR", quiet_deprecations_scan_dir_env(&dir));
@@ -159,14 +156,7 @@ fn run() -> ExitCode {
         cmd.arg(format!("--path={}", served_root.display()));
     }
 
-    let err = cmd.exec();
-    if err.kind() == std::io::ErrorKind::NotFound {
-        return fail(format!(
-            "PHP binary not found at {} ({err}) — reinstall with `yerd install php`",
-            php_bin.display()
-        ));
-    }
-    fail(format!("failed to exec {}: {err}", php_bin.display()))
+    exec_php(cmd, &php_bin, None)
 }
 
 /// Split `boot_fs` into its own directory and bare file name, so it can be
@@ -198,10 +188,11 @@ mod tests {
     #[test]
     fn quiet_deprecations_scan_dir_env_prefixes_the_default_scan_separator() {
         let dir = Path::new("/data/wp-cli-quiet.d");
-        assert_eq!(
-            quiet_deprecations_scan_dir_env(dir),
-            ":/data/wp-cli-quiet.d"
-        );
+        let out = quiet_deprecations_scan_dir_env(dir);
+        assert_eq!(out.chars().next(), Some(INI_SCAN_SEP));
+        assert!(out.ends_with("wp-cli-quiet.d"));
+        #[cfg(not(windows))]
+        assert_eq!(out, ":/data/wp-cli-quiet.d");
     }
 
     #[test]

@@ -89,7 +89,7 @@ pub struct DaemonState {
     /// The FPM pool supervisor, shared with the proxy backend resolver and the
     /// update task. `yerd status` / `yerd doctor` read live pool state from it.
     pub php_manager: Arc<Mutex<DaemonPhpManager>>,
-    /// The database/cache service supervisor (Redis/Valkey in Phase 1). Holds
+    /// The database/cache service supervisor. Holds
     /// one supervised instance per engine; status/doctor read live state from it.
     pub service_manager: Arc<Mutex<crate::services::DaemonServiceManager>>,
     /// The Cloudflare Tunnel supervisor. Holds one supervised `cloudflared`
@@ -166,7 +166,7 @@ pub struct DaemonState {
     /// IPC dispatch is `tokio::spawn`-per-connection, so two clients could swap
     /// `{data}/tools/<id>` concurrently; this guard makes commit+reconcile atomic.
     pub tool_mutate: Mutex<()>,
-    /// Serializes `cloudflared` install (and Phase-2 login) mutations of
+    /// Serializes `cloudflared` install (and named-tunnel login) mutations of
     /// `{data}/tunnel`, so two clients can't clobber the staging binary.
     pub tunnel_mutate: Mutex<()>,
     /// Serializes PHP-version install/update mutations. IPC dispatch is
@@ -189,10 +189,10 @@ pub struct DaemonState {
     pub reserved_names: Mutex<HashSet<String>>,
     /// WordPress core-version availability cache (the WordPress wizard's
     /// version dropdown): the last successful `meta/wordpress-versions.json`
-    /// fetch, plus when it happened so a request can decide whether to
-    /// re-fetch. `None` until the first successful fetch; served (no
-    /// network) when still fresh, or as a stale fallback when a re-fetch
-    /// fails. See [`crate::wordpress_versions`].
+    /// fetch, plus the instant it stops being fresh so a request can decide
+    /// whether to re-fetch. `None` until the first successful fetch; served (no
+    /// network) while that deadline is in the future, or as a stale fallback
+    /// when a re-fetch fails. See [`crate::wordpress_versions`].
     pub wordpress_versions: RwLock<Option<(Instant, Vec<yerd_ipc::WordPressVersionInfo>)>>,
     /// One-click `WordPress` admin login token store, shared with `yerd-proxy`
     /// via the [`yerd_proxy::LoginTokenConsumer`] trait. See

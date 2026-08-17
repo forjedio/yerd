@@ -12,7 +12,7 @@ pub mod credentials;
 pub mod install;
 pub mod named;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use yerd_ipc::{
@@ -170,25 +170,33 @@ pub async fn start_quick_tunnel(site: &str, state: &DaemonState) -> Response {
 /// and `TMPDIR` keep subprocess/temp behaviour sane, and `SSL_CERT_FILE`/
 /// `SSL_CERT_DIR` let edge-TLS trust-store discovery work on Linux distros that
 /// rely on them. Secrets and unrelated daemon config are deliberately excluded.
-const FORWARDED_ENV: [&str; 4] = ["PATH", "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR"];
-
-/// The pinned environment for a `cloudflared` subprocess: `HOME` points at the
-/// daemon-owned `{data}/tunnel` dir so `cloudflared` never reads or writes
-/// `~/.cloudflared`, plus the [`FORWARDED_ENV`] allowlist the cleared child still
-/// needs. Named runs add `TUNNEL_ORIGIN_CERT` on top of this.
+/// The pinned environment for a `cloudflared` subprocess: the variables that
+/// point it at the daemon-owned `{data}/tunnel` dir so it never reads or writes
+/// the real user's `~/.cloudflared`, plus the forwarded allowlist the cleared
+/// child still needs. Both lists differ per host and live in
+/// [`yerd_tunnel::env`], where they are table-tested on every OS. Named runs add
+/// `TUNNEL_ORIGIN_CERT` on top of this.
 pub(super) fn pinned_home_env(
     state: &DaemonState,
 ) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
-    let mut env = vec![(
-        "HOME".into(),
-        install::tunnel_dir(&state.dirs).into_os_string(),
-    )];
-    for key in FORWARDED_ENV {
+    let tunnel_dir = install::tunnel_dir(&state.dirs);
+    let mut env = yerd_tunnel::env::pinned_vars(&tunnel_dir, cfg!(windows));
+    for key in yerd_tunnel::env::forwarded_keys(cfg!(windows)) {
         if let Some(val) = std::env::var_os(key) {
-            env.push((key.into(), val));
+            env.push(((*key).into(), val));
         }
     }
     env
+}
+
+/// A `cloudflared` command that will not flash a console window.
+///
+/// `cloudflared` is a console-subsystem program and the daemon has no console,
+/// so an unflagged spawn would pop one up for each of the short-lived one-shots.
+/// Kept as a named wrapper (over [`crate::spawn::hidden_command`]) so the tunnel
+/// call sites read as "the cloudflared command" rather than a generic spawn.
+pub(super) fn cloudflared_command(binary: &Path) -> tokio::process::Command {
+    crate::spawn::hidden_command(binary)
 }
 
 /// Resolve a site by name or `.test` host to its `(name, secure, tld, host)`,
@@ -525,6 +533,7 @@ mod tests {
         let state = state_in(tmp.path());
         let candidate = tmp.path().join("cloudflared");
         std::fs::write(&candidate, b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o755)).unwrap();

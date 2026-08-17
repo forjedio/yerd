@@ -16,5 +16,13 @@ thiserror = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true, features = ["user"] }
 
+# Per-user logon autostart on Windows: the `Yerd Daemon` HKCU Run value plus its
+# Task-Manager StartupApproved override (both under the user's own hive, no
+# privilege boundary). Safe crate, no `unsafe` in ours. This crate deliberately
+# depends on no `yerd-*` crate, so it references the shared `winreg` pin directly
+# rather than routing through `yerd-platform`.
+[target.'cfg(windows)'.dependencies]
+winreg = { workspace = true }
+
 [lints]
 workspace = true

@@ -86,6 +86,45 @@ On macOS the GUI uses system frameworks, so there are **no** extra packages to
 install for the full workspace.
 :::
 
+### Windows toolchain
+
+On Windows you need the **MSVC** Rust toolchain (`x86_64-pc-windows-msvc`, the
+`rustup` default there - install the "Desktop development with C++" workload or
+the VS Build Tools it comes from) plus Node 22 + npm. There are **no** GTK/WebKit
+packages: the GUI uses the system WebView2 runtime, and Tauri's NSIS bundler
+**downloads NSIS itself** at bundle time (no `choco` prerequisite). Build the
+Windows installer with the Windows bundle overlay:
+
+```sh
+# stage the three binaries as Tauri externalBin sidecars, then bundle:
+cargo build --release -p yerd -p yerdd -p yerd-helper
+# copy target/release/{yerd,yerdd,yerd-helper}.exe into
+# apps/yerd-gui/src-tauri/binaries/<name>-x86_64-pc-windows-msvc.exe
+cd apps/yerd-gui
+npm ci
+npm run tauri build -- --config src-tauri/tauri.bundle-windows.conf.json
+```
+
+The overlay (`src-tauri/tauri.bundle-windows.conf.json`) sets `targets: ["nsis"]`,
+`installMode: currentUser` (per-user, no admin), `webviewInstallMode:
+downloadBootstrapper`, and the `nsis/hooks.nsh` install hooks. The overlay is
+strict JSON with no comments: `bundle.windows` is deserialised with
+`deny_unknown_fields`, so neither a `//` comment nor a `_comment` key can live
+in it.
+
+The installer ships **unsigned** for early access: code-signing certificates
+are not yet provisioned for the project. To sign it
+later, add a `signCommand` or a `certificateThumbprint` under
+`bundle.windows` in that overlay, e.g.
+
+```json
+"signCommand": "trusted-signing-cli -e <endpoint> -a <account> -c <cert> %1"
+```
+
+Self-update integrity does not depend on Authenticode (it is SHA-256 +
+minisign), so leaving signing off only affects SmartScreen on the first manual
+download.
+
 ### Node 22 + npm (for the frontend and docs)
 
 The desktop app's frontend and this documentation site are built with Node. CI
@@ -138,7 +177,8 @@ another yerdd is already running (lock held at /tmp/yerd-501/yerd.lock)
 
 So there are two workflows: **take over** the production paths (stop production,
 run your build in its place) or **isolate** your build onto a separate set of
-paths (Linux only). Pick based on your platform and what you're testing.
+paths (Linux and Windows; macOS has no override). Pick based on your platform
+and what you're testing.
 
 ### Step 1 - stop the production daemon and GUI
 
@@ -175,10 +215,11 @@ cargo build -p yerdd -p yerd
 ### Step 3 - run your build in the foreground
 
 Run the daemon you just built directly from the workspace. `serve` is the
-default subcommand, and `-v` turns up logging so you can watch it come up:
+subcommand that starts it, and `-v` turns up logging so you can watch it come
+up:
 
 ```sh
-cargo run -p yerdd -- -v
+cargo run -p yerdd -- serve -v
 ```
 
 On a rootless host it binds the fallback ports (`http=8080`, `https=8443`) and
@@ -211,7 +252,8 @@ cargo run -p yerdd -- --config ~/yerd-dev.toml -v
 - the **runtime socket** still resolve to the normal platform directories, so a
 daemon started this way still collides with the instance lock above. Use it
 *after* stopping the production daemon, not alongside it. For a fully parallel
-instance, isolate the directories instead (next section, Linux only).
+instance, isolate the directories instead - see the next two sections for the
+Linux and Windows routes.
 :::
 
 ### Fully isolating a parallel instance (Linux)
@@ -244,6 +286,41 @@ directories and socket. On macOS you must **stop the production daemon first**
 (Step 1) and accept that your build reads and writes the same state - you can't
 run two isolated instances side by side.
 :::
+
+### Fully isolating a parallel instance (Windows)
+
+Windows has its own route to the same thing. `Paths::resolve` reads `APPDATA`
+(config), `LOCALAPPDATA` (data, state, cache) and the temp directory (runtime,
+so both `TEMP` and `TMP`) from the environment. Redirect all four and the dev
+instance gets its own directories **and** its own IPC endpoint: the named-pipe
+name embeds a SHA-256 of the runtime directory, so a redirected instance cannot
+clash with production's pipe or its instance lock.
+
+Create the directories **before** you set the variables - a `TEMP`/`TMP` that
+doesn't exist makes `rustc` and `link.exe` fail in obscure ways:
+
+```powershell
+New-Item -ItemType Directory -Force C:\yerd-dev\roaming, C:\yerd-dev\local, C:\yerd-dev\tmp
+$env:APPDATA      = 'C:\yerd-dev\roaming'
+$env:LOCALAPPDATA = 'C:\yerd-dev\local'
+$env:TEMP         = 'C:\yerd-dev\tmp'
+$env:TMP          = 'C:\yerd-dev\tmp'
+cargo build -p yerdd -p yerd
+cargo run -p yerdd -- serve -v
+```
+
+Use a shell that has imported `vcvars64.bat` - the "Developer PowerShell for VS
+2022", or a plain PowerShell seeded with
+`cmd /c "call <VS>\VC\Auxiliary\Build\vcvars64.bat && set"` - because `link.exe`
+is not on the default `PATH`. Any `yerd` CLI (or `npm run tauri dev` GUI) started
+with the *same* four variables reaches your dev daemon; a shell without them
+still reaches production.
+
+Production holds 80, 443, 53, 2525 and 2304, so the dev daemon starts degraded:
+it falls back to `http=8080` / `https=8443` and logs warnings for DNS, mail
+capture and the dump server. That is expected, and it is enough for daemon, CLI,
+PHP and proxy work. Tear the instance down by stopping the daemon and deleting
+`C:\yerd-dev`.
 
 ### Step 4 - restore production
 

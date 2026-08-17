@@ -44,6 +44,9 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    /// The candidates are Linux filesystem paths; `is_absolute()` only holds on
+    /// a Unix host (a leading `/` is drive-relative, not absolute, on Windows).
+    #[cfg(unix)]
     #[test]
     fn linux_candidates_are_absolute_and_ordered() {
         let c = linux_root_candidates();

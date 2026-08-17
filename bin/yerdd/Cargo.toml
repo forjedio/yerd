@@ -5,7 +5,7 @@ edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
 publish.workspace      = true
-description            = "Yerd unprivileged daemon — wires every Phase-1 library together."
+description            = "Yerd unprivileged daemon: owns all runtime state and serves the CLI and GUI over IPC."
 
 [features]
 # Build the daemon for the Arch package: flips `yerd_update::PkgFormat::current()`
@@ -85,6 +85,15 @@ notify-debouncer-mini = "0.4"
 # `user` adds `User::from_uid`/`getuid` — resolve the invoking user's login shell
 # when `$SHELL` is absent (launchd/systemd service env) for external-tool detection.
 nix            = { workspace = true, features = ["user"] }
+
+[target.'cfg(windows)'.dependencies]
+# UTF-16 wrapper for the named-pipe SDDL security descriptor passed to
+# `interprocess`'s `SecurityDescriptor::deserialize`.
+widestring     = { workspace = true }
+# Windows-only: the doctor autostart probe reads the daemon's HKCU `Run` entry
+# via `yerd_service_ctl::autostart_enabled()`. lib <- bin is downhill (the crate
+# depends on no `yerd-*` crate), so there is no dependency cycle.
+yerd-service-ctl = { path = "../../crates/yerd-service-ctl" }
 
 [dev-dependencies]
 tempfile       = { workspace = true }

@@ -30,6 +30,8 @@ pub struct PlatformDirs {
     /// macOS: a deterministic `/tmp/yerd-$UID`, not `$TMPDIR`/`temp_dir()`.
     /// `os::macos::resolve` explains why the uid-derived path is load-bearing
     /// for socket reconstruction.
+    /// Windows: `%TEMP%\yerd`, which is per-user (unlike Linux's shared `/tmp`),
+    /// so no sticky-bit ownership check is needed there.
     pub runtime: PathBuf,
 }
 
@@ -47,11 +49,18 @@ impl PlatformDirs {
     /// that also wants the `XDG_RUNTIME_DIR` location (`/run/user/$uid/yerd`,
     /// which `resolve` prefers when the env var is set) must add it itself,
     /// since the real value can't be recovered from a stripped sudo environment.
+    ///
+    /// On Windows `uid` is meaningless and ignored: the caller identifies the
+    /// user by `home` alone. The layout is derived from `home` without env reads
+    /// (the documented contract of `for_user`), reconstructing the *default
+    /// profile shape* (`home\AppData\Roaming\yerd`, `home\AppData\Local\yerd`).
+    /// Redirected or roaming profiles may differ from the live `resolve()` env
+    /// answer, the same caveat class as the `XDG_RUNTIME_DIR` gap on Linux.
     #[must_use]
     pub fn for_user(home: &std::path::Path, uid: u32) -> Self {
-        let runtime = PathBuf::from(format!("/tmp/yerd-{uid}"));
         #[cfg(target_os = "macos")]
         {
+            let runtime = PathBuf::from(format!("/tmp/yerd-{uid}"));
             let app = home
                 .join("Library")
                 .join("Application Support")
@@ -67,6 +76,7 @@ impl PlatformDirs {
         }
         #[cfg(target_os = "linux")]
         {
+            let runtime = PathBuf::from(format!("/tmp/yerd-{uid}"));
             Self {
                 config: home.join(".config").join("yerd"),
                 data: home.join(".local").join("share").join("yerd"),
@@ -75,8 +85,22 @@ impl PlatformDirs {
                 runtime,
             }
         }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(target_os = "windows")]
         {
+            let _ = uid;
+            let roaming = home.join("AppData").join("Roaming").join("yerd");
+            let local = home.join("AppData").join("Local").join("yerd");
+            Self {
+                config: roaming,
+                data: local.join("data"),
+                state: local.join("state"),
+                cache: local.join("cache"),
+                runtime: home.join("AppData").join("Local").join("Temp").join("yerd"),
+            }
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            let runtime = PathBuf::from(format!("/tmp/yerd-{uid}"));
             Self {
                 config: home.join(".config").join("yerd"),
                 data: home.join(".local").join("share").join("yerd"),
@@ -98,16 +122,20 @@ pub trait Paths {
     fn resolve(&self) -> Result<PlatformDirs, PlatformError>;
 }
 
-#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[cfg(all(
+    test,
+    any(target_os = "linux", target_os = "macos", target_os = "windows")
+))]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod for_user_tests {
     use super::PlatformDirs;
     use crate::{ActivePaths, Paths};
 
-    /// `for_user` must reproduce the home-derived dirs that `directories`
-    /// produces in `resolve` - guards against the macOS fragment (`io.yerd.Yerd`
-    /// vs bare `Yerd`) silently drifting. `runtime` is uid/env-derived and
-    /// handled separately, so it is not compared.
+    /// `for_user` must reproduce the home-derived dirs that `resolve` produces -
+    /// guards against the macOS fragment (`io.yerd.Yerd` vs bare `Yerd`) or the
+    /// Windows `AppData` shape silently drifting. `runtime` is uid/env-derived
+    /// and handled separately, so it is not compared.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn for_user_layout_matches_resolve_for_current_home() {
         let Some(home) = std::env::var_os("HOME") else {
@@ -127,6 +155,49 @@ mod for_user_tests {
         let home = std::path::PathBuf::from(home);
         let r = ActivePaths::new().resolve().expect("resolve current dirs");
         let f = PlatformDirs::for_user(&home, 0);
+        assert_eq!(f.config, r.config, "config dir");
+        assert_eq!(f.data, r.data, "data dir");
+        assert_eq!(f.cache, r.cache, "cache dir");
+        assert_eq!(f.state, r.state, "state dir");
+    }
+
+    /// The exact Windows default-profile layout from a fake home.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn for_user_windows_layout() {
+        let home = std::path::Path::new(r"C:\Users\test");
+        let f = PlatformDirs::for_user(home, 0);
+        assert_eq!(f.config, home.join(r"AppData\Roaming\yerd"));
+        assert_eq!(f.data, home.join(r"AppData\Local\yerd\data"));
+        assert_eq!(f.state, home.join(r"AppData\Local\yerd\state"));
+        assert_eq!(f.cache, home.join(r"AppData\Local\yerd\cache"));
+        assert_eq!(f.runtime, home.join(r"AppData\Local\Temp\yerd"));
+    }
+
+    /// Windows drift-guard: when `%APPDATA%`/`%LOCALAPPDATA%` sit under
+    /// `%USERPROFILE%` in the default shape, `for_user(USERPROFILE, 0)` must
+    /// agree with the live `resolve()` for config/data/state/cache. Redirected
+    /// profiles are skipped (mirrors the Unix XDG skip).
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn for_user_windows_matches_resolve_for_default_profile() {
+        let (Some(profile), Some(appdata), Some(local)) = (
+            std::env::var_os("USERPROFILE"),
+            std::env::var_os("APPDATA"),
+            std::env::var_os("LOCALAPPDATA"),
+        ) else {
+            return;
+        };
+        let profile = std::path::PathBuf::from(profile);
+        let default_appdata = profile.join("AppData").join("Roaming");
+        let default_local = profile.join("AppData").join("Local");
+        if std::path::Path::new(&appdata) != default_appdata
+            || std::path::Path::new(&local) != default_local
+        {
+            return;
+        }
+        let r = ActivePaths::new().resolve().expect("resolve current dirs");
+        let f = PlatformDirs::for_user(&profile, 0);
         assert_eq!(f.config, r.config, "config dir");
         assert_eq!(f.data, r.data, "data dir");
         assert_eq!(f.cache, r.cache, "cache dir");

@@ -451,7 +451,13 @@ async fn ensure_database_engine(
             Err(_not_found) => {
                 state
                     .jobs
-                    .set_phase(id, format!("Installing {}", def.display_name()))
+                    .set_phase(
+                        id,
+                        format!(
+                            "Installing {}",
+                            yerd_services::display_name_for_host(def.as_ref())
+                        ),
+                    )
                     .await;
                 resolve_and_install_latest(def, state).await?
             }
@@ -492,12 +498,18 @@ async fn resolve_and_install_latest(
         .ok_or_else(|| {
             format!(
                 "no {} build is available for this platform",
-                def.display_name()
+                yerd_services::display_name_for_host(def.as_ref())
             )
         })?;
-    crate::service_install::install(def.id(), def.server_binary(), &version, &state.dirs, &dl)
-        .await
-        .map_err(|e| e.to_string())?;
+    crate::service_install::install(
+        def.id(),
+        yerd_services::server_binary_for_host(def.as_ref()),
+        &version,
+        &state.dirs,
+        &dl,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(version)
 }
 

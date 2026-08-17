@@ -52,12 +52,30 @@ struct ExtSpec {
     label: &'static str,
 }
 
+/// On-disk extension file name for the host OS: `.dll` on Windows, `.so`
+/// elsewhere. Must stay in lockstep with `yerd_php`'s `DUMP_EXT_FILE`
+/// (`manager.rs`), which looks up what this module writes (pinned by tests on
+/// both sides).
+#[cfg(windows)]
+const DUMP_SPEC: ExtSpec = ExtSpec {
+    manifest_name: "manifest.json",
+    so_name: "yerd-dump.dll",
+    label: "yerd-dump",
+};
+#[cfg(not(windows))]
 const DUMP_SPEC: ExtSpec = ExtSpec {
     manifest_name: "manifest.json",
     so_name: "yerd-dump.so",
     label: "yerd-dump",
 };
 
+#[cfg(windows)]
+const PCOV_SPEC: ExtSpec = ExtSpec {
+    manifest_name: "pcov-manifest.json",
+    so_name: "pcov.dll",
+    label: "pcov",
+};
+#[cfg(not(windows))]
 const PCOV_SPEC: ExtSpec = ExtSpec {
     manifest_name: "pcov-manifest.json",
     so_name: "pcov.so",
@@ -208,7 +226,7 @@ async fn download_and_place(
     // Atomic place: write a unique temp sibling (pid + sequence, so overlapping
     // installs of the same version don't share a temp path), then rename over.
     let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tmp = dest.with_extension(format!("so.{}.{}.tmp", std::process::id(), seq));
+    let tmp = dest.with_extension(format!("tmp-{}-{}", std::process::id(), seq));
     std::fs::write(&tmp, &bytes)?;
     std::fs::rename(&tmp, dest)?;
     Ok(())
@@ -233,6 +251,22 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    /// Pins the on-disk extension file names per OS. `yerd_php::manager` looks
+    /// these up by the matching cfg'd `DUMP_EXT_FILE`, so the two must agree.
+    #[test]
+    fn ext_filenames_match_host_os() {
+        #[cfg(windows)]
+        {
+            assert_eq!(DUMP_SPEC.so_name, "yerd-dump.dll");
+            assert_eq!(PCOV_SPEC.so_name, "pcov.dll");
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(DUMP_SPEC.so_name, "yerd-dump.so");
+            assert_eq!(PCOV_SPEC.so_name, "pcov.so");
+        }
+    }
+
     fn dirs_in(tmp: &Path) -> PlatformDirs {
         PlatformDirs {
             config: tmp.join("c"),
@@ -248,7 +282,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
         let p = so_path(&dirs, PhpVersion::new(8, 5));
-        assert!(p.ends_with("php-ext/php-8.5/yerd-dump.so"));
+        assert!(
+            p.ends_with(format!("php-ext/php-8.5/{}", DUMP_SPEC.so_name)),
+            "{p:?}"
+        );
         // Crucially NOT under {data}/php/php-8.5 (which is wiped on PHP update).
         assert!(!p.starts_with(dirs.data.join("php").join("php-8.5")));
     }
@@ -258,7 +295,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
         let p = pcov_so_path(&dirs, PhpVersion::new(8, 4));
-        assert!(p.ends_with("php-ext/php-8.4/pcov.so"));
+        assert!(
+            p.ends_with(format!("php-ext/php-8.4/{}", PCOV_SPEC.so_name)),
+            "{p:?}"
+        );
         // Same dir as yerd-dump.so (shared php-ext/php-<ver>/), distinct file.
         assert_eq!(p.parent(), so_path(&dirs, PhpVersion::new(8, 4)).parent());
     }

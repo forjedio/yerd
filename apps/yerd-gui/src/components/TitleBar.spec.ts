@@ -59,6 +59,21 @@ async function flushMicrotasks(times = 10): Promise<void> {
   await nextTick();
 }
 
+/** The `host_platform` payload, with the host OS swapped per test. */
+function hostPayload(os: string) {
+  return {
+    os,
+    vocab: {
+      runtime: "PHP-FPM",
+      pool: "FPM pool",
+      pools: "FPM pools",
+      poolShort: "FPM",
+      extSuffix: ".so",
+      extExample: "/opt/homebrew/lib/php/pecl/20250925/scrypt.so",
+    },
+  };
+}
+
 let wrapper: ReturnType<typeof mount> | null = null;
 
 /** A click's press/release pair. `detail` is read-only on a `UIEvent`, so the
@@ -87,7 +102,7 @@ async function mountTitleBar() {
  * installs in a real webview.
  */
 async function mountOn(platform: string) {
-  mocks.hostPlatform.mockResolvedValue(platform);
+  mocks.hostPlatform.mockResolvedValue(hostPayload(platform));
   wrapper = mount(TitleBar, { attachTo: document.body });
   await flushMicrotasks();
   return wrapper;
@@ -104,7 +119,7 @@ beforeEach(() => {
     mocks.resized = cb;
     return () => {};
   });
-  mocks.hostPlatform.mockResolvedValue("linux");
+  mocks.hostPlatform.mockResolvedValue(hostPayload("linux"));
   mocks.setGuiMaximized.mockResolvedValue(undefined);
   mocks.toggleWindowZoom.mockResolvedValue(undefined);
   vi.useFakeTimers();

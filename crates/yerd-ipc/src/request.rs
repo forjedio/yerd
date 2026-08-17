@@ -275,7 +275,7 @@ pub enum Request {
     DoctorFix,
     /// Restart the daemon's own process in place (re-exec). The daemon replies
     /// `Ok` *before* tearing down; the connection then closes as it restarts.
-    /// Unix-only.
+    /// Unix and Windows; declined on any other platform.
     RestartDaemon,
     /// List every manageable service with its live status (installed versions,
     /// run state, port, enabled flag).
@@ -667,7 +667,7 @@ pub enum Request {
     /// Run the interactive Cloudflare account login (`cloudflared tunnel login`)
     /// as a streamed background job. The job log carries the one-time auth URL
     /// line for the GUI to open. Replies [`super::Response::JobStarted`]. Named
-    /// Tunnels (Phase 2).
+    /// Named tunnels.
     CloudflaredLogin,
     /// Create a named tunnel on the logged-in account, recording its UUID.
     /// Replies [`super::Response::Ok`] (or `Error`). Requires a prior login.

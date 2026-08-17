@@ -9,6 +9,9 @@
 /// Retained:
 ///   - Exact: `PATH`, `HOME`, `USER`, `LANG`
 ///   - Prefix: `LC_`, `XDEBUG_`, `PHP_`
+///   - Windows only: the system variables `php-cgi.exe` needs to start at all
+///     (`SystemRoot`, `WINDIR`, `TEMP`, `PATHEXT`, ...), which have no Unix
+///     equivalent - without them the Windows loader can't resolve core DLLs.
 ///
 /// Order of returned pairs matches the order of `snapshot`.
 #[must_use]
@@ -21,6 +24,48 @@ fn keep(key: &str) -> bool {
         || key.starts_with("LC_")
         || key.starts_with("XDEBUG_")
         || key.starts_with("PHP_")
+        || keep_windows_system(key)
+}
+
+/// Windows system variables required for a native process to launch. Matched
+/// case-insensitively (Windows env keys are case-insensitive). No-op on Unix.
+///
+/// `PATH` is listed here as well as in [`keep`]'s exact set: Windows spells the
+/// variable `Path`, and `std::env::vars` reports the stored spelling, so the
+/// case-sensitive exact match never fires there. Losing it would leave every
+/// `php-cgi.exe` worker with no `PATH` at all after `env_clear`, breaking
+/// `exec`/`proc_open` from user PHP and any extension DLL that links a library
+/// outside the PHP directory.
+#[cfg(windows)]
+fn keep_windows_system(key: &str) -> bool {
+    const WINDOWS_SYSTEM: &[&str] = &[
+        "PATH",
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "TEMP",
+        "TMP",
+        "COMSPEC",
+        "PATHEXT",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+        "USERPROFILE",
+        "USERNAME",
+        "COMPUTERNAME",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "COMMONPROGRAMFILES",
+    ];
+    let upper = key.to_ascii_uppercase();
+    WINDOWS_SYSTEM.contains(&upper.as_str())
+}
+
+#[cfg(not(windows))]
+fn keep_windows_system(_key: &str) -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -92,5 +137,31 @@ mod tests {
         ];
         let out = allowlist(&input);
         assert!(out.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn keeps_windows_system_vars_case_insensitively() {
+        let input = vec![
+            s("SystemRoot", r"C:\Windows"),
+            s("windir", r"C:\Windows"),
+            s("TEMP", r"C:\Temp"),
+            s("PATHEXT", ".EXE;.BAT"),
+            s("SECRET", "no"),
+        ];
+        let out = allowlist(&input);
+        let keys: Vec<&str> = out.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["SystemRoot", "windir", "TEMP", "PATHEXT"]);
+    }
+
+    /// Windows stores the variable as `Path`, so the case-sensitive exact match
+    /// misses it. Dropping it would leave every worker with no `PATH` after
+    /// `env_clear`.
+    #[cfg(windows)]
+    #[test]
+    fn keeps_windows_path_under_its_native_spelling() {
+        let out = allowlist(&[s("Path", r"C:\Windows\System32"), s("SECRET", "no")]);
+        let keys: Vec<&str> = out.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["Path"]);
     }
 }
