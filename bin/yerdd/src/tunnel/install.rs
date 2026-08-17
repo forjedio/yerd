@@ -794,10 +794,11 @@ mod tests {
         let second = tmp.path().join("second");
         std::fs::create_dir_all(&first).unwrap();
         std::fs::create_dir_all(&second).unwrap();
-        std::fs::write(second.join("cloudflared"), b"#!/bin/sh\n").unwrap();
-        set_executable(&second.join("cloudflared")).unwrap();
+        let name = binary_file_name();
+        std::fs::write(second.join(&name), b"#!/bin/sh\n").unwrap();
+        set_executable(&second.join(&name)).unwrap();
         let path_var = std::env::join_paths([&first, &second]).unwrap();
-        assert_eq!(find_in_paths(&path_var), Some(second.join("cloudflared")));
+        assert_eq!(find_in_paths(&path_var), Some(second.join(&name)));
     }
 
     /// The Windows search must match the `.exe` name and ignore a bare

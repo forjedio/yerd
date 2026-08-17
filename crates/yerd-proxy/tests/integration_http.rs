@@ -337,6 +337,10 @@ async fn valid_login_token_adds_auto_prepend_and_strips_token_from_query() {
         consumed: std::sync::atomic::AtomicBool::new(false),
     });
     let prepend_path = PathBuf::from("/opt/yerd/wordpress-autologin-prepend.php");
+    let want_prepend = format!(
+        "auto_prepend_file={}",
+        yerd_core::path_norm::php_path(&prepend_path).display()
+    );
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
@@ -368,7 +372,7 @@ async fn valid_login_token_adds_auto_prepend_and_strips_token_from_query() {
     let params = captured.lock().await.clone();
     assert_eq!(
         params.get("PHP_VALUE").map(String::as_str),
-        Some("auto_prepend_file=/opt/yerd/wordpress-autologin-prepend.php")
+        Some(want_prepend.as_str())
     );
     assert_eq!(
         params.get("YERD_LOGIN_USER").map(String::as_str),
@@ -1153,6 +1157,10 @@ async fn directory_redirect_preserves_login_token_unconsumed() {
     });
     let login_tokens_for_assert = login_tokens.clone();
     let prepend_path = PathBuf::from("/opt/yerd/wordpress-autologin-prepend.php");
+    let want_prepend = format!(
+        "auto_prepend_file={}",
+        yerd_core::path_norm::php_path(&prepend_path).display()
+    );
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
@@ -1209,7 +1217,7 @@ async fn directory_redirect_preserves_login_token_unconsumed() {
     let params = captured.lock().await.clone();
     assert_eq!(
         params.get("PHP_VALUE").map(String::as_str),
-        Some("auto_prepend_file=/opt/yerd/wordpress-autologin-prepend.php"),
+        Some(want_prepend.as_str()),
         "autologin must actually engage on the slashed request"
     );
     assert_eq!(

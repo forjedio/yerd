@@ -68,16 +68,33 @@ fn set_mode(_path: &Path, _mode: u32) -> io::Result<()> {
     Ok(())
 }
 
-/// The `icacls` argv that resets `path`'s DACL to one full-control ACE for
+/// The `icacls` argv that drops every ACE `path` carries, inherited or not, so
+/// the [`icacls_args`] pass that follows starts from an empty DACL.
+///
+/// `/reset` cannot share an invocation with `/inheritance` or `/grant` (icacls
+/// answers `Invalid parameter`), which is why this is a separate argv rather
+/// than two more elements on the one below.
+///
+/// Pure and compiled on every OS, like its sibling.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn icacls_reset_args(path: &Path) -> Vec<String> {
+    vec![path.to_string_lossy().into_owned(), "/reset".to_owned()]
+}
+
+/// The `icacls` argv that reduces `path`'s DACL to one full-control ACE for
 /// `sid`, dropping everything it would otherwise inherit.
 ///
 /// `/inheritance:r` removes the inherited ACEs and `/grant:r` *replaces* the
-/// principal's existing grants rather than adding to them; icacls applies the
-/// options left to right, so the pair leaves exactly one ACE behind. A
-/// directory takes `(OI)(CI)` so new children inherit it; a file takes a bare
-/// `F`. The `*` prefix on the SID is required: without it icacls reads the
-/// string as an account *name* and fails with "No mapping between account names
-/// and security IDs was done".
+/// principal's existing grants rather than adding to them. That pair alone is
+/// not enough: neither option touches an **explicit** ACE belonging to another
+/// principal, and a directory created under a parent with no inheritable ACEs
+/// gets the creating token's default DACL - `SYSTEM`, `Administrators`, the
+/// user - as explicit ACEs. Hence the [`icacls_reset_args`] pass first; this one
+/// then writes the single ACE onto the empty DACL it leaves behind. A directory
+/// takes `(OI)(CI)` so new children inherit it; a file takes a bare `F`. The `*`
+/// prefix on the SID is required: without it icacls reads the string as an
+/// account *name* and fails with "No mapping between account names and security
+/// IDs was done".
 ///
 /// Shelling out to `icacls.exe` is deliberate. The Win32 ACL APIs
 /// (`SetNamedSecurityInfo` and friends) are `unsafe` FFI and the workspace
@@ -105,6 +122,11 @@ fn icacls_args(path: &Path, sid: &str, recursive_inherit: bool) -> Vec<String> {
 /// the Windows counterpart of the Unix `chmod`. `recursive_inherit` marks a
 /// directory, whose ACE is made inheritable so its children are covered too.
 ///
+/// Runs `icacls` twice: a `/reset` pass to clear the DACL, then the `/grant:r`
+/// pass that writes the one ACE (see [`icacls_reset_args`] for why they cannot
+/// be one call). Between the two the path carries whatever its parent hands
+/// down, which is no wider than a path freshly created there would have had.
+///
 /// Spawned with `CREATE_NO_WINDOW` because the daemon itself runs without a
 /// console: a console child would otherwise get one allocated and flash a
 /// window, once per hardened path.
@@ -129,11 +151,16 @@ fn apply_dacl(path: &Path, recursive_inherit: bool) {
             return;
         }
     };
+    run_icacls(path, icacls_reset_args(path));
+    run_icacls(path, icacls_args(path, &sid, recursive_inherit));
+}
+
+/// One best-effort `icacls` invocation against `path`; every outcome but
+/// success is logged and swallowed (see [`apply_dacl`]).
+#[cfg(windows)]
+fn run_icacls(path: &Path, args: Vec<String>) {
     let icacls = yerd_platform::system32_exe("icacls.exe");
-    match yerd_platform::hidden_command(&icacls)
-        .args(icacls_args(path, &sid, recursive_inherit))
-        .output()
-    {
+    match yerd_platform::hidden_command(&icacls).args(args).output() {
         Ok(out) if out.status.success() => {}
         Ok(out) => tracing::warn!(
             path = %path.display(),
@@ -219,6 +246,14 @@ mod icacls_args_tests {
             Some("a dir/with spaces"),
             "the spawner quotes the argument; the builder must not"
         );
+    }
+
+    /// The reset pass clears the DACL and nothing else: pairing `/reset` with
+    /// `/inheritance` or `/grant` makes icacls refuse the whole invocation.
+    #[test]
+    fn reset_is_its_own_invocation() {
+        let args = icacls_reset_args(Path::new("runtime"));
+        assert_eq!(args, vec!["runtime".to_owned(), "/reset".to_owned()]);
     }
 }
 

@@ -379,6 +379,17 @@ mod tests {
 mod win_tests {
     use super::*;
 
+    /// A search directory and a `{data}` root that do **not** overlap: a hit
+    /// under `data_root` is rejected as Yerd-managed, so a fixture that searched
+    /// the data root itself could never find anything.
+    fn roots(tmp: &Path) -> (PathBuf, PathBuf) {
+        let ext = tmp.join("opt");
+        let data = tmp.join("data");
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::create_dir_all(&data).unwrap();
+        (ext, data)
+    }
+
     /// Create `name` in `dir`. On Windows any regular file counts as
     /// executable, so no permission bits are involved.
     fn touch(dir: &Path, name: &str) -> PathBuf {
@@ -392,9 +403,14 @@ mod win_tests {
     #[test]
     fn finds_a_bat_for_a_bare_command_name() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().to_path_buf();
+        let (dir, data) = roots(tmp.path());
         touch(&dir, "composer.bat");
-        let found = find_in_path(&[dir.clone()], "composer", Path::new("nope"), tmp.path());
+        let found = find_in_path(
+            std::slice::from_ref(&dir),
+            "composer",
+            Path::new("nope"),
+            &data,
+        );
         assert_eq!(found, Some(dir.join("composer.bat")));
     }
 
@@ -404,20 +420,25 @@ mod win_tests {
     #[test]
     fn prefers_the_bare_name_over_an_extension() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().to_path_buf();
+        let (dir, data) = roots(tmp.path());
         touch(&dir, "laravel");
         touch(&dir, "laravel.bat");
-        let found = find_in_path(&[dir.clone()], "laravel", Path::new("nope"), tmp.path());
+        let found = find_in_path(
+            std::slice::from_ref(&dir),
+            "laravel",
+            Path::new("nope"),
+            &data,
+        );
         assert_eq!(found, Some(dir.join("laravel")));
     }
 
     #[test]
     fn no_matching_extension_is_not_found() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().to_path_buf();
+        let (dir, data) = roots(tmp.path());
         touch(&dir, "composer.txt");
         assert_eq!(
-            find_in_path(&[dir], "composer", Path::new("nope"), tmp.path()),
+            find_in_path(&[dir], "composer", Path::new("nope"), &data),
             None
         );
     }
@@ -426,11 +447,12 @@ mod win_tests {
     #[test]
     fn exclude_dir_suppresses_an_extension_hit() {
         let tmp = tempfile::tempdir().unwrap();
-        let shim = tmp.path().join("bin");
+        let (dir, data) = roots(tmp.path());
+        let shim = dir.join("bin");
         std::fs::create_dir_all(&shim).unwrap();
         touch(&shim, "composer.bat");
         assert_eq!(
-            find_in_path(&[shim.clone()], "composer", &shim, tmp.path()),
+            find_in_path(std::slice::from_ref(&shim), "composer", &shim, &data),
             None
         );
     }

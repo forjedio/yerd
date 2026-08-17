@@ -196,7 +196,6 @@ pub(super) fn pinned_home_env(
 pub(super) fn cloudflared_command(binary: &Path) -> tokio::process::Command {
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt as _;
         let mut cmd = tokio::process::Command::new(binary);
         cmd.creation_flags(yerd_platform::CREATE_NO_WINDOW);
         cmd

@@ -254,6 +254,12 @@ mod tests {
     #[cfg(not(windows))]
     const BLOG_ROOT: &str = "/srv/www/blog";
 
+    /// The autologin bootstrap script, likewise in the host's own form.
+    #[cfg(windows)]
+    const PREPEND_SCRIPT: &str = r"C:\data\wordpress-autologin-prepend.php";
+    #[cfg(not(windows))]
+    const PREPEND_SCRIPT: &str = "/data/wordpress-autologin-prepend.php";
+
     /// `APP_ROOT` with `sep` appended, for composing an expected child path.
     fn under(root: &str, rel: &str) -> String {
         let sep = if cfg!(windows) { '\\' } else { '/' };
@@ -554,13 +560,13 @@ mod tests {
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
             Some(AutoLoginParams {
-                prepend_script: Path::new("/data/wordpress-autologin-prepend.php"),
+                prepend_script: Path::new(PREPEND_SCRIPT),
                 target_user: "admin",
             }),
         );
         assert_eq!(
             lookup(&pairs, b"PHP_VALUE"),
-            Some(b"auto_prepend_file=/data/wordpress-autologin-prepend.php".as_slice())
+            Some(format!("auto_prepend_file={PREPEND_SCRIPT}").as_bytes())
         );
         assert_eq!(
             lookup(&pairs, b"YERD_LOGIN_USER"),
@@ -580,7 +586,7 @@ mod tests {
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
             Some(AutoLoginParams {
-                prepend_script: Path::new("/data/wordpress-autologin-prepend.php"),
+                prepend_script: Path::new(PREPEND_SCRIPT),
                 target_user: "",
             }),
         );
