@@ -939,8 +939,6 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
             />
           </div>
 
-          <!-- Same macOS-or-Linux predicate as the PATH install: host editor
-               launching has no Windows adapter either. -->
           <div v-if="supportsPathInstall" class="flex items-center justify-between gap-4">
             <div>
               <p class="text-sm font-medium">Preferred editor</p>

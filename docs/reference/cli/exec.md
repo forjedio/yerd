@@ -111,7 +111,9 @@ Both commands fail rather than quietly running the wrong PHP:
 - **Without `--site`, an unreachable daemon just means "not inside a site"** and
   the global default is used - but with a warning on stderr, since inside a site
   that would otherwise silently resolve to the wrong version.
-- **Unix only.** Both commands are available on macOS and Linux.
+- **Available on macOS, Linux and Windows.** On Windows `yerd exec` runs the
+  tool as a child process and returns its exit code, rather than replacing
+  itself with it as it does on Unix.
 
 See [Exit codes](./#exit-codes) for the full table.
 

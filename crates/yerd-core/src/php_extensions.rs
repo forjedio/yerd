@@ -247,8 +247,7 @@ mod tests {
     use super::*;
 
     /// An absolute path this host accepts, so the shared assertions below do
-    /// not have to be written twice. Unix wants a leading slash and `.so`;
-    /// Windows wants a drive prefix and `.dll`.
+    /// not have to be written twice.
     fn host_path(stem: &str) -> String {
         host_path_with_suffix(stem, crate::php_vocab::EXT_SUFFIX)
     }
@@ -257,11 +256,7 @@ mod tests {
     /// the path must still be *absolute* for this host, or the suffix check is
     /// never reached.
     fn host_path_with_suffix(stem: &str, suffix: &str) -> String {
-        if cfg!(windows) {
-            format!("C:\\php\\ext\\{stem}{suffix}")
-        } else {
-            format!("/a/{stem}{suffix}")
-        }
+        crate::php_vocab::example_ext_path(stem, suffix)
     }
 
     #[test]
@@ -389,6 +384,9 @@ mod tests {
         ));
     }
 
+    /// A foreign suffix is kept, so the derived name fails the name charset
+    /// with the clearer "wrong suffix" reason rather than being silently
+    /// truncated.
     #[test]
     fn default_name_derivation() {
         assert_eq!(
@@ -400,8 +398,6 @@ mod tests {
             Some("x")
         );
         assert_eq!(default_name_from_path("/").as_deref(), None);
-        // A foreign suffix is kept, so the derived name fails the name charset
-        // with the clearer "wrong suffix" reason rather than a silent truncation.
         assert_eq!(
             default_name_from_path(&host_path_with_suffix("scrypt", ".dylib")).as_deref(),
             Some("scrypt.dylib")

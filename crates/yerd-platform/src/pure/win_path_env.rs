@@ -1,4 +1,5 @@
-//! Pure editor for a Windows `;`-separated PATH-style list.
+//! Pure editor for a Windows `;`-separated PATH-style list, and the derivation
+//! of executable candidate names from `PATHEXT`.
 //!
 //! Idempotent add/remove of directory entries in the `HKCU\Environment\Path`
 //! value, comparing case-insensitively and ignoring a trailing slash (the two
@@ -7,6 +8,40 @@
 //! registry write (and the `WM_SETTINGCHANGE` broadcast).
 //!
 //! Un-gated (compiled and table-tested on every OS): pure string manipulation.
+
+/// Executable candidate names for `bin` on a host whose `PATHEXT` is `pathext`.
+///
+/// The bare name comes first, then `bin` with each `;`-separated `pathext`
+/// entry appended. Entries are trimmed, given a leading `.` if they lack one,
+/// and skipped when they duplicate an earlier candidate case-insensitively. An
+/// empty or whitespace-only `pathext` yields the bare name alone.
+///
+/// Bare-name-first inverts `cmd.exe`, which tries the extensions first. That is
+/// deliberate: the only place a hit is executed runs it under the managed
+/// `php.exe`, so an extensionless script is the better match when both exist.
+#[must_use]
+pub fn executable_names(bin: &str, pathext: &str) -> Vec<String> {
+    let mut out = vec![bin.to_owned()];
+    let mut seen = vec![bin.to_ascii_lowercase()];
+    for raw in pathext.split(';') {
+        let ext = raw.trim();
+        if ext.is_empty() {
+            continue;
+        }
+        let candidate = if ext.starts_with('.') {
+            format!("{bin}{ext}")
+        } else {
+            format!("{bin}.{ext}")
+        };
+        let key = candidate.to_ascii_lowercase();
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        out.push(candidate);
+    }
+    out
+}
 
 /// Normalised comparison key for a single entry: trimmed, trailing `\`/`/`
 /// stripped, ASCII-lowercased. Empty after trimming means "no entry".
@@ -215,5 +250,50 @@ mod tests {
         for (entry, want) in cases {
             assert_eq!(contains_entry(current, entry), *want, "entry: {entry}");
         }
+    }
+
+    #[test]
+    fn executable_names_puts_the_bare_name_first() {
+        let names = executable_names("composer", ".COM;.EXE;.BAT;.CMD");
+        assert_eq!(
+            names,
+            vec![
+                "composer",
+                "composer.COM",
+                "composer.EXE",
+                "composer.BAT",
+                "composer.CMD"
+            ]
+        );
+    }
+
+    #[test]
+    fn executable_names_without_pathext_is_the_bare_name_only() {
+        assert_eq!(executable_names("laravel", ""), vec!["laravel"]);
+        assert_eq!(executable_names("laravel", "  ;; "), vec!["laravel"]);
+    }
+
+    #[test]
+    fn executable_names_adds_a_missing_leading_dot() {
+        assert_eq!(
+            executable_names("wp", "EXE;.BAT"),
+            vec!["wp", "wp.EXE", "wp.BAT"]
+        );
+    }
+
+    #[test]
+    fn executable_names_drops_case_insensitive_duplicates() {
+        assert_eq!(
+            executable_names("node", ".exe;.EXE;.Exe;.cmd"),
+            vec!["node", "node.exe", "node.cmd"]
+        );
+    }
+
+    #[test]
+    fn executable_names_trims_surrounding_whitespace() {
+        assert_eq!(
+            executable_names("bun", " .exe ; .cmd "),
+            vec!["bun", "bun.exe", "bun.cmd"]
+        );
     }
 }

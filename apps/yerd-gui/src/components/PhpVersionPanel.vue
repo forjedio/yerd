@@ -157,7 +157,7 @@ async function saveSettings(): Promise<void> {
     seed(r.version_settings?.[props.version] ?? {});
     toast.success(
       `PHP ${props.version} settings updated`,
-      "The pool restarts to apply the changes.",
+      `The ${vocab.value.pool} restarts to apply the changes.`,
     );
     emit("updated", r);
   } catch (e) {
@@ -174,7 +174,7 @@ async function saveSettings(): Promise<void> {
 // Hidden on Windows: there is no FPM there, and php-cgi has no worker pool to
 // size (the daemon refuses the request with `unsupported`), so showing the
 // control would offer a setting that cannot take effect.
-const { isWindows } = usePlatform();
+const { isWindows, vocab } = usePlatform();
 const poolMaxChildren = ref("");
 const poolSeeded = ref("");
 

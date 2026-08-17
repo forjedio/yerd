@@ -96,7 +96,7 @@ pub enum ArgvParseError {
 ///
 /// **A path argument would also need an owner-SID check.** The Unix
 /// `require_user_owned` gate was deliberately not ported, because the only
-/// Windows op today (the NRPT resolver) takes no path (`PHASE4_PLAN` §4.3). The
+/// Windows op today (the NRPT resolver) takes no path. The
 /// moment a Windows-reachable op does take one, it must first verify that the
 /// path's owner SID equals the invoking user's SID: an elevated helper writing
 /// through a junction the unprivileged user planted is otherwise a

@@ -846,14 +846,9 @@ async fn subdirectory_index_php_wins_over_root_index_php() {
         Some("/wp-admin/index.php")
     );
     assert_eq!(
-        params.get("SCRIPT_FILENAME").map(|s| s.replace('\\', "/")),
-        Some(
-            docroot
-                .path()
-                .join("wp-admin/index.php")
-                .to_string_lossy()
-                .replace('\\', "/")
-        )
+        params.get("SCRIPT_FILENAME").map(String::as_str),
+        yerd_core::path_norm::php_path(&docroot.path().join("wp-admin/index.php")).to_str(),
+        "SCRIPT_FILENAME must be the host-native normalised path, separators included"
     );
 
     let _ = tx_shutdown.send(());
@@ -2008,10 +2003,14 @@ async fn post_under_rule_prefix_reaches_nested_front_controller() {
         Some("/api/index.php"),
         "the nested front controller must be the executed script"
     );
-    assert!(params
-        .get("SCRIPT_FILENAME")
-        .unwrap()
-        .ends_with("api/index.php"));
+    let want_tail = yerd_core::path_norm::php_path(std::path::Path::new("api/index.php"));
+    assert!(
+        params
+            .get("SCRIPT_FILENAME")
+            .unwrap()
+            .ends_with(want_tail.to_str().unwrap()),
+        "a route-rule target must land in the host's own separator form"
+    );
     assert_eq!(
         params.get("REQUEST_URI").map(String::as_str),
         Some("/api/user/login"),

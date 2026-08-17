@@ -40,7 +40,7 @@ jobs:
         # macos-14 = Apple Silicon. ubuntu-22.04-arm gates the arm64 Linux leg
         # the release builds natively (free GitHub-hosted arm64 runner), so the
         # shipped arm64 .deb is test-covered, not built blind. windows-latest
-        # gates the Phase 1 Windows port: it clippy/tests the workspace (the
+        # gates the Windows port: it clippy/tests the workspace (the
         # WebView2 SDK for the GUI crate comes via `webview2-com` on hosted
         # runners, no extra deps step) and asserts the lifecycle tests actually
         # run there (the guard below). fmt and the Linux packaging steps stay
@@ -72,9 +72,9 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-      # The Phase 1 Definition-of-Done: the daemon lifecycle tests must actually
-      # execute on Windows (not be silently cfg'd out). Encodes the "verify it's
-      # not cfg'd out" clause permanently.
+      # The daemon lifecycle tests must actually execute on Windows, not be
+      # silently cfg'd out. This step makes that permanent rather than relying
+      # on someone noticing a shrinking test count.
       - name: Assert lifecycle tests ran on Windows
         if: runner.os == 'Windows'
         shell: bash

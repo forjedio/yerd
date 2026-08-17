@@ -82,7 +82,17 @@ beforeEach(() => {
     mocks.resized = cb;
     return () => {};
   });
-  mocks.hostPlatform.mockResolvedValue("linux");
+  mocks.hostPlatform.mockResolvedValue({
+    os: "linux",
+    vocab: {
+      runtime: "PHP-FPM",
+      pool: "FPM pool",
+      pools: "FPM pools",
+      poolShort: "FPM",
+      extSuffix: ".so",
+      extExample: "/opt/homebrew/lib/php/pecl/20250925/scrypt.so",
+    },
+  });
   mocks.setGuiMaximized.mockResolvedValue(undefined);
   vi.useFakeTimers();
 });

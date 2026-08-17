@@ -18,11 +18,7 @@ use yerd_core::{PhpVersion, RouteRule, Site, Tld};
 /// (the path names a file on the machine the daemon runs on), so a hard-coded
 /// Unix path fails validation on Windows and vice versa.
 fn host_ext_path(stem: &str) -> String {
-    if cfg!(windows) {
-        format!("C:\\php\\ext\\{stem}.dll")
-    } else {
-        format!("/a/{stem}.so")
-    }
+    yerd_core::php_vocab::example_ext_path(stem, yerd_core::php_vocab::EXT_SUFFIX)
 }
 
 fn populated() -> Config {

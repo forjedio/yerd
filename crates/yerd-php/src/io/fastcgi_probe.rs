@@ -113,14 +113,16 @@ where
 /// named, so PHP answers "No input file specified." on `FCGI_STDOUT` - a
 /// record-shaped reply, which is all the probe needs to prove something real is
 /// listening.
+///
+/// The `BEGIN_REQUEST` body is role (big-endian `u16`), flags, then five
+/// reserved bytes. Flags stay 0, so the server closes the connection when it is
+/// done.
 async fn send_begin_request<S>(s: &mut S) -> io::Result<()>
 where
     S: tokio::io::AsyncWrite + Unpin,
 {
     let mut out = Vec::with_capacity(32);
     out.extend_from_slice(&record_header(FCGI_BEGIN_REQUEST, PROBE_REQUEST_ID, 8));
-    // BEGIN_REQUEST body: role (big-endian u16), flags, five reserved bytes.
-    // Flags stay 0, so the server closes the connection when it is done.
     out.extend_from_slice(&[0, FCGI_RESPONDER, 0, 0, 0, 0, 0, 0]);
     out.extend_from_slice(&record_header(FCGI_PARAMS, PROBE_REQUEST_ID, 0));
     out.extend_from_slice(&record_header(FCGI_STDIN, PROBE_REQUEST_ID, 0));

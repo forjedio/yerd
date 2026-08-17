@@ -343,10 +343,14 @@ const DAEMON_EXE: &str = "yerdd.exe";
 /// hidden console still receives logoff/shutdown control events, so the daemon
 /// can drain gracefully - `DETACHED_PROCESS` would silence those.
 #[cfg(windows)]
+/// Canonically defined in `yerd-platform`; re-declared here because this crate
+/// deliberately depends on no `yerd-*` crate (see `Cargo.toml`).
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// See [`CREATE_NO_WINDOW`]; a fresh process group so console signals to the
 /// parent do not propagate to the detached daemon.
 #[cfg(windows)]
+/// Canonically defined in `yerd-platform`; re-declared here because this crate
+/// deliberately depends on no `yerd-*` crate (see `Cargo.toml`).
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 /// The 12-byte `StartupApproved` payload meaning "enabled" (auto-launch parity):
 /// a `0x02` state flag followed by an all-zero disable timestamp.
@@ -383,8 +387,9 @@ fn tasklist_lists(stdout: &str, exe: &str) -> bool {
 }
 
 /// Absolute path to a `System32` executable, from `%SystemRoot%` (falling back to
-/// the conventional location), so the lookup never trusts `PATH`. Mirrors
-/// `bin/yerd`'s `uninstall.rs::system32_exe`.
+/// the conventional location), so the lookup never trusts `PATH`. Canonically
+/// defined in `yerd-platform`; re-declared here because this crate deliberately
+/// depends on no `yerd-*` crate (see `Cargo.toml`).
 #[cfg(windows)]
 fn system32_exe(name: &str) -> PathBuf {
     let root =
@@ -394,13 +399,43 @@ fn system32_exe(name: &str) -> PathBuf {
 
 /// Force-kill any `yerdd.exe` for this user via absolute-path `taskkill`. An
 /// unelevated `taskkill` only reaps same-user processes (the `pgrep -U` intent);
-/// Phase 2 Job Objects reap the php-cgi/DB/mail children when the daemon dies -
+/// Job Objects reap the php-cgi/DB/mail children when the daemon dies -
 /// the same trade `uninstall.rs::stop_daemon` already ships. Best-effort.
 #[cfg(windows)]
 fn taskkill_daemon() {
+    use std::os::windows::process::CommandExt as _;
+
     let taskkill = system32_exe("taskkill.exe");
     let _ = Command::new(&taskkill)
         .args(["/F", "/IM", DAEMON_EXE])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+}
+
+/// The `taskkill` arguments that force-terminate one process by pid.
+///
+/// Pure and un-gated so the argument order is table-tested on every OS.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn force_kill_pid_args(pid: u32) -> [String; 3] {
+    ["/F".to_owned(), "/PID".to_owned(), pid.to_string()]
+}
+
+/// Force-terminate one process by pid. Best-effort and infallible.
+///
+/// There is no graceful by-pid stop on Windows: `taskkill` without `/F` posts
+/// `WM_CLOSE` to a top-level window, which the daemon does not have. An
+/// unelevated `taskkill` only reaps same-user processes, which is the intent
+/// here, and the daemon's own children die with it through their job objects, so
+/// this orphans nothing. An already-dead pid is not an error, matching the Unix
+/// `sigterm` contract.
+#[cfg(windows)]
+pub fn force_stop_pid(pid: u32) {
+    use std::os::windows::process::CommandExt as _;
+
+    let taskkill = system32_exe("taskkill.exe");
+    let _ = Command::new(&taskkill)
+        .args(force_kill_pid_args(pid))
+        .creation_flags(CREATE_NO_WINDOW)
         .output();
 }
 
@@ -427,10 +462,13 @@ fn spawn_detached_windows(yerdd_path: &Path) -> Result<(), ServiceError> {
 /// Empty/failed output reads as "not running".
 #[cfg(windows)]
 fn yerdd_running() -> bool {
+    use std::os::windows::process::CommandExt as _;
+
     let tasklist = system32_exe("tasklist.exe");
     let filter = format!("IMAGENAME eq {DAEMON_EXE}");
     match Command::new(&tasklist)
         .args(["/FO", "CSV", "/NH", "/FI", &filter])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
     {
         Ok(o) => tasklist_lists(&String::from_utf8_lossy(&o.stdout), DAEMON_EXE),
@@ -784,5 +822,14 @@ mod tests {
     #[test]
     fn autostart_enabled_smoke_is_infallible() {
         let _: bool = autostart_enabled();
+    }
+
+    /// The order matters: `taskkill` requires the `/PID` flag immediately before
+    /// its value, and the pid must be decimal.
+    #[test]
+    fn force_kill_pid_args_are_ordered_and_decimal() {
+        assert_eq!(force_kill_pid_args(4321), ["/F", "/PID", "4321"]);
+        assert_eq!(force_kill_pid_args(0), ["/F", "/PID", "0"]);
+        assert_eq!(force_kill_pid_args(u32::MAX), ["/F", "/PID", "4294967295"]);
     }
 }

@@ -24,6 +24,7 @@ mod route_rule;
 mod router;
 pub mod service_directives;
 mod site;
+pub mod target;
 mod tld;
 
 /// `Server` header value the proxy stamps on its own (synthetic, non-forwarded)

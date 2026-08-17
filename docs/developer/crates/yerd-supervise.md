@@ -214,8 +214,9 @@ exhaustive matching on the two cases is intended at every call site.
   translate `ExitStatus` into [`ExitReason`](#error-model) via
   `ExitReason::from_status`. Its `kill` honours both `KillSignal` (`Term` / `Kill`)
   and `StopProtocol`: on Unix it uses `nix` `killpg`/`kill` (group SIGTERM/SIGKILL,
-  or master-only SIGINT for `MasterInterrupt`); the Windows path is a Phase-2 TODO
-  that collapses to `Child::kill`.
+  or master-only SIGINT for `MasterInterrupt`). The Windows path drops the Job
+  Object, whose `KILL_ON_JOB_CLOSE` reaps the whole tree, then collapses to
+  `Child::kill`; it does not distinguish the two `KillSignal`s.
 
 ## Error model
 

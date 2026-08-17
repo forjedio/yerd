@@ -593,14 +593,14 @@ mod tests {
     }
 
     #[test]
+    /// On Windows the server binary diverges (`redis-server`), so the fixture is
+    /// written at the host-appropriate path discovery looks for.
     fn discover_finds_installed_versions_only() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
         let reg = ServiceRegistry::builtin();
         let v = ServiceVersion::from_str("8").unwrap();
         let redis = reg.get("redis").unwrap();
-        // On Windows the server binary diverges (redis-server), so write the file
-        // at the host-appropriate path discovery looks for.
         let server_base = crate::service::server_binary_for_host(redis.as_ref()).unwrap();
 
         assert!(discover_installed(&dirs, &reg).unwrap().is_empty());

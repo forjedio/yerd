@@ -110,6 +110,8 @@ async fn poll<T>(
 }
 
 #[test]
+/// Uses ephemeral-safe ports so the spawned daemon never fights over 80/443/53
+/// with anything real on the host.
 fn console_restart_spawns_successor_with_new_boot_id() {
     let root = tempfile::tempdir().unwrap();
     let temp = root.path().join("temp");
@@ -119,8 +121,6 @@ fn console_restart_spawns_successor_with_new_boot_id() {
         std::fs::create_dir_all(d).unwrap();
     }
 
-    // Persist a config with ephemeral-safe ports so the spawned daemon never
-    // fights over 80/443/53 with anything real on the host.
     let (http, https) = free_ports();
     let mut cfg = yerd_config::Config::default();
     cfg.ports.http = http;

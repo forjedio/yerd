@@ -51,7 +51,17 @@
 //! [`resolve_bundle_from_listing`] the Windows rows.
 
 use serde::Deserialize;
+use yerd_core::target::UnsupportedTarget;
 use yerd_core::PhpVersion;
+
+/// Host-target vocabulary, re-exported so `yerd_php::{Os, Arch}` keeps working
+/// for the consumers that already import it (including the daemon's non-PHP
+/// downloads). The definitions live in [`yerd_core::target`].
+pub use yerd_core::target::{Arch, Os};
+
+/// Zip-slip guard for archive member names, re-exported from
+/// [`yerd_core::path_norm`] where it now lives.
+pub use yerd_core::path_norm::is_safe_member;
 
 use crate::error::PhpError;
 
@@ -166,51 +176,6 @@ fn parse_listing(listing: &str) -> Result<Listing, PhpError> {
         });
     }
     Ok(parsed)
-}
-
-/// Target operating system for a prebuilt artifact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Os {
-    /// Linux (glibc build - can load shared extensions; the manifest never
-    /// ships a fully-static musl build, which can't `dlopen`).
-    Linux,
-    /// macOS.
-    Macos,
-    /// Windows (repackaged `windows.php.net` bundle: `php.exe` + `php-cgi.exe`,
-    /// `x86_64` only).
-    Windows,
-}
-
-impl Os {
-    /// The token used in artifact filenames.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Os::Linux => "linux",
-            Os::Macos => "macos",
-            Os::Windows => "windows",
-        }
-    }
-}
-
-/// Target CPU architecture for a prebuilt artifact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Arch {
-    /// 64-bit x86.
-    X86_64,
-    /// 64-bit ARM.
-    Aarch64,
-}
-
-impl Arch {
-    /// The token used in artifact filenames.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Arch::X86_64 => "x86_64",
-            Arch::Aarch64 => "aarch64",
-        }
-    }
 }
 
 /// Which binary within a PHP build. Models the Unix cli/fpm tarball layout;
@@ -493,42 +458,16 @@ fn parse_minor(s: &str) -> Option<PhpVersion> {
 }
 
 /// Detect the running platform, erroring on anything yerd has no prebuilt PHP
-/// for (e.g. a 32-bit or unknown OS). Windows resolves to `Os::Windows`
-/// (`x86_64` only); a `windows-aarch64` host resolves fine here but later fails
-/// resolution with `VersionUnavailable`, which is accurate. Call this
-/// **before** any download.
+/// for (e.g. a 32-bit or unknown OS). Thin wrapper over
+/// [`yerd_core::target::current_os_arch`] that renders the failure in this
+/// crate's error vocabulary. Call this **before** any download.
 pub fn current_os_arch() -> Result<(Os, Arch), PhpError> {
-    let os = match std::env::consts::OS {
-        "linux" => Os::Linux,
-        "macos" => Os::Macos,
-        "windows" => Os::Windows,
-        other => {
-            return Err(PhpError::UnsupportedPlatform {
-                detail: format!("no prebuilt PHP for OS {other:?}"),
-            })
-        }
-    };
-    let arch = match std::env::consts::ARCH {
-        "x86_64" => Arch::X86_64,
-        "aarch64" => Arch::Aarch64,
-        other => {
-            return Err(PhpError::UnsupportedPlatform {
-                detail: format!("no prebuilt PHP for architecture {other:?}"),
-            })
-        }
-    };
-    Ok((os, arch))
-}
-
-/// Zip-slip guard: a tar member name is safe to trust only if it is relative
-/// and contains no `..`, root, or prefix components.
-#[must_use]
-pub fn is_safe_member(name: &str) -> bool {
-    use std::path::Component;
-    !name.is_empty()
-        && std::path::Path::new(name)
-            .components()
-            .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+    yerd_core::target::current_os_arch().map_err(|e| PhpError::UnsupportedPlatform {
+        detail: match e {
+            UnsupportedTarget::Os(os) => format!("no prebuilt PHP for OS {os:?}"),
+            UnsupportedTarget::Arch(arch) => format!("no prebuilt PHP for architecture {arch:?}"),
+        },
+    })
 }
 
 /// The patch component of a `"<maj>.<min>.<patch>"` version string.
@@ -578,7 +517,7 @@ mod tests {
     use super::*;
 
     /// A `php.json` body spanning several minors and all four targets, shaped
-    /// like the real manifest (§7). 8.1 is below the floor; 8.5 has a rebuild.
+    /// like the real manifest. 8.1 is below the floor; 8.5 has a rebuild.
     const LISTING: &str = r#"{
         "schema": 1,
         "generated_at": "2026-07-01T00:00:00Z",
@@ -1070,15 +1009,5 @@ mod tests {
         assert_eq!(BinaryKind::Fpm.install_segments(), &["sbin", "php-fpm"]);
         assert_eq!(BinaryKind::Cli.archive_member(), "php");
         assert_eq!(BinaryKind::Fpm.archive_member(), "php-fpm");
-    }
-
-    #[test]
-    fn is_safe_member_rejects_traversal_and_absolute() {
-        assert!(is_safe_member("php"));
-        assert!(is_safe_member("./php"));
-        assert!(!is_safe_member("../php"));
-        assert!(!is_safe_member("/etc/php"));
-        assert!(!is_safe_member("a/../../b"));
-        assert!(!is_safe_member(""));
     }
 }

@@ -1,12 +1,10 @@
 //! Stub implementations for OSes without a real impl.
 //!
 //! Every trait method returns `Err(PlatformError::Unsupported { operation })`.
-//! This lets `cargo check --workspace` stay green on every host while the
-//! macOS + Linux impls are the only ones with full behaviour. Windows reuses
-//! only three of these stubs (`IdeLauncher`, `SystemOpener`, `SystemMetrics`,
-//! aliased by `os::windows`); every other trait has a real `Windows*` type
-//! there, and the remaining aliases go one at a time as later phases implement
-//! them.
+//! This lets `cargo check --workspace` stay green on every host, while macOS,
+//! Linux and Windows each carry the full behaviour. Windows reuses none of these
+//! stubs - `os::windows` has a real `Windows*` type for every trait - but the
+//! module stays compiled there, hence the `dead_code` allows below.
 
 use std::net::SocketAddr;
 use std::path::Path;
@@ -50,8 +48,10 @@ impl TerminalLauncher for UnsupportedTerminalLauncher {
 
 /// Stub IDE launcher for unsupported OSes.
 #[derive(Debug, Default, Clone, Copy)]
+#[cfg_attr(windows, allow(dead_code))]
 pub struct UnsupportedIdeLauncher;
 
+#[cfg_attr(windows, allow(dead_code))]
 impl UnsupportedIdeLauncher {
     /// Construct.
     #[must_use]
@@ -74,8 +74,10 @@ impl IdeLauncher for UnsupportedIdeLauncher {
 
 /// Stub system opener for unsupported OSes.
 #[derive(Debug, Default, Clone, Copy)]
+#[cfg_attr(windows, allow(dead_code))]
 pub struct UnsupportedSystemOpener;
 
+#[cfg_attr(windows, allow(dead_code))]
 impl UnsupportedSystemOpener {
     /// Construct.
     #[must_use]
@@ -241,8 +243,10 @@ impl PortBinder for UnsupportedPortBinder {
 /// Stub `SystemMetrics` for unsupported OSes - metrics are best-effort, so this
 /// returns `None` (no metrics) rather than an error.
 #[derive(Debug, Default, Clone, Copy)]
+#[cfg_attr(windows, allow(dead_code))]
 pub struct UnsupportedSystemMetrics;
 
+#[cfg_attr(windows, allow(dead_code))]
 impl UnsupportedSystemMetrics {
     /// Construct.
     #[must_use]

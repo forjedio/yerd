@@ -432,6 +432,9 @@ where
     /// One start attempt for worker `i` of `v`: plan an address, render the
     /// config, spawn, and health-check. Stores the worker only once it is
     /// `Running`.
+    ///
+    /// Unix renders the FPM pool config; Windows has no FPM, so it renders the
+    /// supplemental php-cgi ini instead, loaded via `PHP_INI_SCAN_DIR`.
     #[allow(clippy::too_many_lines)]
     async fn ensure_worker_once(
         &mut self,
@@ -480,8 +483,6 @@ where
             }
         }
 
-        // Unix renders the FPM pool config; Windows has no FPM, so it renders the
-        // supplemental php-cgi ini (loaded via `PHP_INI_SCAN_DIR`) instead.
         #[cfg(not(windows))]
         let rendered = fpm_conf::render_fpm_conf(&cfg);
         #[cfg(windows)]

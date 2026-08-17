@@ -2,7 +2,7 @@
 //! template format - future edits flip this test deliberately.
 //!
 //! Unix-scoped: FPM with a Unix domain socket is a Unix deployment shape and the
-//! goldens pin Unix path separators. Windows PHP uses php-cgi (Phase 2).
+//! goldens pin Unix path separators. Windows PHP uses php-cgi instead of FPM.
 
 #![cfg(unix)]
 #![allow(

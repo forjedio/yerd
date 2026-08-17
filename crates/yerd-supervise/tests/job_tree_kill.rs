@@ -1,4 +1,4 @@
-//! Windows Job Object orphan guard (the Phase 2 orphan-free definition of done).
+//! Windows Job Object orphan guard: no worker may outlive the daemon.
 //!
 //! Spawns a leader that provably starts a detached grandchild, then proves the
 //! grandchild dies with the leader on both the explicit-`kill` path and the
@@ -118,5 +118,65 @@ async fn drop_terminates_the_whole_tree() {
     assert!(
         dead,
         "grandchild {grandchild} must die when the child's job is dropped (kill-on-close)"
+    );
+}
+
+/// The graceful arm must still reap the tree. The leader never exits on its own,
+/// so this drives the wait to its timeout and then the forced job teardown, which
+/// is the path that must not leak an orphan.
+#[tokio::test]
+async fn graceful_term_forces_after_the_grace_and_reaps_the_tree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pidfile = tmp.path().join("gc.pid");
+    let mut leader = TokioProcessSpawner.spawn(leader_command(&pidfile)).unwrap();
+
+    let grandchild = read_pid(&pidfile).await;
+    assert!(ping_alive(grandchild), "grandchild should be running");
+
+    let started = std::time::Instant::now();
+    leader
+        .kill(KillSignal::Term, StopProtocol::MasterInterrupt)
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    let _ = leader.wait().await;
+
+    let dead = wait_until_dead(grandchild).await;
+    best_effort_kill(grandchild);
+    assert!(
+        dead,
+        "grandchild {grandchild} must die once the grace expires (zero orphans)"
+    );
+    assert!(
+        elapsed >= yerd_supervise::pure::GRACEFUL_EXIT_WAIT,
+        "a non-exiting child must be waited for the full grace, waited {elapsed:?}"
+    );
+}
+
+/// A `Term` under `GroupTerm` must not wait at all: it is the force path, and
+/// paying the grace there would slow every ordinary stop.
+#[tokio::test]
+async fn group_term_forces_immediately() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pidfile = tmp.path().join("gc.pid");
+    let mut leader = TokioProcessSpawner.spawn(leader_command(&pidfile)).unwrap();
+
+    let grandchild = read_pid(&pidfile).await;
+    assert!(ping_alive(grandchild), "grandchild should be running");
+
+    let started = std::time::Instant::now();
+    leader
+        .kill(KillSignal::Term, StopProtocol::GroupTerm)
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    let _ = leader.wait().await;
+
+    let dead = wait_until_dead(grandchild).await;
+    best_effort_kill(grandchild);
+    assert!(dead, "grandchild {grandchild} must die with the leader");
+    assert!(
+        elapsed < yerd_supervise::pure::GRACEFUL_EXIT_WAIT,
+        "the force path must not pay the grace, waited {elapsed:?}"
     );
 }

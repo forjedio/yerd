@@ -17,7 +17,7 @@ use crate::PlatformError;
 pub trait ResolverInstaller {
     /// Request resolver redirection for `tld` to `addr`.
     ///
-    /// `addr` is the IP+port the OS resolver should forward to. Phase 1
+    /// `addr` is the IP+port the OS resolver should forward to. The daemon
     /// daemon always passes `127.0.0.1:<port>`; the trait accepts
     /// `SocketAddr` so v2 can move the DNS responder elsewhere without a
     /// breaking change.

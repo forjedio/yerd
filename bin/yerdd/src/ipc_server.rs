@@ -586,6 +586,11 @@ fn daemon_autostart_enabled() -> Option<bool> {
 /// (non-Unix, or `$HOME` unset). Computed on demand from the `Diagnose` handler,
 /// not on the per-poll status path. The cover/pcov shims alone don't count - the
 /// gate is an actual installed dev tool.
+///
+/// The probe is read-only. On Windows an unreadable `HKCU\Environment` PATH is
+/// "can't tell" (`None`), so the doctor stays quiet rather than nagging on a bad
+/// read; an *absent* one is a real empty PATH, which does need setup. On Unix
+/// the equivalent signal is the managed block in a shell rc file.
 fn path_needs_setup(state: &DaemonState) -> Option<bool> {
     #[cfg(windows)]
     {
@@ -599,9 +604,6 @@ fn path_needs_setup(state: &DaemonState) -> Option<bool> {
             Some(false)
         } else {
             let shim = crate::php_install::shim_dir(&state.dirs);
-            // Read-only probe. An unreadable PATH is "can't tell" (`None`), so
-            // the doctor stays quiet rather than nagging on a bad read; an
-            // absent one is a real empty PATH, which does need setup.
             let current = yerd_platform::user_path().ok()?.unwrap_or_default();
             shim.to_str()
                 .map(|s| win_path_env::upsert_entries(&current, &[s]).is_some())
@@ -612,8 +614,6 @@ fn path_needs_setup(state: &DaemonState) -> Option<bool> {
         let _ = state;
         None
     }
-    // Shell rc files are the Unix way onto PATH; the `#[cfg(windows)]` arm above
-    // is the sibling that probes `HKCU\Environment` instead.
     #[cfg(unix)]
     {
         use yerd_platform::pure::shell_profile::{self, rc_relpaths, HostOs, Shell};
@@ -651,8 +651,9 @@ fn path_needs_setup(state: &DaemonState) -> Option<bool> {
 /// `handle_mutation`.
 /// Resident-set size for each of `pids`, gathered in a single `spawn_blocking`.
 ///
-/// `SystemMetrics::rss_bytes` shells out to `ps` on macOS (fork+exec+wait) -
-/// genuinely blocking I/O, unlike every other field of a `StatusReport`. Doing
+/// `SystemMetrics::rss_bytes` shells out to `ps` on macOS and `tasklist` on
+/// Windows (spawn+wait) - genuinely blocking I/O, unlike every other field of a
+/// `StatusReport`. Doing
 /// it once off-executor, rather than synchronously per pid inline, keeps a
 /// tokio worker thread from being tied up once per installed PHP version plus
 /// once for the daemon itself on every `Request::Status`/`Request::Diagnose`
@@ -2484,6 +2485,14 @@ async fn add_php_extension(
     zend: bool,
     state: &DaemonState,
 ) -> Response {
+    // PHP cannot open a Windows verbatim (`\\?\`) path, and tools the user is
+    // likely to have copied the path from (PowerShell `Resolve-Path`, anything
+    // built on `fs::canonicalize`) emit that form. Settle it here, at the one
+    // edge that persists the entry, so a stored path is always loadable. No-op
+    // off Windows and for a path that is already plain.
+    let path = yerd_core::path_norm::strip_verbatim(std::path::Path::new(&path))
+        .to_string_lossy()
+        .into_owned();
     let php_bin = crate::php_install::cli_binary_path(&state.dirs, version);
     if !php_bin.exists() {
         return Response::Error {
@@ -4108,6 +4117,8 @@ Subject: Captured\r\n\r\nhi\r\n";
     }
 
     #[tokio::test]
+    /// The managed `php` shim is a symlink, which is Unix-only, so the shim half
+    /// of the assertion is gated: `set_default_shim` is a no-op off Unix.
     async fn dispatch_set_default_php_sets_config_and_shim() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
@@ -4121,8 +4132,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         .await;
         assert!(matches!(resp, Response::Ok), "got {resp:?}");
         assert_eq!(state.config.lock().await.php.default, PhpVersion::new(8, 4));
-        // The managed `php` shim is a symlink, which is Unix-only for now
-        // (`set_default_shim` is a no-op off Unix - Phase 5).
         #[cfg(unix)]
         {
             let shim = state.dirs.data.join("bin").join("php");

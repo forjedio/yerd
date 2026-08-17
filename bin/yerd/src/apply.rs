@@ -37,15 +37,15 @@
 //! The bundle-swap mechanics ([`swap_bundle`]) are unit-tested on temp dirs. The
 //! live elevation, the real Gatekeeper/SMAppService behaviour, and whether a
 //! bundle swap preserves the `SMAppService` Login-Item registration are **not**
-//! exercisable in CI - they are the Phase B hardware-spike preconditions.
+//! exercisable in CI - they have to be validated on real hardware.
 //!
 //! ## Atomicity note
 //!
 //! The macOS swap uses rename-aside → rename-in (safe `std::fs::rename`), which
 //! has a sub-millisecond window where the bundle path does not exist. An atomic
 //! `renamex_np(RENAME_SWAP)` would close that window but needs `unsafe` FFI;
-//! `bin/yerd` forbids `unsafe`, so that is a documented hardening follow-up
-//! (move the swap into a small unsafe-permitting module or `yerd-helper`).
+//! `bin/yerd` forbids `unsafe`, so closing that window would mean moving the
+//! swap into a small unsafe-permitting module or `yerd-helper`.
 
 use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -950,7 +950,7 @@ fn delete_old_images(dir: &Path, names: &[&str]) {
 /// exit. `/S` = silent; `/UPDATE` tells the NSIS template this is an update so
 /// its uninstall hook is skipped (see `nsis/hooks.nsh`). Defender can briefly
 /// lock the freshly-written file, so a spawn failure is retried once after a
-/// short pause (Phase 2 precedent).
+/// short pause.
 #[cfg(windows)]
 fn run_nsis_installer(staged: &Path) -> Result<(), String> {
     use std::process::Command;

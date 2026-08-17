@@ -753,11 +753,7 @@ mod tests {
     /// Extension paths are validated host-relatively, so a fixture has to be
     /// a path this host accepts (see `yerd_core::php_extensions`).
     fn host_ext_path(stem: &str) -> String {
-        if cfg!(windows) {
-            format!("C:\\php\\ext\\{stem}.dll")
-        } else {
-            format!("/opt/homebrew/lib/php/pecl/20250925/{stem}.so")
-        }
+        yerd_core::php_vocab::example_ext_path(stem, yerd_core::php_vocab::EXT_SUFFIX)
     }
 
     #[test]

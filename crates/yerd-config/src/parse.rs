@@ -2632,13 +2632,8 @@ target = \"../../etc/passwd\"\n";
 
     /// Extension paths are validated against the *host's* rules (a path names a
     /// file on this machine), so the fixture must be one this host accepts.
-    /// TOML needs the Windows separators escaped.
     fn host_ext_path(stem: &str) -> String {
-        if cfg!(windows) {
-            format!("C:\\php\\ext\\{stem}.dll")
-        } else {
-            format!("/opt/php/pecl/{stem}.so")
-        }
+        yerd_core::php_vocab::example_ext_path(stem, yerd_core::php_vocab::EXT_SUFFIX)
     }
 
     #[test]

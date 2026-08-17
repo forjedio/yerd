@@ -97,6 +97,11 @@ impl PoolConfig {
     /// - Pid + log under `dirs.state`, config under `dirs.config`.
     /// - All basenames embed `version` AND `instance_id` so concurrent
     ///   Yerd daemons on the same host don't clobber each other.
+    ///
+    /// `config_path` differs per host: on Unix it is the FPM config file; on
+    /// Windows it is the supplemental php-cgi ini in a per-pool directory that
+    /// becomes `PHP_INI_SCAN_DIR`, isolated per pool so the scan dir holds only
+    /// this pool's ini.
     #[must_use]
     pub fn dev_defaults(
         version: PhpVersion,
@@ -104,9 +109,6 @@ impl PoolConfig {
         dirs: &PlatformDirs,
         instance_id: u32,
     ) -> Self {
-        // Unix: the FPM config file. Windows: the supplemental php-cgi ini in a
-        // per-pool dir that becomes `PHP_INI_SCAN_DIR` (isolated per pool so the
-        // scan dir holds only this pool's ini).
         #[cfg(not(windows))]
         let config_path = dirs
             .config

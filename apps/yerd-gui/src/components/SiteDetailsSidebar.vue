@@ -41,7 +41,7 @@ import { resolveIde, SYSTEM_LABEL } from "@/lib/ideChoice";
 import { siteUrl } from "@/lib/siteUrl";
 import { openWpAdmin } from "@/lib/wpAdmin";
 import { loadIdes, useIdes } from "@/composables/useIdes";
-import { loadPlatform, usePlatform } from "@/composables/usePlatform";
+import { loadPlatform } from "@/composables/usePlatform";
 import { useToast } from "@/composables/useToast";
 
 const props = defineProps<{
@@ -82,7 +82,6 @@ const emit = defineEmits<{
 
 const toast = useToast();
 const { installedIdes } = useIdes();
-const { supportsEditorLaunch } = usePlatform();
 const activeTab = ref<"general" | "domains" | "routing" | "information">("general");
 const webRoot = ref("");
 const globalIde = ref<string | null>(null);
@@ -525,10 +524,7 @@ onUnmounted(() => {
                 <Button class="min-w-0 px-2" variant="outline" size="sm" @click="openTerminal(site)">
                   <Terminal /> <span class="truncate">Terminal</span>
                 </Button>
-                <!-- macOS and Linux only: IdeLauncher has no Windows adapter, so
-                     the button would only ever raise an Unsupported error there. -->
                 <Button
-                  v-if="supportsEditorLaunch"
                   class="min-w-0 px-2"
                   variant="outline"
                   size="sm"
@@ -586,12 +582,7 @@ onUnmounted(() => {
                     />
                   </dd>
                 </div>
-                <!-- macOS and Linux only: IdeLauncher has no Windows adapter, so
-                     the per-site override would have nothing to launch there. -->
-                <div
-                  v-if="supportsEditorLaunch"
-                  class="flex items-center justify-between gap-4 px-3 py-3"
-                >
+                <div class="flex items-center justify-between gap-4 px-3 py-3">
                   <dt class="shrink-0 text-sm font-medium">Editor</dt>
                   <dd class="min-w-0">
                     <Select

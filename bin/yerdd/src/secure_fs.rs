@@ -101,16 +101,6 @@ fn icacls_args(path: &Path, sid: &str, recursive_inherit: bool) -> Vec<String> {
     ]
 }
 
-/// Absolute path to `icacls.exe`, from `%SystemRoot%` (falling back to the
-/// conventional location), so the DACL edit never runs an attacker-planted
-/// `icacls` found on `PATH`. Mirrors `yerd-service-ctl`'s `system32_exe`.
-#[cfg(windows)]
-fn icacls_path() -> std::path::PathBuf {
-    let root = std::env::var_os("SystemRoot")
-        .map_or_else(|| std::path::PathBuf::from(r"C:\Windows"), Into::into);
-    root.join("System32").join("icacls.exe")
-}
-
 /// Restrict `path`'s DACL to a single full-control ACE for the current user,
 /// the Windows counterpart of the Unix `chmod`. `recursive_inherit` marks a
 /// directory, whose ACE is made inheritable so its children are covered too.
@@ -128,9 +118,6 @@ fn icacls_path() -> std::path::PathBuf {
 /// must never be able to brick daemon startup.
 #[cfg(windows)]
 fn apply_dacl(path: &Path, recursive_inherit: bool) {
-    use std::os::windows::process::CommandExt as _;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
     let sid = match yerd_platform::current_user_sid() {
         Ok(sid) => sid,
         Err(e) => {
@@ -142,10 +129,9 @@ fn apply_dacl(path: &Path, recursive_inherit: bool) {
             return;
         }
     };
-    let icacls = icacls_path();
-    match std::process::Command::new(&icacls)
+    let icacls = yerd_platform::system32_exe("icacls.exe");
+    match yerd_platform::hidden_command(&icacls)
         .args(icacls_args(path, &sid, recursive_inherit))
-        .creation_flags(CREATE_NO_WINDOW)
         .output()
     {
         Ok(out) if out.status.success() => {}
@@ -259,7 +245,7 @@ mod windows_dacl_tests {
         let dir = tmp.path().join("runtime");
         create_private_dir(&dir).unwrap();
 
-        let out = std::process::Command::new(icacls_path())
+        let out = std::process::Command::new(yerd_platform::system32_exe("icacls.exe"))
             .arg(&dir)
             .output()
             .unwrap();

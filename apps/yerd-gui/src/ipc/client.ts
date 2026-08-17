@@ -8,6 +8,7 @@
  */
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 
+import type { HostPlatform } from "./types";
 import type {
   AutostartState,
   CliPathStatus,
@@ -943,8 +944,8 @@ export async function protocolVersion(): Promise<number> {
 }
 
 /** Host OS, e.g. `"linux"` / `"macos"` / `"windows"` - gates platform UI. */
-export async function hostPlatform(): Promise<string> {
-  return call<string>("host_platform");
+export async function hostPlatform(): Promise<HostPlatform> {
+  return call<HostPlatform>("host_platform");
 }
 
 // ── host helpers (Tauri plugins, NOT daemon IPC) ───────────────────────────
@@ -1015,16 +1016,19 @@ export async function pickOpenFile(): Promise<string | null> {
  * Open-file dialog for a PHP extension. Returns the chosen path, or null if
  * cancelled.
  *
- * The filter is `.so` only: the daemon rejects any other extension outright, so
- * offering `.dylib` on macOS would only produce a guaranteed failure. There is
- * no `defaultPath` because nothing reports a version's `extension_dir`.
+ * The filter mirrors the daemon's rule exactly: `validate_ext_path` accepts
+ * only the *host's* suffix, `.so` on Unix and `.dll` (case-insensitively) on
+ * Windows, so `extSuffix` comes from `usePlatform().vocab` rather than being
+ * hard-coded. Offering anything else would produce a guaranteed rejection.
+ * There is no `defaultPath` because nothing reports a version's
+ * `extension_dir`.
  */
-export async function pickExtensionFile(): Promise<string | null> {
+export async function pickExtensionFile(extSuffix: string): Promise<string | null> {
   const { open } = await import("@tauri-apps/plugin-dialog");
   const picked = await open({
     directory: false,
     multiple: false,
-    filters: [{ name: "PHP extension", extensions: ["so"] }],
+    filters: [{ name: "PHP extension", extensions: [extSuffix.replace(/^\./, "")] }],
   });
   return typeof picked === "string" ? picked : null;
 }

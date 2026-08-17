@@ -19,17 +19,10 @@
 //! on-disk contracts that stay spelled "fpm" on every OS. Only human-readable
 //! text changes.
 //!
-//! The GUI cannot read these consts (it learns the host OS at runtime over
-//! IPC); `apps/yerd-gui/src/lib/phpVocab.ts` mirrors them, and its table test
-//! pins the same values.
-//!
-//! Not every const has a Rust reader, and that is deliberate rather than dead
-//! weight: [`POOL`] is the only one composed into a Rust string on both hosts,
-//! [`POOL_SHORT`] is read by the Unix-only PHP download label, and [`RUNTIME`]
-//! and [`EXT_SUFFIX`] exist so this module stays the single definition of the
-//! vocabulary that the TypeScript mirror is checked against. Deleting the two
-//! unread ones would move the definition of "what Yerd calls this on Windows"
-//! into the GUI, which is the wrong place for it.
+//! This module is the single definition of the vocabulary. The GUI does not
+//! mirror it: the Tauri backend builds its `host_platform` response from these
+//! items and the frontend renders whatever it is handed, so a change here
+//! reaches every surface without a second table to keep in step.
 
 /// The supervised web runtime's name, for prose about the daemon itself:
 /// "yerdd supervises PHP-FPM".
@@ -43,12 +36,39 @@ pub const POOL: &str = if cfg!(windows) {
     "FPM pool"
 };
 
+/// The plural of [`POOL`]. Deliberately not `POOL` plus an `s`: that would
+/// render `FastCGI processs` on Windows. Both arms start capitalised, so a
+/// caller can interpolate them sentence-initially without recasing.
+pub const POOL_PLURAL: &str = if cfg!(windows) {
+    "FastCGI processes"
+} else {
+    "FPM pools"
+};
+
 /// The short form for tight spaces such as a table column header or a download
 /// progress label.
 pub const POOL_SHORT: &str = if cfg!(windows) { "php-cgi" } else { "FPM" };
 
 /// The host's dynamic-extension file suffix, including the leading dot.
 pub const EXT_SUFFIX: &str = if cfg!(windows) { ".dll" } else { ".so" };
+
+/// A realistic host-shaped extension path, for an input placeholder or a test
+/// fixture.
+///
+/// Deliberately **prefix-free**: real Windows extension DLLs are usually named
+/// `php_<stem>.dll`, but [`crate::php_extensions::default_name_from_path`]
+/// derives an extension's name by stripping only the host *suffix*, never a
+/// `php_` prefix. Baking the prefix in here would shift every derived-name
+/// assertion on Windows. A caller that wants the prefix passes it as part of
+/// `stem`.
+#[must_use]
+pub fn example_ext_path(stem: &str, suffix: &str) -> String {
+    if cfg!(windows) {
+        format!(r"C:\php\ext\{stem}{suffix}")
+    } else {
+        format!("/opt/homebrew/lib/php/pecl/20250925/{stem}{suffix}")
+    }
+}
 
 #[cfg(test)]
 #[allow(
@@ -69,8 +89,13 @@ mod tests {
     fn unix_table_is_fpm_flavoured() {
         assert_eq!(RUNTIME, "PHP-FPM");
         assert_eq!(POOL, "FPM pool");
+        assert_eq!(POOL_PLURAL, "FPM pools");
         assert_eq!(POOL_SHORT, "FPM");
         assert_eq!(EXT_SUFFIX, ".so");
+        assert_eq!(
+            example_ext_path("scrypt", EXT_SUFFIX),
+            "/opt/homebrew/lib/php/pecl/20250925/scrypt.so"
+        );
     }
 
     #[cfg(windows)]
@@ -78,11 +103,38 @@ mod tests {
     fn windows_table_is_php_cgi_flavoured() {
         assert_eq!(RUNTIME, "php-cgi");
         assert_eq!(POOL, "FastCGI process");
+        assert_eq!(POOL_PLURAL, "FastCGI processes");
         assert_eq!(POOL_SHORT, "php-cgi");
         assert_eq!(EXT_SUFFIX, ".dll");
-        for value in [RUNTIME, POOL, POOL_SHORT] {
+        assert_eq!(
+            example_ext_path("php_scrypt", EXT_SUFFIX),
+            r"C:\php\ext\php_scrypt.dll"
+        );
+        for value in [RUNTIME, POOL, POOL_PLURAL, POOL_SHORT] {
             assert!(!value.contains("FPM"), "{value} still says FPM on Windows");
         }
+    }
+
+    /// On Windows the plural must not be the singular plus an `s`, which would
+    /// render `FastCGI processs`. Unix's "FPM pool" pluralises regularly, so
+    /// only the capitalisation invariant is shared. Previously owned by the
+    /// GUI's vitest suite, which no longer holds a table of its own.
+    #[test]
+    fn pool_plural_is_well_formed() {
+        assert!(POOL_PLURAL.starts_with(char::is_uppercase));
+        assert!(!POOL_PLURAL.contains("sss"), "{POOL_PLURAL}");
+        #[cfg(windows)]
+        assert_ne!(POOL_PLURAL, format!("{POOL}s"));
+    }
+
+    /// The helper must not bake in a `php_` prefix: name derivation strips only
+    /// the suffix, so a baked-in prefix would shift every derived-name
+    /// assertion on Windows.
+    #[test]
+    fn example_ext_path_does_not_prefix_the_stem() {
+        let path = example_ext_path("scrypt", EXT_SUFFIX);
+        assert!(path.ends_with(&format!("scrypt{EXT_SUFFIX}")), "{path}");
+        assert!(!path.contains("php_scrypt"), "{path}");
     }
 
     /// The suffix is interpolated straight into user-facing sentences, so it

@@ -70,7 +70,6 @@ import {
   TEXT_SETTINGS,
 } from "@/lib/phpSettings";
 import { isLegacyVersion } from "@/lib/phpVersion";
-import { phpVocab } from "@/lib/phpVocab";
 import { usePlatform } from "@/composables/usePlatform";
 import { humaniseBytes, poolStateLabel, poolStateTone } from "@/lib/utils";
 
@@ -78,8 +77,7 @@ const toast = useToast();
 
 // No `loadPlatform()` call: the always-mounted SideNav loads the platform
 // singleton, and the composable guards re-entry with its own promise.
-const { isWindows } = usePlatform();
-const vocab = computed(() => phpVocab(isWindows.value));
+const { vocab } = usePlatform();
 const { report, refresh } = useDaemon();
 const operations = useOperations();
 

@@ -8,6 +8,7 @@
 //! `yerd_platform::pure::win_path_env`, registry I/O in `yerd_platform`), plus a
 //! copy of `yerd.exe` into `%LOCALAPPDATA%\Programs\yerd\bin`.
 
+use std::path::Path;
 use std::process::ExitCode;
 
 use crate::cli::PathAction;
@@ -83,6 +84,248 @@ pub fn remove_block_for_user(
 #[cfg(windows)]
 pub fn remove_from_path() -> Vec<std::path::PathBuf> {
     windows::remove_from_path()
+}
+
+/// Filename of the installed CLI in the program directory.
+const LIVE_EXE: &str = "yerd.exe";
+/// Filename a staged replacement is written to before promotion.
+const NEW_EXE: &str = "yerd.exe.new";
+/// Filename the live image is renamed to while a replacement is promoted.
+const OLD_EXE: &str = "yerd.exe.old";
+
+/// What [`reconcile_staged_exe`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwapOutcome {
+    /// No staged replacement and no leftover to recover; nothing to do.
+    Nothing,
+    /// A staged replacement was promoted into place.
+    Promoted,
+    /// The live image was missing and the aside copy was restored.
+    Recovered,
+    /// A staged replacement exists but the live image could not be moved aside,
+    /// so it is still in place and the replacement is retained for a later run.
+    Blocked,
+    /// The promotion failed. `restored` reports whether the aside copy was put
+    /// back, so the caller can say whether the CLI still works.
+    Failed {
+        /// Whether the live image was successfully restored.
+        restored: bool,
+    },
+}
+
+/// Finish or recover an interrupted executable swap in `dir`.
+///
+/// Windows cannot overwrite a running image, so a replacement is staged beside
+/// it and promoted by renaming. Renames are cheap metadata operations, but a
+/// crash can still land between them, so this runs at the start of every install
+/// and is idempotent.
+///
+/// The order matters. The missing-live check comes first, because after a crash
+/// between the two renames the aside copy is the only surviving image and
+/// sweeping first would destroy it. For the same reason the sweep and the
+/// move-aside happen only when the live image is present: with it absent the
+/// aside copy is the previous CLI and is still needed as the rollback target if
+/// promoting the replacement fails.
+pub fn reconcile_staged_exe(dir: &Path) -> SwapOutcome {
+    reconcile_staged_exe_with(dir, |from, to| std::fs::rename(from, to))
+}
+
+/// [`reconcile_staged_exe`] with the rename operation injected, so every failure
+/// interleaving is table-tested on hosts that cannot run the Windows path.
+pub fn reconcile_staged_exe_with<F>(dir: &Path, rename: F) -> SwapOutcome
+where
+    F: Fn(&Path, &Path) -> std::io::Result<()>,
+{
+    let live = dir.join(LIVE_EXE);
+    let new = dir.join(NEW_EXE);
+    let old = dir.join(OLD_EXE);
+
+    if !live.exists() && old.exists() && !new.exists() {
+        return if rename(&old, &live).is_ok() {
+            SwapOutcome::Recovered
+        } else {
+            SwapOutcome::Failed { restored: false }
+        };
+    }
+
+    if !new.exists() {
+        let _ = std::fs::remove_file(&old);
+        return SwapOutcome::Nothing;
+    }
+
+    if live.exists() {
+        let _ = std::fs::remove_file(&old);
+        if rename(&live, &old).is_err() {
+            return SwapOutcome::Blocked;
+        }
+    }
+    if rename(&new, &live).is_ok() {
+        let _ = std::fs::remove_file(&old);
+        return SwapOutcome::Promoted;
+    }
+    SwapOutcome::Failed {
+        restored: rename(&old, &live).is_ok(),
+    }
+}
+
+/// Whether a raw OS error code means the file is held open by someone else.
+///
+/// `ERROR_SHARING_VIOLATION` and `ERROR_LOCK_VIOLATION` are the two Windows
+/// reports for a transiently locked file, which an antivirus or indexer can
+/// cause on any write.
+#[must_use]
+pub fn is_sharing_violation(raw: Option<i32>) -> bool {
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    const ERROR_LOCK_VIOLATION: i32 = 33;
+    matches!(raw, Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod swap_tests {
+    use super::*;
+
+    fn write(dir: &Path, name: &str, body: &str) {
+        std::fs::write(dir.join(name), body).unwrap();
+    }
+
+    fn read(dir: &Path, name: &str) -> String {
+        std::fs::read_to_string(dir.join(name)).unwrap()
+    }
+
+    /// A rename that fails on the given 1-based call numbers and otherwise
+    /// performs the real operation.
+    fn failing_on(calls: &[u32]) -> impl Fn(&Path, &Path) -> std::io::Result<()> + '_ {
+        let seen = std::cell::Cell::new(0u32);
+        move |from, to| {
+            seen.set(seen.get() + 1);
+            if calls.contains(&seen.get()) {
+                return Err(std::io::Error::other("injected rename failure"));
+            }
+            std::fs::rename(from, to)
+        }
+    }
+
+    #[test]
+    fn promotes_new_over_a_live_image() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), LIVE_EXE, "old");
+        write(tmp.path(), NEW_EXE, "new");
+        assert_eq!(reconcile_staged_exe(tmp.path()), SwapOutcome::Promoted);
+        assert_eq!(read(tmp.path(), LIVE_EXE), "new");
+        assert!(!tmp.path().join(NEW_EXE).exists());
+        assert!(!tmp.path().join(OLD_EXE).exists());
+    }
+
+    #[test]
+    fn is_a_noop_without_a_staged_replacement() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), LIVE_EXE, "live");
+        assert_eq!(reconcile_staged_exe(tmp.path()), SwapOutcome::Nothing);
+        assert_eq!(read(tmp.path(), LIVE_EXE), "live");
+    }
+
+    #[test]
+    fn promotes_when_the_live_image_is_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), NEW_EXE, "new");
+        assert_eq!(reconcile_staged_exe(tmp.path()), SwapOutcome::Promoted);
+        assert_eq!(read(tmp.path(), LIVE_EXE), "new");
+    }
+
+    /// A stale aside copy left by an earlier successful swap is swept, but only
+    /// when the live image is present.
+    #[test]
+    fn sweeps_a_stale_aside_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), LIVE_EXE, "live");
+        write(tmp.path(), OLD_EXE, "stale");
+        assert_eq!(reconcile_staged_exe(tmp.path()), SwapOutcome::Nothing);
+        assert_eq!(read(tmp.path(), LIVE_EXE), "live");
+        assert!(!tmp.path().join(OLD_EXE).exists());
+    }
+
+    /// After a crash between the two renames the aside copy is the only image
+    /// left, so it must be restored rather than swept.
+    #[test]
+    fn recovers_the_aside_copy_when_the_live_image_vanished() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), OLD_EXE, "survivor");
+        assert_eq!(reconcile_staged_exe(tmp.path()), SwapOutcome::Recovered);
+        assert_eq!(read(tmp.path(), LIVE_EXE), "survivor");
+    }
+
+    /// A held live image cannot be moved aside. The CLI must keep working and
+    /// the staged replacement must survive for a later run.
+    #[test]
+    fn blocked_leaves_the_live_image_working() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), LIVE_EXE, "live");
+        write(tmp.path(), NEW_EXE, "new");
+        let outcome = reconcile_staged_exe_with(tmp.path(), failing_on(&[1]));
+        assert_eq!(outcome, SwapOutcome::Blocked);
+        assert_eq!(read(tmp.path(), LIVE_EXE), "live");
+        assert_eq!(read(tmp.path(), NEW_EXE), "new");
+    }
+
+    /// If the promotion fails the aside copy goes back, so the user still has a
+    /// working CLI.
+    #[test]
+    fn a_failed_promotion_is_rolled_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), LIVE_EXE, "live");
+        write(tmp.path(), NEW_EXE, "new");
+        let outcome = reconcile_staged_exe_with(tmp.path(), failing_on(&[2]));
+        assert_eq!(outcome, SwapOutcome::Failed { restored: true });
+        assert_eq!(read(tmp.path(), LIVE_EXE), "live");
+    }
+
+    /// A crash between the two renames leaves no live image, an aside copy (the
+    /// previous CLI) and a staged replacement. The aside copy is the only
+    /// rollback target, so it must survive until the promotion has succeeded.
+    #[test]
+    fn keeps_the_aside_copy_when_the_live_image_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), OLD_EXE, "previous");
+        write(tmp.path(), NEW_EXE, "new");
+        let outcome = reconcile_staged_exe_with(tmp.path(), failing_on(&[1]));
+        assert_eq!(outcome, SwapOutcome::Failed { restored: true });
+        assert_eq!(read(tmp.path(), LIVE_EXE), "previous");
+    }
+
+    /// The same interleaving when the promotion works: the replacement lands and
+    /// the now-stale aside copy is swept.
+    #[test]
+    fn promotes_over_a_missing_live_image_and_sweeps_the_aside_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), OLD_EXE, "previous");
+        write(tmp.path(), NEW_EXE, "new");
+        assert_eq!(reconcile_staged_exe(tmp.path()), SwapOutcome::Promoted);
+        assert_eq!(read(tmp.path(), LIVE_EXE), "new");
+        assert!(!tmp.path().join(OLD_EXE).exists());
+    }
+
+    /// The worst case: neither the promotion nor the rollback works. Both images
+    /// must still exist under their own names so the user can rename one back.
+    #[test]
+    fn a_failed_rollback_leaves_both_images_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), LIVE_EXE, "live");
+        write(tmp.path(), NEW_EXE, "new");
+        let outcome = reconcile_staged_exe_with(tmp.path(), failing_on(&[2, 3]));
+        assert_eq!(outcome, SwapOutcome::Failed { restored: false });
+        assert_eq!(read(tmp.path(), OLD_EXE), "live");
+        assert_eq!(read(tmp.path(), NEW_EXE), "new");
+    }
+
+    #[test]
+    fn sharing_violations_are_the_two_lock_codes() {
+        assert!(is_sharing_violation(Some(32)));
+        assert!(is_sharing_violation(Some(33)));
+        assert!(!is_sharing_violation(Some(5)));
+        assert!(!is_sharing_violation(Some(0)));
+        assert!(!is_sharing_violation(None));
+    }
 }
 
 #[cfg(unix)]
@@ -475,7 +718,7 @@ mod windows {
     use crate::cli::PathAction;
 
     /// `%LOCALAPPDATA%\Programs\yerd\bin` - where the installed `yerd.exe` lives
-    /// (the NSIS installer will use the same location in Phase 6). `None` when
+    /// (the NSIS installer uses the same location). `None` when
     /// `%LOCALAPPDATA%` is unset.
     fn programs_bin() -> Option<PathBuf> {
         std::env::var_os("LOCALAPPDATA")
@@ -513,11 +756,19 @@ mod windows {
     }
 
     /// Copy `yerd.exe` into the program dir and add both dirs to the user PATH.
+    ///
+    /// A failed copy is not fatal to the PATH edit, but it must still fail the
+    /// command: the NSIS postinstall hook and any scripted caller branch on the
+    /// exit code, and a PATH entry pointing at a directory with no `yerd.exe` in
+    /// it is not an installed CLI.
     fn install(quiet: bool) -> ExitCode {
+        let mut copy_failed = false;
         if let Err(msg) = copy_self_into_programs() {
             eprintln!("yerd: {msg}");
+            copy_failed = true;
         }
         match upsert_path() {
+            Ok(_) if copy_failed => ExitCode::FAILURE,
             Ok(changed) => {
                 if !quiet {
                     if changed {
@@ -580,13 +831,14 @@ mod windows {
 
     /// Add both dirs to the user PATH (idempotent) and broadcast the change.
     /// Returns whether the stored PATH value actually changed.
+    ///
+    /// A read failure must abort, never fall back to an empty PATH: the edit is
+    /// written back wholesale, so treating "couldn't read" as "no entries" would
+    /// replace the user's real PATH with just Yerd's dirs. An absent value
+    /// (`Ok(None)`) genuinely is an empty starting point.
     fn upsert_path() -> Result<bool, String> {
         let entries = path_entries();
         let refs: Vec<&str> = entries.iter().filter_map(|p| p.to_str()).collect();
-        // A read failure must abort, never fall back to an empty PATH: the edit
-        // below is written back wholesale, so treating "couldn't read" as "no
-        // entries" would replace the user's real PATH with just Yerd's dirs.
-        // An absent value (`Ok(None)`) genuinely is an empty starting point.
         let current = yerd_platform::user_path()
             .map_err(|e| format!("cannot read your PATH, refusing to modify it: {e}"))?
             .unwrap_or_default();
@@ -628,57 +880,78 @@ mod windows {
             .collect()
     }
 
+    /// Copy `src` over `dest`, retrying a transient lock a few times.
+    ///
+    /// An antivirus scanner or the search indexer can hold a freshly-written
+    /// file open for a few milliseconds. Retrying here means a hiccup does not
+    /// burn a rename swap and leave an aside copy that cannot be cleared until
+    /// the holder exits.
+    fn copy_with_retry(src: &Path, dest: &Path) -> std::io::Result<()> {
+        const MAX_ATTEMPTS: u64 = 3;
+        let mut attempt = 1;
+        loop {
+            match std::fs::copy(src, dest) {
+                Ok(_) => return Ok(()),
+                Err(e)
+                    if attempt < MAX_ATTEMPTS && super::is_sharing_violation(e.raw_os_error()) =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(50 * attempt));
+                    attempt += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
     /// Copy the running `yerd.exe` into the program dir. Skips when the source is
-    /// already the destination or the bytes are current. A locked destination
-    /// (`ERROR_SHARING_VIOLATION`, code 32) is staged beside it as `yerd.exe.new`
-    /// with a note; the full staged-swap is Phase 6.
+    /// already the destination or the bytes are current.
+    ///
+    /// A destination held open by another `yerd` process cannot be overwritten,
+    /// so the replacement is staged beside it and promoted by renaming, which
+    /// works on a running image. Any outcome that leaves the CLI unusable is
+    /// reported with the filenames needed to put it right by hand.
     fn copy_self_into_programs() -> Result<(), String> {
         let Some(dir) = programs_bin() else {
             return Err("%LOCALAPPDATA% is not set; cannot locate the install dir".to_owned());
         };
-        finish_pending_swap(&dir);
+        let _ = super::reconcile_staged_exe(&dir);
         let src = std::env::current_exe().map_err(|e| format!("cannot find yerd.exe: {e}"))?;
-        let dest = dir.join("yerd.exe");
+        let dest = dir.join(super::LIVE_EXE);
         if same_file(&src, &dest) || contents_match(&src, &dest) {
             return Ok(());
         }
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        match std::fs::copy(&src, &dest) {
-            Ok(_) => Ok(()),
-            Err(e) if e.raw_os_error() == Some(32) => {
-                let staged = dir.join("yerd.exe.new");
-                std::fs::copy(&src, &staged).map_err(|e| format!("{}: {e}", staged.display()))?;
-                Err(format!(
-                    "{} is in use; staged the update as {} - restart yerd to finish",
-                    dest.display(),
-                    staged.display()
-                ))
+        match copy_with_retry(&src, &dest) {
+            Ok(()) => Ok(()),
+            Err(ref e) if super::is_sharing_violation(e.raw_os_error()) => {
+                let staged = dir.join(super::NEW_EXE);
+                copy_with_retry(&src, &staged).map_err(|e| format!("{}: {e}", staged.display()))?;
+                match super::reconcile_staged_exe(&dir) {
+                    super::SwapOutcome::Promoted | super::SwapOutcome::Recovered => Ok(()),
+                    super::SwapOutcome::Blocked => Err(format!(
+                        "{} is in use; the update is staged as {}. Close any other running yerd \
+                         and re-run `yerd path install` to finish it",
+                        dest.display(),
+                        staged.display()
+                    )),
+                    super::SwapOutcome::Failed { restored: true } => Err(format!(
+                        "the update could not be put in place and was rolled back; {} is unchanged",
+                        dest.display()
+                    )),
+                    super::SwapOutcome::Failed { restored: false } => Err(format!(
+                        "the update could not be put in place; renaming either {} or {} to {} \
+                         restores the CLI",
+                        dir.join(super::OLD_EXE).display(),
+                        staged.display(),
+                        super::LIVE_EXE
+                    )),
+                    super::SwapOutcome::Nothing => Err(format!(
+                        "the staged update at {} disappeared before it could be applied",
+                        staged.display()
+                    )),
+                }
             }
             Err(e) => Err(format!("{}: {e}", dest.display())),
-        }
-    }
-
-    /// Complete a swap staged by a prior locked [`copy_self_into_programs`]: if
-    /// `yerd.exe.new` exists, move the live `yerd.exe` aside to `yerd.exe.old`
-    /// and promote `.new` into place, then clear the stale `.old`. Best-effort
-    /// and idempotent: no `.new` means nothing to do. Called at the start of any
-    /// `path install` / `ensure_installed_after_tool` so the "restart yerd to
-    /// finish" note from the locked-copy path actually resolves.
-    fn finish_pending_swap(dir: &Path) {
-        let new = dir.join("yerd.exe.new");
-        if !new.exists() {
-            return;
-        }
-        let live = dir.join("yerd.exe");
-        let old = dir.join("yerd.exe.old");
-        let _ = std::fs::remove_file(&old);
-        if live.exists() && std::fs::rename(&live, &old).is_err() {
-            return;
-        }
-        if std::fs::rename(&new, &live).is_ok() {
-            let _ = std::fs::remove_file(&old);
-        } else {
-            let _ = std::fs::rename(&old, &live);
         }
     }
 
@@ -686,8 +959,9 @@ mod windows {
     /// running program can't delete its own image, so a failure is tolerated.
     fn delete_programs_copy() {
         if let Some(dir) = programs_bin() {
-            let _ = std::fs::remove_file(dir.join("yerd.exe"));
-            let _ = std::fs::remove_file(dir.join("yerd.exe.new"));
+            let _ = std::fs::remove_file(dir.join(super::LIVE_EXE));
+            let _ = std::fs::remove_file(dir.join(super::NEW_EXE));
+            let _ = std::fs::remove_file(dir.join(super::OLD_EXE));
         }
     }
 
@@ -702,45 +976,6 @@ mod windows {
         match (std::fs::read(a), std::fs::read(b)) {
             (Ok(a), Ok(b)) => a == b,
             _ => false,
-        }
-    }
-
-    #[cfg(test)]
-    #[allow(clippy::unwrap_used)]
-    mod tests {
-        use super::finish_pending_swap;
-
-        #[test]
-        fn finish_pending_swap_promotes_new_over_live() {
-            let tmp = tempfile::tempdir().unwrap();
-            let dir = tmp.path();
-            std::fs::write(dir.join("yerd.exe"), b"old").unwrap();
-            std::fs::write(dir.join("yerd.exe.new"), b"new").unwrap();
-
-            finish_pending_swap(dir);
-
-            assert_eq!(std::fs::read(dir.join("yerd.exe")).unwrap(), b"new");
-            assert!(!dir.join("yerd.exe.new").exists());
-            assert!(!dir.join("yerd.exe.old").exists());
-        }
-
-        #[test]
-        fn finish_pending_swap_is_noop_without_new() {
-            let tmp = tempfile::tempdir().unwrap();
-            let dir = tmp.path();
-            std::fs::write(dir.join("yerd.exe"), b"live").unwrap();
-            finish_pending_swap(dir);
-            assert_eq!(std::fs::read(dir.join("yerd.exe")).unwrap(), b"live");
-        }
-
-        #[test]
-        fn finish_pending_swap_promotes_when_live_absent() {
-            let tmp = tempfile::tempdir().unwrap();
-            let dir = tmp.path();
-            std::fs::write(dir.join("yerd.exe.new"), b"new").unwrap();
-            finish_pending_swap(dir);
-            assert_eq!(std::fs::read(dir.join("yerd.exe")).unwrap(), b"new");
-            assert!(!dir.join("yerd.exe.new").exists());
         }
     }
 }

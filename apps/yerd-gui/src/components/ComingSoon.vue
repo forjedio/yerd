@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
  * A deliberately-disabled affordance for features that need a daemon-side IPC
  * that does not exist yet (log viewing, daemon restart, per-service restart).
  * Renders greyed and non-interactive with an explanatory native tooltip, so the
- * gap reads as intentional rather than broken. See the plan's "Coming soon" set.
+ * gap reads as intentional rather than broken.
  */
 withDefaults(
   defineProps<{

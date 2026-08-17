@@ -36,7 +36,6 @@ import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
 import { useOnboarding } from "@/composables/useOnboarding";
 import { usePlatform } from "@/composables/usePlatform";
-import { phpVocab } from "@/lib/phpVocab";
 import { usePoll } from "@/composables/usePoll";
 import { useResource } from "@/composables/useResource";
 import {
@@ -104,8 +103,7 @@ const connecting = computed(() => connected.value === null && !report.value);
 const tld = computed(() => r.value?.tld ?? "test");
 
 // No loadPlatform() call: the always-mounted SideNav loads the singleton.
-const { isWindows } = usePlatform();
-const vocab = computed(() => phpVocab(isWindows.value));
+const { vocab } = usePlatform();
 
 // ── live site list (for the console chips) ──
 // Shared "sites" cache (same key + fetcher as the Sites view and the command

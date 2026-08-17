@@ -10,14 +10,13 @@
 
 pub mod apply;
 pub mod cli;
-pub mod cli_shim;
-pub mod composer_shim;
-pub mod cover_shim;
+pub(crate) mod cli_shim;
+pub(crate) mod composer_shim;
+pub(crate) mod cover_shim;
 pub mod elevate;
 pub mod error;
-#[cfg(unix)]
 pub mod exec_cmd;
-pub mod laravel_shim;
+pub(crate) mod laravel_shim;
 pub mod map;
 pub mod mcp_cmd;
 pub mod path_cmd;
@@ -25,7 +24,7 @@ pub mod shim;
 pub mod site_scope;
 pub mod transport;
 pub mod uninstall;
-pub mod wp_shim;
+pub(crate) mod wp_shim;
 
 use std::process::ExitCode;
 
@@ -45,29 +44,11 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Path { action } => return path_cmd::run(*action),
         Command::Mcp => return mcp_cmd::run().await,
         Command::Coverage { args } => return cover_shim::run_coverage(args),
-        #[cfg_attr(not(unix), allow(unused_variables))]
         Command::Exec { site, tool, args } => {
-            #[cfg(unix)]
-            {
-                return exec_cmd::run_exec(*tool, site.as_deref(), args).await;
-            }
-            #[cfg(not(unix))]
-            {
-                eprintln!("yerd: exec is only available on macOS and Linux");
-                return ExitCode::from(2);
-            }
+            return exec_cmd::run_exec(*tool, site.as_deref(), args).await
         }
-        #[cfg_attr(not(unix), allow(unused_variables))]
         Command::Which { tool, site } => {
-            #[cfg(unix)]
-            {
-                return exec_cmd::run_which(*tool, site.as_deref(), cli.json).await;
-            }
-            #[cfg(not(unix))]
-            {
-                eprintln!("yerd: which is only available on macOS and Linux");
-                return ExitCode::from(2);
-            }
+            return exec_cmd::run_which(*tool, site.as_deref(), cli.json).await
         }
         Command::Domain {
             action: crate::cli::DomainAction::List { site },
@@ -1094,6 +1075,8 @@ mod tests {
     }
 
     #[test]
+    /// A verbatim root is what PHP answers "No input file specified." to, so it
+    /// must never be what gets persisted.
     fn canonicalize_park_path_canonicalises_absolute_path() {
         let tmp = tempfile::tempdir().unwrap();
         let out = canonicalize_park_path(Request::Park {
@@ -1107,8 +1090,6 @@ mod tests {
             path,
             yerd_core::path_norm::strip_verbatim(&std::fs::canonicalize(tmp.path()).unwrap())
         );
-        // A verbatim root is what PHP answers "No input file specified." to, so
-        // it must never be what gets persisted.
         assert!(
             !path.to_string_lossy().starts_with(r"\\?\"),
             "a parked path must never be stored verbatim"

@@ -232,16 +232,19 @@ pub enum Command {
         action: RouteAction,
     },
     /// Grant yerd OS-level privileges (run via `sudo` on macOS/Linux). No
-    /// subcommand = all. On Windows no `sudo`/admin is needed and only `trust`
-    /// is active until Phase 4 (a one-time confirmation dialog appears instead).
+    /// subcommand = all. On Windows `trust` needs no administrator (a one-time
+    /// certificate confirmation dialog appears instead), `resolver` prompts for
+    /// administrator approval via UAC, and `ports`/`lan` are skipped because
+    /// yerd binds 80/443 directly.
     Elevate {
         /// Which privilege to grant; omit to grant all.
         #[command(subcommand)]
         target: Option<ElevateTarget>,
     },
     /// Revert what `elevate` configured (run via `sudo` on macOS/Linux). No
-    /// subcommand = all. On Windows no `sudo`/admin is needed and only `trust`
-    /// is active until Phase 4.
+    /// subcommand = all. On Windows `trust` needs no administrator, `resolver`
+    /// prompts for administrator approval via UAC, and `ports`/`lan` are
+    /// skipped because yerd binds 80/443 directly.
     Unelevate {
         /// Which privilege to revert; omit to revert all.
         #[command(subcommand)]
@@ -258,7 +261,7 @@ pub enum Command {
     /// the discoverable front door to the `phpcover` shim. Everything after
     /// `coverage` is passed straight through to PHP. To pin a specific version,
     /// use the `php<version>cover` shim (e.g. `php8.4cover`) instead. Local -
-    /// execs PHP directly and does not talk to the daemon. (Unix only.)
+    /// runs PHP directly and does not talk to the daemon.
     Coverage {
         /// Arguments forwarded verbatim to PHP, e.g. `artisan test --coverage`.
         #[arg(
@@ -277,7 +280,7 @@ pub enum Command {
     /// `yerd exec --site blog php -v`). The bare `php` and `composer` shims are
     /// unaffected and still use the global default. `-h`/`--help` go to the
     /// tool, so use `yerd help exec` for this command's own help. Local -
-    /// execs PHP directly. (Unix only.)
+    /// runs PHP directly.
     // `disable_help_flag` because clap otherwise matches `-h`/`--help` before
     // `trailing_var_arg` starts collecting, so `yerd exec composer --help`
     // would print yerd's help instead of Composer's.
@@ -302,7 +305,7 @@ pub enum Command {
     /// Print the absolute path of the binary `yerd exec` would use, resolved
     /// the same way (current directory's site, or `--site <name>`). With
     /// `--json`, reports the version and which site it came from too. Local -
-    /// does not run anything. (Unix only.)
+    /// does not run anything.
     Which {
         /// Which tool to report.
         tool: WhichTool,

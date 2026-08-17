@@ -45,7 +45,7 @@ type Item = {
 };
 
 const { connected, report } = useDaemon();
-const { isMac } = usePlatform();
+const { isMac, isWindows } = usePlatform();
 const unread = computed(() => report.value?.mail?.unread ?? 0);
 const sharedSites = computed(() => report.value?.shared_sites ?? 0);
 
@@ -60,7 +60,7 @@ const yerdUpdate = ref(0);
 
 // Unelevated OS privileges (CA trust, .test resolver, ports) → amber ! on Doctor.
 const unelevated = computed(() =>
-  report.value ? needsElevation(report.value, isMac.value) : false,
+  report.value ? needsElevation(report.value, isMac.value, isWindows.value) : false,
 );
 
 onMounted(() => {

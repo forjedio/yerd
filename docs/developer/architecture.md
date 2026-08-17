@@ -263,7 +263,7 @@ per OS:
 //! The core traits live here - [`Paths`], [`TrustStore`], [`ResolverInstaller`],
 //! [`PortBinder`], and [`PortRedirector`] - each with a single thin
 //! implementation per OS selected by `#[cfg(target_os = ...)]`. macOS and Linux
-//! ship in Phase 1;
+//! ship today;
 //! Windows compiles against the [`os::unsupported`] stub that returns
 //! [`PlatformError::Unsupported`] for every method.
 ```

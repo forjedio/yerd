@@ -116,8 +116,8 @@ fn restart_in_place() -> std::io::Result<()> {
 #[cfg(windows)]
 fn restart_in_place() -> std::io::Result<()> {
     use std::os::windows::process::CommandExt as _;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    use yerd_platform::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
+
     let exe = std::env::current_exe()?;
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     std::process::Command::new(exe)
@@ -149,8 +149,7 @@ fn restart_in_place() -> std::io::Result<()> {
 fn relaunch_detached(args: &ServeArgs) -> ExitCode {
     use std::os::windows::process::CommandExt as _;
     use std::process::Stdio;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    use yerd_platform::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
 
     let exe = match std::env::current_exe() {
         Ok(e) => e,

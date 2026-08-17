@@ -6,7 +6,7 @@ testable.
 
 ## Surface
 
-Four traits, each with macOS and Linux implementations selected by
+The core traits, each with a single thin implementation per OS selected by
 `#[cfg(target_os = ...)]`:
 
 - `Paths` - config / data / state / cache / runtime directories.
@@ -16,8 +16,15 @@ Four traits, each with macOS and Linux implementations selected by
   redirect.
 - `PortBinder` - bind a single TCP listener, plus an atomic 80+443 (or
   rootless 8080+8443) pair-binding helper.
+- `PortRedirector` - install / remove the privileged-port redirect.
+- `TerminalLauncher` - open the host terminal at a directory.
+- `IdeLauncher` - detect and launch the host editor.
+- `SystemOpener` - hand a path or URL to the desktop.
 
-Windows builds compile against `os::unsupported`, whose impls return
+macOS and Linux implement all of them. Windows has real `Windows*` impls for
+`Paths`, `TrustStore`, `ResolverInstaller`, `PortBinder`, `PortRedirector` and
+`TerminalLauncher`, and aliases `IdeLauncher`, `SystemOpener` and
+`SystemMetrics` to the `os::unsupported` stub, which returns
 `PlatformError::Unsupported` for every method.
 
 ## Privilege boundary
@@ -57,8 +64,9 @@ Each `#[cfg(test)] mod tests` opens with the workspace-standard exemption:
 mod tests { ... }
 ```
 
-## Deferred to Phase 2
+## Outstanding
 
-Windows impls, `Autostart`, `Elevation` traits, macOS LaunchDaemon FD
-hand-off, FrankenPHP routing concerns. None of these change the Phase 1
-trait surface.
+Three traits are still aliased to the `unsupported` stub on Windows:
+`IdeLauncher`, `SystemOpener` and `SystemMetrics`. Each is replaced by a real
+`Windows*` type in the same change that adds its full trait impl, never
+half-flipped.

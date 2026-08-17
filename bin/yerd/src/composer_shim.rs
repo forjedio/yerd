@@ -8,30 +8,25 @@
 use std::ffi::OsString;
 use std::process::{Command, ExitCode};
 
-use yerd_platform::{ActivePaths, Paths};
-
-use crate::shim::{fail, resolve_default_php, run_php};
+use crate::shim::{default_php_or_message, dirs_or_fail, dispatch_named, exec_php, fail};
 
 /// If the shim name is `composer`, run the bundled phar under the default PHP
-/// and return its exit code; otherwise `None`, so `main` falls through to the
-/// next shim / CLI.
+/// and return its exit code; otherwise `None`, so dispatch falls through to the
+/// next shim.
 #[must_use]
-pub fn dispatch() -> Option<ExitCode> {
-    let (name, forward) = crate::shim::shim_invocation()?;
-    if name != "composer" {
-        return None;
-    }
-    Some(run(&forward))
+pub(crate) fn dispatch(name: &str, forward: &[OsString]) -> Option<ExitCode> {
+    dispatch_named("composer", name, forward, run)
 }
 
 fn run(forward: &[OsString]) -> ExitCode {
-    let dirs = match ActivePaths::new().resolve() {
+    let dirs = match dirs_or_fail() {
         Ok(d) => d,
-        Err(e) => return fail(format!("cannot resolve yerd directories: {e}")),
+        Err(code) => return code,
     };
 
-    let Some((php_bin, _minor)) = resolve_default_php(&dirs) else {
-        return fail(crate::shim::no_default_php_message(&dirs));
+    let (php_bin, _minor) = match default_php_or_message(&dirs) {
+        Ok(t) => t,
+        Err(msg) => return fail(msg),
     };
 
     let phar = crate::shim::composer_phar(&dirs);
@@ -41,14 +36,7 @@ fn run(forward: &[OsString]) -> ExitCode {
 
     let mut cmd = Command::new(&php_bin);
     cmd.arg(&phar).args(forward);
-    match run_php(cmd) {
-        Ok(code) => code,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => fail(format!(
-            "PHP binary not found at {} ({err}) — reinstall with `yerd install php`",
-            php_bin.display()
-        )),
-        Err(err) => fail(format!("failed to exec {}: {err}", php_bin.display())),
-    }
+    exec_php(cmd, &php_bin, None)
 }
 
 #[cfg(test)]

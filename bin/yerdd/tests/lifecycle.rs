@@ -237,6 +237,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    /// On Unix the bound socket is filesystem-visible; on Windows the named pipe
+    /// is not, so its bind success plus the connect below is the assertion (the
+    /// daemon errors out of `bring_up_with_dirs` if it cannot bind, so reaching
+    /// that point means the listener is up).
     async fn boot_ping_shutdown_round_trip() {
         use interprocess::local_socket::traits::tokio::Stream as _;
         let tmp = tempfile::tempdir().unwrap();
@@ -248,10 +252,6 @@ mod tests {
             .await
             .expect("bring_up_with_dirs");
 
-        // On Unix the bound socket is filesystem-visible; on Windows the named
-        // pipe is not, so its bind success plus the connect below is the
-        // assertion (the daemon errors out of `bring_up_with_dirs` if it can't
-        // bind, so reaching here means the listener is up).
         #[cfg(unix)]
         assert!(
             dirs.runtime.join("yerd.sock").exists(),

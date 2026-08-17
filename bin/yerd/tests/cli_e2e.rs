@@ -153,6 +153,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[allow(clippy::too_many_lines)]
+    /// The persisted site root is the normalised form, not raw `canonicalize`
+    /// output: on Windows that is verbatim (`\\?\C:\...`), which PHP cannot
+    /// open, so a verbatim path in the config means broken sites.
     async fn cli_commands_round_trip_against_daemon() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = make_dirs(tmp.path());
@@ -363,9 +366,6 @@ mod tests {
         }
 
         let on_disk = std::fs::read_to_string(&cfg_path).expect("config written");
-        // The persisted root is the normalised form, not raw `canonicalize`
-        // output: on Windows that is verbatim (`\\?\C:\...`), which PHP cannot
-        // open, so a verbatim path in the config means broken sites.
         let canonical =
             yerd_core::path_norm::strip_verbatim(&std::fs::canonicalize(&sites_root).unwrap());
         let canonical_str = canonical.to_string_lossy().into_owned();
@@ -562,6 +562,8 @@ mod tests {
     /// version. PHP 8.3 is faked on disk (binaries only; no pool is running).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[allow(clippy::too_many_lines)]
+    /// Windows refuses pool sizing outright (php-cgi has no worker pool), so the
+    /// pool round-trip is Unix-only; on Windows the refusal is what is asserted.
     async fn php_version_config_round_trips_against_daemon() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = make_dirs(tmp.path());
@@ -660,8 +662,6 @@ mod tests {
                 },
             },
         };
-        // Windows refuses pool sizing outright (php-cgi has no worker pool), so
-        // the round-trip below is Unix-only; there the refusal is what's asserted.
         #[cfg(not(windows))]
         match send(&dirs, &pool_set).await {
             Response::PhpVersions { pool, .. } => {

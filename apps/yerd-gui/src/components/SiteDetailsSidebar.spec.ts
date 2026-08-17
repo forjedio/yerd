@@ -66,9 +66,6 @@ vi.mock("@/composables/usePlatform", () => ({
         hostPlatform.value === "linux" ||
         hostPlatform.value === "windows",
     ),
-    supportsEditorLaunch: computed(
-      () => hostPlatform.value === "macos" || hostPlatform.value === "linux",
-    ),
   }),
 }));
 
@@ -366,22 +363,6 @@ describe("SiteDetailsSidebar", () => {
     expect((wrapper.get('[aria-label="Site IDE"]').element as HTMLSelectElement).value).toBe(
       "default",
     );
-  });
-
-  it("hides the editor controls on a platform with no host launcher", async () => {
-    hostPlatform.value = "windows";
-    getInstalledIdes.mockResolvedValue([{ id: "zed", label: "Zed" }]);
-    const wrapper = mountSidebar();
-    await flushPromises();
-
-    expect(wrapper.find('[aria-label="Site IDE"]').exists()).toBe(false);
-    expect(wrapper.findAll("button").find((button) => button.text() === "Zed")).toBeUndefined();
-
-    hostPlatform.value = "linux";
-    await flushPromises();
-
-    expect(wrapper.find('[aria-label="Site IDE"]').exists()).toBe(true);
-    expect(wrapper.findAll("button").find((button) => button.text() === "Zed")).toBeDefined();
   });
 
   it("rejects a picked directory outside the site folder", async () => {

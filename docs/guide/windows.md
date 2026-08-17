@@ -89,9 +89,6 @@ These are tracked and slated for hardening after early access:
     ways to hit this. Workarounds: put the caller and callee on different PHP
     versions, or disable the loopback (for WordPress, set
     `DISABLE_WP_CRON` and run `wp cron event run` from a terminal instead).
-- **"Open in editor" and "Open folder" are not wired.** The IDE launcher and
-  system-opener adapters still resolve to the unsupported stub on Windows, so
-  those buttons return an error rather than opening anything.
 - **Self-update replaces the installed app** via the silent installer
   (`/S /UPDATE`): the running executables are renamed aside, the installer runs,
   and the app + daemon restart on the new version. Your data, CA, DNS rule, and

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { StatusReport } from "@/ipc/types";
-import { needsElevation, portsElevated, privilegedFallback } from "./elevation";
+import { needsElevation, portsElevated, portsNeedElevation, privilegedFallback } from "./elevation";
 
 // Only the fields the predicates read matter; the rest of StatusReport is filled
 // with inert defaults so the tests stay focused on privilege state. `in` checks
@@ -60,5 +60,23 @@ describe("needsElevation", () => {
     ["web unbound on macOS is not fixable yet", mk({ webUnbound: { http: 8080, https: 8443 } }), true, false],
   ])("%s → %s", (_label, r, isMac, expected) => {
     expect(needsElevation(r, isMac)).toBe(expected);
+  });
+
+  // Windows binds 80/443 unprivileged, so `yerd elevate ports` is a no-op there:
+  // a ports fallback must never light the marker or the user is sent round a
+  // loop that always reports success and never clears.
+  it.each([
+    ["ports fell back", mk({ httpReq: 80, httpFell: true })],
+    ["web unbound", mk({ webUnbound: { http: 8080, https: 8443 } })],
+  ])("%s on Windows is not elevatable", (_label, r) => {
+    expect(portsNeedElevation(r, false, true)).toBe(false);
+    expect(needsElevation(r, false, true)).toBe(false);
+    // The same report on Linux still asks for a fix.
+    expect(needsElevation(r, false, false)).toBe(true);
+  });
+
+  it("still reports non-ports privileges on Windows", () => {
+    expect(needsElevation(mk({ trusted: false }), false, true)).toBe(true);
+    expect(needsElevation(mk({ resolver: false }), false, true)).toBe(true);
   });
 });

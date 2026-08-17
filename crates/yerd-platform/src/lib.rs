@@ -3,14 +3,11 @@
 //! The core traits live here - [`Paths`], [`TrustStore`], [`ResolverInstaller`],
 //! [`PortBinder`], [`PortRedirector`], [`TerminalLauncher`], [`IdeLauncher`], and
 //! [`SystemOpener`] - each with a single thin
-//! implementation per OS selected by `#[cfg(target_os = ...)]`. macOS and Linux
-//! have full implementations. Windows (`os::windows`) has real `Windows*` impls
-//! for [`Paths`], [`TrustStore`], [`ResolverInstaller`], [`PortBinder`],
-//! [`PortRedirector`] and [`TerminalLauncher`], and still aliases
-//! [`IdeLauncher`], [`SystemOpener`] and [`SystemMetrics`] to the
-//! [`os::unsupported`] stub, which returns [`PlatformError::Unsupported`] for
-//! every method until a later phase replaces each remaining alias with a real
-//! `Windows*` type.
+//! implementation per OS selected by `#[cfg(target_os = ...)]`. macOS, Linux and
+//! Windows all have full implementations: `os::windows` provides real `Windows*`
+//! types for every trait, so no trait aliases the [`os::unsupported`] stub there
+//! any more. That stub - which returns [`PlatformError::Unsupported`] for every
+//! method - stays compiled on Windows and is the active set on any other host.
 //!
 //! ## Privilege boundary
 //!
@@ -96,3 +93,15 @@ pub use os::active::{nrpt_servers_for_tld, udp_port_owner};
 /// single-crate dependency (this crate), off the binaries' own graphs.
 #[cfg(target_os = "windows")]
 pub use os::active::{broadcast_user_env_marker, set_user_path, user_path};
+
+/// Windows process-spawning primitives: the two process-creation flags, the
+/// `%SystemRoot%`-derived paths that keep a tool lookup off `PATH`, and a
+/// [`std::process::Command`] constructor that already carries
+/// `CREATE_NO_WINDOW`. These are the canonical definitions for the workspace;
+/// every binary and the GUI bridge import them rather than re-declaring the
+/// magic numbers. (`yerd-service-ctl` is the one deliberate exception: it
+/// depends on no `yerd-*` crate, so it keeps its own copies.)
+#[cfg(target_os = "windows")]
+pub use os::active::{
+    hidden_command, system32_exe, system_root, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
+};

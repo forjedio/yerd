@@ -1,12 +1,16 @@
 //! Detect dev tools installed *outside* Yerd (on the user's PATH) so the Tooling
 //! page can show them as "External" and the Laravel scaffold can use them.
 //!
-//! The daemon runs under launchd / `systemd --user` with a **restricted** PATH,
-//! so it can't see Homebrew / fnm / global-Composer tools from its own env. We
-//! resolve the user's **interactive-login** shell PATH to find them. Spawning the
-//! shell is the heaviest I/O edge, but the path-walking also hits the filesystem
-//! (`metadata`/`canonicalize`); nothing here is I/O-free. Unix-only - Windows
-//! yields `None`/no externals.
+//! The PATH to search comes from a different source per host. On Unix the daemon
+//! runs under launchd / `systemd --user` with a **restricted** PATH, so it can't
+//! see Homebrew / fnm / global-Composer tools from its own env; we resolve the
+//! user's **interactive-login** shell PATH instead. On Windows the daemon is
+//! launched from the user's own `HKCU` `Run` entry and so already inherits the
+//! merged machine+user PATH, which we take directly and then top up with a fresh
+//! `HKCU\Environment` read so a tool installed after logon is still found.
+//!
+//! Spawning the shell is the heaviest I/O edge, but the path-walking also hits
+//! the filesystem (`metadata`/`canonicalize`); nothing here is I/O-free.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -16,7 +20,9 @@ use super::Tool;
 
 /// Markers wrapping the printed PATH so rc-file banners / `echo` can't corrupt
 /// the capture - we extract strictly between them.
+#[cfg(unix)]
 const BEGIN: &str = "__YERD_PATH_BEGIN__";
+#[cfg(unix)]
 const END: &str = "__YERD_PATH_END__";
 
 /// How long a resolved PATH stays cached. `ListTools` can fire on each Tooling
@@ -43,13 +49,7 @@ pub async fn resolve_user_path() -> Option<Vec<PathBuf>> {
             }
         }
     }
-    let raw = capture_path_string().await?;
-    let inner = between(&raw, BEGIN, END)?;
-    let dirs: Vec<PathBuf> = inner
-        .split(':')
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .collect();
+    let dirs = capture_path_dirs().await?;
     if dirs.is_empty() {
         return None;
     }
@@ -57,6 +57,23 @@ pub async fn resolve_user_path() -> Option<Vec<PathBuf>> {
         *guard = Some((Instant::now(), dirs.clone()));
     }
     Some(dirs)
+}
+
+/// The filenames to probe for a command called `bin`.
+///
+/// On Windows a command on `PATH` is rarely the bare name: `composer` is
+/// `composer.bat`, `node` is `node.exe`. The candidates come from `PATHEXT`,
+/// defaulting to the documented set when it is unset or not UTF-8. On Unix the
+/// bare name is the only candidate, so this is the identity.
+#[cfg(windows)]
+fn candidate_names(bin: &str) -> Vec<String> {
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned());
+    yerd_platform::pure::win_path_env::executable_names(bin, &pathext)
+}
+
+#[cfg(not(windows))]
+fn candidate_names(bin: &str) -> Vec<String> {
+    vec![bin.to_owned()]
 }
 
 /// Find an executable named `bin` on `dirs`, skipping `exclude_dir` (Yerd's
@@ -70,19 +87,22 @@ pub fn find_in_path(
     data_root: &Path,
 ) -> Option<PathBuf> {
     let data_canon = std::fs::canonicalize(data_root).unwrap_or_else(|_| data_root.to_path_buf());
+    let names = candidate_names(bin);
     for dir in dirs {
         if dir == exclude_dir {
             continue;
         }
-        let cand = dir.join(bin);
-        if !is_executable(&cand) {
-            continue;
+        for name in &names {
+            let cand = dir.join(name);
+            if !is_executable(&cand) {
+                continue;
+            }
+            let canon = std::fs::canonicalize(&cand).unwrap_or_else(|_| cand.clone());
+            if canon.starts_with(&data_canon) {
+                continue;
+            }
+            return Some(cand);
         }
-        let canon = std::fs::canonicalize(&cand).unwrap_or_else(|_| cand.clone());
-        if canon.starts_with(&data_canon) {
-            continue;
-        }
-        return Some(cand);
     }
     None
 }
@@ -113,6 +133,7 @@ fn is_executable(p: &Path) -> bool {
 }
 
 /// Substring strictly between the first `begin` and the following `end`.
+#[cfg(unix)]
 fn between<'a>(s: &'a str, begin: &str, end: &str) -> Option<&'a str> {
     let start = s.find(begin)? + begin.len();
     let rest = s.get(start..)?;
@@ -123,7 +144,7 @@ fn between<'a>(s: &'a str, begin: &str, end: &str) -> Option<&'a str> {
 // ── shell spawn (Unix) ───────────────────────────────────────────────────────
 
 #[cfg(unix)]
-async fn capture_path_string() -> Option<String> {
+async fn capture_path_dirs() -> Option<Vec<PathBuf>> {
     use std::process::Stdio;
 
     let shell = user_shell();
@@ -140,14 +161,43 @@ async fn capture_path_string() -> Option<String> {
         .await
         .ok()?
         .ok()?;
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    let raw = String::from_utf8_lossy(&out.stdout).into_owned();
+    let inner = between(&raw, BEGIN, END)?;
+    Some(
+        inner
+            .split(':')
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .collect(),
+    )
 }
 
-/// No login-shell PATH capture off Unix. Kept `async` to mirror the Unix
+/// The daemon's own inherited `PATH`, topped up with a fresh `HKCU\Environment`
+/// read.
+///
+/// The daemon is started from the user's `HKCU` `Run` entry, so its inherited
+/// `PATH` is already the merged and expanded machine+user value. The registry
+/// read then covers a tool installed after this daemon started, whose PATH entry
+/// the inherited copy predates. Every failure degrades to contributing no
+/// directories rather than failing the lookup. Kept `async` to mirror the Unix
 /// signature so callers stay platform-agnostic.
-#[cfg(not(unix))]
+#[cfg(windows)]
 #[allow(clippy::unused_async)]
-async fn capture_path_string() -> Option<String> {
+async fn capture_path_dirs() -> Option<Vec<PathBuf>> {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    if let Some(user) = yerd_platform::user_path().ok().flatten() {
+        dirs.extend(std::env::split_paths(&user));
+    }
+    Some(dirs)
+}
+
+/// No PATH source on other platforms. Kept `async` to mirror the Unix signature
+/// so callers stay platform-agnostic.
+#[cfg(not(any(unix, windows)))]
+#[allow(clippy::unused_async)]
+async fn capture_path_dirs() -> Option<Vec<PathBuf>> {
     None
 }
 
@@ -321,5 +371,67 @@ mod tests {
             Some(v) => std::env::set_var("SHELL", v),
             None => std::env::remove_var("SHELL"),
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+#[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+mod win_tests {
+    use super::*;
+
+    /// Create `name` in `dir`. On Windows any regular file counts as
+    /// executable, so no permission bits are involved.
+    fn touch(dir: &Path, name: &str) -> PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, b"x").unwrap();
+        p
+    }
+
+    /// A command on the Windows PATH is usually not the bare name: Composer
+    /// installs as `composer.bat`. Probing the bare name alone finds nothing.
+    #[test]
+    fn finds_a_bat_for_a_bare_command_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        touch(&dir, "composer.bat");
+        let found = find_in_path(&[dir.clone()], "composer", Path::new("nope"), tmp.path());
+        assert_eq!(found, Some(dir.join("composer.bat")));
+    }
+
+    /// When both an extensionless file and an extended one exist, the bare name
+    /// wins: the one place a hit is executed runs it under the managed
+    /// `php.exe`, for which the extensionless script is the right target.
+    #[test]
+    fn prefers_the_bare_name_over_an_extension() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        touch(&dir, "laravel");
+        touch(&dir, "laravel.bat");
+        let found = find_in_path(&[dir.clone()], "laravel", Path::new("nope"), tmp.path());
+        assert_eq!(found, Some(dir.join("laravel")));
+    }
+
+    #[test]
+    fn no_matching_extension_is_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        touch(&dir, "composer.txt");
+        assert_eq!(
+            find_in_path(&[dir], "composer", Path::new("nope"), tmp.path()),
+            None
+        );
+    }
+
+    /// The shim directory is skipped whichever candidate name matches there.
+    #[test]
+    fn exclude_dir_suppresses_an_extension_hit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shim = tmp.path().join("bin");
+        std::fs::create_dir_all(&shim).unwrap();
+        touch(&shim, "composer.bat");
+        assert_eq!(
+            find_in_path(&[shim.clone()], "composer", &shim, tmp.path()),
+            None
+        );
     }
 }

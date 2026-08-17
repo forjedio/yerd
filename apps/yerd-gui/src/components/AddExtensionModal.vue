@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { ref, watch } from "vue";
 import { FolderOpen } from "lucide-vue-next";
 
 import Button from "@/components/ui/Button.vue";
@@ -9,7 +9,6 @@ import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
 import { usePlatform } from "@/composables/usePlatform";
 import { useToast } from "@/composables/useToast";
-import { phpVocab } from "@/lib/phpVocab";
 import {
   addPhpExtension,
   IpcError,
@@ -34,8 +33,7 @@ const toast = useToast();
 
 // No `loadPlatform()` call: the always-mounted SideNav loads the platform
 // singleton long before this modal can be opened.
-const { isWindows } = usePlatform();
-const vocab = computed(() => phpVocab(isWindows.value));
+const { vocab } = usePlatform();
 
 const path = ref("");
 const name = ref("");
@@ -57,7 +55,7 @@ watch(
 );
 
 async function browse(): Promise<void> {
-  const picked = await pickExtensionFile();
+  const picked = await pickExtensionFile(vocab.value.extSuffix);
   if (picked === null) return;
   path.value = picked;
   problem.value = null;

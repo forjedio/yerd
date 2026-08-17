@@ -3,7 +3,7 @@
 //! Unlike the other traits in this crate ([`crate::TrustStore`],
 //! [`crate::ResolverInstaller`], [`crate::PortBinder`]) which return
 //! `Result<_, PlatformError>`, metrics are **best-effort and return `Option`**:
-//! `None` covers both "this OS is not supported" (macOS/Windows in Phase 1) and
+//! `None` covers both "no source on this platform" and
 //! "a transient read failed". Callers that surface metrics (e.g. `yerd status`)
 //! treat the two cases identically - show nothing - so collapsing them keeps the
 //! call sites simple. The actual decoding lives in pure, table-tested parsers

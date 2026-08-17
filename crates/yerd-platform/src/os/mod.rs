@@ -1,17 +1,16 @@
 //! Per-OS implementations selected by `#[cfg(target_os = ...)]`.
 //!
 //! Exactly one of `linux`, `macos`, `windows`, or `unsupported` is active per
-//! build. Windows implements a growing subset with real `Windows*` types
-//! (`Paths`, `PortBinder`, `PortRedirector`, `TrustStore`, `ResolverInstaller`,
-//! `TerminalLauncher`) and delegates the remaining three (`IdeLauncher`,
-//! `SystemOpener`, `SystemMetrics`) to the `unsupported` stub, so `unsupported`
-//! stays compiled on Windows too. The `active` re-export below is the entry
-//! point used by `lib.rs`.
+//! build. Windows has a real `Windows*` type for every trait, so nothing there
+//! delegates to the `unsupported` stub, though that module stays compiled on
+//! Windows. The `active` re-export below is the entry point used by `lib.rs`.
 
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod port_bind;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod unix;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -42,13 +41,15 @@ pub(crate) mod active {
 
     #[cfg(target_os = "windows")]
     pub use super::windows::{
-        broadcast_user_env_marker, current_user_sid, daemon_pipe_name, is_token_elevated,
-        nrpt_guids_for_tld, nrpt_servers_for_tld, set_user_path, udp_port_owner, user_path,
-        WindowsIdeLauncher as ActiveIdeLauncher, WindowsPaths as ActivePaths,
-        WindowsPortBinder as ActivePortBinder, WindowsPortRedirector as ActivePortRedirector,
+        broadcast_user_env_marker, current_user_sid, daemon_pipe_name, hidden_command,
+        is_token_elevated, nrpt_guids_for_tld, nrpt_servers_for_tld, set_user_path, system32_exe,
+        system_root, udp_port_owner, user_path, WindowsIdeLauncher as ActiveIdeLauncher,
+        WindowsPaths as ActivePaths, WindowsPortBinder as ActivePortBinder,
+        WindowsPortRedirector as ActivePortRedirector,
         WindowsResolverInstaller as ActiveResolverInstaller,
         WindowsSystemMetrics as ActiveSystemMetrics, WindowsSystemOpener as ActiveSystemOpener,
         WindowsTerminalLauncher as ActiveTerminalLauncher, WindowsTrustStore as ActiveTrustStore,
+        CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
     };
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]

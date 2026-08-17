@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 /// `runtime`: `yerd-<sid>-<h>`, where `h` is the first 16 hex chars of
 /// `SHA-256(runtime path bytes)`.
 ///
-/// - **SID component** is the locked, per-user-unique key the Phase 5 session-0
+/// - **SID component** is the locked, per-user-unique key a session-0
 ///   service will key the DACL on. Named-pipe names are inherently global
 ///   (`\\.\pipe\` has no per-session namespace), so cross-session reachability is
 ///   controlled by the DACL, not a `Global\` prefix.
@@ -36,7 +36,7 @@ pub fn pipe_name(sid: &str, runtime: &Path) -> String {
 }
 
 /// The SDDL for the daemon pipe's DACL: a protected DACL (no inheritance) that
-/// grants full access to SYSTEM (so the Phase 5 service account can own/serve
+/// grants full access to SYSTEM (so a service account can own/serve
 /// it) and to the named user, denying everyone else by absence.
 #[must_use]
 pub fn pipe_sddl(sid: &str) -> String {

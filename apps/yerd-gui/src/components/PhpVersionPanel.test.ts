@@ -34,6 +34,25 @@ vi.mock("@/composables/usePlatform", async () => {
         isMac: computed(() => platform.value === "macos"),
         isLinux: computed(() => platform.value === "linux"),
         isWindows: computed(() => platform.value === "windows"),
+        vocab: computed(() =>
+          platform.value === "windows"
+            ? {
+                runtime: "php-cgi",
+                pool: "FastCGI process",
+                pools: "FastCGI processes",
+                poolShort: "php-cgi",
+                extSuffix: ".dll",
+                extExample: "C:\\php\\ext\\php_scrypt.dll",
+              }
+            : {
+                runtime: "PHP-FPM",
+                pool: "FPM pool",
+                pools: "FPM pools",
+                poolShort: "FPM",
+                extSuffix: ".so",
+                extExample: "/opt/homebrew/lib/php/pecl/20250925/scrypt.so",
+              },
+        ),
         supportsPathInstall: computed(() => true),
       };
     },

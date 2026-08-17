@@ -118,14 +118,15 @@ pub(crate) fn tunnel_dir(dirs: &PlatformDirs) -> PathBuf {
     dirs.data.join("tunnel")
 }
 
+/// The host's filename for the cloudflared binary, shared by the managed path
+/// and the `PATH` search so the two cannot disagree.
+fn binary_file_name() -> String {
+    yerd_services::version::host_binary_name("cloudflared")
+}
+
 /// `{data}/tunnel/bin/cloudflared` (`cloudflared.exe` on Windows).
 pub(crate) fn binary_path(dirs: &PlatformDirs) -> PathBuf {
-    let name = if cfg!(windows) {
-        "cloudflared.exe"
-    } else {
-        "cloudflared"
-    };
-    tunnel_dir(dirs).join("bin").join(name)
+    tunnel_dir(dirs).join("bin").join(binary_file_name())
 }
 
 /// `{data}/tunnel/.cloudflared-version`.
@@ -188,7 +189,7 @@ pub struct RealVersionProbe;
 #[async_trait]
 impl VersionProbe for RealVersionProbe {
     async fn probe(&self, binary: &Path) -> Option<String> {
-        let mut cmd = tokio::process::Command::new(binary);
+        let mut cmd = super::cloudflared_command(binary);
         cmd.arg("--version").stdin(Stdio::null()).kill_on_drop(true);
         let out = tokio::time::timeout(VERSION_PROBE_TIMEOUT, cmd.output())
             .await
@@ -238,11 +239,12 @@ impl PathSearch for RealPathSearch {
     }
 }
 
-/// Search `dirs` in order for an executable file named `cloudflared`; first
-/// match wins.
+/// Search `dirs` in order for an executable file with the host's cloudflared
+/// filename; first match wins.
 fn find_in_dirs(dirs: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    let name = binary_file_name();
     dirs.into_iter().find_map(|dir| {
-        let candidate = dir.join("cloudflared");
+        let candidate = dir.join(&name);
         is_executable(&candidate).then_some(candidate)
     })
 }
@@ -262,6 +264,8 @@ pub(crate) fn is_executable(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
+/// Off Unix there is no execute bit, and the candidate name already carries the
+/// host's executable extension, so being a regular file is the whole check.
 #[cfg(not(unix))]
 pub(crate) fn is_executable(path: &Path) -> bool {
     path.is_file()
@@ -486,8 +490,18 @@ fn extract_cloudflared_from_tgz(gz_bytes: &[u8]) -> Result<Vec<u8>, CloudflaredI
     ))
 }
 
-/// Write `bytes` to `{data}/tunnel/bin/cloudflared` via a staging file + atomic
-/// rename, make it executable, and record the version.
+/// Write `bytes` to `{data}/tunnel/bin/cloudflared`, make it executable, and
+/// record the version.
+///
+/// The commit is a move-aside swap rather than a single rename, because Windows
+/// forbids overwriting a running image but permits renaming one out of the way.
+/// The same path runs on every OS so all four CI legs exercise it. A predecessor
+/// that is still running cannot be deleted, which is expected; it is swept on a
+/// later install instead.
+///
+/// This leaves a sub-millisecond window in which the binary path does not exist.
+/// It is only observable to a status poll during an install the caller itself
+/// started, and the cache is repaired immediately afterwards.
 fn install_binary(
     dirs: &PlatformDirs,
     version: &str,
@@ -505,14 +519,84 @@ fn install_binary(
     std::fs::write(&staging, bytes)
         .map_err(|e| CloudflaredInstallError::Io(format!("{}: {e}", staging.display())))?;
     set_executable(&staging)?;
-    std::fs::rename(&staging, &final_path).map_err(|e| {
+
+    let seq = PREVIOUS_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let previous = bin_dir.join(format!(
+        ".cloudflared.previous-{}-{seq}",
+        std::process::id()
+    ));
+    let displaced = final_path.exists() && rename_with_retry(&final_path, &previous).is_ok();
+    if let Err(e) = rename_with_retry(&staging, &final_path) {
+        if displaced {
+            let _ = std::fs::rename(&previous, &final_path);
+        }
         let _ = std::fs::remove_file(&staging);
-        CloudflaredInstallError::Io(format!("{}: {e}", final_path.display()))
-    })?;
+        return Err(CloudflaredInstallError::Io(format!(
+            "{}: {e}",
+            final_path.display()
+        )));
+    }
+    let _ = std::fs::remove_file(&previous);
+    sweep_previous(&bin_dir);
     let marker = version_marker(dirs);
     std::fs::write(&marker, version)
         .map_err(|e| CloudflaredInstallError::Io(format!("{}: {e}", marker.display())))?;
     Ok(())
+}
+
+/// Distinguishes concurrent move-aside names within one process.
+static PREVIOUS_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Rename, retrying a transient Windows lock.
+///
+/// An antivirus scanner or the indexer can hold a freshly-written file open for
+/// a few milliseconds. `service_install::unpack_with_retry` encodes the same
+/// policy for tar entries.
+#[cfg(windows)]
+fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    const ERROR_LOCK_VIOLATION: i32 = 33;
+    const MAX_ATTEMPTS: u64 = 3;
+
+    let mut attempt = 1;
+    loop {
+        match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e)
+                if attempt < MAX_ATTEMPTS
+                    && matches!(
+                        e.raw_os_error(),
+                        Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
+                    ) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(50 * attempt));
+                attempt += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::rename(from, to)
+}
+
+/// Best-effort removal of predecessors left behind because they were still
+/// running when a previous install displaced them.
+fn sweep_previous(bin_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(bin_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if name
+            .to_str()
+            .is_some_and(|n| n.starts_with(".cloudflared.previous-"))
+        {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Mark a file `rwxr-xr-x` on Unix; a no-op elsewhere.
@@ -710,16 +794,30 @@ mod tests {
         let second = tmp.path().join("second");
         std::fs::create_dir_all(&first).unwrap();
         std::fs::create_dir_all(&second).unwrap();
-        // Only `second` has a `cloudflared` on it.
         std::fs::write(second.join("cloudflared"), b"#!/bin/sh\n").unwrap();
         set_executable(&second.join("cloudflared")).unwrap();
         let path_var = std::env::join_paths([&first, &second]).unwrap();
         assert_eq!(find_in_paths(&path_var), Some(second.join("cloudflared")));
     }
 
-    /// "executable" here means the Unix exec bit; Windows has no such bit (and
-    /// cloudflared-on-Windows is a later phase), so a non-`.exe` file is not
-    /// filtered out there. Unix-scoped.
+    /// The Windows search must match the `.exe` name and ignore a bare
+    /// `cloudflared`, which is not executable there.
+    #[cfg(windows)]
+    #[test]
+    fn find_in_paths_matches_the_exe_name_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        std::fs::write(dir.join("cloudflared"), b"not an exe").unwrap();
+        let path_var = std::env::join_paths([&dir]).unwrap();
+        assert_eq!(find_in_paths(&path_var), None);
+
+        std::fs::write(dir.join("cloudflared.exe"), b"MZ").unwrap();
+        assert_eq!(find_in_paths(&path_var), Some(dir.join("cloudflared.exe")));
+    }
+
+    /// "executable" here means the Unix exec bit, so this test is Unix-scoped.
+    /// Windows has no such bit; there the candidate name already carries `.exe`,
+    /// which is what excludes a non-executable file.
     #[cfg(unix)]
     #[test]
     fn find_in_paths_ignores_non_executable_file() {

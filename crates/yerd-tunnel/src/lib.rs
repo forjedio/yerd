@@ -14,6 +14,7 @@
 
 pub mod args;
 pub mod config;
+pub mod env;
 pub mod error;
 pub mod manager;
 pub mod origin;

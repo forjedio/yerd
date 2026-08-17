@@ -18,9 +18,11 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use yerd_platform::{ActivePaths, Paths, PlatformDirs};
+use yerd_platform::PlatformDirs;
 
-use crate::shim::{cli_phprc, fail, resolve_default_php, run_php};
+use crate::shim::{
+    cli_phprc, default_php_or_message, dirs_or_fail, dispatch_named, exec_php, fail, managed_tool,
+};
 use crate::site_scope::{site_scope, ScopeResolution};
 
 /// The `PHP_INI_SCAN_DIR` list separator: `;` on Windows, `:` on Unix. Prefixing
@@ -77,20 +79,16 @@ fn quiet_deprecations_scan_dir_env(dir: &Path) -> String {
 }
 
 /// If the shim name is `wp`, exec WP-CLI and return its exit code; otherwise
-/// `None`, so `main` falls through to the next shim / CLI.
+/// `None`, so dispatch falls through to the next shim.
 #[must_use]
-pub fn dispatch() -> Option<ExitCode> {
-    let (name, forward) = crate::shim::shim_invocation()?;
-    if name != "wp" {
-        return None;
-    }
-    Some(run(&forward))
+pub(crate) fn dispatch(name: &str, forward: &[OsString]) -> Option<ExitCode> {
+    dispatch_named("wp", name, forward, run)
 }
 
 fn run(forward: &[OsString]) -> ExitCode {
-    let dirs = match ActivePaths::new().resolve() {
+    let dirs = match dirs_or_fail() {
         Ok(d) => d,
-        Err(e) => return fail(format!("cannot resolve yerd directories: {e}")),
+        Err(code) => return code,
     };
     let cwd = std::env::current_dir()
         .ok()
@@ -124,28 +122,21 @@ fn run(forward: &[OsString]) -> ExitCode {
     };
     let (php_bin, minor, scope) = match scoped {
         Some(s) => (s.php_bin.clone(), s.php_minor.clone(), Some(s)),
-        None => match resolve_default_php(&dirs) {
-            Some((php, minor)) => (php, minor, None),
-            None => return fail(crate::shim::no_default_php_message(&dirs)),
+        None => match default_php_or_message(&dirs) {
+            Ok((php, minor)) => (php, minor, None),
+            Err(msg) => return fail(msg),
         },
     };
 
-    let boot_fs = dirs
-        .data
-        .join("tools")
-        .join("wp-cli")
-        .join("vendor")
-        .join("wp-cli")
-        .join("wp-cli")
-        .join("php")
-        .join("boot-fs.php");
-    if !boot_fs.is_file() {
-        return fail(
-            "WP-CLI is not installed — install it from the Tooling page \
-             (or run `yerd install tool wp-cli`)"
-                .to_owned(),
-        );
-    }
+    let boot_fs = match managed_tool(
+        &dirs,
+        "WP-CLI",
+        "wp-cli",
+        &["wp-cli", "vendor", "wp-cli", "wp-cli", "php", "boot-fs.php"],
+    ) {
+        Ok(p) => p,
+        Err(msg) => return fail(msg),
+    };
     let Some((boot_dir, boot_name)) = split_boot_fs(&boot_fs) else {
         return fail(format!("{}: not a valid file path", boot_fs.display()));
     };
@@ -165,14 +156,7 @@ fn run(forward: &[OsString]) -> ExitCode {
         cmd.arg(format!("--path={}", served_root.display()));
     }
 
-    match run_php(cmd) {
-        Ok(code) => code,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => fail(format!(
-            "PHP binary not found at {} ({err}) — reinstall with `yerd install php`",
-            php_bin.display()
-        )),
-        Err(err) => fail(format!("failed to exec {}: {err}", php_bin.display())),
-    }
+    exec_php(cmd, &php_bin, None)
 }
 
 /// Split `boot_fs` into its own directory and bare file name, so it can be

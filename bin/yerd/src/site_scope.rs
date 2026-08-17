@@ -141,12 +141,13 @@ struct Candidate {
 /// of those cases, but `NoScope::daemon_unavailable` distinguishes an
 /// unanswered lookup from a genuine no-match so they can warn about the
 /// former. `pub` for the same testability reason as [`SiteScope`].
+///
+/// Matching is string containment, so both sides must spell a path the same way.
+/// Callers hand in raw `fs::canonicalize` output, which on Windows is verbatim
+/// (`\\?\C:\...`) while the site roots are normalised, so `cwd` is normalised
+/// here rather than trusting every caller to have done it.
 #[must_use]
 pub fn site_scope(dirs: &PlatformDirs, cwd: &Path) -> ScopeResolution {
-    // Matching is string containment, so both sides must spell a path the same
-    // way. Callers hand us raw `fs::canonicalize` output, which on Windows is
-    // verbatim (`\\?\C:\...`) while the site roots below are normalised - so
-    // normalise here rather than trusting every caller to have done it.
     let cwd = &yerd_core::path_norm::strip_verbatim(cwd);
     let Ok(candidates) = candidates(dirs) else {
         return ScopeResolution::NoScope {

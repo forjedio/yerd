@@ -1,34 +1,37 @@
 //! Windows OS implementation.
 //!
-//! Windows implements a growing subset of the traits with real `Windows*`
-//! types (`Paths`, `PortBinder`, `PortRedirector`); the remainder are type
-//! aliases to the `os::unsupported` stub, so those impls come for free and stay
-//! total. Later phases replace one alias at a time with a real `Windows*` type
-//! in the same change that adds its full trait impl (the "never half-flip"
-//! rule).
+//! Real `Windows*` types implement every trait in the crate: `Paths`,
+//! `TrustStore`, `ResolverInstaller`, `PortBinder`, `PortRedirector`,
+//! `TerminalLauncher`, `SystemOpener`, `SystemMetrics` and `IdeLauncher`. No
+//! trait aliases the `os::unsupported` stub here any more, though that module
+//! stays compiled on Windows so `cargo check --workspace` is green on any host.
 
-#![allow(clippy::similar_names)]
-
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use schannel::cert_context::CertContext;
 use schannel::cert_store::{CertAdd, CertStore};
 
-use crate::error::{ops, TerminalErrorReason, TrustStoreErrorReason};
+use crate::error::{
+    ops, IdeErrorReason, OpenErrorReason, TerminalErrorReason, TrustStoreErrorReason,
+};
+use crate::ide::{DetectedIde, IdeLauncher, LaunchTarget};
+use crate::metrics::SystemMetrics;
+use crate::opener::SystemOpener;
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::PortRedirector;
-use crate::pure::{nrpt, pem_match, port_plan, win_pipe, win_port_owner, win_terminal, win_token};
+use crate::pure::ide_spec::{
+    ide_cli_candidates_windows, spec_for, windows_executable_names, IdeSpec, IDE_SPECS,
+};
+use crate::pure::{
+    nrpt, pem_match, win_metrics, win_pipe, win_port_owner, win_terminal, win_token,
+};
 use crate::resolver::ResolverInstaller;
 use crate::terminal::TerminalLauncher;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
-use crate::{BindPairErrorReason, PlatformError};
-
-pub use super::unsupported::UnsupportedIdeLauncher as WindowsIdeLauncher;
-pub use super::unsupported::UnsupportedSystemMetrics as WindowsSystemMetrics;
-pub use super::unsupported::UnsupportedSystemOpener as WindowsSystemOpener;
+use crate::PlatformError;
 
 /// `CREATE_NEW_CONSOLE` process-creation flag: the spawned shell gets its own
 /// console window instead of inheriting the caller's (the daemon/GUI has none
@@ -38,7 +41,17 @@ const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
 /// `CREATE_NO_WINDOW` process-creation flag: a console child runs with no
 /// window at all, so a console-less parent (the daemon) never flashes one.
 /// Safe std `creation_flags`, no FFI.
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+///
+/// The canonical definition for the whole workspace. Prefer [`hidden_command`],
+/// which applies it for you.
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// `CREATE_NEW_PROCESS_GROUP` process-creation flag: the child leads its own
+/// process group, so a console Ctrl-C aimed at the parent does not also reach
+/// it. Safe std `creation_flags`, no FFI.
+///
+/// The canonical definition for the whole workspace.
+pub const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
 /// Real `TerminalLauncher` for Windows.
 ///
@@ -131,9 +144,7 @@ impl Paths for WindowsPaths {
 ///
 /// Sub-1024 binds are unprivileged on Windows, so unlike Linux/macOS there is no
 /// `setcap`/`pf` special-casing: `bind_pair` uses the same generic desired →
-/// fallback retry as Linux, attempting the desired ports directly. Pulled forward
-/// from Phase 3 (Phase 2's FPM pool needs an ephemeral loopback bind; Phase 3
-/// adds the 80/443 conflict validation and doctor check on top).
+/// fallback retry as Linux, attempting the desired ports directly.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct WindowsPortBinder;
 
@@ -145,13 +156,9 @@ impl WindowsPortBinder {
     }
 }
 
-fn bind_at(ip: Ipv4Addr, port: u16) -> std::io::Result<TcpListener> {
-    TcpListener::bind(SocketAddr::from((ip, port)))
-}
-
 impl PortBinder for WindowsPortBinder {
     fn bind(&self, port: u16) -> Result<BoundPort, PlatformError> {
-        bind_at(Ipv4Addr::LOCALHOST, port)
+        super::port_bind::bind_at(Ipv4Addr::LOCALHOST, port)
             .map(|listener| BoundPort { listener })
             .map_err(|source| PlatformError::Bind { port, source })
     }
@@ -162,108 +169,7 @@ impl PortBinder for WindowsPortBinder {
         desired: (u16, u16),
         fallback: (u16, u16),
     ) -> Result<PortPair, PlatformError> {
-        bind_pair_impl(lan, desired, fallback)
-    }
-}
-
-/// The generic desired → fallback bind-pair retry (Linux shape, no privilege
-/// special-casing). Attempt `desired`; on a retry-trigger kind
-/// (`PermissionDenied`/`AddrInUse`/`AddrNotAvailable`) drop any partial listener
-/// and retry `fallback`; any other error on the desired pair surfaces
-/// immediately; if both pairs fail, a [`PlatformError::BindPair`] carries all
-/// four `ErrorKind`s.
-fn bind_pair_impl(
-    lan: bool,
-    desired: (u16, u16),
-    fallback: (u16, u16),
-) -> Result<PortPair, PlatformError> {
-    let ip = if lan {
-        Ipv4Addr::UNSPECIFIED
-    } else {
-        Ipv4Addr::LOCALHOST
-    };
-    let http_attempt = bind_at(ip, desired.0);
-    let https_attempt = bind_at(ip, desired.1);
-
-    let http_outcome = http_attempt
-        .as_ref()
-        .map(|_| ())
-        .map_err(std::io::Error::kind);
-    let https_outcome = https_attempt
-        .as_ref()
-        .map(|_| ())
-        .map_err(std::io::Error::kind);
-
-    match port_plan::classify_desired(http_outcome, https_outcome) {
-        port_plan::DesiredPairAction::KeepDesired => Ok(PortPair {
-            http: BoundPort {
-                listener: http_attempt.map_err(|e| PlatformError::Bind {
-                    port: desired.0,
-                    source: e,
-                })?,
-            },
-            https: BoundPort {
-                listener: https_attempt.map_err(|e| PlatformError::Bind {
-                    port: desired.1,
-                    source: e,
-                })?,
-            },
-        }),
-        port_plan::DesiredPairAction::HardFail(_) => {
-            if let Err(e) = http_attempt {
-                return Err(PlatformError::Bind {
-                    port: desired.0,
-                    source: e,
-                });
-            }
-            if let Err(e) = https_attempt {
-                return Err(PlatformError::Bind {
-                    port: desired.1,
-                    source: e,
-                });
-            }
-            Err(PlatformError::Bind {
-                port: desired.0,
-                source: std::io::Error::from(std::io::ErrorKind::Other),
-            })
-        }
-        port_plan::DesiredPairAction::UseFallback => {
-            let desired_http_kind = http_outcome.err().unwrap_or(std::io::ErrorKind::Other);
-            let desired_https_kind = https_outcome.err().unwrap_or(std::io::ErrorKind::Other);
-            drop(http_attempt);
-            drop(https_attempt);
-
-            let fb_http = bind_at(ip, fallback.0);
-            let fb_https = bind_at(ip, fallback.1);
-
-            let fb_http_outcome = fb_http.as_ref().map(|_| ()).map_err(std::io::Error::kind);
-            let fb_https_outcome = fb_https.as_ref().map(|_| ()).map_err(std::io::Error::kind);
-
-            match port_plan::classify_fallback(fb_http_outcome, fb_https_outcome) {
-                port_plan::FallbackPairAction::KeepFallback => Ok(PortPair {
-                    http: BoundPort {
-                        listener: fb_http.map_err(|e| PlatformError::Bind {
-                            port: fallback.0,
-                            source: e,
-                        })?,
-                    },
-                    https: BoundPort {
-                        listener: fb_https.map_err(|e| PlatformError::Bind {
-                            port: fallback.1,
-                            source: e,
-                        })?,
-                    },
-                }),
-                port_plan::FallbackPairAction::BothFailed => Err(PlatformError::BindPair {
-                    reason: BindPairErrorReason::BothPairsFailed {
-                        desired_http: desired_http_kind,
-                        desired_https: desired_https_kind,
-                        fallback_http: fb_http_outcome.err().unwrap_or(std::io::ErrorKind::Other),
-                        fallback_https: fb_https_outcome.err().unwrap_or(std::io::ErrorKind::Other),
-                    },
-                }),
-            }
-        }
+        super::port_bind::bind_pair_impl(false, lan, desired, fallback)
     }
 }
 
@@ -394,21 +300,28 @@ pub fn udp_port_owner(port: u16) -> Option<String> {
     win_port_owner::image_name(&csv)
 }
 
+/// Run a `System32` console tool and return its stdout, preserving the failure.
+///
+/// Spawned through [`hidden_command`], so a console-less parent never flashes a
+/// window. A non-zero exit becomes an [`std::io::Error`] so callers that must
+/// report *why* the tool failed can do so; [`run_console_tool`] is the
+/// discarding form.
+fn try_console_tool(exe: &str, args: &[&str]) -> Result<String, std::io::Error> {
+    let output = hidden_command(&system32_exe(exe)).args(args).output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::other(format!(
+            "exited with {}",
+            output.status
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 /// Run a `System32` console tool and return its stdout, or `None` on any
 /// spawn/exit failure. `CREATE_NO_WINDOW` keeps the daemon (which has no console
 /// of its own) from flashing one up on every status poll.
 fn run_console_tool(exe: &str, args: &[&str]) -> Option<String> {
-    use std::os::windows::process::CommandExt as _;
-
-    let output = std::process::Command::new(win_system32(exe))
-        .args(args)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    try_console_tool(exe, args).ok()
 }
 
 /// Real `ResolverInstaller` for Windows, backed by an NRPT wildcard rule.
@@ -471,17 +384,8 @@ impl ResolverInstaller for WindowsResolverInstaller {
 /// `#![forbid(unsafe_code)]` rules out.
 #[must_use]
 pub fn is_token_elevated() -> bool {
-    let Ok(output) = std::process::Command::new(whoami_path())
-        .args(["/groups", "/fo", "csv", "/nh"])
-        .output()
-    else {
-        return false;
-    };
-    if !output.status.success() {
-        return false;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    win_token::csv_has_elevated_integrity(&stdout)
+    run_console_tool("whoami.exe", &["/groups", "/fo", "csv", "/nh"])
+        .is_some_and(|stdout| win_token::csv_has_elevated_integrity(&stdout))
 }
 
 /// Map a schannel/`std::io` cert-store failure to the shared typed reason. Every
@@ -541,8 +445,8 @@ fn store_root_pem(store: &CertStore) -> String {
 /// elevation** here rather than returning `NeedsHelper`: adding a CA to the
 /// `CurrentUser` Root store needs no admin rights, only a one-time OS confirmation
 /// dialog. That dialog requires an **interactive desktop**, so these mutations
-/// must run in the CLI or GUI process and NEVER in `yerdd` (Phase 5 turns the
-/// daemon into a session-0 service with no desktop).
+/// must run in the CLI or GUI process and NEVER in `yerdd`, which runs as a
+/// session-0 service with no desktop.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct WindowsTrustStore;
 
@@ -635,10 +539,10 @@ impl TrustStore for WindowsTrustStore {
         Ok(!find_by_fp(&store, fp).is_empty())
     }
 
+    /// On Windows, presence in the Root store *is* trust: there is no separate
+    /// trust-settings layer as on macOS, so the effective-trust probe is the same
+    /// as the presence probe and `ca_path` is unused.
     fn is_trusted(&self, _ca_path: &Path, fp: &CaFingerprint) -> Result<bool, PlatformError> {
-        // On Windows, presence in the Root store *is* trust (there is no separate
-        // trust-settings layer like macOS), so the effective-trust probe is the
-        // same as the presence probe. `ca_path` is unused here.
         self.is_present_system(fp)
     }
 
@@ -709,28 +613,15 @@ pub fn current_user_sid() -> Result<String, PlatformError> {
     Ok(USER_SID.get_or_init(|| sid).clone())
 }
 
-/// Absolute path to `whoami.exe`, from `%SystemRoot%` (falling back to the
-/// conventional location), so the lookup never resolves an attacker-planted
-/// `whoami` on `PATH`.
-fn whoami_path() -> PathBuf {
-    let root =
-        std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
-    root.join("System32").join("whoami.exe")
-}
-
+/// The current user's SID, via `whoami /user`, parsed by the table-tested
+/// [`win_pipe`] parser. Spawned through [`try_console_tool`], so it resolves an
+/// absolute `System32` path and never flashes a console window.
 fn spawn_whoami_sid() -> Result<String, PlatformError> {
-    let output = std::process::Command::new(whoami_path())
-        .args(["/user", "/fo", "csv", "/nh"])
-        .output()
-        .map_err(|e| PlatformError::SidLookup {
-            detail: format!("whoami spawn failed: {e}"),
-        })?;
-    if !output.status.success() {
-        return Err(PlatformError::SidLookup {
-            detail: format!("whoami exited with {}", output.status),
-        });
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = try_console_tool("whoami.exe", &["/user", "/fo", "csv", "/nh"]).map_err(|e| {
+        PlatformError::SidLookup {
+            detail: format!("whoami {e}"),
+        }
+    })?;
     win_pipe::parse_whoami_sid(&stdout).ok_or_else(|| PlatformError::SidLookup {
         detail: "whoami output had no parseable SID".to_owned(),
     })
@@ -845,8 +736,8 @@ pub fn set_user_path(value: &str) -> Result<(), PlatformError> {
 /// [`set_user_path`] for why); only this incidental, independently-useful marker
 /// is. Best-effort: a non-zero exit is surfaced as [`PlatformError::Io`].
 pub fn broadcast_user_env_marker(dir: &Path) -> Result<(), PlatformError> {
-    let setx = win_system32("setx.exe");
-    let status = std::process::Command::new(setx)
+    let setx = system32_exe("setx.exe");
+    let status = hidden_command(&setx)
         .arg("YERD_BIN")
         .arg(dir)
         .output()
@@ -864,14 +755,201 @@ pub fn broadcast_user_env_marker(dir: &Path) -> Result<(), PlatformError> {
     }
 }
 
-/// Absolute path to a `System32` executable, from `%SystemRoot%` (falling back to
-/// the conventional location), so a lookup never resolves an attacker-planted
-/// binary on `PATH`.
-fn win_system32(exe: &str) -> PathBuf {
-    std::env::var_os("SystemRoot")
-        .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from)
-        .join("System32")
-        .join(exe)
+/// The Windows installation root, from `%SystemRoot%`, falling back to the
+/// conventional location when the variable is unset.
+///
+/// The canonical definition for the whole workspace.
+#[must_use]
+pub fn system_root() -> PathBuf {
+    std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from)
+}
+
+/// Absolute path to a `System32` executable, derived from [`system_root`] so a
+/// lookup never resolves an attacker-planted binary on `PATH`.
+///
+/// The canonical definition for the whole workspace.
+#[must_use]
+pub fn system32_exe(exe: &str) -> PathBuf {
+    system_root().join("System32").join(exe)
+}
+
+/// Absolute path to `explorer.exe`, which lives directly under the Windows
+/// installation root rather than in `System32`.
+#[must_use]
+fn explorer_exe() -> PathBuf {
+    system_root().join("explorer.exe")
+}
+
+/// A [`Command`] for `exe` that will not flash a console window, for a parent
+/// that has no console of its own.
+///
+/// The canonical way to spawn a console child anywhere in the workspace: it
+/// applies [`CREATE_NO_WINDOW`] so no caller has to remember the flag.
+#[must_use]
+pub fn hidden_command(exe: &Path) -> std::process::Command {
+    use std::os::windows::process::CommandExt as _;
+
+    let mut cmd = std::process::Command::new(exe);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+/// First existing file among `windows_executable_names(name)` across `dirs`.
+///
+/// Windows has no execute bit, so a plain file test is the whole check; the
+/// Unix twin in `os::unix` additionally tests the mode.
+fn executable_in_directories<I>(name: &str, dirs: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    let names = windows_executable_names(name);
+    dirs.into_iter().find_map(|dir| {
+        names.iter().find_map(|file| {
+            let candidate = dir.join(file);
+            std::fs::metadata(&candidate)
+                .ok()
+                .filter(std::fs::Metadata::is_file)
+                .map(|_| candidate)
+        })
+    })
+}
+
+/// `PATH` first, then the `JetBrains` Toolbox scripts directory.
+fn executable_in_path(name: &str) -> Option<PathBuf> {
+    if let Some(paths) = std::env::var_os("PATH") {
+        if let Some(exe) = executable_in_directories(name, std::env::split_paths(&paths)) {
+            return Some(exe);
+        }
+    }
+    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    executable_in_directories(name, ide_cli_candidates_windows(local.as_deref()))
+}
+
+fn ide_executable(spec: &IdeSpec) -> Option<PathBuf> {
+    spec.cli_names
+        .iter()
+        .find_map(|name| executable_in_path(name))
+}
+
+/// Real `IdeLauncher` for Windows.
+///
+/// Detection is a handful of `metadata` probes over `PATH` plus the Toolbox
+/// scripts directory, so unlike the Unix adapters there is no second
+/// application-scan pass: there is nothing an `/Applications` walk or an XDG
+/// desktop-entry scan would add. Every hit is therefore a
+/// [`LaunchTarget::Cli`].
+///
+/// A `.cmd` or `.bat` shim is run by `std`, which detects the batch extension
+/// and re-targets `cmd.exe` itself, owning the argument escaping. Success is a
+/// successful spawn: the startup-window check the Unix adapters use guards
+/// against a broken `PATH` script, which the direct file probe here already
+/// rules out.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WindowsIdeLauncher;
+
+impl WindowsIdeLauncher {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl IdeLauncher for WindowsIdeLauncher {
+    fn detect(&self) -> Vec<DetectedIde> {
+        let mut found: Vec<DetectedIde> = IDE_SPECS
+            .iter()
+            .filter_map(|spec| {
+                ide_executable(spec).map(|exe| DetectedIde {
+                    id: spec.id,
+                    display_name: spec.display_name,
+                    launch: LaunchTarget::Cli(exe),
+                })
+            })
+            .collect();
+        found.sort_by_key(|ide| spec_for(ide.id).map_or(u8::MAX, |spec| spec.rank));
+        found
+    }
+
+    fn launch(&self, ide: &DetectedIde, path: &Path) -> Result<(), PlatformError> {
+        let (LaunchTarget::Cli(exe) | LaunchTarget::Application(exe)) = &ide.launch;
+        hidden_command(exe)
+            .arg(path)
+            .current_dir(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|source| PlatformError::Ide {
+                reason: IdeErrorReason::Launch {
+                    ide: ide.display_name.to_owned(),
+                    source,
+                },
+            })
+    }
+}
+
+/// Real `SystemOpener` for Windows.
+///
+/// Hands the path to `explorer.exe`, the shell's own handler, which selects the
+/// right action for a directory or a file. A successful **spawn** is the success
+/// signal: Explorer routes the request to the already-running shell process and
+/// then exits non-zero, so inspecting its status would misreport every
+/// successful open as a failure. The child is not waited on for the same reason.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WindowsSystemOpener;
+
+impl WindowsSystemOpener {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl SystemOpener for WindowsSystemOpener {
+    fn open_path(&self, path: &Path) -> Result<(), PlatformError> {
+        hidden_command(&explorer_exe())
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|source| PlatformError::SystemOpen {
+                reason: OpenErrorReason::Launch {
+                    program: "explorer.exe".to_owned(),
+                    source,
+                },
+            })
+    }
+}
+
+/// Real `SystemMetrics` for Windows.
+///
+/// `rss_bytes` reports the process working set, via `tasklist.exe`, which is the
+/// closest Windows analogue of Unix RSS: both count resident physical pages.
+/// Every failure to spawn, exit or parse collapses to `None`, because metrics
+/// are best-effort decoration and must never fail a status call.
+///
+/// `load_average` is `None`: Windows has no load-average concept, the same
+/// answer the macOS impl gives for the same reason.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WindowsSystemMetrics;
+
+impl WindowsSystemMetrics {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl SystemMetrics for WindowsSystemMetrics {
+    fn rss_bytes(&self, pid: u32) -> Option<u64> {
+        let filter = format!("PID eq {pid}");
+        let csv = run_console_tool("tasklist.exe", &["/FI", &filter, "/FO", "CSV", "/NH"])?;
+        win_metrics::parse_tasklist_mem_bytes(&csv)
+    }
+
+    fn load_average(&self) -> Option<[f64; 3]> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -885,6 +963,18 @@ mod tests {
     use schannel::cert_store::Memory;
 
     use super::*;
+
+    /// `explorer.exe` lives directly under the Windows root, not in `System32`.
+    /// Composing it through [`system32_exe`] would make every "reveal in folder"
+    /// spawn a path that does not exist.
+    #[test]
+    fn explorer_exe_sits_at_the_windows_root_not_system32() {
+        let p = explorer_exe();
+        assert!(p.is_absolute(), "{p:?}");
+        assert!(p.ends_with("explorer.exe"), "{p:?}");
+        assert!(!p.starts_with(system_root().join("System32")), "{p:?}");
+        assert_eq!(p.parent(), Some(system_root().as_path()));
+    }
 
     /// Mint a throwaway CA via `yerd-tls`; the returned PEM, DER, and
     /// fingerprint all describe the same certificate. Fingerprint identity is

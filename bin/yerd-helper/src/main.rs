@@ -36,6 +36,13 @@ fn main() -> ExitCode {
     run()
 }
 
+/// `ShellExecuteEx` already starts the elevated Windows child in `system32`; the
+/// Unix `chdir("/")` guards against the elevation mechanism leaving the process
+/// in a deleted or attacker-controlled cwd.
+///
+/// Windows has no stdio back to the caller (again `ShellExecuteEx`), so when the
+/// caller supplies a token the outcome goes into an advisory result file
+/// instead. Best-effort: it never changes the exit code.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn run() -> ExitCode {
     let parsed = match cli::parse(std::env::args_os()) {
@@ -46,17 +53,11 @@ fn run() -> ExitCode {
         }
     };
 
-    // ShellExecuteEx already starts the elevated Windows child in system32; the
-    // Unix `chdir("/")` guards against the elevation mechanism leaving us in a
-    // deleted or attacker-controlled cwd.
     #[cfg(unix)]
     let _ = std::env::set_current_dir("/");
 
     let result = execute(&parsed);
 
-    // Windows has no stdio back to the caller (ShellExecuteEx), so write the
-    // advisory result file if the caller supplied a token. Best-effort; never
-    // changes the exit code.
     #[cfg(windows)]
     if let Some(token) = parsed.result_token.as_deref() {
         ops::write_result_file(token, &result);

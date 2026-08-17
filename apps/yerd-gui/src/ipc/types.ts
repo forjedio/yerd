@@ -1,3 +1,5 @@
+import type { PhpVocab } from "@/lib/phpVocab";
+
 /**
  * TypeScript mirrors of the `yerd-ipc` wire JSON.
  *
@@ -753,7 +755,7 @@ export interface CloudflaredStatus {
   version?: string;
   /** Where the installed binary came from; absent when not installed. */
   source?: CloudflaredSource;
-  /** Whether a Cloudflare account is logged in (Phase 2). */
+  /** Whether a Cloudflare account is logged in (named tunnels). */
   logged_in: boolean;
 }
 
@@ -890,4 +892,12 @@ export interface GuiLogs {
   guiLog: string[];
   daemonPath: string | null;
   daemonLog: string[];
+}
+
+/** The host OS and its PHP vocabulary, from the `host_platform` command. */
+export interface HostPlatform {
+  /** `"linux"`, `"macos"` or `"windows"`. */
+  os: string;
+  /** Host-appropriate PHP nouns; see `crates/yerd-core/src/php_vocab.rs`. */
+  vocab: PhpVocab;
 }

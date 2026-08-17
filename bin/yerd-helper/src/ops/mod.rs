@@ -66,9 +66,9 @@ where
     map_command_output(tool, cmd.output())
 }
 
-/// System PowerShell modules directory, derived from `%SystemRoot%` the same
-/// way [`powershell_path`](resolver) and `whoami_path` derive their base, with
-/// a `C:\Windows` fallback when `SystemRoot` is unset.
+/// System PowerShell modules directory, derived from
+/// [`yerd_platform::system_root`], the workspace's single `%SystemRoot%`
+/// derivation.
 ///
 /// This is pinned as the sole `PSModulePath` for elevated spawns (security:
 /// avoid user-writable module autoload). The default Windows `PSModulePath`
@@ -79,11 +79,8 @@ where
 /// closing that hijack.
 #[cfg(windows)]
 fn system_ps_modules_dir() -> std::path::PathBuf {
-    let root = std::env::var_os("SystemRoot").map_or_else(
-        || std::path::PathBuf::from(r"C:\Windows"),
-        std::path::PathBuf::from,
-    );
-    root.join("System32")
+    yerd_platform::system_root()
+        .join("System32")
         .join("WindowsPowerShell")
         .join("v1.0")
         .join("Modules")

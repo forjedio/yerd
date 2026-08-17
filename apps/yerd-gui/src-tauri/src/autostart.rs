@@ -1393,6 +1393,12 @@ pub(crate) fn plan_start(nudge: bool) -> Result<Vec<StartStep>, GuiError> {
 
 /// Stop the daemon via the service manager (best-effort; the caller adds a
 /// universal SIGTERM-of-pid fallback for daemons not under the service).
+///
+/// The Windows arm passes a path it does not need: `ServiceCtl::stop` reaps by
+/// image name (`taskkill /IM yerdd.exe`) and never reads `yerdd_path`, which
+/// only the start path uses. So the stop must not be skipped when the sidecar
+/// cannot be located - that is exactly the broken-install case where it is the
+/// only mechanism that still works.
 pub(crate) fn daemon_stop() {
     #[cfg(target_os = "linux")]
     {

@@ -358,14 +358,13 @@ fn macos_try_restore_backup(tld: &str, dest: &std::path::Path) -> Result<bool, H
 
 // ---- Windows: NRPT wildcard rule -----------------------------------
 
-/// Absolute path to `powershell.exe`, from `%SystemRoot%` (falling back to the
-/// conventional location), so the elevated helper never resolves an
+/// Absolute path to `powershell.exe`, derived from
+/// [`yerd_platform::system_root`], so the elevated helper never resolves an
 /// attacker-planted `powershell` on `PATH`.
 #[cfg(windows)]
 fn powershell_path() -> PathBuf {
-    let root =
-        std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
-    root.join("System32")
+    yerd_platform::system_root()
+        .join("System32")
         .join("WindowsPowerShell")
         .join("v1.0")
         .join("powershell.exe")

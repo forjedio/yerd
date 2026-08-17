@@ -51,7 +51,7 @@ These are not aspirational - they are enforced by code structure, lints, and tes
 
 ## main: the control flow
 
-`main.rs` is intentionally short. On an unsupported OS (anything but Linux/macOS in Phase 1) it prints a message and exits `78` (`EX_CONFIG`). On a supported OS:
+`main.rs` is intentionally short. On an unsupported OS it prints a message and exits `78` (`EX_CONFIG`). On a supported OS:
 
 ```rust
 fn run() -> ExitCode {
@@ -289,7 +289,7 @@ The daemon keys off these codes - for example, `77` tells it elevation is requir
 
 ## Platform scope and roadmap
 
-Windows is not supported in Phase 1: the `main` stub exits `78`. Real Windows behaviour is planned for Phase 2 alongside `yerd-platform`'s Windows implementations. Also planned: a macOS Authorization Services entitlements wrapper, and broader Linux distro coverage (unknown anchor-dir layouts currently return `Unsupported`). There is intentionally no `tracing` subscriber - `eprintln!` to stderr is enough for a process that lives for milliseconds.
+Windows ships the NRPT resolver ops, elevated via UAC rather than `sudo`. Because a UAC-elevated process has no stdout back to its caller, the outcome is written to an advisory result file named by the caller's `--result-token`. Still planned: a macOS Authorization Services entitlements wrapper, and broader Linux distro coverage (unknown anchor-dir layouts currently return `Unsupported`). There is intentionally no `tracing` subscriber - `eprintln!` to stderr is enough for a process that lives for milliseconds.
 
 ## See also
 

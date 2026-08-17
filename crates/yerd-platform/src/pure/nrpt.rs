@@ -6,11 +6,9 @@
 //! PowerShell bodies the elevated helper runs, and match one registry rule's
 //! decoded values.
 //!
-//! ## Step-0 machine spike (verified 2026-08-03, `richa` @ Medium integrity)
+//! ## Registry ground truth
 //!
-//! The box could NOT be elevated during the spike, but a leftover `.test` NRPT
-//! rule (from earlier manual testing) provided exact ground truth for the shapes
-//! the code below depends on:
+//! The shapes the code below depends on:
 //!
 //! - Rules live under
 //!   `HKLM\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters\DnsPolicyConfig`.
@@ -30,11 +28,6 @@
 //!   `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`.
 //! - `winreg 0.55`: `Vec<String>: FromRegValue` decodes `REG_MULTI_SZ` (`Name`);
 //!   `String: FromRegValue` decodes `REG_SZ` (`GenericDNSServers`).
-//!
-//! Still needing on-machine (elevated) confirmation, tracked as a manual `DoD` gate
-//! (see `TODO.md`): that `Add-DnsClientNrptRule -Namespace '.test' -NameServers
-//! '127.0.0.1' -Comment 'yerd'` writes exactly those value names (the leftover
-//! rule matches this shape) and applies immediately with no reboot.
 
 use std::net::Ipv4Addr;
 

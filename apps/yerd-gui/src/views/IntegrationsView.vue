@@ -65,7 +65,7 @@ const loggedIn = computed(() => cloudflared.value?.logged_in ?? false);
 // Yerd's own managed download - offers a way to switch to the bundled copy.
 const isSystemCloudflared = computed(() => cloudflared.value?.source === "system");
 
-// Named tunnels (Phase 2). One consolidated tunnel exposes every enabled site.
+// Named tunnels. One consolidated tunnel exposes every enabled site.
 const namedTunnels = ref<NamedTunnelMeta[]>([]);
 const newTunnelName = ref("");
 // site -> hostname currently enabled on the server.
@@ -210,7 +210,7 @@ async function reload(): Promise<void> {
   if (data.value) applyData(data.value);
 }
 
-// ── named tunnels (Phase 2) ───────────────────────────────────────────────
+// ── named tunnels ─────────────────────────────────────────────────────────
 
 const loginOpen = ref(false);
 const loginLog = ref<string[]>([]);

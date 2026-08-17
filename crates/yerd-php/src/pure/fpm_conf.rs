@@ -169,6 +169,7 @@ mod tests {
     }
 
     #[test]
+    /// No FPM pool syntax may leak into the plain `php.ini` form.
     fn win_ini_renders_settings_directives_and_ca() {
         let mut cfg = cfg_tcp();
         cfg.ini = vec![("memory_limit".to_owned(), "512M".to_owned())];
@@ -179,7 +180,6 @@ mod tests {
         assert!(ini.contains("xdebug.mode = debug"), "{ini}");
         assert!(ini.contains("openssl.cafile = \"/d/cacert.pem\""), "{ini}");
         assert!(ini.contains("curl.cainfo = \"/d/cacert.pem\""), "{ini}");
-        // No FPM pool syntax leaks into the plain php.ini form.
         assert!(!ini.contains("php_value["), "{ini}");
         assert!(!ini.contains("[global]"), "{ini}");
     }

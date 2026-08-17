@@ -24,7 +24,6 @@ import { useDaemonStart } from "@/composables/useDaemonStart";
 import { MIN_PORT, MAX_PORT, useFallbackPorts } from "@/composables/useFallbackPorts";
 import { useOnboarding } from "@/composables/useOnboarding";
 import { loadPlatform, usePlatform } from "@/composables/usePlatform";
-import { phpVocab } from "@/lib/phpVocab";
 import { useToast } from "@/composables/useToast";
 import {
   availablePhp,
@@ -277,8 +276,7 @@ async function doInstallPhp(): Promise<void> {
 // this installs onto PATH, so it's still useful there. On Windows the CLI copy
 // plus the shim dir are added to the user PATH. Optional and recommended; it
 // never blocks "Next". ──
-const { supportsPathInstall, isWindows } = usePlatform();
-const vocab = computed(() => phpVocab(isWindows.value));
+const { supportsPathInstall, vocab } = usePlatform();
 const cli = ref<CliPathStatus | null>(null);
 const cliBusy = ref(false);
 

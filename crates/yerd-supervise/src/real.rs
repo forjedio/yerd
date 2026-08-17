@@ -28,7 +28,7 @@ impl Clock for SystemClock {
 /// it can `wait()` - a daemon shutting down mid-init - call this to reap the
 /// whole subtree. Requires the leader to have been spawned into its own process
 /// group (`process_group(0)`), so its PID doubles as the group id. No-op off
-/// Unix (Windows worker teardown is a Phase 2 job-object ticket, as for `kill`).
+/// Unix, where the Job Object handles teardown (see below).
 ///
 /// A `leader_pid` of 0 is ignored: `killpg(0, ..)` targets the *caller's* own
 /// process group, so it would signal the daemon itself. A real spawned child PID
@@ -175,6 +175,17 @@ pub struct TokioChild {
     job: Option<win32job::Job>,
 }
 
+#[cfg(windows)]
+impl TokioChild {
+    /// Terminate the whole tree: dropping the job closes its handle, and
+    /// `KILL_ON_JOB_CLOSE` reaps every process in it. Written once so no stop
+    /// arm can accidentally skip the job drop.
+    async fn force(&mut self) -> Result<(), io::Error> {
+        drop(self.job.take());
+        self.inner.kill().await
+    }
+}
+
 #[async_trait]
 impl ChildHandle for TokioChild {
     fn id(&self) -> u32 {
@@ -189,6 +200,16 @@ impl ChildHandle for TokioChild {
         Ok(ExitReason::from_status(self.inner.wait().await?))
     }
 
+    /// On Windows, dropping the job closes its handle; with `KILL_ON_JOB_CLOSE`
+    /// the OS terminates the whole tree (workers plus init-tool grandchildren).
+    ///
+    /// Windows cannot deliver a graceful *request* from safe Rust, so `protocol`
+    /// selects between forcing now and letting an already-requested graceful
+    /// stop finish. Under [`StopProtocol::MasterInterrupt`] the engine's own
+    /// admin command has already been issued a layer up, so the child is given a
+    /// bounded wait to exit on its own; every other combination forces
+    /// immediately. Both arms end in the job-object teardown, so no worker can
+    /// outlive the call either way.
     async fn kill(&mut self, signal: KillSignal, protocol: StopProtocol) -> Result<(), io::Error> {
         #[cfg(unix)]
         {
@@ -206,13 +227,23 @@ impl ChildHandle for TokioChild {
         }
         #[cfg(windows)]
         {
-            let _ = (signal, protocol);
-            // Dropping the job closes its handle; with KILL_ON_JOB_CLOSE the OS
-            // terminates the whole tree (workers + init-tool grandchildren).
-            // A graceful `MasterInterrupt` stop is driven a layer up before
-            // `kill` runs, so by here forced termination is intended.
-            drop(self.job.take());
-            self.inner.kill().await
+            match crate::pure::windows_stop_action(signal, protocol) {
+                crate::pure::WindowsStop::Force => self.force().await,
+                crate::pure::WindowsStop::AwaitThenForce { grace } => {
+                    match tokio::time::timeout(grace, self.inner.wait()).await {
+                        // The master exited on its own, but a wedged worker or
+                        // logger can still be sitting in the job, and the
+                        // contract is that no worker outlives this call. Drop
+                        // the job rather than calling `force`: `inner` has been
+                        // reaped, and tokio's `kill` errors on an exited child.
+                        Ok(_) => {
+                            drop(self.job.take());
+                            Ok(())
+                        }
+                        Err(_) => self.force().await,
+                    }
+                }
+            }
         }
     }
 }

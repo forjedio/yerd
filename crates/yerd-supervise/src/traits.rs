@@ -35,12 +35,14 @@ pub trait ProcessSpawner: Send + Sync + 'static {
 /// (Postgres fast shutdown), which deliberately signals only the master PID,
 /// because the postmaster reaps its own backends and a group signal would
 /// mis-deliver to them. A forced [`KillSignal::Kill`] always SIGKILLs the group
-/// regardless of protocol. On Windows there are no signals: every `kill`
-/// combination drops the child's kill-on-close Job Object, terminating the whole
-/// process tree (workers + init-tool grandchildren), then reaps the direct child
-/// handle. So `GroupTerm` reaping is provided by the job, and `MasterInterrupt`
-/// graceful stops are handled a layer up (in the service manager) before `kill`
-/// forces termination.
+/// regardless of protocol. On Windows there are no signals: `kill` drops the
+/// child's kill-on-close Job Object, terminating the whole process tree (workers
+/// + init-tool grandchildren), then reaps the direct child handle. So
+/// `GroupTerm` reaping is provided by the job. `MasterInterrupt` graceful stops
+/// are still requested a layer up (in the service manager), and there `kill`
+/// grants the child a bounded wait to finish that shutdown before forcing, so an
+/// in-flight clean exit is not truncated. Either way the job teardown runs, so
+/// no worker outlives the call.
 #[async_trait]
 pub trait ChildHandle: Send + 'static {
     /// PID captured once at spawn time. `tokio::process::Child::id()` returns
@@ -57,7 +59,8 @@ pub trait ChildHandle: Send + 'static {
 
     /// Signal the child. `protocol` selects how a graceful [`KillSignal::Term`]
     /// is delivered (group SIGTERM vs master-only SIGINT); a forced
-    /// [`KillSignal::Kill`] ignores it and SIGKILLs the process group.
+    /// [`KillSignal::Kill`] ignores it and SIGKILLs the process group. On
+    /// Windows `protocol` instead selects force-now versus wait-then-force.
     async fn kill(&mut self, signal: KillSignal, protocol: StopProtocol) -> Result<(), io::Error>;
 }
 

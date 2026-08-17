@@ -459,6 +459,10 @@ async fn graceful_reap<Ch: ChildHandle>(child: &mut Ch, grace: Duration) {
 /// create-mode is ignored for an existing file) is re-tightened: a Quick
 /// tunnel's only access control is its unguessable URL, which is captured here,
 /// and a Named tunnel's log carries connection metadata.
+///
+/// On Windows the child instead gets `CREATE_NO_WINDOW`: it is a long-lived
+/// console process, so without the flag a console window would sit on screen for
+/// the whole life of every tunnel.
 fn build_cmd(
     binary: &Path,
     args: &[OsString],
@@ -493,8 +497,21 @@ fn build_cmd(
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     Ok(cmd)
 }
+
+/// `CREATE_NO_WINDOW` process-creation flag.
+///
+/// Canonically defined in `yerd-platform`; re-declared here because this crate
+/// depends on no `yerd-*` crate other than `yerd-supervise`, the same documented
+/// exception `yerd-service-ctl` carries.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Read a logfile as lossy UTF-8; a missing/unreadable file is treated as empty
 /// (the tunnel is simply "not ready yet").

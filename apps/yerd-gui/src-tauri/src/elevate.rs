@@ -1,7 +1,6 @@
 //! OS-elevated invocation of the existing `yerd elevate` CLI.
 //!
-//! Invariants (see the plan's elevation section, grounded in
-//! `bin/yerd/src/elevate.rs`):
+//! Invariants, grounded in `bin/yerd/src/elevate.rs`:
 //!   1. Elevate the CLI, not the GUI - the GUI process never becomes root.
 //!   2. Resolve the trusted `yerd` path as a sibling of our own `current_exe`,
 //!      never from `PATH` or the daemon (anti-forgery, like the CLI does).
@@ -220,21 +219,18 @@ fn applescript_escape(s: &str) -> String {
 /// Windows: run `yerd <verb> [target]` **unelevated** (no console window). The
 /// CLI's helper raises its own UAC prompt per privileged op, so the GUI must not
 /// pre-elevate. Stderr is captured for the error path.
+///
+/// [`yerd_platform::hidden_command`] keeps the console-subsystem CLI from
+/// flashing a window under the GUI; the helper's UAC dialog is a separate,
+/// deliberately visible prompt.
 #[cfg(windows)]
 fn spawn_elevated(yerd: &std::path::Path, verb: &str, target: &str) -> Result<(), GuiError> {
-    use std::os::windows::process::CommandExt as _;
-
-    /// Keep the console-subsystem CLI from flashing a window under the GUI (the
-    /// helper's UAC dialog is a separate, visible prompt).
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-    let mut cmd = std::process::Command::new(yerd);
+    let mut cmd = yerd_platform::hidden_command(yerd);
     cmd.arg(verb);
     if !target.is_empty() {
         cmd.arg(target);
     }
     let out = cmd
-        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| GuiError::internal(format!("failed to launch yerd {verb}: {e}")))?;
     if out.status.success() {

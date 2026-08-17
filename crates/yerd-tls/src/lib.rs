@@ -10,7 +10,7 @@
 //!
 //! No `tokio`, no `std::fs`, no `std::time::SystemTime`/`Instant`. All
 //! random material comes from rcgen's configured backend (`ring` under our
-//! feature set). See `README.md` for the cryptography posture.
+//! feature set).
 
 #![forbid(unsafe_code)]
 

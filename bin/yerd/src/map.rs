@@ -3725,7 +3725,7 @@ mod tests {
     /// A customized proxy whose primary is still its apex reports
     /// `primary_domain: None` (the daemon omits a primary equal to the apex), and
     /// the renderer has no TLD to rebuild that apex from, so no domain carries the
-    /// marker. Pinned so the behaviour and `docs/reference/cli/proxies.md` agree.
+    /// marker. Pinned so the rendered output cannot drift.
     #[test]
     fn format_proxies_marks_nothing_when_the_primary_is_the_apex() {
         let apex_primary = yerd_ipc::ProxyEntry {

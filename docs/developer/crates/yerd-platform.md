@@ -37,7 +37,7 @@ src/
     unix.rs         executable_in_directories + spawn_and_check (Linux + macOS)
     linux.rs        Linux* impls
     macos.rs        Macos* impls (+ security-framework)
-    unsupported.rs  Unsupported* stubs (Windows, Phase 1)
+    unsupported.rs  Unsupported* stubs
   pure/
     mod.rs
     firefox.rs          parse_profiles_ini
@@ -107,7 +107,7 @@ pub trait TrustStore {
 
 The CA is identified by a `CaFingerprint` - a newtype around `[u8; 32]` (SHA-256 over the cert's DER body) with a private field, so callers cannot construct an unchecked fingerprint. Its canonical wire form is **64 lowercase hex characters**; `from_hex` strictly rejects uppercase, wrong length, and non-hex so the form stays byte-stable across the helper argv boundary.
 
-- `install_system` / `uninstall_system` always return `Err(PlatformError::NeedsHelper { .. })` in Phase 1. They are write operations against a root-owned store, so the daemon materialises the matching `HelperInvocation` and runs `yerd-helper`.
+- `install_system` / `uninstall_system` always return `Err(PlatformError::NeedsHelper { .. })`. They are write operations against a root-owned store, so the daemon materialises the matching `HelperInvocation` and runs `yerd-helper`.
 - `is_present_system` is a **read-only, unprivileged presence probe**. It reports whether a CA matching the fingerprint is *in* the store - not whether it is trusted for SSL by every consumer. On macOS it enumerates `/Library/Keychains/System.keychain` via `security-framework` and hashes each cert's DER; on Linux it iterates the distro's anchor directory and hashes each PEM block (the candidate directories are `/usr/local/share/ca-certificates`, `/etc/pki/ca-trust/source/anchors`, and `/etc/ca-certificates/trust-source/anchors`).
 - `install_firefox_nss` / `uninstall_firefox_nss` / `browser_ca_trust` are the trust operations that run **per-user and unprivileged**. On Linux, Chromium-family browsers (Brave/Chrome/Chromium/Edge) and Firefox ignore the system store and read their own per-user NSS database - `~/.pki/nssdb` (shared by Chromium-family) and one `cert9.db` per Firefox profile, including Snap (`~/snap/<app>/{common,current}/...`) and Flatpak (`~/.var/app/<id>/...`) copies. Path derivation and the `certutil` argv are pure (`pure::nss`); the discover→run→aggregate orchestration is behind injected seams (`nss_exec`) so it is unit-tested in-memory. `certutil` (from `libnss3-tools`) missing is a first-class outcome (`certutil_missing` / `BrowserCaTrust::ToolMissing`), not an error. `install_firefox_nss` takes the CA **path** (read `-i` by `certutil`), creating and initialising `~/.pki/nssdb` if absent. It is best-effort and returns `Ok(NssOutcome)` even on partial failure:
 
@@ -138,7 +138,7 @@ pub trait ResolverInstaller {
 }
 ```
 
-`addr` is the IP+port the OS resolver should forward `.test` lookups to. The Phase-1 daemon always passes `127.0.0.1:<port>`, but the trait takes a full `SocketAddr` so a future version can move the DNS responder without a breaking change. `install`/`uninstall` return `NeedsHelper`; `is_installed` reads public config and is unprivileged. Both `uninstall` and `is_installed` are idempotent for an absent TLD (`Ok(())` / `Ok(false)`).
+`addr` is the IP+port the OS resolver should forward `.test` lookups to. The daemon always passes `127.0.0.1:<port>`, but the trait takes a full `SocketAddr` so a future version can move the DNS responder without a breaking change. `install`/`uninstall` return `NeedsHelper`; `is_installed` reads public config and is unprivileged. Both `uninstall` and `is_installed` are idempotent for an absent TLD (`Ok(())` / `Ok(false)`).
 
 `is_installed` must verify the on-disk config points at **this** `addr` - a stale file aimed elsewhere (e.g. a Valet/Herd leftover on `:53`) must report `false` so the redirect gets re-installed. See [DNS & .test Domains](../../guide/dns).
 
@@ -257,7 +257,7 @@ pub(crate) mod active {
 
 `lib.rs` re-exports these, so callers write `ActiveTrustStore`, `ActivePaths`, etc. and the right concrete type is selected at compile time - no `cfg` leaks into consumer crates.
 
-The **`unsupported` stub** (Windows in Phase 1) implements every trait so `cargo check --workspace` stays green on any host. Every fallible method returns `Err(PlatformError::Unsupported { operation })`; `SystemMetrics` returns `None`; `PortRedirector` returns `None`. `tests/unsupported.rs` (gated to non-Linux/non-macOS targets) asserts each method returns `Unsupported`.
+The **`unsupported` stub** implements every trait so `cargo check --workspace` stays green on any host. Every fallible method returns `Err(PlatformError::Unsupported { operation })`; `SystemMetrics` returns `None`; `PortRedirector` returns `None`. `tests/unsupported.rs` (gated to non-Linux/non-macOS targets) asserts each method returns `Unsupported`.
 
 ## The `pure` module
 

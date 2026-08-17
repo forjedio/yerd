@@ -1452,7 +1452,7 @@ mod tests {
         );
     }
 
-    /// §10 contingency probe: prove `interprocess`'s `security_descriptor` is
+    /// Contingency probe: prove `interprocess`'s `security_descriptor` is
     /// actually applied to the pipe by binding one with a DACL that DENIES the
     /// current user, then asserting a client connect is refused. If the SD were
     /// ignored, the default (owner-allowed) DACL would let the connect succeed.
@@ -1482,7 +1482,7 @@ mod tests {
         assert!(
             result.is_err(),
             "the deny-everyone DACL must refuse the connect; if this passes, the \
-             security descriptor was NOT applied (escalate per plan §10)"
+             security descriptor was NOT applied)"
         );
     }
 }

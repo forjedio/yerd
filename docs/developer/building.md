@@ -112,7 +112,8 @@ strict JSON with no comments: `bundle.windows` is deserialised with
 `deny_unknown_fields`, so neither a `//` comment nor a `_comment` key can live
 in it.
 
-The installer ships **unsigned** for early access (decision #5). To sign it
+The installer ships **unsigned** for early access: code-signing certificates
+are not yet provisioned for the project. To sign it
 later, add a `signCommand` or a `certificateThumbprint` under
 `bundle.windows` in that overlay, e.g.
 

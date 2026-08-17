@@ -851,6 +851,9 @@ mod tests {
     /// The `.exe` matcher is disjoint from the deb/pacman/rpm/mac matchers, and the
     /// detached `.exe.minisig` signature is never selected as the artifact.
     #[test]
+    /// A release carrying only the `.exe` plus `.minisig` must resolve the
+    /// artifact to the `.exe` and its signature to the `.exe.minisig`, not the
+    /// reverse.
     fn windows_matcher_is_disjoint_and_skips_minisig() {
         assert!(is_windows_x86_64_artifact("Yerd_Windows_x86_64_v2.exe"));
         assert!(is_windows_x86_64_artifact("Yerd_Windows_X64_v2.exe"));
@@ -865,8 +868,6 @@ mod tests {
         assert!(!is_macos_aarch64_artifact("Yerd_Windows_x86_64_v2.exe"));
         assert!(!is_linux_x86_64_artifact("Yerd_Windows_x86_64_v2.exe"));
 
-        // A release carrying only the `.exe` + `.minisig` resolves the artifact to
-        // the `.exe`, and its signature to the `.exe.minisig`, not the reverse.
         let r = release_with(&[
             "Yerd_Windows_x86_64_v2.exe",
             "Yerd_Windows_x86_64_v2.exe.minisig",

@@ -39,12 +39,99 @@ pub fn run(_yes: bool) -> ExitCode {
     ExitCode::from(78)
 }
 
+/// Shapes shared by the Windows and Unix uninstall flows. None of them touches
+/// an OS API, so both impls use one copy.
+///
+/// Gated to the two OSes that have a real flow: on any other target `run`
+/// declines and these items would be dead code.
+#[cfg(any(unix, windows))]
+mod common {
+    use std::path::PathBuf;
+
+    use yerd_platform::{CaFingerprint, PlatformDirs};
+
+    /// Facts captured from disk before deletion, used to revert (or print the
+    /// manual steps to revert) the system changes made by `yerd elevate`.
+    pub(super) struct CapturedFacts {
+        pub(super) tld: Option<String>,
+        pub(super) ca_fp: Option<CaFingerprint>,
+    }
+
+    impl CapturedFacts {
+        pub(super) fn capture(dirs: &PlatformDirs) -> Self {
+            let tld = yerd_config::Config::load(&dirs.config.join("yerd.toml"))
+                .ok()
+                .map(|c| c.tld.as_str().to_owned());
+            let ca_fp = std::fs::read_to_string(dirs.data.join("ca.cert.pem"))
+                .ok()
+                .and_then(|pem| CaFingerprint::from_pem(&pem));
+            Self { tld, ca_fp }
+        }
+    }
+
+    pub(super) fn dedup(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+        let mut seen = std::collections::HashSet::new();
+        paths
+            .into_iter()
+            .filter(|p| seen.insert(p.clone()))
+            .collect()
+    }
+
+    pub(super) fn confirm() -> bool {
+        use std::io::{IsTerminal, Write};
+        if !std::io::stdin().is_terminal() {
+            eprintln!(
+                "yerd: refusing to uninstall without confirmation — \
+                 re-run with --yes to proceed non-interactively."
+            );
+            return false;
+        }
+        print!("\nProceed with uninstalling yerd? Type 'yes' to confirm: ");
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).is_err() {
+            return false;
+        }
+        matches!(line.trim(), "y" | "Y" | "yes" | "Yes" | "YES")
+    }
+
+    /// The common closing summary. The Unix flow prints one extra PATH line at
+    /// its call site immediately after this, which keeps both outputs
+    /// byte-identical without a parameter.
+    pub(super) fn print_summary(residue: &[String]) {
+        println!();
+        if residue.is_empty() {
+            println!("yerd has been uninstalled.");
+        } else {
+            println!("yerd has been uninstalled, with some leftovers to handle manually:");
+            for r in residue {
+                println!("  • {r}");
+            }
+        }
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn dedup_preserves_order_and_drops_repeats() {
+            let v = dedup(vec![
+                PathBuf::from("/a"),
+                PathBuf::from("/b"),
+                PathBuf::from("/a"),
+            ]);
+            assert_eq!(v, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+        }
+    }
+}
+
 /// Windows full self-uninstall. Mirrors the Unix flow's order without the
 /// sudo/actor machinery (on Windows the CLI runs as the invoking user, so
 /// `ActivePaths::resolve()` reads the right profile - no `SUDO_UID`
-/// reconstruction and no `for_user`). Small shared shapes (`confirm`, `dedup`,
-/// `CapturedFacts`) are duplicated here rather than moved, so the Unix
-/// `unix_impl` stays byte-identical.
+/// reconstruction and no `for_user`). The shapes both flows share live in
+/// [`common`].
 #[cfg(windows)]
 mod windows_impl {
     use std::path::{Path, PathBuf};
@@ -56,26 +143,8 @@ mod windows_impl {
         TrustStore,
     };
 
+    use super::common::{confirm, dedup, print_summary, CapturedFacts};
     use crate::elevate;
-
-    /// Facts captured from disk before deletion, used to revert (or print the
-    /// manual steps to revert) the system changes made by `yerd elevate`.
-    struct CapturedFacts {
-        tld: Option<String>,
-        ca_fp: Option<CaFingerprint>,
-    }
-
-    impl CapturedFacts {
-        fn capture(dirs: &PlatformDirs) -> Self {
-            let tld = yerd_config::Config::load(&dirs.config.join("yerd.toml"))
-                .ok()
-                .map(|c| c.tld.as_str().to_owned());
-            let ca_fp = std::fs::read_to_string(dirs.data.join("ca.cert.pem"))
-                .ok()
-                .and_then(|pem| CaFingerprint::from_pem(&pem));
-            Self { tld, ca_fp }
-        }
-    }
 
     pub fn run(yes: bool) -> ExitCode {
         let dirs = match ActivePaths::new().resolve() {
@@ -186,8 +255,8 @@ mod windows_impl {
         }
     }
 
-    /// Remove the local CA from the `CurrentUser` Root store directly (Phase 3;
-    /// per-cert confirmation dialog, no admin). Missing fingerprint on disk means
+    /// Remove the local CA from the `CurrentUser` Root store directly (a per-cert
+    /// confirmation dialog, no admin). Missing fingerprint on disk means
     /// we can't identify the cert - point the user at `certmgr.msc`.
     fn revert_ca(ca_fp: Option<CaFingerprint>, residue: &mut Vec<String>) {
         match ca_fp {
@@ -225,10 +294,10 @@ mod windows_impl {
 
     /// Kill any running `yerdd.exe` for this user via absolute-path `taskkill`
     /// (an unelevated taskkill only reaps same-user processes, which is the
-    /// intent). Phase 2's `KILL_ON_JOB_CLOSE` job objects reap the
+    /// intent). The `KILL_ON_JOB_CLOSE` job objects reap the
     /// php-cgi/DB children when the daemon dies. Best-effort.
     fn stop_daemon() {
-        let taskkill = system32_exe("taskkill.exe");
+        let taskkill = yerd_platform::system32_exe("taskkill.exe");
         let _ = Command::new(&taskkill)
             .args(["/F", "/IM", "yerdd.exe"])
             .output();
@@ -248,8 +317,7 @@ mod windows_impl {
     }
 
     /// Remove a directory tree, retrying once after a short pause on a non
-    /// not-found error (Defender/indexer file-lock flakiness, a Phase 2
-    /// precedent).
+    /// not-found error (Defender/indexer file-lock flakiness).
     fn remove_dir_all_retry(dir: &Path) -> std::io::Result<()> {
         let first = std::fs::remove_dir_all(dir);
         if first.is_ok()
@@ -264,23 +332,7 @@ mod windows_impl {
         std::fs::remove_dir_all(dir)
     }
 
-    /// Absolute path to a `System32` executable, from `%SystemRoot%` (falling
-    /// back to the conventional location), so the lookup never trusts `PATH`.
-    fn system32_exe(name: &str) -> PathBuf {
-        let root = std::env::var_os("SystemRoot")
-            .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
-        root.join("System32").join(name)
-    }
-
     // ── pure helpers (unit-tested) ───────────────────────────────────────────
-
-    fn dedup(paths: Vec<PathBuf>) -> Vec<PathBuf> {
-        let mut seen = std::collections::HashSet::new();
-        paths
-            .into_iter()
-            .filter(|p| seen.insert(p.clone()))
-            .collect()
-    }
 
     /// Admin PowerShell one-liner to remove the `.tld` NRPT rule manually.
     fn nrpt_manual_remedy(tld: &str) -> String {
@@ -298,24 +350,6 @@ mod windows_impl {
 
     // ── interaction / output ─────────────────────────────────────────────────
 
-    fn confirm() -> bool {
-        use std::io::{IsTerminal, Write};
-        if !std::io::stdin().is_terminal() {
-            eprintln!(
-                "yerd: refusing to uninstall without confirmation — \
-                 re-run with --yes to proceed non-interactively."
-            );
-            return false;
-        }
-        print!("\nProceed with uninstalling yerd? Type 'yes' to confirm: ");
-        let _ = std::io::stdout().flush();
-        let mut line = String::new();
-        if std::io::stdin().read_line(&mut line).is_err() {
-            return false;
-        }
-        matches!(line.trim(), "y" | "Y" | "yes" | "Yes" | "YES")
-    }
-
     fn print_header(dirs: &PlatformDirs) {
         println!("This will uninstall yerd for the current user. It removes:");
         println!("  • config:  {}", dirs.config.display());
@@ -331,40 +365,10 @@ mod windows_impl {
         );
     }
 
-    fn print_summary(residue: &[String]) {
-        println!();
-        if residue.is_empty() {
-            println!("yerd has been uninstalled.");
-        } else {
-            println!("yerd has been uninstalled, with some leftovers to handle manually:");
-            for r in residue {
-                println!("  • {r}");
-            }
-        }
-    }
-
     #[cfg(test)]
     #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
     mod tests {
         use super::*;
-
-        #[test]
-        fn dedup_preserves_order_and_drops_repeats() {
-            let v = dedup(vec![
-                PathBuf::from(r"C:\a"),
-                PathBuf::from(r"C:\b"),
-                PathBuf::from(r"C:\a"),
-                PathBuf::from(r"C:\c"),
-            ]);
-            assert_eq!(
-                v,
-                vec![
-                    PathBuf::from(r"C:\a"),
-                    PathBuf::from(r"C:\b"),
-                    PathBuf::from(r"C:\c")
-                ]
-            );
-        }
 
         #[test]
         fn dirs_to_delete_dedups_the_five_dirs() {
@@ -393,13 +397,6 @@ mod windows_impl {
         fn ca_remedy_points_at_certmgr() {
             assert!(ca_manual_remedy().contains("certmgr.msc"));
         }
-
-        #[test]
-        fn system32_exe_is_absolute_under_system32() {
-            let p = system32_exe("taskkill.exe");
-            assert!(p.ends_with(r"System32\taskkill.exe"), "{p:?}");
-            assert!(p.is_absolute(), "{p:?}");
-        }
     }
 }
 
@@ -408,8 +405,9 @@ mod unix_impl {
     use std::path::{Path, PathBuf};
     use std::process::{Command, ExitCode};
 
-    use yerd_platform::{CaFingerprint, HelperInvocation, PlatformDirs};
+    use yerd_platform::{HelperInvocation, PlatformDirs};
 
+    use super::common::{confirm, dedup, print_summary, CapturedFacts};
     use crate::{elevate, path_cmd};
 
     /// The user yerd is being uninstalled for - the invoking user, even under
@@ -420,25 +418,6 @@ mod unix_impl {
         name: String,
         home: PathBuf,
         shell: PathBuf,
-    }
-
-    /// Facts captured from disk before deletion, used to revert (or print the
-    /// manual steps to revert) the system changes made by `yerd elevate`.
-    struct CapturedFacts {
-        tld: Option<String>,
-        ca_fp: Option<CaFingerprint>,
-    }
-
-    impl CapturedFacts {
-        fn capture(dirs: &PlatformDirs) -> Self {
-            let tld = yerd_config::Config::load(&dirs.config.join("yerd.toml"))
-                .ok()
-                .map(|c| c.tld.as_str().to_owned());
-            let ca_fp = std::fs::read_to_string(dirs.data.join("ca.cert.pem"))
-                .ok()
-                .and_then(|pem| CaFingerprint::from_pem(&pem));
-            Self { tld, ca_fp }
-        }
     }
 
     pub fn run(yes: bool) -> ExitCode {
@@ -497,6 +476,7 @@ mod unix_impl {
         remove_binaries(&actor, &mut residue);
 
         print_summary(&residue);
+        println!("Open a new terminal so the PATH change takes effect.");
         ExitCode::SUCCESS
     }
 
@@ -802,14 +782,6 @@ mod unix_impl {
             .unwrap_or_default()
     }
 
-    fn dedup(paths: Vec<PathBuf>) -> Vec<PathBuf> {
-        let mut seen = std::collections::HashSet::new();
-        paths
-            .into_iter()
-            .filter(|p| seen.insert(p.clone()))
-            .collect()
-    }
-
     fn run_quiet(program: &str, args: &[&str]) -> bool {
         Command::new(program)
             .args(args)
@@ -818,24 +790,6 @@ mod unix_impl {
     }
 
     // ── interaction / output ─────────────────────────────────────────────────
-
-    fn confirm() -> bool {
-        use std::io::{IsTerminal, Write};
-        if !std::io::stdin().is_terminal() {
-            eprintln!(
-                "yerd: refusing to uninstall without confirmation — \
-                 re-run with --yes to proceed non-interactively."
-            );
-            return false;
-        }
-        print!("\nProceed with uninstalling yerd? Type 'yes' to confirm: ");
-        let _ = std::io::stdout().flush();
-        let mut line = String::new();
-        if std::io::stdin().read_line(&mut line).is_err() {
-            return false;
-        }
-        matches!(line.trim(), "y" | "Y" | "yes" | "Yes" | "YES")
-    }
 
     fn print_header(actor: &Actor, dirs: &PlatformDirs, root: bool) {
         println!(
@@ -906,19 +860,6 @@ mod unix_impl {
         }
     }
 
-    fn print_summary(residue: &[String]) {
-        println!();
-        if residue.is_empty() {
-            println!("yerd has been uninstalled.");
-        } else {
-            println!("yerd has been uninstalled, with some leftovers to handle manually:");
-            for r in residue {
-                println!("  • {r}");
-            }
-        }
-        println!("Open a new terminal so the PATH change takes effect.");
-    }
-
     #[cfg(test)]
     #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
     mod tests {
@@ -936,24 +877,6 @@ mod unix_impl {
             assert!(is_system_install_dir(Path::new("/usr/bin")));
             assert!(!is_system_install_dir(Path::new("/home/u/.local/bin")));
             assert!(!is_system_install_dir(Path::new("/usr/local/bin")));
-        }
-
-        #[test]
-        fn dedup_preserves_order_and_drops_repeats() {
-            let v = dedup(vec![
-                PathBuf::from("/a"),
-                PathBuf::from("/b"),
-                PathBuf::from("/a"),
-                PathBuf::from("/c"),
-            ]);
-            assert_eq!(
-                v,
-                vec![
-                    PathBuf::from("/a"),
-                    PathBuf::from("/b"),
-                    PathBuf::from("/c")
-                ]
-            );
         }
 
         #[test]

@@ -769,8 +769,8 @@ mod unix_impl {
 /// `Trust`: `CurrentUser`-Root trust needs no admin/UAC, so the CLI (an
 /// interactive process) performs the store mutation directly - no helper. The
 /// daemon must never do this: the Root store mutation pops an OS confirmation
-/// dialog needing an interactive desktop, and Phase 5 makes `yerdd` a session-0
-/// service with none.
+/// dialog needing an interactive desktop, which a session-0 service does not
+/// have.
 ///
 /// `Resolver`: the `.test` NRPT wildcard rule. Writing NRPT requires an elevated
 /// token, so this arm launches `yerd-helper.exe` **once, elevated via UAC**
@@ -1092,18 +1092,43 @@ mod windows_impl {
             .flatten()
     }
 
-    /// Locate `yerd-helper.exe` as a sibling of the running `yerd.exe`. Deriving
-    /// it from the trusted `current_exe` (never from IPC) keeps the elevated
-    /// launch pointed at the real install dir. `yerdd.exe` is returned too for
-    /// symmetry with the Unix locator, though the resolver flow does not need it.
+    /// Locate `yerd-helper.exe` in the install dir. Deriving the candidates from
+    /// the trusted `current_exe` and `%LOCALAPPDATA%` (never from IPC) keeps the
+    /// elevated launch pointed at a real install dir. `yerdd.exe` is returned too
+    /// for symmetry with the Unix locator, though the resolver flow does not need
+    /// it.
+    ///
+    /// The exe's own directory is not enough: `yerd path install` copies only
+    /// `yerd.exe` into `%LOCALAPPDATA%\Programs\yerd\bin`, and that copy is what
+    /// PATH resolves, so a terminal-invoked `yerd elevate` runs from a directory
+    /// holding no helper. `%LOCALAPPDATA%\Yerd` (the NSIS install dir) is the
+    /// fallback, mirroring `apply::install_dir_candidates`.
     pub(crate) fn sibling_binaries() -> Result<(PathBuf, PathBuf), String> {
-        let exe =
-            std::env::current_exe().map_err(|e| format!("cannot resolve current exe: {e}"))?;
-        let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
-        let dir = exe
-            .parent()
-            .ok_or_else(|| "current exe has no parent directory".to_owned())?;
-        Ok((dir.join("yerd-helper.exe"), dir.join("yerdd.exe")))
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        if let Ok(exe) = std::env::current_exe() {
+            let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+            if let Some(dir) = exe.parent() {
+                candidates.push(dir.to_path_buf());
+            }
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty()) {
+            candidates.push(PathBuf::from(local).join("Yerd"));
+        }
+        for dir in &candidates {
+            let helper = dir.join("yerd-helper.exe");
+            if helper.is_file() {
+                return Ok((helper, dir.join("yerdd.exe")));
+            }
+        }
+        let searched = candidates
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(format!(
+            "yerd-helper.exe was not found (looked in: {searched}) - reinstall Yerd from the \
+             installer"
+        ))
     }
 
     /// Trust (or untrust) the local CA in the `CurrentUser` Root store. Fetches the

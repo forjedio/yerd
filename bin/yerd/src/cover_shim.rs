@@ -8,8 +8,9 @@
 //! `PHPRC` (rather than `-d` flags) is what it is: those flags are process-local,
 //! but this env var is inherited by any PHP process the exec'd one spawns in
 //! turn (e.g. `artisan test`'s child PHPUnit/Pest/paratest run), so coverage
-//! stays enabled across that hop too. Unix-only: cover shims are never created
-//! on other platforms.
+//! stays enabled across that hop too. The shims are symlinks on Unix and `.cmd`
+//! wrappers on Windows; [`PCOV_SO_NAME`] is cfg-split to match the host's
+//! extension suffix.
 
 use std::ffi::OsString;
 use std::io::Write as _;
@@ -17,9 +18,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use yerd_core::{php_settings, PhpVersion};
-use yerd_platform::{ActivePaths, Paths, PlatformDirs};
+use yerd_platform::PlatformDirs;
 
-use crate::shim::{cli_binary, fail, resolve_default_php, run_php};
+use crate::shim::{
+    cli_binary, default_php_or_message, dirs_or_fail, exec_php, fail, parse_version_affix,
+    ShimVersion,
+};
 
 /// On-disk pcov extension filename for the host: `pcov.dll` on Windows, `pcov.so`
 /// elsewhere. Mirrors `bin/yerdd`'s `ext_install::PCOV_SPEC.so_name` cfg split
@@ -30,22 +34,13 @@ const PCOV_SO_NAME: &str = "pcov.dll";
 #[cfg(not(windows))]
 const PCOV_SO_NAME: &str = "pcov.so";
 
-/// Which PHP a cover alias targets.
-enum CoverSpec {
-    /// `phpcover` - the default version (resolved at run time).
-    Default,
-    /// `php<major>.<minor>cover` - an explicit version.
-    Version(u8, u8),
-}
-
-/// If `argv[0]` is a cover-alias name, run that PHP with pcov enabled and return
-/// its exit code (on success `exec` replaces the process and never returns);
-/// otherwise `None`, so `main` falls through to the normal CLI.
+/// If the shim name is a cover-alias name, run that PHP with pcov enabled and
+/// return its exit code (on success `exec` replaces the process and never
+/// returns); otherwise `None`, so dispatch falls through to the next shim.
 #[must_use]
-pub fn dispatch() -> Option<ExitCode> {
-    let (name, forward) = crate::shim::shim_invocation()?;
-    let spec = parse_cover_name(&name)?;
-    Some(run(&spec, &forward))
+pub(crate) fn dispatch(name: &str, forward: &[OsString]) -> Option<ExitCode> {
+    let spec = parse_cover_name(name)?;
+    Some(run(&spec, forward))
 }
 
 /// Front door for `yerd coverage <args…>`: run the default PHP version with pcov
@@ -53,31 +48,20 @@ pub fn dispatch() -> Option<ExitCode> {
 /// success `exec` replaces the process and never returns.
 #[must_use]
 pub fn run_coverage(args: &[OsString]) -> ExitCode {
-    run(&CoverSpec::Default, args)
+    run(&ShimVersion::Default, args)
 }
 
 /// Parse a cover-alias basename. Matches `phpcover` and `php<MAJOR>.<MINOR>cover`
 /// exactly; returns `None` for `php`, `php<ver>`, and anything else (so a normal
 /// `yerd` invocation, or a clean versioned shim, is never intercepted).
-fn parse_cover_name(name: &str) -> Option<CoverSpec> {
-    let rest = name.strip_prefix("php")?;
-    let rest = rest.strip_suffix("cover")?;
-    if rest.is_empty() {
-        return Some(CoverSpec::Default);
-    }
-    let (maj, min) = rest.split_once('.')?;
-    if maj.is_empty() || min.is_empty() {
-        return None;
-    }
-    let major: u8 = maj.parse().ok()?;
-    let minor: u8 = min.parse().ok()?;
-    Some(CoverSpec::Version(major, minor))
+fn parse_cover_name(name: &str) -> Option<ShimVersion> {
+    parse_version_affix(name, "php", "cover")
 }
 
-fn run(spec: &CoverSpec, forward: &[OsString]) -> ExitCode {
-    let dirs = match ActivePaths::new().resolve() {
+fn run(spec: &ShimVersion, forward: &[OsString]) -> ExitCode {
+    let dirs = match dirs_or_fail() {
         Ok(d) => d,
-        Err(e) => return fail(format!("cannot resolve yerd directories: {e}")),
+        Err(code) => return code,
     };
     let (php_bin, minor) = match resolve_target(&dirs, spec) {
         Ok(t) => t,
@@ -112,14 +96,7 @@ fn run(spec: &CoverSpec, forward: &[OsString]) -> ExitCode {
 
     let mut cmd = Command::new(&php_bin);
     cmd.env("PHPRC", &cover_ini_path).args(forward);
-    match run_php(cmd) {
-        Ok(code) => code,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => fail(format!(
-            "PHP binary not found at {} ({err}) — reinstall with `yerd install php {minor}`",
-            php_bin.display()
-        )),
-        Err(err) => fail(format!("failed to exec {}: {err}", php_bin.display())),
-    }
+    exec_php(cmd, &php_bin, Some(&minor))
 }
 
 /// Write `bytes` to `path` atomically (tempfile in the same directory +
@@ -139,9 +116,9 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// Resolve `(php_binary, "major.minor")` for the spec.
-fn resolve_target(dirs: &PlatformDirs, spec: &CoverSpec) -> Result<(PathBuf, String), String> {
+fn resolve_target(dirs: &PlatformDirs, spec: &ShimVersion) -> Result<(PathBuf, String), String> {
     match spec {
-        CoverSpec::Version(maj, min) => {
+        ShimVersion::Version(maj, min) => {
             if PhpVersion::new(*maj, *min).is_legacy() {
                 return Err(format!(
                     "code coverage is not available for PHP {maj}.{min}: pcov is not built for \
@@ -158,9 +135,7 @@ fn resolve_target(dirs: &PlatformDirs, spec: &CoverSpec) -> Result<(PathBuf, Str
                 ))
             }
         }
-        CoverSpec::Default => {
-            resolve_default_php(dirs).ok_or_else(|| crate::shim::no_default_php_message(dirs))
-        }
+        ShimVersion::Default => default_php_or_message(dirs),
     }
 }
 
@@ -181,11 +156,11 @@ mod tests {
     fn parses_default_and_versioned_cover_names() {
         assert!(matches!(
             parse_cover_name("phpcover"),
-            Some(CoverSpec::Default)
+            Some(ShimVersion::Default)
         ));
         assert!(matches!(
             parse_cover_name("php8.4cover"),
-            Some(CoverSpec::Version(8, 4))
+            Some(ShimVersion::Version(8, 4))
         ));
     }
 
@@ -198,6 +173,8 @@ mod tests {
         assert!(parse_cover_name("phpx.4cover").is_none());
     }
 
+    /// With no 7.4 installed, the legacy gate must still fire first and produce
+    /// the pcov message rather than "not installed".
     #[test]
     fn resolve_target_rejects_legacy_before_checking_install() {
         let tmp = tempfile::tempdir().unwrap();
@@ -208,9 +185,7 @@ mod tests {
             cache: tmp.path().join("ca"),
             runtime: tmp.path().join("r"),
         };
-        // No 7.4 installed, yet the legacy gate fires first with a pcov message,
-        // not "not installed".
-        match resolve_target(&dirs, &CoverSpec::Version(7, 4)) {
+        match resolve_target(&dirs, &ShimVersion::Version(7, 4)) {
             Err(msg) => {
                 assert!(msg.contains("pcov"), "got {msg}");
                 assert!(msg.contains("legacy"), "got {msg}");

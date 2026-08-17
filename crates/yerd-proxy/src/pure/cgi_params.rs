@@ -37,7 +37,7 @@
 //! identifies yerd honestly to browsers and tools.
 
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The one-click `WordPress` login flow's per-request FastCGI overrides -
 /// present only for the one request that already proved it holds a valid,
@@ -55,12 +55,42 @@ pub struct AutoLoginParams<'a> {
     pub target_user: &'a str,
 }
 
+/// The `(SCRIPT_FILENAME, SCRIPT_NAME)` pair for a request.
+///
+/// The filename is a filesystem path and goes through
+/// [`yerd_core::path_norm::php_path`]; the name is a URL path and keeps slash
+/// form on every OS. `None` falls back to the root `index.php` policy.
+fn script_target(document_root: &Path, script_rel: Option<&Path>) -> (PathBuf, String) {
+    match script_rel {
+        Some(rel) => (
+            yerd_core::path_norm::php_path(&document_root.join(rel)),
+            format!("/{}", rel.to_string_lossy().replace('\\', "/")),
+        ),
+        None => (
+            yerd_core::path_norm::php_path(&document_root.join("index.php")),
+            "/index.php".to_owned(),
+        ),
+    }
+}
+
 /// Build the CGI parameter pairs. `script_rel`, if given, is a real,
 /// on-disk `.php` file's path relative to `document_root` (see the module
 /// doc) - `None` falls back to the root `index.php` policy. `auto_login`, if
 /// given, adds a `PHP_VALUE: auto_prepend_file=<path>` param plus a custom
 /// `YERD_LOGIN_USER` param carrying the target username - see
 /// [`AutoLoginParams`].
+///
+/// Every filesystem path handed to PHP goes through
+/// [`yerd_core::path_norm::php_path`] first: `DOCUMENT_ROOT`,
+/// `SCRIPT_FILENAME`, and the `auto_prepend_file` value. That strips a Windows
+/// verbatim (`\\?\`) prefix, which PHP cannot open at all, and settles the
+/// separator on the native form, which is what PHP reports for the same file.
+/// Normalising the composed `SCRIPT_FILENAME` rather than only the root matters
+/// because a route-rule target arrives as a configured `api/index.php` whose
+/// interior slash a `join` preserves.
+///
+/// `SCRIPT_NAME` is deliberately excluded: it is a URL path, not a filesystem
+/// path, and stays slash-form on every OS. This is all a no-op off Windows.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn build_params(
@@ -76,21 +106,10 @@ pub fn build_params(
 ) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut out: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(16 + headers.len());
 
-    // PHP cannot open a Windows verbatim (`\\?\`) path: it answers
-    // "No input file specified." Roots reach us straight from the config, which
-    // may hold a canonicalised verbatim path written by an older build, so
-    // normalise here - the last point before the path leaves for PHP - rather
-    // than relying on every writer having got it right. No-op off Windows.
-    let document_root = &yerd_core::path_norm::strip_verbatim(document_root);
+    let document_root = &yerd_core::path_norm::php_path(document_root);
 
     let (path, query) = split_path_query(path_and_query);
-    let (script_filename, script_name) = match script_rel {
-        Some(rel) => (
-            document_root.join(rel),
-            format!("/{}", rel.to_string_lossy().replace('\\', "/")),
-        ),
-        None => (document_root.join("index.php"), "/index.php".to_owned()),
-    };
+    let (script_filename, script_name) = script_target(document_root, script_rel);
 
     push(&mut out, b"GATEWAY_INTERFACE", b"CGI/1.1");
     push(&mut out, b"SERVER_PROTOCOL", b"HTTP/1.1");
@@ -137,7 +156,11 @@ pub fn build_params(
         push(
             &mut out,
             b"PHP_VALUE",
-            format!("auto_prepend_file={}", login.prepend_script.display()).as_bytes(),
+            format!(
+                "auto_prepend_file={}",
+                yerd_core::path_norm::php_path(login.prepend_script).display()
+            )
+            .as_bytes(),
         );
         push(&mut out, b"YERD_LOGIN_USER", login.target_user.as_bytes());
     }
@@ -220,14 +243,26 @@ mod tests {
         h
     }
 
-    /// SCRIPT_FILENAME/DOCUMENT_ROOT come from `document_root.join(...)`, whose
-    /// `to_string_lossy()` emits `\` on Windows for these Unix-style roots. The
-    /// correct Windows CGI path form is a Phase 2 decision (real Windows document
-    /// roots), so pin the exact byte output on Unix only for now.
-    #[cfg(unix)]
+    /// Fixture site roots in the host's own form, so the byte-exact assertions
+    /// below run on every OS instead of only Unix.
+    #[cfg(windows)]
+    const APP_ROOT: &str = r"C:\srv\www\app";
+    #[cfg(not(windows))]
+    const APP_ROOT: &str = "/srv/www/app";
+    #[cfg(windows)]
+    const BLOG_ROOT: &str = r"C:\srv\www\blog";
+    #[cfg(not(windows))]
+    const BLOG_ROOT: &str = "/srv/www/blog";
+
+    /// `APP_ROOT` with `sep` appended, for composing an expected child path.
+    fn under(root: &str, rel: &str) -> String {
+        let sep = if cfg!(windows) { '\\' } else { '/' };
+        format!("{root}{sep}{}", rel.replace('/', &sep.to_string()))
+    }
+
     #[test]
     fn caddy_style_everything_to_index_php() {
-        let root = PathBuf::from("/srv/www/app");
+        let root = PathBuf::from(APP_ROOT);
         let pairs = build_params(
             "GET",
             "/foo/bar?a=1&b=2",
@@ -245,7 +280,7 @@ mod tests {
         );
         assert_eq!(
             lookup(&pairs, b"SCRIPT_FILENAME"),
-            Some("/srv/www/app/index.php".as_bytes())
+            Some(under(APP_ROOT, "index.php").as_bytes())
         );
         assert_eq!(lookup(&pairs, b"PATH_INFO"), Some(b"/foo/bar".as_slice()));
         assert_eq!(
@@ -256,10 +291,7 @@ mod tests {
         assert_eq!(lookup(&pairs, b"REQUEST_METHOD"), Some(b"GET".as_slice()));
         assert_eq!(lookup(&pairs, b"SERVER_NAME"), Some(b"app.test".as_slice()));
         assert_eq!(lookup(&pairs, b"HTTP_HOST"), Some(b"app.test".as_slice()));
-        assert_eq!(
-            lookup(&pairs, b"DOCUMENT_ROOT"),
-            Some(b"/srv/www/app".as_slice())
-        );
+        assert_eq!(lookup(&pairs, b"DOCUMENT_ROOT"), Some(APP_ROOT.as_bytes()));
         assert!(lookup(&pairs, b"HTTPS").is_none());
     }
 
@@ -341,7 +373,7 @@ mod tests {
             "GET",
             "/wp-admin/",
             &make_headers("blog.test"),
-            Path::new("/srv/www/blog"),
+            Path::new(BLOG_ROOT),
             Some(rel.as_path()),
             false,
             "127.0.0.1:1".parse().unwrap(),
@@ -373,13 +405,10 @@ mod tests {
         assert!(software.contains("nginx"), "got {software:?}");
     }
 
-    /// Unix-scoped for the same reason as [`caddy_style_everything_to_index_php`].
-    #[cfg(unix)]
     #[test]
     fn web_root_subdir_drives_script_filename_and_document_root() {
         let mut site =
-            yerd_core::Site::linked("app", "/srv/www/app", yerd_core::PhpVersion::new(8, 3))
-                .unwrap();
+            yerd_core::Site::linked("app", APP_ROOT, yerd_core::PhpVersion::new(8, 3)).unwrap();
         site.set_web_subpath("public");
         let served = site.served_root();
         let pairs = build_params(
@@ -395,11 +424,11 @@ mod tests {
         );
         assert_eq!(
             lookup(&pairs, b"DOCUMENT_ROOT"),
-            Some("/srv/www/app/public".as_bytes())
+            Some(under(APP_ROOT, "public").as_bytes())
         );
         assert_eq!(
             lookup(&pairs, b"SCRIPT_FILENAME"),
-            Some("/srv/www/app/public/index.php".as_bytes())
+            Some(under(APP_ROOT, "public/index.php").as_bytes())
         );
     }
 
@@ -409,7 +438,7 @@ mod tests {
             "POST",
             "/",
             &make_headers("app.test"),
-            Path::new("/srv/www/app"),
+            Path::new(APP_ROOT),
             None,
             true,
             "1.2.3.4:1000".parse().unwrap(),
@@ -487,15 +516,13 @@ mod tests {
         assert_eq!(lookup(&pairs, b"QUERY_STRING"), Some(b"".as_slice()));
     }
 
-    /// Unix-scoped for the same reason as [`caddy_style_everything_to_index_php`].
-    #[cfg(unix)]
     #[test]
     fn resolved_script_drives_script_name_and_filename() {
         let pairs = build_params(
             "GET",
             "/wp-admin/?page=1",
             &make_headers("blog.test"),
-            Path::new("/srv/www/blog"),
+            Path::new(BLOG_ROOT),
             Some(Path::new("wp-admin/index.php")),
             false,
             "127.0.0.1:1".parse().unwrap(),
@@ -508,7 +535,7 @@ mod tests {
         );
         assert_eq!(
             lookup(&pairs, b"SCRIPT_FILENAME"),
-            Some("/srv/www/blog/wp-admin/index.php".as_bytes())
+            Some(under(BLOG_ROOT, "wp-admin/index.php").as_bytes())
         );
         // PATH_INFO stays the full original path either way - WordPress and
         // Laravel both route on REQUEST_URI, not PATH_INFO (see module doc).
@@ -521,7 +548,7 @@ mod tests {
             "GET",
             "/wp-admin/",
             &make_headers("blog.test"),
-            Path::new("/srv/www/blog"),
+            Path::new(BLOG_ROOT),
             None,
             false,
             "127.0.0.1:1".parse().unwrap(),
@@ -547,7 +574,7 @@ mod tests {
             "GET",
             "/wp-admin/",
             &make_headers("blog.test"),
-            Path::new("/srv/www/blog"),
+            Path::new(BLOG_ROOT),
             None,
             false,
             "127.0.0.1:1".parse().unwrap(),
@@ -566,7 +593,7 @@ mod tests {
             "GET",
             "/",
             &make_headers("app.test"),
-            Path::new("/srv/www/app"),
+            Path::new(APP_ROOT),
             None,
             false,
             "127.0.0.1:1".parse().unwrap(),
@@ -577,15 +604,13 @@ mod tests {
         assert!(lookup(&pairs, b"YERD_LOGIN_USER").is_none());
     }
 
-    /// Unix-scoped for the same reason as [`caddy_style_everything_to_index_php`].
-    #[cfg(unix)]
     #[test]
     fn resolved_exact_script_match_drives_script_name_and_filename() {
         let pairs = build_params(
             "POST",
             "/wp-login.php",
             &make_headers("blog.test"),
-            Path::new("/srv/www/blog"),
+            Path::new(BLOG_ROOT),
             Some(Path::new("wp-login.php")),
             false,
             "127.0.0.1:1".parse().unwrap(),
@@ -598,7 +623,67 @@ mod tests {
         );
         assert_eq!(
             lookup(&pairs, b"SCRIPT_FILENAME"),
-            Some("/srv/www/blog/wp-login.php".as_bytes())
+            Some(under(BLOG_ROOT, "wp-login.php").as_bytes())
         );
+    }
+
+    /// The relational invariants frameworks actually depend on, across every
+    /// root shape and both ways a script-relative path is produced.
+    ///
+    /// `WordPress`'s `get_home_path()` derives the install directory by
+    /// comparing `SCRIPT_FILENAME` against `DOCUMENT_ROOT`, so the prefix
+    /// relation must hold byte-for-byte. A `join`-built rel carries the native
+    /// separator already; a config-built rel like `api/index.php` carries a
+    /// forward slash inside one component, which is the case that produced a
+    /// mixed form before the paths were normalised.
+    #[test]
+    fn script_filename_is_always_prefixed_by_document_root() {
+        let roots = [
+            "/srv/www/app",
+            r"C:\srv\www\app",
+            "C:/srv/www/app",
+            r"\\server\share\app",
+            r"\\?\C:\srv\www\app",
+        ];
+        let rels = [
+            None,
+            Some(PathBuf::from("api").join("index.php")),
+            Some(PathBuf::from("api/index.php")),
+        ];
+        for root in roots {
+            for rel in &rels {
+                let pairs = build_params(
+                    "GET",
+                    "/api/thing",
+                    &make_headers("app.test"),
+                    Path::new(root),
+                    rel.as_deref(),
+                    false,
+                    "127.0.0.1:9000".parse().unwrap(),
+                    "127.0.0.1:80".parse().unwrap(),
+                    None,
+                );
+                let doc_root = lookup(&pairs, b"DOCUMENT_ROOT").unwrap();
+                let script = lookup(&pairs, b"SCRIPT_FILENAME").unwrap();
+                let name = lookup(&pairs, b"SCRIPT_NAME").unwrap();
+
+                assert!(
+                    script.starts_with(doc_root),
+                    "{root:?} + {rel:?}: SCRIPT_FILENAME {:?} must start with DOCUMENT_ROOT {:?}",
+                    String::from_utf8_lossy(script),
+                    String::from_utf8_lossy(doc_root)
+                );
+                assert!(
+                    !name.contains(&b'\\'),
+                    "{root:?} + {rel:?}: SCRIPT_NAME is a URL and must not contain a backslash"
+                );
+                if cfg!(windows) {
+                    assert!(
+                        !doc_root.contains(&b'/') && !script.contains(&b'/'),
+                        "{root:?} + {rel:?}: filesystem paths must be all-backslash on Windows"
+                    );
+                }
+            }
+        }
     }
 }

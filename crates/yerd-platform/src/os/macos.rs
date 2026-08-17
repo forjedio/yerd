@@ -12,8 +12,6 @@
 //! has its own copy of the impl (the Linux one is `#[cfg]`-gated to
 //! Linux); the shared decision logic lives in `pure::port_plan`.
 
-#![allow(clippy::similar_names)]
-
 use std::fs;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
@@ -36,13 +34,13 @@ use crate::pure::ide_spec::{
     ide_cli_candidates_macos, mac_app_name_matches, mac_application_locations, spec_for, IdeSpec,
     IDE_SPECS,
 };
-use crate::pure::{pem_match, pf_anchor, port_plan, ps_metrics, resolver_file};
+use crate::pure::{pem_match, pf_anchor, ps_metrics, resolver_file};
 use crate::resolver::ResolverInstaller;
 use crate::terminal::TerminalLauncher;
 use crate::trust_store::{BrowserCaTrust, CaFingerprint, NssOutcome, TrustStore};
 use crate::{
-    BindPairErrorReason, IdeErrorReason, OpenErrorReason, PlatformError, ResolverErrorReason,
-    TerminalErrorReason, TrustStoreErrorReason,
+    IdeErrorReason, OpenErrorReason, PlatformError, ResolverErrorReason, TerminalErrorReason,
+    TrustStoreErrorReason,
 };
 
 /// macOS terminal launcher.
@@ -609,12 +607,8 @@ impl MacosPortBinder {
     }
 }
 
-fn bind_at(ip: Ipv4Addr, port: u16) -> std::io::Result<TcpListener> {
-    TcpListener::bind(SocketAddr::from((ip, port)))
-}
-
 fn bind_loopback(port: u16) -> std::io::Result<TcpListener> {
-    bind_at(Ipv4Addr::LOCALHOST, port)
+    super::port_bind::bind_at(Ipv4Addr::LOCALHOST, port)
 }
 
 impl PortBinder for MacosPortBinder {
@@ -630,113 +624,7 @@ impl PortBinder for MacosPortBinder {
         desired: (u16, u16),
         fallback: (u16, u16),
     ) -> Result<PortPair, PlatformError> {
-        bind_pair_impl(lan, desired, fallback)
-    }
-}
-
-/// macOS uses the M2 LAN strategy: even in LAN mode the daemon binds the rootless
-/// ports on `0.0.0.0`, and a privileged `pf rdr` (installed by `yerd elevate lan`)
-/// carries inbound 80/443 to `<lan_ip>:<rootless>`. So `lan` here only widens the
-/// bind address; the privileged-port redirect is a separate concern.
-///
-/// The daemon must never hold a privileged port directly, so a privileged
-/// `desired` pair is replaced by `fallback` before any bind is attempted (see
-/// [`port_plan::strip_privileged_desired`]). This keeps the daemon deterministically
-/// on the rootless ports the `pf rdr` targets, regardless of whether a privileged
-/// bind would have been permitted.
-fn bind_pair_impl(
-    lan: bool,
-    desired: (u16, u16),
-    fallback: (u16, u16),
-) -> Result<PortPair, PlatformError> {
-    let desired = port_plan::strip_privileged_desired(desired, fallback);
-    let ip = if lan {
-        Ipv4Addr::UNSPECIFIED
-    } else {
-        Ipv4Addr::LOCALHOST
-    };
-    let http_attempt = bind_at(ip, desired.0);
-    let https_attempt = bind_at(ip, desired.1);
-
-    let http_outcome = http_attempt
-        .as_ref()
-        .map(|_| ())
-        .map_err(std::io::Error::kind);
-    let https_outcome = https_attempt
-        .as_ref()
-        .map(|_| ())
-        .map_err(std::io::Error::kind);
-
-    match port_plan::classify_desired(http_outcome, https_outcome) {
-        port_plan::DesiredPairAction::KeepDesired => Ok(PortPair {
-            http: BoundPort {
-                listener: http_attempt.map_err(|e| PlatformError::Bind {
-                    port: desired.0,
-                    source: e,
-                })?,
-            },
-            https: BoundPort {
-                listener: https_attempt.map_err(|e| PlatformError::Bind {
-                    port: desired.1,
-                    source: e,
-                })?,
-            },
-        }),
-        port_plan::DesiredPairAction::HardFail(_) => {
-            if let Err(e) = http_attempt {
-                return Err(PlatformError::Bind {
-                    port: desired.0,
-                    source: e,
-                });
-            }
-            if let Err(e) = https_attempt {
-                return Err(PlatformError::Bind {
-                    port: desired.1,
-                    source: e,
-                });
-            }
-            Err(PlatformError::Bind {
-                port: desired.0,
-                source: std::io::Error::from(std::io::ErrorKind::Other),
-            })
-        }
-        port_plan::DesiredPairAction::UseFallback => {
-            let desired_http_kind = http_outcome.err().unwrap_or(std::io::ErrorKind::Other);
-            let desired_https_kind = https_outcome.err().unwrap_or(std::io::ErrorKind::Other);
-            drop(http_attempt);
-            drop(https_attempt);
-
-            let fb_http = bind_at(ip, fallback.0);
-            let fb_https = bind_at(ip, fallback.1);
-
-            let fb_http_outcome = fb_http.as_ref().map(|_| ()).map_err(std::io::Error::kind);
-            let fb_https_outcome = fb_https.as_ref().map(|_| ()).map_err(std::io::Error::kind);
-
-            match port_plan::classify_fallback(fb_http_outcome, fb_https_outcome) {
-                port_plan::FallbackPairAction::KeepFallback => Ok(PortPair {
-                    http: BoundPort {
-                        listener: fb_http.map_err(|e| PlatformError::Bind {
-                            port: fallback.0,
-                            source: e,
-                        })?,
-                    },
-                    https: BoundPort {
-                        listener: fb_https.map_err(|e| PlatformError::Bind {
-                            port: fallback.1,
-                            source: e,
-                        })?,
-                    },
-                }),
-                port_plan::FallbackPairAction::BothFailed => Err(PlatformError::BindPair {
-                    reason: BindPairErrorReason::BothPairsFailed {
-                        desired_http: desired_http_kind,
-                        desired_https: desired_https_kind,
-                        fallback_http: fb_http_outcome.err().unwrap_or(std::io::ErrorKind::Other),
-                        fallback_https: fb_https_outcome.err().unwrap_or(std::io::ErrorKind::Other),
-                    },
-                }),
-            }
-        }
+        super::port_bind::bind_pair_impl(true, lan, desired, fallback)
     }
 }
 
@@ -1087,99 +975,12 @@ mod tests {
         assert_ne!(listener.local_addr().unwrap().port(), 0);
     }
 
-    /// (0, 0) makes both ephemeral binds succeed, exercising the `KeepDesired` arm.
-    #[test]
-    fn bind_pair_impl_keeps_desired_when_both_free() {
-        let pair = bind_pair_impl(false, (0, 0), (0, 0)).unwrap();
-        let http = pair.http.port().unwrap();
-        let https = pair.https.port().unwrap();
-        assert_ne!(http, 0);
-        assert_ne!(https, 0);
-        assert_ne!(http, https);
-    }
-
-    /// In LAN mode the pair binds the wildcard address, so the resolved local
-    /// address is `0.0.0.0` rather than loopback.
-    #[test]
-    fn bind_pair_impl_lan_binds_wildcard() {
-        let pair = bind_pair_impl(true, (0, 0), (0, 0)).unwrap();
-        assert_eq!(
-            pair.http.listener.local_addr().unwrap().ip(),
-            std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED)
-        );
-        assert_eq!(
-            pair.https.listener.local_addr().unwrap().ip(),
-            std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED)
-        );
-    }
-
-    /// Even when the desired pair is taken and it falls back, LAN mode still
-    /// binds the wildcard address for both listeners.
-    #[test]
-    fn bind_pair_impl_lan_fallback_still_binds_wildcard() {
-        let occupied = bind_at(Ipv4Addr::UNSPECIFIED, 0).unwrap();
-        let taken = occupied.local_addr().unwrap().port();
-        let pair = bind_pair_impl(true, (taken, 0), (0, 0)).unwrap();
-        assert_eq!(
-            pair.http.listener.local_addr().unwrap().ip(),
-            std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED)
-        );
-        assert_eq!(
-            pair.https.listener.local_addr().unwrap().ip(),
-            std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED)
-        );
-        assert_ne!(pair.http.port().unwrap(), taken);
-    }
-
-    /// Occupy a real loopback port so the desired-HTTP bind fails with
-    /// `AddrInUse` (a retry kind), driving `UseFallback` then `KeepFallback` on
-    /// (0, 0).
-    #[test]
-    fn bind_pair_impl_uses_fallback_when_desired_http_taken() {
-        let occupied = bind_loopback(0).unwrap();
-        let taken = occupied.local_addr().unwrap().port();
-
-        let pair = bind_pair_impl(false, (taken, 0), (0, 0)).unwrap();
-        assert_ne!(pair.http.port().unwrap(), 0);
-        assert_ne!(pair.https.port().unwrap(), 0);
-    }
-
-    /// Occupy both the desired-HTTP and fallback-HTTP ports so the desired
-    /// pair retries, then the fallback also fails: `BothFailed` then `BindPair`.
-    #[test]
-    fn bind_pair_impl_both_pairs_failed_yields_bind_pair_error() {
-        let occ_desired = bind_loopback(0).unwrap();
-        let desired_http = occ_desired.local_addr().unwrap().port();
-        let occ_fallback = bind_loopback(0).unwrap();
-        let fallback_http = occ_fallback.local_addr().unwrap().port();
-
-        let err = bind_pair_impl(false, (desired_http, 0), (fallback_http, 0)).unwrap_err();
-        assert!(matches!(
-            err,
-            PlatformError::BindPair {
-                reason: BindPairErrorReason::BothPairsFailed { .. }
-            }
-        ));
-    }
-
     #[test]
     fn port_binder_bind_reports_bind_error_for_taken_port() {
         let occupied = bind_loopback(0).unwrap();
         let taken = occupied.local_addr().unwrap().port();
         let err = MacosPortBinder::new().bind(taken).unwrap_err();
         assert!(matches!(err, PlatformError::Bind { port, .. } if port == taken));
-    }
-
-    /// A privileged desired pair is never attempted: it is replaced by the
-    /// rootless fallback first, so the bind succeeds without root and lands on
-    /// non-privileged ports even though 80/443 were requested.
-    #[test]
-    fn bind_pair_impl_never_attempts_privileged_desired() {
-        let pair = bind_pair_impl(false, (80, 443), (0, 0)).unwrap();
-        let http = pair.http.port().unwrap();
-        let https = pair.https.port().unwrap();
-        assert!(http != 80 && http != 443 && http != 0);
-        assert!(https != 80 && https != 443 && https != 0);
     }
 
     // ---- PortRedirector anchor target reads ---------------------------

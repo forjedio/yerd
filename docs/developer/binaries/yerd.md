@@ -46,7 +46,7 @@ the `tests/cli_e2e.rs` integration test can drive the same code paths.
 | `src/shim.rs` | Shared PHP-resolution helpers for the cover, composer, `wp`, and `laravel` multi-call shims (default-version resolution, highest-installed fallback). |
 | `src/cli_shim.rs` | Multi-call dispatch: when `argv[0]` is `php` or `php<major>.<minor>`, exec that version's PHP CLI with `PHPRC` pointed at its generated ini (Unix-only). Runs before clap. |
 | `src/site_scope.rs` | Resolve the site owning a directory (or a `--site` name) to its pinned PHP version - the shared lookup behind `exec`, `which`, and the site-aware `wp` shim. |
-| `src/exec_cmd.rs` | `yerd exec` / `yerd which`: run a tool under a site's pinned PHP, or print the binary that would be used (local exec, no IPC beyond the site lookup; Unix-only). |
+| `src/exec_cmd.rs` | `yerd exec` / `yerd which`: run a tool under a site's pinned PHP, or print the binary that would be used (local exec, no IPC beyond the site lookup). |
 | `src/path_cmd.rs` | `yerd path install`/`uninstall`/`print`: edit the user's shell startup file to add `{data}/bin` to `PATH` (local, no IPC; Unix-only). |
 | `src/mcp_cmd.rs` | `yerd mcp`: serve Yerd's tools to AI agents over MCP on stdin/stdout. |
 | `src/apply.rs` | Self-update applier: install a staged, verified artifact, in-process for `yerd update --yes` or detached (gated by `YERD_APPLY_UPDATE`) when the GUI drives it. |
@@ -307,7 +307,7 @@ becomes `ClientError::DaemonUnreachable`.
 ::: warning Windows is not yet a client
 `exchange` on non-Unix targets returns `DaemonUnreachable` immediately: the
 daemon's Windows pipe name is currently PID-based and not derivable by a client.
-This is tracked as a Phase-2 follow-up - treat Windows CLI support as roadmap.
+Treat this as roadmap rather than shipped behaviour.
 :::
 
 ## Orchestration and exit codes (`lib.rs`)

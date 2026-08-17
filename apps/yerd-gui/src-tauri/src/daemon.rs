@@ -265,16 +265,13 @@ pub async fn install_cli_to_path() -> Result<(), GuiError> {
 /// Spawn `yerd path <action>` (Windows) with no console window and map the
 /// outcome to a [`GuiError`]. `action` is `"install"` or `"uninstall"`; the CLI
 /// does the copy + PATH edit + broadcast (the GUI stays a thin client of it).
+///
+/// [`yerd_platform::hidden_command`] keeps the console-subsystem CLI from
+/// flashing a window under the GUI.
 #[cfg(windows)]
 fn run_yerd_path(yerd: &std::path::Path, action: &str) -> Result<(), GuiError> {
-    use std::os::windows::process::CommandExt as _;
-
-    /// Keep the console-subsystem CLI from flashing a window under the GUI.
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-    let out = std::process::Command::new(yerd)
+    let out = yerd_platform::hidden_command(yerd)
         .args(["path", action])
-        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| GuiError::internal(format!("could not run `yerd path {action}`: {e}")))?;
     if out.status.success() {
@@ -289,6 +286,12 @@ fn run_yerd_path(yerd: &std::path::Path, action: &str) -> Result<(), GuiError> {
 
 /// Remove the `{data}/bin/yerd` symlink. (Leaves the `yerd path` rc block alone -
 /// other yerd shims, e.g. `php`/`composer`, also live in `{data}/bin`.)
+///
+/// Windows is wider: `yerd path uninstall` drops both PATH entries, so the
+/// `{data}\bin` shim dir goes too and `php`/`composer`/`wp` leave the user's
+/// PATH with it. There is no per-entry uninstall to call instead, and unlike the
+/// Unix rc block the entries are individually-owned registry values rather than
+/// one shared shim dir on disk.
 #[tauri::command]
 pub fn remove_cli_from_path() -> Result<(), GuiError> {
     #[cfg(windows)]
@@ -402,13 +405,18 @@ fn sigterm(pid: u32) {
     }
 }
 
-/// No-op on Windows: graceful daemon stop by signal is not available here.
+/// Force-terminate the daemon by pid on Windows.
 ///
-/// `stop()` already tries the IPC `Shutdown` path first (unaffected by this),
-/// and a real Windows process-teardown path arrives with the Phase 5 service
-/// work. Phase 1 deliberately does not shell out to `taskkill`.
+/// `stop()` first asks `autostart::daemon_stop` to kill `yerdd.exe` by image
+/// name; this by-pid kill is the fallback for when that did not happen, because
+/// the `yerdd.exe` path could not be resolved, or did not work. Force is the
+/// only lever available here: Windows has no graceful by-pid stop for a process
+/// without a top-level window. A daemon reached on this path is by definition
+/// not draining.
 #[cfg(windows)]
-fn sigterm(_pid: u32) {}
+fn sigterm(pid: u32) {
+    yerd_service_ctl::force_stop_pid(pid);
+}
 
 /// Display-only: the daemon's transport address for diagnostics - the Unix
 /// socket path, or the Windows named pipe name.
