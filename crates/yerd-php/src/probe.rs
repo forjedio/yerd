@@ -44,13 +44,21 @@ pub trait CommandRunner: Send + Sync + 'static {
 }
 
 /// Production [`CommandRunner`] backed by `tokio::process`.
+///
+/// On Windows the probe runs with `CREATE_NO_WINDOW`: `php.exe` is
+/// console-subsystem and the daemon has no console, so an unflagged spawn pops a
+/// console window per probe - and the probes run in a burst (every enabled
+/// extension of every installed PHP version) as the daemon starts.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TokioCommandRunner;
 
 #[async_trait]
 impl CommandRunner for TokioCommandRunner {
     async fn run(&self, cmd: Command) -> Result<ProbeOutput, io::Error> {
-        let out = tokio::process::Command::from(cmd).output().await?;
+        let mut cmd = tokio::process::Command::from(cmd);
+        #[cfg(windows)]
+        cmd.creation_flags(yerd_platform::CREATE_NO_WINDOW);
+        let out = cmd.output().await?;
         Ok(ProbeOutput {
             status_ok: out.status.success(),
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),

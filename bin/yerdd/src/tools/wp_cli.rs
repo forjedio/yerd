@@ -123,7 +123,7 @@ pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Resu
     let build = tools_root.join(format!(".wp-cli-build-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&build);
 
-    let mut child = tokio::process::Command::new(&php)
+    let mut child = crate::spawn::hidden_command(&php)
         .arg(&phar)
         .arg("create-project")
         .arg("--prefer-dist")

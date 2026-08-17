@@ -193,17 +193,10 @@ pub(super) fn pinned_home_env(
 ///
 /// `cloudflared` is a console-subsystem program and the daemon has no console,
 /// so an unflagged spawn would pop one up for each of the short-lived one-shots.
+/// Kept as a named wrapper (over [`crate::spawn::hidden_command`]) so the tunnel
+/// call sites read as "the cloudflared command" rather than a generic spawn.
 pub(super) fn cloudflared_command(binary: &Path) -> tokio::process::Command {
-    #[cfg(windows)]
-    {
-        let mut cmd = tokio::process::Command::new(binary);
-        cmd.creation_flags(yerd_platform::CREATE_NO_WINDOW);
-        cmd
-    }
-    #[cfg(not(windows))]
-    {
-        tokio::process::Command::new(binary)
-    }
+    crate::spawn::hidden_command(binary)
 }
 
 /// Resolve a site by name or `.test` host to its `(name, secure, tld, host)`,

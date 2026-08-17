@@ -287,7 +287,7 @@ async fn run_streamed(
     state: &Arc<DaemonState>,
     cancel_rx: &mut watch::Receiver<bool>,
 ) -> StreamedOutcome {
-    let mut cmd = tokio::process::Command::new(php_cli);
+    let mut cmd = crate::spawn::hidden_command(php_cli);
     cmd.args(php_flags)
         .arg(entry_point)
         .args(args)

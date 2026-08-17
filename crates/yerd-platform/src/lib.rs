@@ -99,8 +99,9 @@ pub use os::active::{broadcast_user_env_marker, set_user_path, user_path};
 /// [`std::process::Command`] constructor that already carries
 /// `CREATE_NO_WINDOW`. These are the canonical definitions for the workspace;
 /// every binary and the GUI bridge import them rather than re-declaring the
-/// magic numbers. (`yerd-service-ctl` is the one deliberate exception: it
-/// depends on no `yerd-*` crate, so it keeps its own copies.)
+/// magic numbers. (`yerd-service-ctl` and `yerd-supervise` are the deliberate
+/// exceptions: neither depends on any `yerd-*` crate, so each keeps its own
+/// copy.)
 #[cfg(target_os = "windows")]
 pub use os::active::{
     hidden_command, system32_exe, system_root, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,

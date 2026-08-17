@@ -248,7 +248,7 @@ fn composed_path(job_bin: &Path, data_bin: &Path, user_dirs: &[PathBuf]) -> std:
 
 /// `git --version` resolves on the composed PATH.
 async fn git_available(path_env: &std::ffi::OsString) -> bool {
-    tokio::process::Command::new("git")
+    crate::spawn::hidden_command("git")
         .arg("--version")
         .env("PATH", path_env)
         .stdin(Stdio::null())

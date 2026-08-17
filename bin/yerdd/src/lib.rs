@@ -35,6 +35,7 @@ pub mod services;
 pub mod signals;
 pub mod single_instance;
 pub mod site_domains;
+pub mod spawn;
 pub mod startup;
 pub mod state;
 pub mod tools;

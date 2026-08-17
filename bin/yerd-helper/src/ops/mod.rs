@@ -94,6 +94,10 @@ fn system_ps_modules_dir() -> std::path::PathBuf {
 /// explicitly rather than inherited to avoid user-writable module autoload (see
 /// [`system_ps_modules_dir`]). Returns the process output; maps every failure
 /// mode into a typed [`HelperError::Command`].
+///
+/// `CREATE_NO_WINDOW` keeps `powershell.exe`/`netsh.exe` from ever painting a
+/// console: the helper is launched hidden through UAC, and the flag makes that
+/// independent of how the launcher happened to be shown.
 #[cfg(windows)]
 pub fn run_command_abs<I, S>(
     tool: &'static str,
@@ -104,7 +108,10 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    use std::os::windows::process::CommandExt as _;
+
     let mut cmd = Command::new(program);
+    cmd.creation_flags(yerd_platform::CREATE_NO_WINDOW);
     cmd.env_clear();
     for var in ["SystemRoot", "windir"] {
         if let Some(value) = std::env::var_os(var) {

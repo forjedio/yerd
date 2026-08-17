@@ -63,11 +63,26 @@ fn group_signal_target(leader_pid: u32) -> Option<i32> {
 #[cfg(not(unix))]
 pub fn kill_process_group(_leader_pid: u32) {}
 
+/// `CREATE_NO_WINDOW` process-creation flag: a console child runs with no
+/// console window at all.
+///
+/// Declared here rather than imported from `yerd-platform` so this crate keeps
+/// its no-`yerd-*`-dependencies shape (the same deliberate exception
+/// `yerd-service-ctl` makes). Safe std `creation_flags`, no FFI.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// Spawns commands via `tokio::process::Command`, sets `kill_on_drop(true)` so
 /// unexpected crashes of the daemon take the direct child down with them, and on
 /// Windows assigns each child to a kill-on-close Job Object so the **whole tree**
 /// (workers, init-tool grandchildren) dies with the child - the Windows
 /// equivalent of the Unix process-group reaping.
+///
+/// Windows children additionally get `CREATE_NO_WINDOW`. Every supervised
+/// program (php-cgi, mysqld, postgres, redis, meilisearch, the init tools,
+/// cloudflared) is console-subsystem and `yerdd` has no console of its own, so
+/// an unflagged spawn makes Windows allocate a fresh console *window* per child.
+/// Applying it in the single spawn seam means no call site has to remember it.
 pub struct TokioProcessSpawner;
 
 impl ProcessSpawner for TokioProcessSpawner {
@@ -76,6 +91,8 @@ impl ProcessSpawner for TokioProcessSpawner {
     fn spawn(&self, cmd: StdCommand) -> Result<TokioChild, io::Error> {
         let mut tokio_cmd = tokio::process::Command::from(cmd);
         tokio_cmd.kill_on_drop(true);
+        #[cfg(windows)]
+        tokio_cmd.creation_flags(CREATE_NO_WINDOW);
         #[cfg_attr(not(windows), allow(unused_mut))]
         let mut child = spawn_retrying_text_file_busy(&mut tokio_cmd)?;
         let pid = child
