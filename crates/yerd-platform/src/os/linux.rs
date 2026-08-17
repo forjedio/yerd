@@ -26,14 +26,13 @@ use crate::pure::ide_spec::{
 use crate::pure::opener_spec::linux_default_openers;
 use crate::pure::terminal_spec::{working_dir_flags, TERMINAL_SPECS};
 use crate::pure::{
-    networkmanager_dnsmasq, pem_match, port_plan, proc_metrics, resolved_drop_in, system_roots,
+    networkmanager_dnsmasq, pem_match, proc_metrics, resolved_drop_in, system_roots,
 };
 use crate::resolver::ResolverInstaller;
 use crate::terminal::TerminalLauncher;
 use crate::trust_store::{BrowserCaTrust, CaFingerprint, NssOutcome, TrustStore};
 use crate::{
-    BindPairErrorReason, IdeErrorReason, PlatformError, ResolverErrorReason, TerminalErrorReason,
-    TrustStoreErrorReason,
+    IdeErrorReason, PlatformError, ResolverErrorReason, TerminalErrorReason, TrustStoreErrorReason,
 };
 
 /// Linux terminal launcher.

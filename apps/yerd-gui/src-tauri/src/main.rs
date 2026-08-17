@@ -12,6 +12,8 @@ mod launch_probe;
 mod logging;
 #[cfg(target_os = "macos")]
 mod mac_trust;
+#[cfg(target_os = "macos")]
+mod mac_zoom;
 mod mail_window;
 #[cfg(target_os = "macos")]
 mod smappservice;
@@ -185,6 +187,7 @@ fn main() {
             commands::job_cancel,
             commands::save_mail_attachment,
             show_dumps_window,
+            toggle_window_zoom,
             daemon::daemon_installed,
             daemon::daemon_diagnostics,
             daemon::start_daemon,
@@ -593,6 +596,18 @@ pub(crate) fn show_dumps(app: &tauri::AppHandle) -> tauri::Result<()> {
 fn show_dumps_window(app: tauri::AppHandle) -> Result<(), crate::error::GuiError> {
     show_dumps(&app)
         .map_err(|e| crate::error::GuiError::internal(format!("failed to show dumps window: {e}")))
+}
+
+/// Toggle the calling window between zoomed and restored, without the frame
+/// animation tao applies to a decorationless window (see `mac_zoom`). Registered
+/// on every platform so the handler list stays platform-independent; the
+/// frontend only calls it on macOS, where it is the titlebar's zoom path.
+#[tauri::command]
+fn toggle_window_zoom(window: tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    mac_zoom::toggle(&window);
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
 }
 
 /// Show or hide the app's Dock presence by flipping the macOS activation policy:

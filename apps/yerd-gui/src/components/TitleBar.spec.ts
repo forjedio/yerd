@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   onResized: vi.fn(),
   hostPlatform: vi.fn(),
   setGuiMaximized: vi.fn(),
+  toggleWindowZoom: vi.fn(),
   resized: null as null | (() => void),
 }));
 
@@ -32,6 +33,7 @@ vi.mock("@tauri-apps/api/window", () => ({
 vi.mock("@/ipc/client", () => ({
   hostPlatform: mocks.hostPlatform,
   setGuiMaximized: mocks.setGuiMaximized,
+  toggleWindowZoom: mocks.toggleWindowZoom,
   getTitleBarStyle: vi.fn(async () => "auto"),
   setTitleBarStyle: vi.fn(async () => {}),
 }));
@@ -57,7 +59,30 @@ async function flushMicrotasks(times = 10): Promise<void> {
   await nextTick();
 }
 
+/** The `host_platform` payload, with the host OS swapped per test. */
+function hostPayload(os: string) {
+  return {
+    os,
+    vocab: {
+      runtime: "PHP-FPM",
+      pool: "FPM pool",
+      pools: "FPM pools",
+      poolShort: "FPM",
+      extSuffix: ".so",
+      extExample: "/opt/homebrew/lib/php/pecl/20250925/scrypt.so",
+    },
+  };
+}
+
 let wrapper: ReturnType<typeof mount> | null = null;
+
+/** A click's press/release pair. `detail` is read-only on a `UIEvent`, so the
+ *  click count has to come from the constructor rather than `trigger()`. */
+function pressAndRelease(el: Element, detail: number): void {
+  for (const type of ["mousedown", "mouseup"]) {
+    el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, detail }));
+  }
+}
 
 /**
  * Mount the titlebar on a host that reports a reliable maximized state
@@ -68,6 +93,18 @@ async function mountTitleBar() {
   wrapper = mount(TitleBar);
   await flushMicrotasks();
   mocks.isMaximized.mockClear();
+  return wrapper;
+}
+
+/**
+ * Mount the titlebar for a given host, attached to the document so events
+ * bubble as far as the document-level listener Tauri's drag-region script
+ * installs in a real webview.
+ */
+async function mountOn(platform: string) {
+  mocks.hostPlatform.mockResolvedValue(hostPayload(platform));
+  wrapper = mount(TitleBar, { attachTo: document.body });
+  await flushMicrotasks();
   return wrapper;
 }
 
@@ -82,18 +119,9 @@ beforeEach(() => {
     mocks.resized = cb;
     return () => {};
   });
-  mocks.hostPlatform.mockResolvedValue({
-    os: "linux",
-    vocab: {
-      runtime: "PHP-FPM",
-      pool: "FPM pool",
-      pools: "FPM pools",
-      poolShort: "FPM",
-      extSuffix: ".so",
-      extExample: "/opt/homebrew/lib/php/pecl/20250925/scrypt.so",
-    },
-  });
+  mocks.hostPlatform.mockResolvedValue(hostPayload("linux"));
   mocks.setGuiMaximized.mockResolvedValue(undefined);
+  mocks.toggleWindowZoom.mockResolvedValue(undefined);
   vi.useFakeTimers();
 });
 
@@ -150,5 +178,69 @@ describe("TitleBar resize debounce", () => {
 
     await vi.advanceTimersByTimeAsync(DEBOUNCE_MS * 4);
     expect(mocks.isMaximized).not.toHaveBeenCalled();
+  });
+});
+
+describe("TitleBar zoom gesture", () => {
+  it("zooms through the host command on macOS", async () => {
+    const w = await mountOn("macos");
+
+    await w.get('button[aria-label="Zoom"]').trigger("click");
+    await flushMicrotasks();
+
+    expect(mocks.toggleWindowZoom).toHaveBeenCalledOnce();
+    expect(mocks.toggleMaximize).not.toHaveBeenCalled();
+  });
+
+  it("keeps Tauri's own maximize off macOS", async () => {
+    const w = await mountOn("linux");
+
+    await w.get('button[aria-label="Maximize"]').trigger("click");
+    await flushMicrotasks();
+
+    expect(mocks.toggleMaximize).toHaveBeenCalledOnce();
+    expect(mocks.toggleWindowZoom).not.toHaveBeenCalled();
+  });
+
+  it("zooms on a double click on the bar, but not through a control", async () => {
+    const w = await mountOn("macos");
+
+    await w.get("header").trigger("dblclick");
+    await flushMicrotasks();
+    expect(mocks.toggleWindowZoom).toHaveBeenCalledOnce();
+
+    await w.get('button[aria-label="Zoom"]').trigger("dblclick");
+    await flushMicrotasks();
+    expect(mocks.toggleWindowZoom).toHaveBeenCalledOnce();
+  });
+
+  it("zooms on a double click in the gaps around the controls", async () => {
+    const w = await mountOn("macos");
+
+    const controls = w.get('button[aria-label="Close"]').element.parentElement;
+    expect(controls).not.toBeNull();
+    controls?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    await flushMicrotasks();
+
+    expect(mocks.toggleWindowZoom).toHaveBeenCalledOnce();
+  });
+
+  it("hides a double click's press and release from the drag region", async () => {
+    const w = await mountOn("macos");
+    const seen: string[] = [];
+    const record = (e: Event) => seen.push(`${e.type}:${(e as MouseEvent).detail}`);
+    document.addEventListener("mousedown", record);
+    document.addEventListener("mouseup", record);
+
+    try {
+      pressAndRelease(w.get("header").element, 1);
+      expect(seen).toEqual(["mousedown:1", "mouseup:1"]);
+
+      pressAndRelease(w.get("header").element, 2);
+      expect(seen).toEqual(["mousedown:1", "mouseup:1"]);
+    } finally {
+      document.removeEventListener("mousedown", record);
+      document.removeEventListener("mouseup", record);
+    }
   });
 });

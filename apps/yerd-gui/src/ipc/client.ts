@@ -1140,6 +1140,16 @@ export async function setGuiMaximized(maximized: boolean): Promise<void> {
   await call<void>("set_gui_maximized", { maximized });
 }
 
+/**
+ * macOS: zoom the calling window, or restore it, with the native frame
+ * animation. Tauri's own maximize animates a decorationless window's frame with
+ * redraw suppressed, which reads as the window sliding to the screen corner at
+ * its old size before snapping to full size.
+ */
+export async function toggleWindowZoom(): Promise<void> {
+  await call<void>("toggle_window_zoom");
+}
+
 /** Return supported IDEs detected on the host. */
 export async function getInstalledIdes(): Promise<IdeOption[]> {
   return call<IdeOption[]>("get_installed_ides");
