@@ -400,18 +400,28 @@ mod win_tests {
 
     /// A command on the Windows PATH is usually not the bare name: Composer
     /// installs as `composer.bat`. Probing the bare name alone finds nothing.
+    ///
+    /// The hit is spelled with `PATHEXT`'s own casing (`.BAT` on a stock
+    /// Windows), which names the same file on a case-insensitive filesystem, so
+    /// the assertion compares case-insensitively rather than pinning whichever
+    /// spelling the host's environment happens to carry.
     #[test]
     fn finds_a_bat_for_a_bare_command_name() {
         let tmp = tempfile::tempdir().unwrap();
         let (dir, data) = roots(tmp.path());
-        touch(&dir, "composer.bat");
+        let want = touch(&dir, "composer.bat");
         let found = find_in_path(
             std::slice::from_ref(&dir),
             "composer",
             Path::new("nope"),
             &data,
+        )
+        .unwrap();
+        assert!(found.is_file(), "{} does not name a file", found.display());
+        assert_eq!(
+            found.to_string_lossy().to_ascii_lowercase(),
+            want.to_string_lossy().to_ascii_lowercase()
         );
-        assert_eq!(found, Some(dir.join("composer.bat")));
     }
 
     /// When both an extensionless file and an extended one exist, the bare name
