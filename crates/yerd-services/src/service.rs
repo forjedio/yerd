@@ -169,6 +169,15 @@ pub trait ServiceDefinition: Send + Sync + 'static {
     /// Human-facing label for the GUI/CLI.
     fn display_name(&self) -> &'static str;
 
+    /// Human-facing label on Windows, when it diverges from
+    /// [`display_name`](Self::display_name). Defaults to `display_name`; Redis
+    /// overrides it because the Windows build is the native MSVC Redis port, not
+    /// Valkey (which has no Windows build). Read it through
+    /// [`display_name_for_host`].
+    fn windows_display_name(&self) -> &'static str {
+        self.display_name()
+    }
+
     /// Cache / database / app-server classification.
     fn kind(&self) -> ServiceKind;
 
@@ -434,6 +443,9 @@ impl ServiceDefinition for Redis {
     }
     fn display_name(&self) -> &'static str {
         "Redis (Valkey)"
+    }
+    fn windows_display_name(&self) -> &'static str {
+        "Redis"
     }
     fn kind(&self) -> ServiceKind {
         ServiceKind::Cache
@@ -882,6 +894,20 @@ pub fn server_binary_for_host(def: &dyn ServiceDefinition) -> Option<&'static st
     }
 }
 
+/// The human-facing label to use on the host OS: the Windows override on
+/// Windows, otherwise the Unix label. Every user-visible surface reads the name
+/// through this, so `Redis (Valkey)` does not claim Valkey on a host that runs
+/// the MSVC Redis port. On Unix this is exactly
+/// [`ServiceDefinition::display_name`], so Unix behaviour is unchanged.
+#[must_use]
+pub fn display_name_for_host(def: &dyn ServiceDefinition) -> &'static str {
+    if cfg!(windows) {
+        def.windows_display_name()
+    } else {
+        def.display_name()
+    }
+}
+
 /// Start a server command from the program + layered geo env. Shared by the
 /// database/cache engines (app servers build their own from scratch).
 fn base_command(ctx: &LaunchContext<'_>) -> StdCommand {
@@ -1001,6 +1027,40 @@ mod tests {
         assert!(!d.needs_init());
         assert_eq!(d.server_binary(), Some("valkey-server"));
         assert!(d.as_database().is_none());
+    }
+
+    /// Redis is the only type whose Windows label diverges: the Windows artifact
+    /// is the native MSVC Redis port, so claiming Valkey there would be wrong.
+    #[test]
+    fn only_redis_relabels_itself_on_windows() {
+        for (id, unix, windows) in [
+            ("redis", "Redis (Valkey)", "Redis"),
+            ("mysql", "MySQL", "MySQL"),
+            ("mariadb", "MariaDB", "MariaDB"),
+            ("postgres", "PostgreSQL", "PostgreSQL"),
+            ("meilisearch", "Meilisearch", "Meilisearch"),
+            ("reverb", "Reverb", "Reverb"),
+        ] {
+            let d = reg().get(id).unwrap();
+            assert_eq!(d.display_name(), unix, "{id} unix label");
+            assert_eq!(d.windows_display_name(), windows, "{id} windows label");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn display_name_for_host_keeps_the_valkey_label_on_unix() {
+        let d = reg().get("redis").unwrap();
+        assert_eq!(display_name_for_host(d.as_ref()), "Redis (Valkey)");
+    }
+
+    /// The Windows counterpart of
+    /// [`display_name_for_host_keeps_the_valkey_label_on_unix`].
+    #[cfg(windows)]
+    #[test]
+    fn display_name_for_host_drops_the_valkey_label_on_windows() {
+        let d = reg().get("redis").unwrap();
+        assert_eq!(display_name_for_host(d.as_ref()), "Redis");
     }
 
     /// The launch args pin `--dump-dir`/`--snapshot-dir` via `datadir.join(...)`,

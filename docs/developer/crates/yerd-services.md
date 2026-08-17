@@ -26,7 +26,10 @@ no [configuration overrides](#configuration-overrides).
 The "Redis" slot is filled by **Valkey** - the BSD-licensed fork - because Redis
 7.4+ is SSPL/RSALv2 and not cleanly redistributable. It stays wire-compatible, so
 clients are unaffected. The server binary is `valkey-server`; the user-facing
-display name is `Redis (Valkey)`.
+display name is `Redis (Valkey)`. Valkey has no Windows build, so the Windows
+artifact is the native MSVC Redis port: there the server binary is `redis-server`
+and the display name is plain `Redis` (see the Windows notes in the `version.rs`
+section below).
 :::
 
 ::: info Crate metadata
@@ -229,7 +232,10 @@ real server binary; the daemon calls it at startup.
 On **Windows** the binary names differ: `version::host_binary_name` appends
 `.exe` at the path layer, and `service::server_binary_for_host` picks the
 Windows-specific base name where it diverges (Redis ships as `redis-server`, not
-`valkey-server`, from the native MSVC port). MariaDB's datadir-init tool is probed
+`valkey-server`, from the native MSVC port). The same divergence reaches the UI
+through `service::display_name_for_host`, which returns
+`ServiceDefinition::windows_display_name` on Windows, so the Redis row reads
+`Redis` there instead of crediting Valkey. MariaDB's datadir-init tool is probed
 (`mariadb-install-db.exe` then `mysql_install_db.exe`) since the producer's name
 varies. My.cnf omits the `socket` line on Windows (named-pipe semantics). Because
 Windows has no SIGINT, Postgres stops via `ServiceDefinition::graceful_stop_plan`

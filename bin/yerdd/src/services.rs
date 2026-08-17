@@ -24,9 +24,9 @@ use yerd_ipc::{
 };
 use yerd_platform::{ActivePortBinder, PlatformDirs, PortBinder};
 use yerd_services::{
-    available_versions, candidate_ports, current_os_arch, listing_url, version as svc_version,
-    Multiplicity, ServiceDefinition, ServiceError, ServiceManager, ServiceProbes, ServiceRegistry,
-    ServiceRunState as MgrRunState, ServiceVersion,
+    available_versions, candidate_ports, current_os_arch, display_name_for_host, listing_url,
+    version as svc_version, Multiplicity, ServiceDefinition, ServiceError, ServiceManager,
+    ServiceProbes, ServiceRegistry, ServiceRunState as MgrRunState, ServiceVersion,
 };
 use yerd_supervise::{Downloader, SystemClock, TokioProcessSpawner};
 
@@ -171,7 +171,7 @@ pub async fn addable_service_types(state: &DaemonState, dl: &dyn Downloader) -> 
                 pick_free_port(d.default_port(), &reserved).unwrap_or(d.default_port());
             AddableServiceType {
                 type_id: d.id().to_string(),
-                display_name: d.display_name().to_string(),
+                display_name: display_name_for_host(d.as_ref()).to_string(),
                 multiplicity: match d.multiplicity() {
                     Multiplicity::Single => "single".to_string(),
                     Multiplicity::PerSite => "per_site".to_string(),
@@ -1048,7 +1048,7 @@ fn build_status(
     };
     ServiceStatus {
         service: wire.to_string(),
-        display_name: def.display_name().to_string(),
+        display_name: display_name_for_host(def.as_ref()).to_string(),
         installed_versions: versions.iter().map(ToString::to_string).collect(),
         selected_version: inst.and_then(|i| i.version.clone()),
         state: run_state,
@@ -1282,7 +1282,7 @@ pub(crate) fn resolve_version(
         code: ErrorCode::NotFound,
         message: format!(
             "no {} version installed - run `yerd service install {}` first",
-            def.display_name(),
+            display_name_for_host(def.as_ref()),
             def.id()
         ),
     })
@@ -1360,7 +1360,7 @@ fn no_override_support(def: &Arc<dyn ServiceDefinition>) -> Response {
         ErrorCode::InvalidPath,
         &format!(
             "{} does not support configuration overrides",
-            def.display_name()
+            display_name_for_host(def.as_ref())
         ),
     )
 }

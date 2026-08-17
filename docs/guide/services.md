@@ -20,6 +20,10 @@ The five engines:
 The `redis` slot is filled by **Valkey**, the BSD-licensed fork, because recent
 Redis releases are no longer cleanly redistributable. It is wire-compatible, so
 your Redis clients work unchanged. Yerd shows it as `Redis (Valkey)`.
+
+Valkey publishes no Windows build, so on Windows the slot is filled by the native
+MSVC **Redis** port instead, and Yerd labels it plainly `Redis` there rather than
+crediting Valkey. Same `redis` id, same port, same clients.
 :::
 
 ::: tip Engine availability

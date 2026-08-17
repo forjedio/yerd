@@ -17,7 +17,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 use yerd_ipc::{DatabaseSummary, ErrorCode, Response};
-use yerd_services::{database, version, ServiceRegistry, ServiceRunState, SqlEngine};
+use yerd_services::{
+    database, display_name_for_host, version, ServiceRegistry, ServiceRunState, SqlEngine,
+};
 
 use crate::services::resolve_version;
 use crate::state::DaemonState;
@@ -240,7 +242,10 @@ async fn prepare(service_id: &str, state: &DaemonState) -> Result<DbCtx, Respons
     let Some(engine) = def.as_database() else {
         return Err(Response::Error {
             code: ErrorCode::InvalidPath,
-            message: format!("{} does not host SQL databases", def.display_name()),
+            message: format!(
+                "{} does not host SQL databases",
+                display_name_for_host(def.as_ref())
+            ),
         });
     };
     let client = engine.client_binary();
@@ -260,7 +265,7 @@ async fn prepare(service_id: &str, state: &DaemonState) -> Result<DbCtx, Respons
             code: ErrorCode::Internal,
             message: format!(
                 "this {} build does not include {client}",
-                def.display_name()
+                display_name_for_host(def.as_ref())
             ),
         });
     }
@@ -291,7 +296,7 @@ async fn prepare(service_id: &str, state: &DaemonState) -> Result<DbCtx, Respons
     };
     Ok(DbCtx {
         engine,
-        display_name: def.display_name().to_owned(),
+        display_name: display_name_for_host(def.as_ref()).to_owned(),
         bin_dir,
         client_path,
         socket: version::socket_path(&state.dirs, def.id()),
