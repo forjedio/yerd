@@ -47,3 +47,4 @@ apps/yerd-gui/src-tauri/binaries/
 @docs
 .agents
 .openai
+.mcp.json

@@ -1,7 +1,8 @@
 import { ref } from 'vue'
 
-// Shared lightbox state. Any image (e.g. <ShowcaseRow>) calls openLightbox()
-// with its light/dark sources; the single global <Lightbox> overlay renders it.
+// Shared lightbox state. Any image (e.g. the home page's app screenshots)
+// calls openLightbox() with its light/dark sources; the single global
+// <Lightbox> overlay renders it.
 export interface LightboxImage {
   light: string
   dark: string

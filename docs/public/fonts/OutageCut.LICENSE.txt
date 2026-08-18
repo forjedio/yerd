@@ -1,0 +1,16 @@
+Outage Cut
+==========
+
+Designer: Dave Whitley (www.davewhitley.com, www.losttype.com)
+Copyright (c) 2011 by Dave Whitley. All rights reserved.
+Outage is a trademark of Dave Whitley.
+
+This font file is redistributed here unmodified. Its End User License
+Agreement explicitly permits web use:
+
+    "Can I use it on my cool website using @fontface? Sure. Any link back
+     to davewhitley.com or losttype.com would be awesome."
+
+The full agreement is embedded in the font file itself (name record 13) and
+can be read with any font inspector. Yerd uses the face for display headings
+only; the font data and design remain the copyright of Dave Whitley.

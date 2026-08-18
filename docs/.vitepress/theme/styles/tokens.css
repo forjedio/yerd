@@ -1,0 +1,174 @@
+/**
+ * Yerd design tokens, and the VitePress variables they drive.
+ *
+ * The palette is the Forjed "deep navy + signal blue" system: a near-black
+ * canvas in dark mode, a cool off-white one in light mode, one blue for every
+ * accent, and a single green reserved for "running / healthy" status text.
+ *
+ * `--y-*` are Yerd's own tokens (used by the home page and the custom doc
+ * chrome); the `--vp-*` blocks below map them onto the default theme so
+ * VitePress's own components inherit the same palette.
+ */
+
+:root {
+  /* Type */
+  --y-display: 'Outage Cut', 'Space Grotesk', ui-sans-serif, system-ui,
+    sans-serif;
+  --y-sans: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+  /* Marketing prose sits in Inter - denser and quieter next to the display
+   * face than Space Grotesk, which carries the documentation instead. */
+  --y-prose: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --y-mono: 'JetBrains Mono', ui-monospace, 'Menlo', 'Consolas', monospace;
+
+  /* Surfaces */
+  --y-canvas: #f4f6f9;
+  --y-surface: #ffffff;
+  --y-surface-2: #edf1f8;
+  --y-terminal: #080d18;
+
+  /* Lines, weakest to strongest */
+  --y-line: #e4e9f1;
+  --y-line-2: #dde1e8;
+  --y-line-3: #c8d0de;
+
+  /* Ink */
+  --y-ink: #0c1a30;
+  --y-slate: #58647a;
+  --y-faint: #97a1b2;
+
+  /* Accents */
+  --y-blue: #3a63ee;
+  --y-blue-bright: #3a63ee;
+  --y-blue-code: #2b4ecc;
+  --y-green: #12b981;
+
+  /* Elevation + glow. The home page paints these as radial background
+   * images rather than blurred elements, so nothing is composited on scroll. */
+  --y-shadow: 0 4px 10px rgba(12, 26, 48, 0.07);
+  --y-shadow-lg: 0 18px 44px -12px rgba(12, 26, 48, 0.18);
+  --y-glow-strong: rgba(58, 99, 238, 0.16);
+  --y-glow-soft: rgba(58, 99, 238, 0.11);
+  --y-glow-term: rgba(92, 134, 255, 0.14);
+  --y-glow-doc: rgba(58, 99, 238, 0.1);
+  --y-glow-none: rgba(58, 99, 238, 0);
+
+  /* Layout rhythm shared by the home page sections. */
+  --y-content-width: 1152px;
+  --y-section-gap: 116px;
+}
+
+.dark {
+  --y-canvas: #070b14;
+  --y-surface: #0c1322;
+  --y-surface-2: #101a2e;
+  --y-terminal: #080d18;
+
+  --y-line: #1b2740;
+  --y-line-2: #22304c;
+  --y-line-3: #2a3a5c;
+
+  --y-ink: #f2f5fb;
+  --y-slate: #8a99b4;
+  --y-faint: #6b7d9c;
+
+  --y-blue: #3a63ee;
+  --y-blue-bright: #5c86ff;
+  --y-blue-code: #a9c0ff;
+  --y-green: #3fcf6e;
+
+  --y-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  --y-shadow-lg: 0 24px 60px -18px rgba(0, 0, 0, 0.66);
+  --y-glow-strong: rgba(58, 99, 238, 0.5);
+  --y-glow-soft: rgba(58, 99, 238, 0.3);
+  --y-glow-term: rgba(92, 134, 255, 0.45);
+  --y-glow-doc: rgba(58, 99, 238, 0.34);
+}
+
+/* ---- VitePress theme variables ---- */
+
+:root {
+  --vp-font-family-base: var(--y-sans);
+  --vp-font-family-mono: var(--y-mono);
+
+  --vp-c-bg: #ffffff;
+  --vp-c-bg-alt: var(--y-canvas);
+  --vp-c-bg-elv: var(--y-surface);
+  --vp-c-bg-soft: var(--y-canvas);
+
+  --vp-c-border: var(--y-line-2);
+  --vp-c-divider: var(--y-line);
+  --vp-c-gutter: var(--y-line);
+
+  --vp-c-text-1: var(--y-ink);
+  --vp-c-text-2: var(--y-slate);
+  --vp-c-text-3: var(--y-faint);
+
+  --vp-c-brand-1: var(--y-blue);
+  --vp-c-brand-2: #2b4ecc;
+  --vp-c-brand-3: var(--y-blue);
+  --vp-c-brand-soft: rgba(58, 99, 238, 0.12);
+
+  --vp-c-default-1: var(--y-line-3);
+  --vp-c-default-2: var(--y-line-2);
+  --vp-c-default-3: var(--y-surface-2);
+  --vp-c-default-soft: rgba(58, 99, 238, 0.07);
+
+  --vp-c-green-1: #0f9a6c;
+  --vp-c-green-2: #12b981;
+  --vp-c-green-3: #12b981;
+
+  /* The navbar floats over the hero glow, so it is translucent rather than
+   * a solid band; `doc.css` adds the backdrop blur that makes that readable. */
+  --vp-nav-bg-color: transparent;
+  --vp-sidebar-bg-color: var(--vp-c-bg-alt);
+  --vp-sidebar-width: 270px;
+  --vp-layout-max-width: 1440px;
+
+  --vp-code-font-size: 0.86em;
+  --vp-code-color: var(--y-blue-code);
+  --vp-code-bg: var(--y-surface-2);
+  --vp-code-block-bg: #f7f9fd;
+  --vp-code-block-color: var(--y-slate);
+  --vp-code-lang-color: var(--y-faint);
+  --vp-code-copy-code-bg: var(--y-surface-2);
+  --vp-code-copy-code-border-color: var(--y-line-2);
+  --vp-code-copy-code-hover-bg: var(--y-surface);
+  --vp-code-copy-code-hover-border-color: var(--y-line-3);
+
+  --vp-button-brand-border: transparent;
+  --vp-button-brand-text: #ffffff;
+  --vp-button-brand-bg: var(--y-blue);
+  --vp-button-brand-hover-bg: #2b4ecc;
+  --vp-button-brand-active-bg: #2445b8;
+
+  --vp-input-bg-color: var(--y-surface);
+  --vp-input-border-color: var(--y-line-2);
+
+  --vp-local-search-bg: var(--y-surface);
+  --vp-local-search-result-bg: var(--y-surface);
+  --vp-local-search-result-border: var(--y-line);
+  --vp-local-search-result-selected-bg: var(--y-surface);
+  --vp-local-search-result-selected-border: var(--y-blue);
+}
+
+.dark {
+  --vp-c-bg: #070b14;
+  --vp-c-bg-alt: #0a1120;
+  --vp-c-bg-elv: var(--y-surface);
+  --vp-c-bg-soft: var(--y-surface);
+
+  --vp-c-brand-1: var(--y-blue-bright);
+  --vp-c-brand-2: #7ea3ff;
+  --vp-c-brand-3: var(--y-blue);
+  --vp-c-brand-soft: rgba(92, 134, 255, 0.16);
+
+  --vp-c-default-soft: rgba(92, 134, 255, 0.1);
+
+  --vp-c-green-1: var(--y-green);
+  --vp-c-green-2: var(--y-green);
+  --vp-c-green-3: #2fa858;
+
+  --vp-code-block-bg: var(--y-surface);
+  --vp-button-brand-hover-bg: #4a71f2;
+  --vp-button-brand-active-bg: #2b4ecc;
+}

@@ -27,7 +27,30 @@ export default withMermaid({
 
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }],
-    ['meta', { name: 'theme-color', content: '#6366f1' }],
+    ['meta', { name: 'theme-color', content: '#3a63ee' }],
+    // The two faces every page paints above the fold: the display face used by
+    // the navbar wordmark and marketing headlines, and the latin subset of the
+    // UI/body face. Both are self-hosted (see theme/styles/fonts.css).
+    [
+      'link',
+      {
+        rel: 'preload',
+        as: 'font',
+        type: 'font/ttf',
+        href: '/fonts/OutageCut.ttf',
+        crossorigin: '',
+      },
+    ],
+    [
+      'link',
+      {
+        rel: 'preload',
+        as: 'font',
+        type: 'font/woff2',
+        href: '/fonts/space-grotesk-latin.woff2',
+        crossorigin: '',
+      },
+    ],
     ['meta', { name: 'author', content: 'Forjed' }],
     [
       'meta',

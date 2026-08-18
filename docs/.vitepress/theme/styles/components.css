@@ -1,0 +1,227 @@
+/**
+ * Shared content components: theme-aware screenshots, the lightbox overlay,
+ * Mermaid diagrams, and click-to-load video embeds.
+ */
+
+/* ---- Theme-aware screenshots (<ThemedImage>) ----
+ * Both images render; CSS hides the off-theme one keyed on the `.dark` class
+ * VitePress sets on <html> before paint, so there's no flash.
+ */
+html.dark .themed-img--light {
+  display: none;
+}
+html:not(.dark) .themed-img--dark {
+  display: none;
+}
+.themed-img {
+  display: block;
+  width: 100%;
+  margin: 1.25rem 0;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 10px;
+}
+
+/* ---- Lightbox image viewer (<Lightbox>) ---- */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2.5rem;
+  background: rgba(4, 7, 14, 0.86);
+  backdrop-filter: blur(4px);
+  cursor: zoom-out;
+}
+.lightbox__img {
+  max-width: min(1200px, 95vw);
+  max-height: 90vh;
+  width: auto;
+  height: auto;
+  border-radius: 12px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  cursor: default;
+}
+.lightbox__close {
+  position: fixed;
+  top: 0.75rem;
+  right: 1.25rem;
+  width: 2.5rem;
+  height: 2.5rem;
+  font-size: 2rem;
+  line-height: 1;
+  color: #fff;
+  background: transparent;
+  border: 0;
+  border-radius: 9999px;
+  cursor: pointer;
+  opacity: 0.75;
+  transition: opacity 0.15s ease;
+}
+.lightbox__close:hover {
+  opacity: 1;
+}
+.lightbox-fade-enter-active,
+.lightbox-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.lightbox-fade-enter-from,
+.lightbox-fade-leave-to {
+  opacity: 0;
+}
+
+/* ---- Mermaid diagrams ----
+ * Let diagrams size to their content and stay responsive, instead of being
+ * clipped to a fixed pixel height (which cut off multi-line node labels).
+ */
+.mermaid {
+  margin: 1.25rem 0;
+  text-align: center;
+}
+
+/* The SVG carries a fixed height attribute; override it so the diagram grows
+ * to fit its content and scales down on narrow screens. */
+.mermaid svg {
+  max-width: 100%;
+  height: auto !important;
+}
+
+/* Repaint Mermaid's own theme in the Yerd palette. The plugin renders in the
+ * browser and swaps between mermaid's `default`/`dark` themes on the fly, so
+ * the colours have to be forced from CSS to stay theme-aware - hence the
+ * !important on every declaration mermaid writes into the SVG's own <style>. */
+.mermaid svg {
+  font-family: var(--y-sans) !important;
+}
+.mermaid svg .node rect,
+.mermaid svg .node polygon,
+.mermaid svg .node circle,
+.mermaid svg .node path,
+.mermaid svg .label-container {
+  fill: var(--vp-c-bg-elv) !important;
+  stroke: var(--vp-c-brand-1) !important;
+  stroke-width: 1px !important;
+}
+.mermaid svg .cluster rect {
+  fill: var(--vp-c-bg-alt) !important;
+  stroke: var(--vp-c-divider) !important;
+}
+.mermaid svg .nodeLabel,
+.mermaid svg .cluster-label,
+.mermaid svg .label,
+.mermaid svg text {
+  color: var(--vp-c-text-1) !important;
+  fill: var(--vp-c-text-1) !important;
+}
+.mermaid svg .edgePath .path,
+.mermaid svg .flowchart-link,
+.mermaid svg .messageLine0,
+.mermaid svg .messageLine1,
+.mermaid svg .transition {
+  stroke: var(--vp-c-text-3) !important;
+}
+.mermaid svg marker path,
+.mermaid svg .arrowheadPath,
+.mermaid svg .marker {
+  fill: var(--vp-c-text-3) !important;
+  stroke: var(--vp-c-text-3) !important;
+}
+.mermaid svg .edgeLabel,
+.mermaid svg .edgeLabel p,
+.mermaid svg .edgeLabel rect,
+.mermaid svg .labelBkg {
+  background-color: var(--vp-c-bg) !important;
+  fill: var(--vp-c-bg) !important;
+  color: var(--vp-c-text-2) !important;
+}
+.mermaid svg .edgeLabel .edgeLabel {
+  color: var(--vp-c-text-2) !important;
+}
+/* Sequence diagrams: actor boxes, lifelines, and message text. */
+.mermaid svg .actor {
+  fill: var(--vp-c-bg-elv) !important;
+  stroke: var(--vp-c-brand-1) !important;
+}
+.mermaid svg text.actor > tspan,
+.mermaid svg .messageText,
+.mermaid svg .loopText,
+.mermaid svg .noteText {
+  fill: var(--vp-c-text-1) !important;
+}
+.mermaid svg line.actor-line {
+  stroke: var(--vp-c-divider) !important;
+}
+.mermaid svg .note {
+  fill: var(--vp-c-bg-alt) !important;
+  stroke: var(--vp-c-divider) !important;
+}
+
+/* HTML labels wrap into a <foreignObject> (node and edge labels alike); make
+ * sure every wrapped line is visible and the box is not clipped vertically. */
+.mermaid foreignObject {
+  overflow: visible;
+}
+.mermaid foreignObject > div,
+.mermaid foreignObject p,
+.mermaid .nodeLabel,
+.mermaid span.nodeLabel,
+.mermaid .edgeLabel {
+  white-space: normal !important;
+  overflow: visible !important;
+  line-height: 1.35;
+}
+
+/* ---- Video embeds (<YouTubeEmbed>) ---- */
+.yt-embed {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  margin: 1.25rem 0;
+  overflow: hidden;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  background: var(--vp-c-bg-soft);
+  box-shadow: var(--y-shadow);
+}
+.yt-embed__facade {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+.yt-embed__thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: filter 0.18s ease;
+}
+.yt-embed__facade:hover .yt-embed__thumb {
+  filter: brightness(0.85);
+}
+.yt-embed__play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.yt-embed__play svg {
+  width: 68px;
+  height: 48px;
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.45));
+  transition: transform 0.18s ease;
+}
+.yt-embed__facade:hover .yt-embed__play svg {
+  transform: scale(1.08);
+}
+.yt-embed__frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}

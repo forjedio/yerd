@@ -1,0 +1,394 @@
+/**
+ * Documentation chrome: navbar, sidebar, prose, code, aside, and page footer.
+ *
+ * Everything here reshapes the VitePress default theme rather than replacing
+ * it, so upstream keeps owning behaviour (routing, search, mobile nav) while
+ * Yerd owns the look.
+ */
+
+/* ---- Navbar ------------------------------------------------------------- */
+
+/* Floats over the hero glow on the home page and over the doc glow elsewhere,
+ * so it is a translucent blurred band rather than a solid one. */
+.VPNav {
+  background-color: transparent;
+}
+.VPNavBar {
+  background-color: color-mix(in srgb, var(--vp-c-bg) 76%, transparent);
+  backdrop-filter: saturate(140%) blur(14px);
+}
+.VPNavBar.home.top,
+.VPNavBar.top:not(.has-sidebar) {
+  background-color: transparent;
+  backdrop-filter: none;
+}
+/* The default theme only draws the navbar hairline once scrolled; the design
+ * has it always, running the full width under the bar. */
+.VPNavBar .divider {
+  display: none;
+}
+.VPNavBar::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0;
+  height: 1px;
+  background-color: var(--vp-c-divider);
+}
+
+.VPNavBarTitle .title {
+  font-family: var(--y-display);
+  font-weight: 400;
+  font-size: 21px;
+  letter-spacing: 0.045em;
+  border-bottom: 0;
+}
+/* Outage Cut's caps sit high in the line box - nudge down to centre on the mark. */
+.VPNavBarTitle .title > span:last-child {
+  display: inline-block;
+  transform: translateY(2px);
+}
+
+.VPNavBarMenuLink,
+.VPNavBarMenuGroup .VPFlyout .button {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* The version dropdown reads as a chip, matching the design's `v2.x` badge. */
+.VPNavBarMenuGroup > .button > .text {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px 0 12px;
+  height: 28px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 8px;
+  background-color: var(--y-surface);
+  font-family: var(--y-mono);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--vp-c-text-2);
+  transition:
+    border-color 0.2s,
+    color 0.2s;
+}
+.VPNavBarMenuGroup > .button:hover > .text {
+  border-color: var(--y-line-3);
+  color: var(--vp-c-text-1);
+}
+
+/* Search: a bordered field, not a bare button. */
+.VPNavBarSearch .DocSearch-Button,
+.VPNavBarSearch button.DocSearch-Button {
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 8px;
+  background-color: var(--y-surface);
+}
+.VPNavBarSearch .DocSearch-Button:hover {
+  border-color: var(--y-line-3);
+  background-color: var(--y-surface);
+}
+.DocSearch-Button-Placeholder {
+  font-size: 13px;
+  color: var(--vp-c-text-3);
+}
+.DocSearch-Button-Key {
+  font-family: var(--y-mono);
+  font-size: 11px;
+}
+
+/* ---- Sidebar ------------------------------------------------------------ */
+
+.VPSidebar {
+  border-right: 1px solid var(--vp-c-divider);
+}
+.VPSidebarItem.level-0 > .item > .text {
+  font-family: var(--y-sans);
+  font-size: 13.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--vp-c-text-1);
+}
+.VPSidebarItem.level-0 .VPSidebarItem .link .text,
+.VPSidebarItem.level-1 > .item > .text {
+  font-size: 13.5px;
+  font-weight: 400;
+  color: var(--vp-c-text-2);
+  transition: color 0.2s;
+}
+.VPSidebarItem .link:hover .text {
+  color: var(--vp-c-text-1);
+}
+.VPSidebarItem.is-active > .item .link .text,
+.VPSidebarItem.is-active > .item > .text {
+  font-weight: 500;
+  color: var(--vp-c-brand-1);
+}
+/* A hairline between top-level groups, as in the design. */
+.VPSidebarItem.level-0:not(:first-child) {
+  border-top: 1px solid var(--vp-c-divider);
+  padding-top: 22px;
+  margin-top: 4px;
+}
+
+/* ---- The blue wash behind the top of every doc page --------------------- */
+
+.Layout:not(.home-page) .VPContent:not(.is-home) {
+  background-image: radial-gradient(
+    1740px 560px at 50% 216px,
+    var(--y-glow-doc),
+    var(--y-glow-none) 68%
+  );
+  background-repeat: no-repeat;
+}
+
+/* ---- Prose -------------------------------------------------------------- */
+
+.vp-doc h1,
+.vp-doc h2,
+.vp-doc h3,
+.vp-doc h4 {
+  font-family: var(--y-sans);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.vp-doc h1 {
+  font-size: 30px;
+  line-height: 1.2;
+  margin-bottom: 20px;
+}
+.vp-doc h2 {
+  font-size: 22px;
+  line-height: 1.2;
+  margin: 44px 0 18px;
+  padding-top: 26px;
+  border-top: 1px solid var(--vp-c-divider);
+  letter-spacing: -0.018em;
+}
+.vp-doc h3 {
+  font-size: 18px;
+  line-height: 1.3;
+  margin: 30px 0 12px;
+}
+.vp-doc p,
+.vp-doc li {
+  font-size: 15.5px;
+  line-height: 1.7;
+  color: var(--vp-c-text-2);
+}
+.vp-doc strong {
+  color: var(--vp-c-text-1);
+  font-weight: 700;
+}
+.vp-doc a {
+  font-weight: 500;
+  text-underline-offset: 3px;
+}
+/* Blue markers, as in the design. */
+.vp-doc ul {
+  list-style: none;
+  padding-left: 22px;
+}
+.vp-doc ul > li {
+  position: relative;
+}
+.vp-doc ul > li::before {
+  content: '';
+  position: absolute;
+  left: -16px;
+  top: 0.72em;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background-color: var(--vp-c-brand-1);
+}
+.vp-doc ol {
+  padding-left: 24px;
+}
+.vp-doc ol > li::marker {
+  font-family: var(--y-mono);
+  font-size: 0.85em;
+  color: var(--vp-c-text-3);
+}
+
+/* Inline code renders as a bordered chip. */
+.vp-doc :not(pre) > code {
+  padding: 3px 6px;
+  border: 1px solid var(--y-line-2);
+  border-radius: 6px;
+  background-color: var(--vp-code-bg);
+  font-weight: 400;
+}
+
+/* ---- Code blocks -------------------------------------------------------- */
+
+.vp-doc div[class*='language-'],
+.vp-block {
+  border: 1px solid var(--y-line-2);
+  border-radius: 10px;
+  background-color: var(--vp-code-block-bg);
+}
+.vp-doc [class*='language-'] code {
+  font-size: 13px;
+}
+/* The language tag stays visible instead of fading in on hover. */
+.vp-doc [class*='language-'] > span.lang {
+  opacity: 1;
+  font-family: var(--y-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--vp-c-text-3);
+}
+.vp-doc [class*='language-']:hover > button.copy + span.lang {
+  opacity: 0;
+}
+
+/* ---- Tables ------------------------------------------------------------- */
+
+.vp-doc table {
+  display: table;
+  width: 100%;
+  border-collapse: collapse;
+  overflow-x: auto;
+}
+.vp-doc th {
+  font-family: var(--y-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--vp-c-text-3);
+  background-color: transparent;
+}
+.vp-doc td,
+.vp-doc th {
+  border-color: var(--vp-c-divider);
+  font-size: 14px;
+}
+.vp-doc tr {
+  background-color: transparent;
+  border-top-color: var(--vp-c-divider);
+}
+
+/* ---- Custom blocks ------------------------------------------------------ */
+
+.vp-doc .custom-block {
+  border: 1px solid var(--y-line-2);
+  border-radius: 12px;
+  background-color: var(--vp-c-bg-elv);
+}
+.vp-doc .custom-block.tip,
+.vp-doc .custom-block.info,
+.vp-doc .custom-block.note {
+  border-color: color-mix(in srgb, var(--vp-c-brand-1) 30%, var(--y-line-2));
+}
+.vp-doc .custom-block.warning {
+  border-color: color-mix(in srgb, var(--vp-c-warning-1) 34%, var(--y-line-2));
+}
+.vp-doc .custom-block.danger,
+.vp-doc .custom-block.caution {
+  border-color: color-mix(in srgb, var(--vp-c-danger-1) 34%, var(--y-line-2));
+}
+.vp-doc .custom-block .custom-block-title {
+  font-family: var(--y-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--vp-c-brand-1);
+}
+.vp-doc .custom-block.warning .custom-block-title {
+  color: var(--vp-c-warning-1);
+}
+.vp-doc .custom-block.danger .custom-block-title {
+  color: var(--vp-c-danger-1);
+}
+.vp-doc .custom-block p {
+  font-size: 14px;
+}
+
+/* ---- Right-hand outline ------------------------------------------------- */
+
+.VPDocAsideOutline .outline-title {
+  font-family: var(--y-sans);
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--vp-c-text-1);
+}
+.VPDocAsideOutline .outline-link {
+  font-size: 13.5px;
+  color: var(--vp-c-text-2);
+}
+.VPDocAsideOutline .root .outline-marker {
+  background-color: var(--vp-c-brand-1);
+}
+
+/* ---- Page footer: edit link, timestamp, prev/next ----------------------- */
+
+.VPDocFooter {
+  margin-top: 56px;
+  padding-top: 24px;
+  border-top: 1px solid var(--vp-c-divider);
+}
+.VPDocFooter .edit-info {
+  padding-bottom: 24px;
+}
+.VPDocFooter .edit-link-button,
+.VPDocFooter .VPLastUpdated {
+  font-size: 13.5px;
+  font-weight: 500;
+}
+.VPDocFooter .prev-next {
+  border-top: 0;
+  padding-top: 0;
+}
+.VPDocFooter .pager-link {
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  padding: 15px 16px;
+  background-color: var(--vp-c-bg-elv);
+  transition:
+    border-color 0.2s,
+    transform 0.2s;
+}
+.VPDocFooter .pager-link:hover {
+  border-color: var(--vp-c-brand-1);
+  transform: translateY(-1px);
+}
+.VPDocFooter .pager-link .desc {
+  font-family: var(--y-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--vp-c-text-3);
+}
+.VPDocFooter .pager-link .title {
+  font-family: var(--y-sans);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--vp-c-brand-1);
+}
+
+/* ---- Local nav (mobile "On this page" bar) ------------------------------ */
+
+.VPLocalNav {
+  background-color: color-mix(in srgb, var(--vp-c-bg) 88%, transparent);
+  backdrop-filter: saturate(140%) blur(14px);
+  border-bottom-color: var(--vp-c-divider);
+}
+
+/* ---- Site footer -------------------------------------------------------- */
+
+.VPFooter {
+  background-color: var(--vp-c-bg);
+  border-top-color: var(--vp-c-divider);
+}
+.VPFooter .message,
+.VPFooter .copyright {
+  font-family: var(--y-prose);
+  font-size: 14px;
+  font-weight: 400;
+}
+.VPFooter .copyright {
+  color: var(--vp-c-text-3);
+}

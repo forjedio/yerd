@@ -1,97 +1,149 @@
 ---
-layout: home
+layout: HomeLayout
+pageClass: home-page
 
 # A descriptive <title> for the homepage (the default would just be "Yerd").
 title: Yerd - Local PHP development environment for macOS & Linux
 titleTemplate: false
+description: Serve every project in a folder on its own .test domain over HTTPS, run a different PHP version per site, and manage databases, mail and tooling from one ~8 MB Rust daemon. Free, MIT-licensed, rootless, and Docker-free.
 
 hero:
-  name: Yerd
-  text: Local PHP, without the friction.
-  tagline: Serve your projects on .test domains over HTTP and HTTPS, run a different PHP version per site, and manage it all from one tiny daemon. No Docker, no sudo for everyday work, no subscription.
-  image:
-    src: /images/overview-dark.png
-    alt: The Yerd desktop app
+  pill: OPEN SOURCE · ROOTLESS · MIT
+  lines:
+    - LOCAL PHP,
+    - WITHOUT THE
+  accent: WEIGHT.
+  tagline: Every project in a parked folder is live on its own .test domain - HTTPS, per-site PHP, databases and mail. One tiny Rust daemon, and no Docker anywhere.
+  command:
+    label: YOUR FIRST COMMAND
+    text: yerd park ~/Code
   actions:
     - theme: brand
-      text: Get Started
+      text: Get started →
       link: /guide/getting-started
-    - theme: alt
-      text: Why Yerd?
-      link: /guide/introduction
     - theme: alt
       text: View on GitHub
       link: https://github.com/forjedio/yerd
+  platforms: macOS (Apple Silicon) · Debian · Ubuntu · Arch · Fedora
+  shot:
+    light: /images/overview-light.png
+    dark: /images/overview-dark.png
+    alt: The Yerd desktop app Overview dashboard
 
-features:
-  - icon: 🚀
-    title: Zero-config sites
-    details: Drop a project into a parked directory and it's instantly live at <name>.test. Park a whole folder or link a single project under a name you choose.
-  - icon: 🔒
-    title: Automatic HTTPS
-    details: A local certificate authority issues a per-site certificate on demand. No mkcert dance, no OpenSSL, no browser warnings once trusted - just a green padlock.
-  - icon: 🐘
-    title: Per-site PHP
-    details: Install multiple PHP versions and pin each site to the one it needs. Set a global default, then override individual sites with a single command.
-  - icon: 🪶
-    title: Lightweight & native
-    details: A single ~8 MB daemon binary written in Rust. No containers, no VM, no Electron - just native processes managed for you.
-  - icon: 🛡️
-    title: Rootless by design
-    details: Setup elevates exactly once. The daemon, CLI, and GUI never run as root - everything after the one-time setup runs as your own user.
-  - icon: 🔍
-    title: Self-diagnosing
-    details: yerd status shows what's running; yerd doctor tells you exactly what's broken and how to fix it - and auto-repairs the safe problems.
+stats:
+  - value: 8 MB
+    label: ONE RUST DAEMON
+  - value: '0'
+    label: CONTAINERS OR VMS
+  - value: 1 CMD
+    label: FOLDER TO LIVE SITES
+  - value: MIT
+    label: FREE AND OPEN SOURCE
+
+footprint:
+  eyebrow: FOOTPRINT
+  heading: THE BLUE SLIVER IS YERD.
+  sub: The bar below stands for 1.6 GB - about what a container runtime costs you before a single site is served. Yerd's daemon is the few pixels glowing on the left.
+  scaleMax: 1600
+  ticks: ['0', 400 MB, 800 MB, 1.2 GB, 1.6 GB]
+  yerd:
+    label: YERD · ~8 MB
+    mb: 8
+  middle:
+    label: ELECTRON APP · ~180 MB
+    mb: 180
+  full:
+    label: CONTAINER RUNTIME · ~1.6 GB
+
+capabilities:
+  eyebrow: WHAT IT DOES
+  heading: EVERY CAPABILITY HAS A COMMAND.
+  sub: The desktop app and the CLI drive the same daemon. Whatever you can click, you can script.
+  items:
+    - icon: grid
+      title: Zero-config sites
+      details: Drop a project into a parked folder and it is live at its own .test domain straight away.
+      command: yerd park ~/Code
+      link: /guide/sites
+    - icon: lock
+      title: Automatic HTTPS
+      details: A local certificate authority issues a per-site certificate on demand. No mkcert, no browser warnings.
+      command: yerd secure my-app
+      link: /guide/https
+    - icon: stack
+      title: Per-site PHP
+      details: Install as many PHP versions as you need, set a global default, then pin the sites that disagree.
+      command: yerd use 8.4
+      link: /guide/php-versions
+    - icon: database
+      title: Databases & caches
+      details: MySQL, MariaDB, PostgreSQL, Redis and Meilisearch, supervised as native processes and started with the daemon.
+      command: yerd db create app
+      link: /guide/services
+    - icon: mail
+      title: Mail, caught locally
+      details: Every message your apps send is captured on the machine and readable in the app. Nothing escapes.
+      command: yerd mail list
+      link: /guide/mail
+    - icon: shield
+      title: Self-diagnosing
+      details: Status shows what is running. Doctor tells you exactly what is broken, and repairs the safe problems.
+      command: yerd doctor fix
+      link: /guide/diagnostics
+
+steps:
+  eyebrow: FROM ZERO
+  heading: THREE COMMANDS TO A WORKING SITE.
+  items:
+    - command: yerd install php 8.5
+      details: PHP is not bundled. Yerd downloads a prebuilt static build on demand and supervises its FPM pool for you.
+    - command: yerd park ~/Code
+      details: Every project inside the folder is served on its own .test domain, immediately and with no config file.
+    - command: yerd secure my-app
+      details: A certificate issued on demand by your own local CA. Green padlock, no browser warnings, no mkcert.
+
+app:
+  eyebrow: THE APP
+  heading: ONE WINDOW OVER THE WHOLE TOOLCHAIN.
+  sub: Sites, PHP versions, services, mail and Laravel telemetry - the desktop app is a thin window over the same daemon the CLI drives.
+  primary:
+    light: /images/overview-light.png
+    dark: /images/overview-dark.png
+    alt: The Yerd desktop app Overview dashboard
+  secondary:
+    - light: /images/sites-light.png
+      dark: /images/sites-dark.png
+      alt: The Sites page in the Yerd desktop app
+    - light: /images/services-light.png
+      dark: /images/services-dark.png
+      alt: The Services page in the Yerd desktop app
+  captions:
+    - OVERVIEW · every project and service at a glance
+    - SITES · SERVICES · managed in place
+  chipsLabel: ALSO INSTALLED ON DEMAND
+  chips:
+    - MySQL
+    - MariaDB
+    - PostgreSQL
+    - Redis
+    - Meilisearch
+    - SMTP mail
+    - Composer
+    - Node
+    - Bun
+    - Laravel dumps
+    - LAN sharing
+
+closing:
+  lines:
+    - STOP RUNNING A DATA CENTRE
+    - TO BUILD A WEBSITE.
+  sub: Free and MIT-licensed. macOS and Linux. No account, no subscription.
+  actions:
+    - theme: brand
+      text: Get started →
+      link: /guide/getting-started
+    - theme: alt
+      text: View on GitHub
+      link: https://github.com/forjedio/yerd
 ---
-
-<div class="home-showcase">
-
-<h2 class="home-showcase__heading">See Yerd in action</h2>
-<p class="home-showcase__sub">A tiny tray app over the whole toolchain - PHP, sites, services, mail, Laravel telemetry, and public sharing, all in one place.</p>
-
-<ShowcaseRow
-  title="Multiple PHP versions"
-  description="Run as many PHP versions as you need, side by side. Set a global default, pin per-site versions, tune the shared ini settings, and update in place - every version is an isolated static build the daemon supervises."
-  light="/images/php-light.png"
-  dark="/images/php-dark.png"
-/>
-
-<ShowcaseRow
-  reverse
-  title="Developer tooling, managed"
-  description="Composer, Node, and Bun installed onto your PATH alongside PHP and managed by Yerd - no global installs to collide with, no version juggling. Add or remove a tool in a click."
-  light="/images/tooling-light.png"
-  dark="/images/tooling-dark.png"
-/>
-
-<ShowcaseRow
-  title="Every project, instantly served"
-  description="Park a folder and every project inside it is live on its own .test domain automatically, or link a single directory under a name you choose. Per-site PHP version and one-click HTTPS, all from one list."
-  light="/images/sites-light.png"
-  dark="/images/sites-dark.png"
-/>
-
-<ShowcaseRow
-  reverse
-  title="Databases & caches on tap"
-  description="Redis, MySQL, MariaDB, and PostgreSQL supervised as native processes. Install a version, create and back up databases, and copy a ready-made Laravel .env - every installed engine starts with the daemon."
-  light="/images/services-light.png"
-  dark="/images/services-dark.png"
-/>
-
-<ShowcaseRow
-  title="Catch every outgoing email"
-  description="A built-in SMTP server captures everything your app sends during development so you can preview it - nothing ever leaves your machine. Copy the Laravel mail config and you're wired up in seconds."
-  light="/images/mail-light.png"
-  dark="/images/mail-dark.png"
-/>
-
-<ShowcaseRow
-  reverse
-  title="Laravel dumps, live"
-  description="dump() and dd() plus queries, jobs, views, requests, logs, cache, and outgoing HTTP - streamed live to a dedicated window with zero code changes, captured by a native PHP extension."
-  light="/images/dumps-light.png"
-  dark="/images/dumps-dark.png"
-/>
-
-</div>
