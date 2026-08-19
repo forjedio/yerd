@@ -18,11 +18,13 @@ for a specific one. They live in the same `{data}/bin` directory as the regular
 (default PHP + pcov); use a `php<version>cover` shim when you need to pin coverage
 to a specific version.
 
-::: info Zero overhead by default
-The plain `php` and `php<version>` shims **never** load pcov, so normal CLI
-scripts and your `.test` sites run with no coverage instrumentation. pcov is
-loaded only when you invoke a `…cover` shim - coverage is strictly opt-in,
-per command.
+::: info Zero overhead unless you ask for it
+The plain `php` and `php<version>` shims don't load pcov on their own, so normal
+CLI scripts and your `.test` sites run with no coverage instrumentation. pcov is
+loaded when you invoke a `…cover` shim, or when the environment carries
+[`YERD_COVER=1`](#enabling-coverage-with-yerd-cover) - which those shims export
+so nested PHP runs keep coverage, and which you can set yourself. Either way
+coverage is opt-in: nothing loads pcov unless something asked for it.
 :::
 
 ## Running tests with coverage
@@ -51,10 +53,17 @@ passed to PHP rather than producing a JSON response.
 :::
 
 Each cover shim points `PHPRC` at a pcov-enabled copy of Yerd's CLI ini, then
-hands off to your script. Because `PHPRC` is an environment variable rather
-than a CLI flag, it's inherited by any PHP process your script spawns in
-turn - which is what makes `artisan test`'s child PHPUnit/Pest/paratest run
-see a working coverage driver too, not just the top-level `artisan` process.
+hands off to your script. Because `PHPRC` is an environment variable rather than
+a CLI flag, it is inherited by any PHP process your script spawns **by absolute
+interpreter path** - the `PHP_BINARY` style used by Symfony's `Process`,
+paratest, and `artisan test`'s child PHPUnit/Pest run, so those see the coverage
+driver too, not just the top-level `artisan` process.
+
+A child that resolves `php` from your `PATH` instead - a `#!/usr/bin/env php`
+shebang, phpunit-watcher, a `Process` handed a bare `php` - re-enters Yerd's own
+`php` shim, which sets its own `PHPRC` and would otherwise drop the coverage
+driver on the way through. For those, the cover shims also export
+`YERD_COVER=1`, described next.
 
 ::: tip Add the shim dir to your PATH
 The cover shims sit in the same `{data}/bin` directory as `php` (Yerd prints the
@@ -62,6 +71,43 @@ exact path). Once that's on your `PATH`, `phpcover` and `php<version>cover` are
 available everywhere, right next to the version shims described in
 [PHP Versions](./php-versions).
 :::
+
+## Enabling coverage with `YERD_COVER`
+
+`yerd coverage` and the `phpcover` / `php<version>cover` shims set
+`YERD_COVER=1` in the environment of the PHP process they exec, and every
+process that one spawns inherits it. The plain `php` and `php<version>` shims
+read it: when the environment carries exactly `1`, the shim loads pcov for the
+PHP version **it** resolves, rather than the clean per-version ini it would
+normally use. Coverage therefore survives a `PATH` hop, and a child running on a
+different PHP version gets that version's own pcov build.
+
+You can also set it yourself, which is the answer for test runners that spawn
+their own PHP processes instead of being launched under a cover shim:
+
+```sh
+# Pest / PHPUnit watch mode - the watcher spawns the php runs itself
+YERD_COVER=1 vendor/bin/phpunit-watcher watch
+
+# Or turn it on for a whole shell session
+export YERD_COVER=1
+```
+
+::: warning Exactly `1`, nothing else
+Only the literal value `1` enables coverage. Unset, empty, `0`, `true` or any
+other value means off, so a stray `YERD_COVER` can't quietly instrument
+everything you run.
+:::
+
+Two limits worth knowing:
+
+- **It applies to the `php` and `php<version>` shims.** The `composer`, `wp` and
+  `laravel` shims and `yerd exec` point `PHPRC` at the clean per-version ini
+  regardless, so they do not pick up `YERD_COVER`.
+- **It never fails your command.** If pcov isn't available for the version the
+  shim resolves - a [legacy version](./php-versions#legacy-php-versions), or a
+  build that hasn't been fetched yet - the shim prints a one-line notice on
+  stderr and runs your command as normal, without coverage.
 
 ## Automatic, per version
 

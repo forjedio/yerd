@@ -6,8 +6,14 @@
 //! generated ini (`{data}/php-cli-<minor>.ini`, which carries the user's global
 //! settings **and** that version's registered extensions), and `exec`s PHP.
 //! Pointing `PHPRC` per version is what lets a custom extension load in the CLI,
-//! and `PHPRC` (rather than `-d`) is inherited by any child PHP the exec'd one
-//! spawns. Unix-only: these wrappers are never created on other platforms.
+//! and `PHPRC` (rather than `-d`) is inherited by a child PHP the exec'd one
+//! spawns through its absolute interpreter path; a child that resolves `php` from
+//! `PATH` re-enters this shim instead and gets its own `PHPRC`. To keep coverage
+//! alive across that second kind of hop, the shim honours `YERD_COVER=1` from the
+//! environment (exported by the cover shims) by pointing `PHPRC` at the cover ini
+//! for the version *it* resolves, falling back to the clean ini with a stderr
+//! notice when pcov isn't available. Unix-only: these wrappers are never created
+//! on other platforms.
 
 use std::os::unix::process::CommandExt as _;
 use std::path::Path;
@@ -59,6 +65,13 @@ fn parse_cli_name(name: &str) -> Option<CliSpec> {
     Some(CliSpec::Version(major, minor))
 }
 
+/// Whether `YERD_COVER`'s value turns coverage on. Deliberately narrow: only the
+/// exact value `1` counts, so an unset, empty, `0`, or stray value left in a
+/// long-lived shell never silently instruments every `php` run.
+fn cover_env_enabled(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|v| v == "1")
+}
+
 fn run(spec: &CliSpec) -> ExitCode {
     let dirs = match ActivePaths::new().resolve() {
         Ok(d) => d,
@@ -70,7 +83,18 @@ fn run(spec: &CliSpec) -> ExitCode {
     };
 
     let mut cmd = std::process::Command::new(&php_bin);
-    if let Some(phprc) = cli_phprc(&dirs, &minor) {
+    let cover_ini = if cover_env_enabled(std::env::var_os("YERD_COVER").as_deref()) {
+        match crate::cover_shim::prepare_cover_ini(&dirs, &minor) {
+            Ok(path) => Some(path),
+            Err(msg) => {
+                eprintln!("yerd: YERD_COVER=1 ignored ({msg}); running without coverage");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(phprc) = cover_ini.or_else(|| cli_phprc(&dirs, &minor)) {
         cmd.env("PHPRC", phprc);
     }
     let err = cmd.args(std::env::args_os().skip(1)).exec();
@@ -128,5 +152,20 @@ mod tests {
         assert!(parse_cli_name("php8").is_none());
         assert!(parse_cli_name("php8.").is_none());
         assert!(parse_cli_name("php.5").is_none());
+    }
+
+    #[test]
+    fn cover_env_enabled_only_for_exactly_one() {
+        for (value, want) in [
+            (None, false),
+            (Some(""), false),
+            (Some("0"), false),
+            (Some("true"), false),
+            (Some("1 "), false),
+            (Some("1"), true),
+        ] {
+            let got = cover_env_enabled(value.map(std::ffi::OsStr::new));
+            assert_eq!(got, want, "YERD_COVER={value:?}");
+        }
     }
 }

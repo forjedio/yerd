@@ -6,10 +6,14 @@
 //! `PHPRC` at a pcov-augmented copy of Yerd's CLI ini, and `exec`s PHP with
 //! coverage enabled - leaving the clean `php`/`php<ver>` shims untouched.
 //! `PHPRC` (rather than `-d` flags) is what it is: those flags are process-local,
-//! but this env var is inherited by any PHP process the exec'd one spawns in
-//! turn (e.g. `artisan test`'s child PHPUnit/Pest/paratest run), so coverage
-//! stays enabled across that hop too. Unix-only: cover shims are never created
-//! on other platforms.
+//! but this env var is inherited by a child PHP the exec'd one spawns through its
+//! absolute interpreter path (`PHP_BINARY`, what `artisan test`'s child
+//! PHPUnit/Pest/paratest run does), so coverage stays enabled across that hop. A
+//! child that instead resolves `php` from `PATH` re-enters Yerd's plain CLI shim,
+//! which sets its own `PHPRC`; for that hop these shims also export
+//! `YERD_COVER=1`, which the plain shim honours by deriving the cover ini for the
+//! version *it* resolves. Unix-only: cover shims are never created on other
+//! platforms.
 
 use std::ffi::OsString;
 use std::io::Write as _;
@@ -77,35 +81,14 @@ fn run(spec: &CoverSpec, forward: &[OsString]) -> ExitCode {
         Ok(t) => t,
         Err(msg) => return fail(msg),
     };
-    let ext_dir = dirs.data.join("php-ext").join(format!("php-{minor}"));
-    let pcov = ext_dir.join("pcov.so");
-    if !pcov.is_file() {
-        return fail(format!(
-            "pcov not installed for PHP {minor} — reinstall PHP or wait for the background fetch"
-        ));
-    }
-
-    let base = match crate::shim::cli_phprc(&dirs, &minor) {
-        Some(ini) => match std::fs::read_to_string(&ini) {
-            Ok(s) => s,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(e) => return fail(format!("cannot read Yerd's CLI php.ini: {e}")),
-        },
-        None => String::new(),
+    let cover_ini_path = match prepare_cover_ini(&dirs, &minor) {
+        Ok(p) => p,
+        Err(msg) => return fail(msg),
     };
-    let Some(cover_ini) = php_settings::render_cover_ini(&base, &pcov) else {
-        return fail(format!(
-            "cannot enable pcov: {} isn't safe to use as an ini value (no control characters, `;`, or `#`, and it must be valid UTF-8) - move Yerd's data directory to a path without those",
-            pcov.display()
-        ));
-    };
-    let cover_ini_path = ext_dir.join("cover.ini");
-    if let Err(e) = atomic_write(&cover_ini_path, cover_ini.as_bytes()) {
-        return fail(format!("cannot write {}: {e}", cover_ini_path.display()));
-    }
 
     let err = Command::new(&php_bin)
         .env("PHPRC", &cover_ini_path)
+        .env("YERD_COVER", "1")
         .args(forward)
         .exec();
     if err.kind() == std::io::ErrorKind::NotFound {
@@ -115,6 +98,45 @@ fn run(spec: &CoverSpec, forward: &[OsString]) -> ExitCode {
         ));
     }
     fail(format!("failed to exec {}: {err}", php_bin.display()))
+}
+
+/// Derive the pcov-enabled ini for `minor` and return its path
+/// (`{data}/php-ext/php-<minor>/cover.ini`), writing it atomically.
+///
+/// Shared by the cover shims, which treat an `Err` as fatal, and by the plain
+/// CLI shim under `YERD_COVER=1`, which treats it as a reason to run without
+/// coverage. Every failure - no `pcov.so` for that version (which is also what a
+/// legacy minor hits, since pcov is never built for < 8.2), an unreadable base
+/// ini, a path that can't be rendered as an ini value, or a failed write -
+/// returns `Err(message)` rather than exiting.
+pub(crate) fn prepare_cover_ini(dirs: &PlatformDirs, minor: &str) -> Result<PathBuf, String> {
+    let ext_dir = dirs.data.join("php-ext").join(format!("php-{minor}"));
+    let pcov = ext_dir.join("pcov.so");
+    if !pcov.is_file() {
+        return Err(format!(
+            "pcov not installed for PHP {minor} — reinstall PHP or wait for the background fetch"
+        ));
+    }
+
+    let base = match crate::shim::cli_phprc(dirs, minor) {
+        Some(ini) => match std::fs::read_to_string(&ini) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(format!("cannot read Yerd's CLI php.ini: {e}")),
+        },
+        None => String::new(),
+    };
+    let Some(cover_ini) = php_settings::render_cover_ini(&base, &pcov) else {
+        return Err(format!(
+            "cannot enable pcov: {} isn't safe to use as an ini value (no control characters, `;`, or `#`, and it must be valid UTF-8) - move Yerd's data directory to a path without those",
+            pcov.display()
+        ));
+    };
+    let cover_ini_path = ext_dir.join("cover.ini");
+    if let Err(e) = atomic_write(&cover_ini_path, cover_ini.as_bytes()) {
+        return Err(format!("cannot write {}: {e}", cover_ini_path.display()));
+    }
+    Ok(cover_ini_path)
 }
 
 /// Write `bytes` to `path` atomically (tempfile in the same directory +

@@ -44,7 +44,7 @@ the `tests/cli_e2e.rs` integration test can drive the same code paths.
 | `src/wp_shim.rs` | Multi-call dispatch: when `argv[0]` is `wp`, exec WP-CLI - site-aware if cwd is inside a registered site (pins that site's PHP, scopes via `--path=`) (Unix-only). Runs before clap. |
 | `src/laravel_shim.rs` | Multi-call dispatch: when `argv[0]` is `laravel`, exec the Laravel installer under the resolved PHP (Unix-only). Runs before clap. |
 | `src/shim.rs` | Shared PHP-resolution helpers for the cover, composer, `wp`, and `laravel` multi-call shims (default-version resolution, highest-installed fallback). |
-| `src/cli_shim.rs` | Multi-call dispatch: when `argv[0]` is `php` or `php<major>.<minor>`, exec that version's PHP CLI with `PHPRC` pointed at its generated ini (Unix-only). Runs before clap. |
+| `src/cli_shim.rs` | Multi-call dispatch: when `argv[0]` is `php` or `php<major>.<minor>`, exec that version's PHP CLI with `PHPRC` pointed at its generated ini (Unix-only). Runs before clap. If the environment carries exactly `YERD_COVER=1` it instead derives *its own* resolved version's pcov-enabled `cover.ini` (via `cover_shim::prepare_cover_ini`), falling back to the clean ini with a stderr notice when pcov isn't available. |
 | `src/site_scope.rs` | Resolve the site owning a directory (or a `--site` name) to its pinned PHP version - the shared lookup behind `exec`, `which`, and the site-aware `wp` shim. |
 | `src/exec_cmd.rs` | `yerd exec` / `yerd which`: run a tool under a site's pinned PHP, or print the binary that would be used (local exec, no IPC beyond the site lookup; Unix-only). |
 | `src/path_cmd.rs` | `yerd path install`/`uninstall`/`print`: edit the user's shell startup file to add `{data}/bin` to `PATH` (local, no IPC; Unix-only). |
@@ -118,8 +118,9 @@ the target means "all three".
 maintains a set of *cover* symlinks - `phpcover` (the default PHP version) and
 `php<major>.<minor>cover` (e.g. `php8.4cover`) - each pointing back at the `yerd`
 binary itself. Running one of those names makes `yerd` behave as a thin PHP
-wrapper that turns coverage on, while the clean `php` / `php<ver>` shims stay
-untouched so ordinary PHP carries **no coverage overhead**.
+wrapper that turns coverage on, while the `php` / `php<ver>` shims stay clean so
+ordinary PHP carries **no coverage overhead** - unless they are told otherwise by
+the `YERD_COVER=1` the cover shims export, described below.
 
 This is dispatched in `main.rs` **before clap ever parses**:
 
@@ -156,16 +157,30 @@ if let Some(code) = yerd::cover_shim::dispatch() {
   `ExitCode::FAILURE`.
 
 `PHPRC` rather than `-d` flags is deliberate: `-d` only affects the exec'd
-process itself, but `PHPRC` is an environment variable, so it's inherited by
-any PHP process that process spawns in turn (e.g. `php artisan test`'s child
-PHPUnit/Pest/paratest run, launched via `PHP_BINARY` by a Symfony `Process`
-that inherits the parent's environment) - which is what actually needs pcov
-loaded to produce a coverage report. Setting `PHPRC` on the `Command` overrides
-that one key and leaves the rest of the environment inherited (no
-`env_clear()` is called), so if the caller's shell already has its own `PHPRC`
-(for example from the `yerd path install` rc-block, which points the plain
-`php` shim at `{data}/php-cli.ini`), the cover shim's value wins for the
+process itself, but `PHPRC` is an environment variable, so it's inherited by any
+PHP process that process spawns **by absolute interpreter path** (e.g. `php
+artisan test`'s child PHPUnit/Pest/paratest run, launched via `PHP_BINARY` by a
+Symfony `Process` that inherits the parent's environment) - which is what
+actually needs pcov loaded to produce a coverage report. Setting `PHPRC` on the
+`Command` overrides that one key and leaves the rest of the environment
+inherited (no `env_clear()` is called), so if the caller's shell already has its
+own `PHPRC` (for example from the `yerd path install` rc-block, which points the
+plain `php` shim at `{data}/php-cli.ini`), the cover shim's value wins for the
 exec'd process - intentional, not a conflict to resolve.
+
+Inheritance alone is not enough, though: a child that resolves `php` from `PATH`
+(a `#!/usr/bin/env php` shebang, phpunit-watcher, a `Process` handed a bare
+`php`) re-enters `cli_shim`, which sets its **own** `PHPRC` and so clobbers the
+inherited cover ini. The cover shims therefore also set `YERD_COVER=1` on the
+`Command`. `cli_shim` honours that flag - exact value `1` only - by calling
+`cover_shim::prepare_cover_ini` for the minor *it* just resolved, so the child
+loads the pcov build matching its own PHP version rather than reusing the
+parent's ABI-specific `pcov.so`. When that derivation fails (no `pcov.so` for
+the resolved version, including every legacy minor) `cli_shim` prints one
+`yerd:` notice on stderr and execs with the clean per-version ini, so an
+inherited `YERD_COVER` can never break an unrelated `php` invocation. The
+`composer`, `wp` and `laravel` shims and `yerd exec` do not participate: they
+still set `PHPRC` unconditionally.
 
 The same logic also backs the `yerd coverage <args…>` **subcommand**, which
 reaches it from the other direction. Rather than being keyed on `argv[0]`,

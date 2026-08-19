@@ -52,7 +52,39 @@ belong to your script or test runner, not to `yerd`:
   daemon response, and `--json` has no effect. This is the one command where the
   "`--json` on every command" note in the [overview](./) does not apply.
 
+## Environment
+
+The three coverage front doors - `yerd coverage`, `phpcover` and
+`php<version>cover` - set `YERD_COVER=1` in the environment of the PHP process
+they `exec`, and every process it spawns inherits it.
+
+| Variable | Value | Effect |
+| --- | --- | --- |
+| `YERD_COVER` | `1` | The plain `php` / `php<version>` shims load pcov for the version **they** resolve, instead of the clean per-version ini. |
+| `YERD_COVER` | unset, empty, `0`, anything else | No effect - the plain shims behave normally. |
+
+Only the literal value `1` enables coverage; the reading is deliberately narrow
+so a stray value can't silently instrument every PHP run. Set it yourself for
+test runners that spawn their own PHP processes rather than running under a
+cover shim:
+
+```sh
+YERD_COVER=1 vendor/bin/phpunit-watcher watch
+```
+
+If pcov isn't available for the version a plain shim resolves - a legacy version,
+or a build not fetched yet - the shim prints a one-line notice on stderr and
+**runs the command normally, without coverage**. It does not fail. Only the
+`php` / `php<version>` shims honour the variable: the `composer`, `wp` and
+`laravel` shims and `yerd exec` set their own `PHPRC` regardless. See
+[Code Coverage · Enabling coverage with `YERD_COVER`](../../guide/code-coverage#enabling-coverage-with-yerd-cover).
+
 ## Failure modes
+
+These apply to the coverage front doors - `yerd coverage` and the `phpcover` /
+`php<version>cover` shims - which fail rather than run without coverage. They do
+**not** describe the `YERD_COVER` path above, where a plain shim falls back to a
+normal run instead.
 
 - If the resolved default version has no published pcov build for your OS and
   architecture yet, `yerd coverage` reports that pcov isn't installed for that
