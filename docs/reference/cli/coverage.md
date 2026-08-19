@@ -75,8 +75,9 @@ YERD_COVER=1 vendor/bin/phpunit-watcher watch
 If pcov isn't available for the version a plain shim resolves - a legacy version,
 or a build not fetched yet - the shim prints a one-line notice on stderr and
 **runs the command normally, without coverage**. It does not fail. Only the
-`php` / `php<version>` shims honour the variable: the `composer`, `wp` and
-`laravel` shims and `yerd exec` set their own `PHPRC` regardless. See
+`php` / `php<version>` shims honour the variable: the `wp` shim and `yerd exec`
+set their own `PHPRC` regardless, while the `composer` and `laravel` shims set
+none and inherit whatever the environment already carries. See
 [Code Coverage · Enabling coverage with `YERD_COVER`](../../guide/code-coverage#enabling-coverage-with-yerd-cover).
 
 ## Failure modes

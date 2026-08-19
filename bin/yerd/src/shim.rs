@@ -11,7 +11,7 @@ use yerd_platform::PlatformDirs;
 
 /// Whether a `"major.minor"` minor string names a legacy version (< 8.2). A
 /// minor that doesn't parse is treated as non-legacy (it will fail elsewhere).
-fn minor_is_legacy(minor: &str) -> bool {
+pub(crate) fn minor_is_legacy(minor: &str) -> bool {
     minor.parse::<PhpVersion>().is_ok_and(PhpVersion::is_legacy)
 }
 

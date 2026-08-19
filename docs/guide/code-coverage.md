@@ -101,9 +101,12 @@ everything you run.
 
 Two limits worth knowing:
 
-- **It applies to the `php` and `php<version>` shims.** The `composer`, `wp` and
-  `laravel` shims and `yerd exec` point `PHPRC` at the clean per-version ini
-  regardless, so they do not pick up `YERD_COVER`.
+- **It applies to the `php` and `php<version>` shims.** The `wp` shim and `yerd
+  exec` point `PHPRC` at the clean per-version ini regardless, so they do not
+  pick up `YERD_COVER`. The `composer` and `laravel` shims set no `PHPRC` of
+  their own at all: they simply inherit whatever the environment carries, so a
+  `composer` run nested inside a cover shim keeps the *parent's* cover ini even
+  though it resolves your default PHP version.
 - **It never fails your command.** If pcov isn't available for the version the
   shim resolves - a [legacy version](./php-versions#legacy-php-versions), or a
   build that hasn't been fetched yet - the shim prints a one-line notice on

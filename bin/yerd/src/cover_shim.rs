@@ -105,17 +105,25 @@ fn run(spec: &CoverSpec, forward: &[OsString]) -> ExitCode {
 ///
 /// Shared by the cover shims, which treat an `Err` as fatal, and by the plain
 /// CLI shim under `YERD_COVER=1`, which treats it as a reason to run without
-/// coverage. Every failure - no `pcov.so` for that version (which is also what a
-/// legacy minor hits, since pcov is never built for < 8.2), an unreadable base
+/// coverage. Every failure - no `pcov.so` for that version, an unreadable base
 /// ini, a path that can't be rendered as an ini value, or a failed write -
-/// returns `Err(message)` rather than exiting.
+/// returns `Err(message)` rather than exiting. A legacy minor gets its own
+/// wording, since pcov is never built for < 8.2 and no amount of waiting for the
+/// background fetch will produce one.
 pub(crate) fn prepare_cover_ini(dirs: &PlatformDirs, minor: &str) -> Result<PathBuf, String> {
     let ext_dir = dirs.data.join("php-ext").join(format!("php-{minor}"));
     let pcov = ext_dir.join("pcov.so");
     if !pcov.is_file() {
-        return Err(format!(
-            "pcov not installed for PHP {minor} — reinstall PHP or wait for the background fetch"
-        ));
+        return Err(if crate::shim::minor_is_legacy(minor) {
+            format!(
+                "pcov is not built for out-of-support legacy PHP {minor} (< 8.2), so coverage is \
+                 never available there"
+            )
+        } else {
+            format!(
+                "pcov not installed for PHP {minor} — reinstall PHP or wait for the background fetch"
+            )
+        });
     }
 
     let base = match crate::shim::cli_phprc(dirs, minor) {
@@ -207,16 +215,40 @@ mod tests {
         assert!(parse_cover_name("phpx.4cover").is_none());
     }
 
+    fn dirs_at(tmp: &Path) -> PlatformDirs {
+        PlatformDirs {
+            config: tmp.join("c"),
+            data: tmp.join("d"),
+            state: tmp.join("s"),
+            cache: tmp.join("ca"),
+            runtime: tmp.join("r"),
+        }
+    }
+
+    /// The plain CLI shim reaches [`prepare_cover_ini`] without a legacy gate in
+    /// front of it, so the missing-pcov message has to tell a legacy minor the
+    /// truth rather than sending the user off to wait for a fetch that will
+    /// never produce a build.
+    #[test]
+    fn missing_pcov_message_distinguishes_legacy_from_not_yet_fetched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_at(tmp.path());
+
+        let legacy = prepare_cover_ini(&dirs, "8.1").unwrap_err();
+        assert!(legacy.contains("legacy"), "got {legacy}");
+        assert!(
+            !legacy.contains("background fetch"),
+            "legacy must not promise a fetch, got {legacy}"
+        );
+
+        let supported = prepare_cover_ini(&dirs, "8.4").unwrap_err();
+        assert!(supported.contains("background fetch"), "got {supported}");
+    }
+
     #[test]
     fn resolve_target_rejects_legacy_before_checking_install() {
         let tmp = tempfile::tempdir().unwrap();
-        let dirs = PlatformDirs {
-            config: tmp.path().join("c"),
-            data: tmp.path().join("d"),
-            state: tmp.path().join("s"),
-            cache: tmp.path().join("ca"),
-            runtime: tmp.path().join("r"),
-        };
+        let dirs = dirs_at(tmp.path());
         // No 7.4 installed, yet the legacy gate fires first with a pcov message,
         // not "not installed".
         match resolve_target(&dirs, &CoverSpec::Version(7, 4)) {

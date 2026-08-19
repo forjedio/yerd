@@ -178,9 +178,12 @@ loads the pcov build matching its own PHP version rather than reusing the
 parent's ABI-specific `pcov.so`. When that derivation fails (no `pcov.so` for
 the resolved version, including every legacy minor) `cli_shim` prints one
 `yerd:` notice on stderr and execs with the clean per-version ini, so an
-inherited `YERD_COVER` can never break an unrelated `php` invocation. The
-`composer`, `wp` and `laravel` shims and `yerd exec` do not participate: they
-still set `PHPRC` unconditionally.
+inherited `YERD_COVER` can never break an unrelated `php` invocation. The `wp`
+shim and `yerd exec` do not participate: they still point `PHPRC` at
+`cli_phprc`'s clean per-version ini. `composer_shim` and `laravel_shim` set no
+`PHPRC` at all, so they inherit the caller's - which means a `composer` nested
+inside a cover shim keeps the parent's cover ini while resolving the *default*
+PHP version, and loads a mismatched `pcov.so` when those versions differ.
 
 The same logic also backs the `yerd coverage <args…>` **subcommand**, which
 reaches it from the other direction. Rather than being keyed on `argv[0]`,
