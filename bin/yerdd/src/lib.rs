@@ -470,7 +470,10 @@ fn spawn_redirect_probe(
 /// holds in LAN mode too: the loopback probe measures exactly whether `:443` is
 /// reachable on-host (via the `elevate ports` redirect), so a LAN-enabled host
 /// that hasn't elevated still advertises the reachable fallback port.
-fn effective_redirect_port(https: yerd_ipc::PortStatus, redirect_active: Option<bool>) -> u16 {
+pub(crate) fn effective_redirect_port(
+    https: yerd_ipc::PortStatus,
+    redirect_active: Option<bool>,
+) -> u16 {
     if !https.fell_back || redirect_active == Some(true) {
         https.requested
     } else {
