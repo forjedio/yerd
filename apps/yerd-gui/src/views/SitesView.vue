@@ -3,8 +3,11 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   ArrowDown,
   ArrowUp,
+  CakeSlice,
   ChevronDown,
   ChevronRight,
+  Feather,
+  Flame,
   FolderMinus,
   FolderOpen,
   FolderPlus,
@@ -22,6 +25,7 @@ import {
 
 import CreateLaravelWizard from "@/components/site-create/CreateLaravelWizard.vue";
 import CreateWordPressWizard from "@/components/site-create/CreateWordPressWizard.vue";
+import CreateComposerSiteWizard from "@/components/site-create/CreateComposerSiteWizard.vue";
 import SiteCard from "@/components/SiteCard.vue";
 import SiteDetailsSidebar from "@/components/SiteDetailsSidebar.vue";
 import PageHeader from "@/components/PageHeader.vue";
@@ -69,7 +73,7 @@ import {
   unlink,
   unpark,
 } from "@/ipc/client";
-import type { GroupsState, Site, SiteEntry } from "@/ipc/types";
+import type { ComposerFramework, GroupsState, Site, SiteEntry } from "@/ipc/types";
 
 const toast = useToast();
 const { report } = useDaemon();
@@ -341,6 +345,8 @@ const groupSelectOptions = computed(() => [
 // ── create new site ──
 const createOpen = ref(false);
 const wordpressCreateOpen = ref(false);
+const COMPOSER_FRAMEWORKS: ComposerFramework[] = ["codeigniter", "cakephp", "slim"];
+const composerCreateOpen = ref<ComposerFramework | null>(null);
 const phpVersionList = computed(() => (report.value?.php ?? []).map((p) => p.version));
 const defaultPhp = computed(() => report.value?.default_php ?? "");
 
@@ -354,6 +360,12 @@ function openCreate(): void {
 function openCreateWordpress(): void {
   void nextTick(() => {
     wordpressCreateOpen.value = true;
+  });
+}
+
+function openCreateComposer(framework: ComposerFramework): void {
+  void nextTick(() => {
+    composerCreateOpen.value = framework;
   });
 }
 
@@ -672,6 +684,15 @@ async function shareSitePublicly(s: Site): Promise<void> {
             <DropdownMenuItem @select="openCreateWordpress">
               <Package class="size-4" /> New WordPress site…
             </DropdownMenuItem>
+            <DropdownMenuItem @select="openCreateComposer('codeigniter')">
+              <Flame class="size-4" /> New CodeIgniter site…
+            </DropdownMenuItem>
+            <DropdownMenuItem @select="openCreateComposer('cakephp')">
+              <CakeSlice class="size-4" /> New CakePHP site…
+            </DropdownMenuItem>
+            <DropdownMenuItem @select="openCreateComposer('slim')">
+              <Feather class="size-4" /> New Slim site…
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem @select="linkOpen = true">
               <Link2 class="size-4" /> Link existing site
@@ -959,6 +980,21 @@ async function shareSitePublicly(s: Site): Promise<void> {
       :default-php="defaultPhp"
       :tld="tld"
       :report="report ?? null"
+      @created="onCreated"
+    />
+
+    <!-- create new CodeIgniter / CakePHP / Slim site wizard -->
+    <CreateComposerSiteWizard
+      v-for="framework in COMPOSER_FRAMEWORKS"
+      :key="framework"
+      :open="composerCreateOpen === framework"
+      :framework="framework"
+      :parked-folders="parked"
+      :php-versions="phpVersionList"
+      :default-php="defaultPhp"
+      :tld="tld"
+      :report="report ?? null"
+      @update:open="(v: boolean) => (composerCreateOpen = v ? framework : null)"
       @created="onCreated"
     />
 

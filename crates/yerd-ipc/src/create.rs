@@ -64,6 +64,15 @@ pub enum Framework {
         /// WordPress-specific installer options.
         options: WordPressOptions,
     },
+    /// Scaffold a `CodeIgniter` 4 app via `composer create-project
+    /// codeigniter4/appstarter`. Spelled `Codeigniter` so the wire tag is
+    /// `"codeigniter"`, same reason as [`Framework::Wordpress`].
+    Codeigniter,
+    /// Scaffold a `CakePHP` app via `composer create-project cakephp/app`.
+    /// Spelled `Cakephp` so the wire tag is `"cakephp"`.
+    Cakephp,
+    /// Scaffold a Slim 4 app via `composer create-project slim/skeleton`.
+    Slim,
 }
 
 /// Options mapped onto `laravel new` flags.

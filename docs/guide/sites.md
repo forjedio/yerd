@@ -124,6 +124,22 @@ A final summary of your choices. Click **Create** and the dialog switches to a l
 
 When it finishes, the site is on disk, registered, served at `<name>.test`, and ready to use - **Open folder**, **Open in browser**, or **WP Admin** to sign in as the administrator you just created (see below).
 
+## Create a new CodeIgniter, CakePHP or Slim site
+
+The **Create** menu can also scaffold a project from a framework's official Composer template. Choose **New CodeIgniter site**, **New CakePHP site** or **New Slim site** to open a two-step wizard, **Basics → Review**, that runs `composer create-project` under the PHP version you pick and registers the result as a `.test` site automatically.
+
+| Framework | Template | PHP |
+|---|---|---|
+| CodeIgniter 4 | `codeigniter4/appstarter` | 8.1+ |
+| CakePHP | `cakephp/app` | 8.1+ |
+| Slim 4 | `slim/skeleton` | 7.4+ |
+
+::: tip Prerequisites
+These wizards need a PHP version the framework supports and **Composer**. If either is missing, the wizard offers to install it. An [externally installed](./tooling#external-tools) Composer works too.
+:::
+
+The **Basics** step matches the other wizards: project name, location, PHP version and HTTPS. The web root is detected automatically: `public/` for CodeIgniter and Slim, `webroot/` for CakePHP. A new CodeIgniter site also gets a `.env` created from its `env` template, with `CI_ENVIRONMENT = development` and `app.baseURL` set to the site's URL, so errors show while you work. Yerd keeps an active `app.baseURL` in step when you later toggle HTTPS or change the site's primary domain. A commented-out one is left alone. No database is created. Configure one in the project as usual - see [Services & Databases](./services).
+
 ## WordPress one-click admin login
 
 A WordPress site created through the wizard has **one-click admin login** turned on by default: opening **WP Admin** signs you in as the site's administrator instead of showing WordPress's own login screen. Existing or parked WordPress sites can opt in the same way.

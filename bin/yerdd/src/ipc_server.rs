@@ -2638,6 +2638,7 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
 
     if let Some(site) = site_after {
         crate::wordpress_url_sync::sync_site_url(&site, state).await;
+        crate::codeigniter_url_sync::sync_base_url(&site, state).await;
     }
 
     tracing::info!(summary = %applied.summary, "applied mutation");
@@ -2645,7 +2646,7 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
 }
 
 /// The post-mutation site to run [`crate::wordpress_url_sync::sync_site_url`]
-/// against: `SetSecure` (which flips the scheme) plus every domain mutation
+/// and [`crate::codeigniter_url_sync::sync_base_url`] against: `SetSecure` (which flips the scheme) plus every domain mutation
 /// (each of which can change the primary domain a WordPress install should
 /// advertise). `AddDomain` is included, not just `SetPrimaryDomain`/`ResetDomains`
 /// /`RemoveDomain`: re-adding a previously-suppressed apex when the delta holds no

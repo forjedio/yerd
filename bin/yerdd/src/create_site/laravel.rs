@@ -49,13 +49,11 @@ pub(super) async fn run(
     let data_root = &dirs.data;
 
     let composer_phar = tools::composer::phar_path(dirs);
-    let composer_managed = composer_phar.is_file();
-    if !composer_managed
-        && crate::tools::external::find_in_path(&user_dirs, "composer", &data_bin, data_root)
-            .is_none()
-    {
+    let Some(composer) =
+        super::resolve_composer(&composer_phar, &user_dirs, &data_bin, data_root)
+    else {
         return Outcome::Failed("Composer is not installed - install it first".to_owned());
-    }
+    };
 
     let managed_installer = tools::laravel::installer_bin(dirs);
     let installer_bin = if managed_installer.is_file() {
@@ -81,15 +79,11 @@ pub(super) async fn run(
         return Outcome::Failed(msg);
     }
 
-    let job_bin = match build_job_bin(
-        job_dir,
-        &php_cli,
-        composer_managed.then_some(composer_phar.as_path()),
-    ) {
+    let job_bin = match super::build_job_bin(job_dir, &php_cli, composer.managed_phar()) {
         Ok(b) => b,
         Err(msg) => return Outcome::Failed(msg),
     };
-    let path_env = composed_path(&job_bin, &data_bin, &user_dirs);
+    let path_env = super::composed_path(&job_bin, &data_bin, &user_dirs);
     let composer_home = tools::laravel::composer_home(dirs);
 
     if needs_git(options) && !git_available(&path_env).await {
@@ -139,10 +133,9 @@ pub(super) async fn run(
     {
         return Outcome::Failed(format!("scaffolded, but registration failed: {msg}"));
     }
-    state
-        .jobs
-        .push_log(id, format!("serving https://{name}.test"))
-        .await;
+    let tld = state.config.lock().await.tld.as_str().to_owned();
+    let url = crate::public_url::site_url(state, &format!("{name}.{tld}"), spec.secure).await;
+    state.jobs.push_log(id, format!("serving {url}")).await;
     Outcome::Succeeded
 }
 
@@ -233,19 +226,6 @@ async fn ensure_js_runtime(
     super::ensure_tool(id, tool, user_dirs, state).await
 }
 
-/// Compose `PATH` = `<per-job bin> : <{data}/bin> : <user PATH> : <inherited>`.
-/// The user's resolved PATH is appended so externally-installed
-/// composer/node/bun/git/laravel are findable, while the per-job bin (managed
-/// `php`) and Yerd shims keep precedence.
-fn composed_path(job_bin: &Path, data_bin: &Path, user_dirs: &[PathBuf]) -> std::ffi::OsString {
-    let mut entries = vec![job_bin.to_path_buf(), data_bin.to_path_buf()];
-    entries.extend(user_dirs.iter().cloned());
-    if let Some(existing) = std::env::var_os("PATH") {
-        entries.extend(std::env::split_paths(&existing));
-    }
-    std::env::join_paths(entries).unwrap_or_else(|_| std::ffi::OsString::from(job_bin))
-}
-
 /// `git --version` resolves on the composed PATH.
 async fn git_available(path_env: &std::ffi::OsString) -> bool {
     tokio::process::Command::new("git")
@@ -257,58 +237,6 @@ async fn git_available(path_env: &std::ffi::OsString) -> bool {
         .status()
         .await
         .is_ok_and(|s| s.success())
-}
-
-/// Single-quote a path for safe inclusion in a `/bin/sh` script, escaping any
-/// embedded single quotes (`'` → `'\''`). Without this a data dir containing a
-/// `'` (e.g. `/Users/o'brien/…`) would produce a broken wrapper script.
-#[cfg(unix)]
-fn sh_quote(p: &Path) -> String {
-    format!("'{}'", p.to_string_lossy().replace('\'', "'\\''"))
-}
-
-/// Build `{job_dir}/bin` containing a `php` symlink to the chosen version and,
-/// when `composer_phar` is `Some` (Yerd-managed Composer), a `composer` wrapper
-/// that runs that same PHP so the installer's nested `composer create-project`
-/// uses the requested runtime (Composer derives its child PHP from `PHP_BINARY`).
-/// When `None` (external Composer), no wrapper is written - Composer is found on
-/// the composed PATH and runs under the managed `php` via its shebang. Unix-only.
-#[cfg(unix)]
-fn build_job_bin(
-    job_dir: &Path,
-    php_cli: &Path,
-    composer_phar: Option<&Path>,
-) -> Result<PathBuf, String> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let bin = job_dir.join("bin");
-    std::fs::create_dir_all(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
-
-    let php_link = bin.join("php");
-    let _ = std::fs::remove_file(&php_link);
-    std::os::unix::fs::symlink(php_cli, &php_link).map_err(|e| format!("link php: {e}"))?;
-
-    if let Some(phar) = composer_phar {
-        let composer = bin.join("composer");
-        let script = format!(
-            "#!/bin/sh\nexec {} {} \"$@\"\n",
-            sh_quote(php_cli),
-            sh_quote(phar)
-        );
-        std::fs::write(&composer, script).map_err(|e| format!("write composer wrapper: {e}"))?;
-        std::fs::set_permissions(&composer, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| format!("chmod composer wrapper: {e}"))?;
-    }
-    Ok(bin)
-}
-
-#[cfg(not(unix))]
-fn build_job_bin(
-    _job_dir: &Path,
-    _php_cli: &Path,
-    _composer_phar: Option<&Path>,
-) -> Result<PathBuf, String> {
-    Err("site creation is not yet supported on this platform".to_owned())
 }
 
 #[cfg(test)]
@@ -471,65 +399,5 @@ mod tests {
         let mut o = opts();
         o.starter_kit = StarterKit::Community("acme/kit".to_owned());
         assert!(needs_git(&o));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn composed_path_puts_job_bin_first() {
-        let job_bin = Path::new("/jobs/abc/bin");
-        let data_bin = Path::new("/data/bin");
-        let user = vec![PathBuf::from("/opt/homebrew/bin")];
-        let composed = composed_path(job_bin, data_bin, &user);
-        let entries: Vec<PathBuf> = std::env::split_paths(&composed).collect();
-        assert_eq!(entries.first().unwrap(), job_bin);
-        assert_eq!(entries.get(1).unwrap(), data_bin);
-        assert!(entries.iter().any(|p| p == Path::new("/opt/homebrew/bin")));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn sh_quote_escapes_embedded_single_quotes() {
-        assert_eq!(sh_quote(Path::new("/Users/obrien")), "'/Users/obrien'");
-        assert_eq!(
-            sh_quote(Path::new("/Users/o'brien/data")),
-            "'/Users/o'\\''brien/data'"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn build_job_bin_links_php_and_writes_composer_wrapper() {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = tempfile::tempdir().unwrap();
-        let job_dir = tmp.path().join("job");
-        let php = tmp.path().join("php-bin");
-        std::fs::write(&php, b"#!fake-php").unwrap();
-        let phar = tmp.path().join("composer.phar");
-        std::fs::write(&phar, b"phar").unwrap();
-
-        let bin = build_job_bin(&job_dir, &php, Some(phar.as_path())).unwrap();
-        assert_eq!(std::fs::read_link(bin.join("php")).unwrap(), php);
-        let wrapper = std::fs::read_to_string(bin.join("composer")).unwrap();
-        assert!(wrapper.starts_with("#!/bin/sh\n"));
-        assert!(wrapper.contains(&php.to_string_lossy().into_owned()));
-        assert!(wrapper.contains(&phar.to_string_lossy().into_owned()));
-        let mode = std::fs::metadata(bin.join("composer"))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o111, 0o111, "wrapper should be executable");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn build_job_bin_without_phar_writes_no_composer_wrapper() {
-        let tmp = tempfile::tempdir().unwrap();
-        let job_dir = tmp.path().join("job");
-        let php = tmp.path().join("php-bin");
-        std::fs::write(&php, b"#!fake-php").unwrap();
-
-        let bin = build_job_bin(&job_dir, &php, None).unwrap();
-        assert!(bin.join("php").exists());
-        assert!(!bin.join("composer").exists());
     }
 }

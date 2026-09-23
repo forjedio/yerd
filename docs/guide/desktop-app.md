@@ -69,7 +69,7 @@ The card itself keeps only the inline shortcuts - open, the HTTPS lock, and that
 
 The filter box above the list matches **any** domain a site answers, not just its name - typing `admin.` finds `codestash.test` when its only match is an added `admin.codestash.test`.
 
-Sites can also be organized into named, reorderable groups shown as collapsible sections on this page; see [Sites](./sites) for the full walkthrough. The **Create** menu at the top of the page offers New Laravel site…, New WordPress site…, Link existing site, Park folder, and New group….
+Sites can also be organized into named, reorderable groups shown as collapsible sections on this page; see [Sites](./sites) for the full walkthrough. The **Create** menu at the top of the page offers New Laravel site…, New WordPress site…, New CodeIgniter site…, New CakePHP site…, New Slim site…, Link existing site, Park folder, and New group….
 
 #### The site details sidebar
 
