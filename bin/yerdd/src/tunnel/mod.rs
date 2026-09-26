@@ -149,7 +149,8 @@ pub async fn start_quick_tunnel(site: &str, state: &DaemonState) -> Response {
         };
     };
 
-    let origin = OriginTarget::for_site(&host, secure, state.http.bound, state.https.bound);
+    let (plain_port, tls_port) = origin_ports(state).await;
+    let origin = OriginTarget::for_site(&host, secure, plain_port, tls_port);
     let args = yerd_tunnel::args::quick_tunnel_args(&origin);
     run_to_ready(
         state,
@@ -211,6 +212,50 @@ pub(super) async fn resolve_site(
     }
     let tld = router.config().tld().to_owned();
     Some((s.name().to_owned(), s.secure(), tld, host))
+}
+
+/// The loopback ports a tunnel origin should dial: the well-known pair when
+/// the proxy bound it directly or a live privileged-port redirect (macOS `pf`,
+/// via `yerd elevate ports`) carries it, the rootless fallbacks otherwise.
+///
+/// While that `pf` `rdr` is live, a direct loopback connect to the *fallback*
+/// port is unreliable: the kernel's SYN-ACK from `:8443` is matched against
+/// the redirect's state table and dropped, so `cloudflared` times out dialing
+/// the origin and the public hostname answers `502`. The redirect makes the
+/// well-known port reachable, so the origin dials that instead. Probes the
+/// redirect right now (rather than trusting `state.redirect_https_port`, which
+/// the background prober refreshes only every minute) so a tunnel started
+/// straight after `yerd elevate ports` or a daemon restart picks the right port.
+pub(super) async fn origin_ports(state: &DaemonState) -> (u16, u16) {
+    let redirect_active = if state.http.fell_back || state.https.fell_back {
+        tokio::task::spawn_blocking(|| {
+            use yerd_platform::PortRedirector;
+            yerd_platform::ActivePortRedirector::new().is_active()
+        })
+        .await
+        .unwrap_or(None)
+    } else {
+        None
+    };
+    state.redirect_https_port.store(
+        crate::effective_redirect_port(state.https, redirect_active),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    origin_ports_for(state.http, state.https, redirect_active)
+}
+
+/// Pure port selection behind [`origin_ports`]: each listener dials its
+/// requested (well-known) port when bound directly or when the redirect is
+/// live, and its bound fallback port otherwise.
+fn origin_ports_for(
+    http: yerd_ipc::PortStatus,
+    https: yerd_ipc::PortStatus,
+    redirect_active: Option<bool>,
+) -> (u16, u16) {
+    (
+        crate::effective_redirect_port(http, redirect_active),
+        crate::effective_redirect_port(https, redirect_active),
+    )
 }
 
 /// Register + spawn a tunnel for `name` under a brief manager lock, then drive
@@ -438,6 +483,34 @@ pub async fn install_cloudflared_streamed(state: Arc<DaemonState>) -> Response {
 mod tests {
     use super::*;
     use crate::test_support::state_in;
+
+    fn status(requested: u16, bound: u16) -> yerd_ipc::PortStatus {
+        yerd_ipc::PortStatus {
+            requested,
+            bound,
+            fell_back: requested != bound,
+        }
+    }
+
+    #[test]
+    fn origin_dials_well_known_ports_when_bound_directly() {
+        let (http, https) = (status(80, 80), status(443, 443));
+        assert_eq!(origin_ports_for(http, https, None), (80, 443));
+        assert_eq!(origin_ports_for(http, https, Some(false)), (80, 443));
+    }
+
+    #[test]
+    fn origin_dials_well_known_ports_through_a_live_redirect() {
+        let (http, https) = (status(80, 8080), status(443, 8443));
+        assert_eq!(origin_ports_for(http, https, Some(true)), (80, 443));
+    }
+
+    #[test]
+    fn origin_dials_fallback_ports_without_a_redirect() {
+        let (http, https) = (status(80, 8080), status(443, 8443));
+        assert_eq!(origin_ports_for(http, https, Some(false)), (8080, 8443));
+        assert_eq!(origin_ports_for(http, https, None), (8080, 8443));
+    }
 
     #[tokio::test]
     async fn resolved_cloudflared_reflects_a_fresh_install_without_restart() {
