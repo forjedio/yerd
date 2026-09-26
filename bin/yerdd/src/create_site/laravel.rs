@@ -49,8 +49,7 @@ pub(super) async fn run(
     let data_root = &dirs.data;
 
     let composer_phar = tools::composer::phar_path(dirs);
-    let Some(composer) =
-        super::resolve_composer(&composer_phar, &user_dirs, &data_bin, data_root)
+    let Some(composer) = super::resolve_composer(&composer_phar, &user_dirs, &data_bin, data_root)
     else {
         return Outcome::Failed("Composer is not installed - install it first".to_owned());
     };
@@ -134,7 +133,7 @@ pub(super) async fn run(
         return Outcome::Failed(format!("scaffolded, but registration failed: {msg}"));
     }
     let tld = state.config.lock().await.tld.as_str().to_owned();
-    let url = crate::public_url::site_url(state, &format!("{name}.{tld}"), spec.secure).await;
+    let url = crate::public_url::browser_url(state, &format!("{name}.{tld}"), spec.secure).await;
     state.jobs.push_log(id, format!("serving {url}")).await;
     Outcome::Succeeded
 }

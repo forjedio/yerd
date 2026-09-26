@@ -8,7 +8,7 @@
 //! template leaves unsuitable for local development; Registering reuses the
 //! shared [`super::registration`].
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use tokio::sync::watch;
@@ -75,8 +75,7 @@ pub(super) async fn run(
     let data_bin = tools::bin_dir(dirs);
 
     let composer_phar = tools::composer::phar_path(dirs);
-    let Some(composer) =
-        super::resolve_composer(&composer_phar, &user_dirs, &data_bin, &dirs.data)
+    let Some(composer) = super::resolve_composer(&composer_phar, &user_dirs, &data_bin, &dirs.data)
     else {
         return Outcome::Failed("Composer is not installed - install it first".to_owned());
     };
@@ -99,16 +98,22 @@ pub(super) async fn run(
     let args = create_project_args(template, name);
     state
         .jobs
-        .push_log(id, format!("$ composer {CREATE_PROJECT} {}", args.join(" ")))
+        .push_log(
+            id,
+            format!("$ composer {CREATE_PROJECT} {}", args.join(" ")),
+        )
         .await;
 
-    let command = composer_command(&composer, &php_cli, args);
+    let composer_exe = match &composer {
+        Composer::Managed(_) => job_bin.join("composer"),
+        Composer::External(bin) => bin.clone(),
+    };
     let scaffold = super::run_streamed(
         id,
-        &command.program,
+        &composer_exe,
         &[],
-        &command.entry_point,
-        &command.args,
+        Path::new(CREATE_PROJECT),
+        &args,
         &spec.parent_dir,
         Some(&path_env),
         Some(&composer_home),
@@ -139,14 +144,13 @@ pub(super) async fn run(
     }
 
     let tld = state.config.lock().await.tld.as_str().to_owned();
-    let url = crate::public_url::site_url(state, &format!("{name}.{tld}"), spec.secure).await;
+    let host = format!("{name}.{tld}");
 
     if template == Template::Codeigniter {
+        let url = crate::public_url::site_url(state, &host, spec.secure).await;
         if let Err(msg) = write_codeigniter_env(&project_dir, &format!("{url}/")) {
-            state
-                .jobs
-                .push_log(id, format!("warning: could not write .env: {msg}"))
-                .await;
+            let _ = std::fs::remove_dir_all(&project_dir);
+            return Outcome::Failed(format!("could not write .env: {msg}"));
         }
     }
 
@@ -156,35 +160,16 @@ pub(super) async fn run(
     {
         return Outcome::Failed(format!("scaffolded, but registration failed: {msg}"));
     }
+    let site = state.router.read().await.get(name).cloned();
+    if let Some(site) = site {
+        crate::codeigniter_url_sync::sync_base_url(&site, state).await;
+    }
+    let url = crate::public_url::browser_url(state, &host, spec.secure).await;
     state.jobs.push_log(id, format!("serving {url}")).await;
     Outcome::Succeeded
 }
 
 const CREATE_PROJECT: &str = "create-project";
-
-#[derive(Debug, PartialEq, Eq)]
-struct Command {
-    program: PathBuf,
-    entry_point: PathBuf,
-    args: Vec<String>,
-}
-
-/// Map `composer create-project <args…>` onto [`super::run_streamed`]'s
-/// `<program> <entry_point> <args…>` shape. Pure - unit-tested.
-fn composer_command(composer: &Composer, php_cli: &Path, args: Vec<String>) -> Command {
-    match composer {
-        Composer::Managed(phar) => Command {
-            program: php_cli.to_path_buf(),
-            entry_point: phar.clone(),
-            args: std::iter::once(CREATE_PROJECT.to_owned()).chain(args).collect(),
-        },
-        Composer::External(bin) => Command {
-            program: bin.clone(),
-            entry_point: PathBuf::from(CREATE_PROJECT),
-            args,
-        },
-    }
-}
 
 /// The `composer create-project` arguments after the subcommand. Pure -
 /// unit-tested.
@@ -202,13 +187,20 @@ fn create_project_args(template: Template, name: &str) -> Vec<String> {
     ]
 }
 
-/// `base_url` must end in `/`, which `CodeIgniter`'s `app.baseURL` requires.
+/// `base_url` must end in `/`, which `CodeIgniter`'s `app.baseURL` requires. A
+/// missing `env` template is treated as empty; any other read or write error
+/// fails the create, since the site would otherwise boot in production mode.
 fn write_codeigniter_env(project_dir: &Path, base_url: &str) -> Result<(), String> {
     let dotenv = project_dir.join(".env");
     if dotenv.exists() {
         return Ok(());
     }
-    let template = std::fs::read_to_string(project_dir.join("env")).unwrap_or_default();
+    let template_path = project_dir.join("env");
+    let template = match std::fs::read_to_string(&template_path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("{}: {e}", template_path.display())),
+    };
     std::fs::write(&dotenv, codeigniter_env(&template, base_url))
         .map_err(|e| format!("{}: {e}", dotenv.display()))
 }
@@ -287,44 +279,16 @@ mod tests {
         ] {
             assert_eq!(
                 create_project_args(template, "app"),
-                vec!["--no-interaction", "--no-ansi", "--prefer-dist", package, "app"],
+                vec![
+                    "--no-interaction",
+                    "--no-ansi",
+                    "--prefer-dist",
+                    package,
+                    "app"
+                ],
                 "{template:?}"
             );
         }
-    }
-
-    #[test]
-    fn composer_command_runs_managed_phar_under_job_php() {
-        let cmd = composer_command(
-            &Composer::Managed(PathBuf::from("/data/composer.phar")),
-            Path::new("/data/php/8.3/bin/php"),
-            vec!["--no-ansi".to_owned()],
-        );
-        assert_eq!(
-            cmd,
-            Command {
-                program: PathBuf::from("/data/php/8.3/bin/php"),
-                entry_point: PathBuf::from("/data/composer.phar"),
-                args: vec!["create-project".to_owned(), "--no-ansi".to_owned()],
-            }
-        );
-    }
-
-    #[test]
-    fn composer_command_executes_external_composer_directly() {
-        let cmd = composer_command(
-            &Composer::External(PathBuf::from("/home/me/.local/share/mise/shims/composer")),
-            Path::new("/data/php/8.3/bin/php"),
-            vec!["--no-ansi".to_owned()],
-        );
-        assert_eq!(
-            cmd,
-            Command {
-                program: PathBuf::from("/home/me/.local/share/mise/shims/composer"),
-                entry_point: PathBuf::from("create-project"),
-                args: vec!["--no-ansi".to_owned()],
-            }
-        );
     }
 
     #[test]
@@ -364,7 +328,10 @@ mod tests {
 ";
         let out = codeigniter_env(template, "https://blog.test/");
         assert!(out.contains("\nCI_ENVIRONMENT = development\n"), "{out}");
-        assert!(out.contains("\napp.baseURL = 'https://blog.test/'\n"), "{out}");
+        assert!(
+            out.contains("\napp.baseURL = 'https://blog.test/'\n"),
+            "{out}"
+        );
         assert!(out.contains("# app.forceGlobalSecureRequests = false\n"));
         assert!(!out.contains("production"));
         assert_eq!(out.lines().count(), template.lines().count());
@@ -406,5 +373,24 @@ mod tests {
         write_codeigniter_env(tmp.path(), "http://a.test/").unwrap();
         let dotenv = std::fs::read_to_string(tmp.path().join(".env")).unwrap();
         assert_eq!(dotenv, "KEEP=1\n");
+    }
+
+    #[test]
+    fn write_codeigniter_env_treats_a_missing_template_as_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_codeigniter_env(tmp.path(), "http://a.test/").unwrap();
+        let dotenv = std::fs::read_to_string(tmp.path().join(".env")).unwrap();
+        assert_eq!(
+            dotenv,
+            "CI_ENVIRONMENT = development\napp.baseURL = 'http://a.test/'\n"
+        );
+    }
+
+    #[test]
+    fn write_codeigniter_env_fails_on_an_unreadable_template() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("env")).unwrap();
+        assert!(write_codeigniter_env(tmp.path(), "http://a.test/").is_err());
+        assert!(!tmp.path().join(".env").exists());
     }
 }

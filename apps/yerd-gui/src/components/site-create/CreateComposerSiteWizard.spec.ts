@@ -7,6 +7,8 @@ import type { ComposerFramework, ToolStatus } from "@/ipc/types";
 const createSite = vi.hoisted(() => vi.fn());
 const jobStatus = vi.hoisted(() => vi.fn());
 const listTools = vi.hoisted(() => vi.fn());
+const toastSuccess = vi.hoisted(() => vi.fn());
+const toastError = vi.hoisted(() => vi.fn());
 
 vi.mock("@/ipc/client", () => ({
   IpcError: class IpcError extends Error {},
@@ -14,7 +16,7 @@ vi.mock("@/ipc/client", () => ({
   createSite,
   installPhpWithProgress: vi.fn(),
   installToolStreamed: vi.fn(),
-  jobCancel: vi.fn(),
+  jobCancel: vi.fn().mockResolvedValue(undefined),
   jobStatus,
   listTools,
   openInBrowser: vi.fn(),
@@ -28,7 +30,7 @@ vi.mock("@/composables/useDaemon", () => ({
 }));
 
 vi.mock("@/composables/useToast", () => ({
-  useToast: () => ({ success: vi.fn(), error: vi.fn() }),
+  useToast: () => ({ success: toastSuccess, error: toastError }),
 }));
 
 function composer(overrides: Partial<ToolStatus> = {}): ToolStatus {
@@ -69,6 +71,8 @@ describe("CreateComposerSiteWizard", () => {
     jobStatus.mockReset();
     listTools.mockReset();
     listTools.mockResolvedValue([composer()]);
+    toastSuccess.mockReset();
+    toastError.mockReset();
   });
 
   it.each([
@@ -176,6 +180,103 @@ describe("CreateComposerSiteWizard", () => {
 
     await w.setProps({ open: false });
     await vi.waitFor(() => expect(w.emitted("created")).toBeTruthy(), { timeout: 3000 });
+    w.unmount();
+  });
+
+  it("stops polling when unmounted while a status request is in flight", async () => {
+    createSite.mockResolvedValue("job-1");
+    let resolveStatus: (value: unknown) => void = () => {};
+    jobStatus.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveStatus = resolve;
+      }),
+    );
+    const w = await mountWizard("slim", ["8.4"]);
+
+    await w.find("#ccs-name").setValue("shop");
+    await byText(w, "Next")!.trigger("click");
+    await byText(w, "Create site")!.trigger("click");
+    await flushPromises();
+    expect(jobStatus).toHaveBeenCalledTimes(1);
+
+    w.unmount();
+    resolveStatus({ log: [], next_cursor: 0, phase: "Scaffolding", state: "running", error: null });
+    await flushPromises();
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    expect(jobStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes the progress view when reopened before the daemon returns a job id", async () => {
+    let resolveCreate: (value: string) => void = () => {};
+    createSite.mockReturnValueOnce(
+      new Promise<string>((resolve) => {
+        resolveCreate = resolve;
+      }),
+    );
+    jobStatus.mockResolvedValue({
+      log: [],
+      next_cursor: 0,
+      phase: "Scaffolding",
+      state: "succeeded",
+      error: null,
+    });
+    const w = await mountWizard("slim", ["8.4"]);
+
+    await w.find("#ccs-name").setValue("shop");
+    await byText(w, "Next")!.trigger("click");
+    await byText(w, "Create site")!.trigger("click");
+    await w.setProps({ open: false });
+    await w.setProps({ open: true });
+    await flushPromises();
+
+    expect(w.find("#ccs-name").exists()).toBe(false);
+    resolveCreate("job-1");
+    await flushPromises();
+    expect(w.emitted("created")).toBeTruthy();
+    w.unmount();
+  });
+
+  it("stops the phase spinner when the job fails", async () => {
+    createSite.mockResolvedValue("job-1");
+    jobStatus.mockResolvedValue({
+      log: [],
+      next_cursor: 0,
+      phase: "Scaffolding",
+      state: "failed",
+      error: "composer exploded",
+    });
+    const w = await mountWizard("slim", ["8.4"]);
+
+    await w.find("#ccs-name").setValue("shop");
+    await byText(w, "Next")!.trigger("click");
+    await byText(w, "Create site")!.trigger("click");
+    await flushPromises();
+
+    expect(w.text()).toContain("composer exploded");
+    expect(w.find(".animate-spin").exists()).toBe(false);
+    w.unmount();
+  });
+
+  it.each([
+    ["succeeded", null],
+    ["failed", "composer exploded"],
+  ] as const)("toasts a %s create that finishes while the dialog is closed", async (state, error) => {
+    createSite.mockResolvedValue("job-1");
+    jobStatus
+      .mockResolvedValueOnce({ log: [], next_cursor: 0, phase: "Scaffolding", state: "running", error: null })
+      .mockResolvedValue({ log: [], next_cursor: 0, phase: "Done", state, error });
+    const w = await mountWizard("slim", ["8.4"]);
+
+    await w.find("#ccs-name").setValue("shop");
+    await byText(w, "Next")!.trigger("click");
+    await byText(w, "Create site")!.trigger("click");
+    await flushPromises();
+    await w.setProps({ open: false });
+
+    const toast = state === "succeeded" ? toastSuccess : toastError;
+    await vi.waitFor(() => expect(toast).toHaveBeenCalledTimes(1), { timeout: 2000 });
+    expect(Boolean(w.emitted("created"))).toBe(state === "succeeded");
     w.unmount();
   });
 

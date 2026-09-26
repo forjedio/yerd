@@ -9,7 +9,7 @@
 //! setting is the user's choice and left alone. Best-effort: a failed write only
 //! logs a warning and never fails the mutation it's attached to.
 
-use yerd_core::Site;
+use yerd_core::{Site, SiteRouter};
 
 use crate::state::DaemonState;
 
@@ -25,8 +25,10 @@ pub async fn sync_base_url(site: &Site, state: &DaemonState) {
         return;
     };
 
-    let host = state.router.read().await.primary_fqdn(site.name());
-    let url = crate::public_url::site_url(state, &host, site.secure()).await;
+    let Some((host, secure)) = advertised_host(&*state.router.read().await, site.name()) else {
+        return;
+    };
+    let url = crate::public_url::site_url(state, &host, secure).await;
     let Some(updated) = rewrite_base_url(&current, &format!("{url}/")) else {
         return;
     };
@@ -37,6 +39,18 @@ pub async fn sync_base_url(site: &Site, state: &DaemonState) {
             "couldn't sync CodeIgniter app.baseURL after a site change"
         );
     }
+}
+
+/// The host and secure flag to advertise for `name`, read from the live router
+/// rather than the hook's snapshot so a hook that finishes after a later
+/// mutation cannot write back a stale scheme. `None` when the site is gone or
+/// its primary FQDN routes to a different site (a shadowed apex leaves it
+/// wildcard-only): no concrete host reaches it, so the `.env` is left alone.
+/// Same guard as `tunnel::resolve_site`.
+fn advertised_host(router: &SiteRouter, name: &str) -> Option<(String, bool)> {
+    let secure = router.get(name)?.secure();
+    let host = router.primary_fqdn(name);
+    (router.resolve(&host).map(Site::name) == Some(name)).then_some((host, secure))
 }
 
 /// Replace the first active `app.baseURL` line with `base_url`. Pure - `None`
@@ -77,6 +91,59 @@ fn is_active_base_url(line: &str) -> bool {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use yerd_config::{Config, DomainDelta};
+    use yerd_core::{Domain, PhpVersion};
+
+    fn router(sites: &[(&str, bool)], deltas: &[(&str, &str)]) -> SiteRouter {
+        let mut cfg = Config::default();
+        cfg.tld = yerd_core::Tld::new("test").unwrap();
+        for (site, domain) in deltas {
+            cfg.domains.linked.insert(
+                (*site).into(),
+                DomainDelta {
+                    added: vec![Domain::parse_subpart(domain).unwrap()],
+                    suppressed: vec![],
+                    primary: None,
+                },
+            );
+        }
+        let sites = sites
+            .iter()
+            .map(|(name, secure)| {
+                let mut s =
+                    Site::linked(name, format!("/srv/{name}"), PhpVersion::new(8, 3)).unwrap();
+                s.set_secure(*secure);
+                s
+            })
+            .collect();
+        crate::site_domains::build(&cfg, sites)
+    }
+
+    #[test]
+    fn advertised_host_is_the_primary_fqdn_with_the_live_secure_flag() {
+        let r = router(&[("blog", true), ("shop", false)], &[]);
+        assert_eq!(
+            advertised_host(&r, "blog"),
+            Some(("blog.test".to_owned(), true))
+        );
+        assert_eq!(
+            advertised_host(&r, "shop"),
+            Some(("shop.test".to_owned(), false))
+        );
+    }
+
+    #[test]
+    fn advertised_host_is_none_when_the_primary_routes_to_another_site() {
+        let r = router(&[("a", false), ("b", false)], &[("a", "*.a"), ("b", "a")]);
+        assert_eq!(r.resolve("a.test").map(Site::name), Some("b"));
+        assert_eq!(advertised_host(&r, "a"), None);
+    }
+
+    #[test]
+    fn advertised_host_is_none_for_an_unknown_site() {
+        let r = router(&[("blog", false)], &[]);
+        assert_eq!(advertised_host(&r, "gone"), None);
+    }
 
     #[test]
     fn rewrites_the_active_base_url_line() {

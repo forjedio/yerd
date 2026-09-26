@@ -821,7 +821,12 @@ mod tests {
         let data = tmp.path().join("data");
         std::fs::create_dir_all(&data).unwrap();
 
-        let got = resolve_composer(&data.join("composer.phar"), &[ext], &data.join("bin"), &data);
+        let got = resolve_composer(
+            &data.join("composer.phar"),
+            &[ext],
+            &data.join("bin"),
+            &data,
+        );
         assert_eq!(got, Some(Composer::External(shim)));
     }
 
