@@ -536,8 +536,11 @@ async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
         symlink_protection,
     )
     .await;
-    let script_rel = match resolution {
-        script_file::ScriptResolution::Script(rel) => Some(rel),
+    let (script_rel, path_info) = match resolution {
+        script_file::ScriptResolution::Script(script) => (Some(script), None),
+        script_file::ScriptResolution::ScriptWithPathInfo(script, extra) => {
+            (Some(script), Some(extra))
+        }
         script_file::ScriptResolution::DirectoryRedirect
             if *req.method() == Method::GET || *req.method() == Method::HEAD =>
         {
@@ -547,8 +550,8 @@ async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
         | script_file::ScriptResolution::Fallback => {
             match apply_route(&req, route, served_root, allowed_root, symlink_protection).await {
                 RouteOutcome::Respond(resp) => return Ok(resp),
-                RouteOutcome::Script(rel) => Some(rel),
-                RouteOutcome::Fallback => None,
+                RouteOutcome::Script(rel) => (Some(rel), None),
+                RouteOutcome::Fallback => (None, None),
             }
         }
     };
@@ -565,6 +568,7 @@ async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
         backend,
         served_root.to_path_buf(),
         script_rel,
+        path_info,
         server_addr,
         peer_addr,
         https,

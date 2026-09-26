@@ -1294,6 +1294,97 @@ async fn direct_script_execution_gated_to_wordpress_sites() {
     let _ = fake_task.await;
 }
 
+/// Moodle-style slash arguments: a real script followed by opaque path data
+/// must execute that script with the remainder in `PATH_INFO`, while
+/// `REQUEST_URI` still carries the whole original path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn php_script_with_path_info_forwards_split_to_fcgi() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.php"), b"<?php /* front page */").unwrap();
+    std::fs::create_dir(docroot.path().join("theme")).unwrap();
+    std::fs::write(
+        docroot.path().join("theme").join("styles.php"),
+        b"<?php /* styles */",
+    )
+    .unwrap();
+
+    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fcgi_addr = fcgi_listener.local_addr().unwrap();
+    let captured = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let captured_for_fake = captured.clone();
+    let stdout_payload = b"Status: 200 OK\r\nContent-Type: text/plain\r\n\r\nfrom fpm".to_vec();
+    let fake_task = tokio::spawn(run_fake_fcgi(
+        fcgi_listener,
+        stdout_payload,
+        captured_for_fake,
+    ));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+
+    let tld = Tld::new("test").unwrap();
+    let cfg = RouterConfig::with_tld(tld);
+    let mut router = SiteRouter::new(cfg);
+    let site = Site::linked("lms", docroot.path().to_path_buf(), PhpVersion::new(8, 3)).unwrap();
+    router.insert(site).unwrap();
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+
+    let resolver = Arc::new(StaticResolver {
+        backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+    });
+
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
+            proxy_listener,
+            None,
+            router,
+            resolver,
+            Arc::new(NoLoginTokens),
+            None,
+            Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
+            false,
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
+        .await;
+    });
+
+    let body = client_get(proxy_addr, "lms.test", "/theme/styles.php/moove//123/all").await;
+    assert_eq!(body, b"from fpm");
+
+    let params = captured.lock().await.clone();
+    assert_eq!(
+        params.get("SCRIPT_NAME").map(String::as_str),
+        Some("/theme/styles.php")
+    );
+    assert_eq!(
+        params.get("SCRIPT_FILENAME").map(String::as_str),
+        Some(
+            docroot
+                .path()
+                .join("theme")
+                .join("styles.php")
+                .to_str()
+                .unwrap()
+        )
+    );
+    assert_eq!(
+        params.get("PATH_INFO").map(String::as_str),
+        Some("/moove//123/all")
+    );
+    assert_eq!(
+        params.get("REQUEST_URI").map(String::as_str),
+        Some("/theme/styles.php/moove//123/all")
+    );
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+    let _ = fake_task.await;
+}
+
 /// A real directory with none of index.php/html/htm must still reach the
 /// front controller rather than dead-ending in a 404.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

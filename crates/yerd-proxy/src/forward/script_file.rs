@@ -24,13 +24,19 @@
 use std::path::{Path, PathBuf};
 
 use crate::forward::static_file::{canonical_within, Containment};
-use crate::pure::try_files::{directory_candidate, is_php_source, static_candidate};
+use crate::pure::try_files::{
+    directory_candidate, is_php_source, php_split_candidate, static_candidate,
+};
 
 /// Outcome of resolving a direct-mode request against the on-disk tree.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ScriptResolution {
     /// A real, on-disk PHP script to execute, relative to `served_root`.
     Script(PathBuf),
+    /// A real, on-disk PHP script addressed `PATH_INFO`-style
+    /// (`/styles.php/extra/args`): the script to execute plus the decoded
+    /// `PATH_INFO` remainder to hand FastCGI.
+    ScriptWithPathInfo(PathBuf, String),
     /// The path names a real directory without a trailing slash; answer
     /// `301` to the trailing-slash form.
     DirectoryRedirect,
@@ -72,15 +78,37 @@ pub async fn resolve_script(
         if is_existing_directory(served_root, &real_root, &rel, symlink_protection).await {
             return ScriptResolution::DirectoryRedirect;
         }
-        return ScriptResolution::Fallback;
+        return split_path_info(uri_path, served_root, &real_root, symlink_protection).await;
     }
 
     let Some(dir_rel) = directory_candidate(uri_path) else {
-        return ScriptResolution::Fallback;
+        return split_path_info(uri_path, served_root, &real_root, symlink_protection).await;
     };
     let script_rel = dir_rel.join("index.php");
     match existing_php_file(served_root, &real_root, &script_rel, symlink_protection).await {
         Some(script) => ScriptResolution::Script(script),
+        None => split_path_info(uri_path, served_root, &real_root, symlink_protection).await,
+    }
+}
+
+/// The `fastcgi_split_path_info` half of [`resolve_script`]: when the path
+/// embeds extra segments after a PHP script (`/theme/styles.php/moove/1/all`,
+/// Moodle's "slash arguments" and classic CGI/1.1 `PATH_INFO` addressing),
+/// execute that script - if it really exists on disk under the same
+/// containment discipline as an exact match - with the remainder as
+/// `PATH_INFO`. Tried only after the exact-file and directory answers have
+/// been ruled out, so it can never shadow a real file or directory.
+async fn split_path_info(
+    uri_path: &str,
+    served_root: &Path,
+    real_root: &Path,
+    symlink_protection: bool,
+) -> ScriptResolution {
+    let Some((script_rel, path_info)) = php_split_candidate(uri_path) else {
+        return ScriptResolution::Fallback;
+    };
+    match existing_php_file(served_root, real_root, &script_rel, symlink_protection).await {
+        Some(script) => ScriptResolution::ScriptWithPathInfo(script, path_info),
         None => ScriptResolution::Fallback,
     }
 }
@@ -173,6 +201,70 @@ mod tests {
 
         let rel = resolve_script("/wp-login.php", root.path(), root.path(), true).await;
         assert_eq!(rel, ScriptResolution::Script(PathBuf::from("wp-login.php")));
+    }
+
+    #[tokio::test]
+    async fn resolves_path_info_split_for_real_script() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("theme")).unwrap();
+        std::fs::write(root.path().join("theme/styles.php"), b"<?php").unwrap();
+
+        let rel = resolve_script(
+            "/theme/styles.php/moove/123/all",
+            root.path(),
+            root.path(),
+            true,
+        )
+        .await;
+        assert_eq!(
+            rel,
+            ScriptResolution::ScriptWithPathInfo(
+                PathBuf::from("theme/styles.php"),
+                "/moove/123/all".to_owned()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn resolves_slash_only_path_info_for_trailing_slash() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file.php"), b"<?php").unwrap();
+
+        assert_eq!(
+            resolve_script("/file.php/", root.path(), root.path(), true).await,
+            ScriptResolution::ScriptWithPathInfo(PathBuf::from("file.php"), "/".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn resolves_path_info_containing_dot_dot_segments() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file.php"), b"<?php").unwrap();
+
+        assert_eq!(
+            resolve_script("/file.php/../arg", root.path(), root.path(), true).await,
+            ScriptResolution::ScriptWithPathInfo(PathBuf::from("file.php"), "/../arg".to_owned())
+        );
+        assert_eq!(
+            resolve_script("/file.php/%2e%2e/arg", root.path(), root.path(), true).await,
+            ScriptResolution::ScriptWithPathInfo(PathBuf::from("file.php"), "/../arg".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn path_info_split_requires_the_script_to_exist() {
+        let root = tempfile::tempdir().unwrap();
+
+        assert_eq!(
+            resolve_script(
+                "/theme/styles.php/moove/123/all",
+                root.path(),
+                root.path(),
+                true
+            )
+            .await,
+            ScriptResolution::Fallback
+        );
     }
 
     #[tokio::test]
