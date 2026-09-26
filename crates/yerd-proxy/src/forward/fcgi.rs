@@ -71,7 +71,10 @@ const MAX_DISCARDED_BYTES: u64 = 8 * 1024 * 1024;
 /// `script_rel`, if given, is a real, on-disk `.php` file (relative to
 /// `served_root`) that [`crate::forward::script_file::resolve_script`]
 /// resolved for this request - see `pure::cgi_params`'s module doc for the
-/// front-controller policy this drives. `auto_login`, if given, is passed
+/// front-controller policy this drives. `path_info`, if given, is the
+/// decoded remainder of a `PATH_INFO`-style split
+/// ([`crate::forward::script_file::ScriptResolution::ScriptWithPathInfo`])
+/// and overrides the default full-path `PATH_INFO`. `auto_login`, if given, is passed
 /// straight through to [`build_params`] - see [`AutoLoginParams`] for
 /// when/why.
 #[allow(clippy::too_many_arguments)]
@@ -80,6 +83,7 @@ pub async fn forward(
     backend: Backend,
     served_root: PathBuf,
     script_rel: Option<PathBuf>,
+    path_info: Option<String>,
     server_addr: SocketAddr,
     peer_addr: SocketAddr,
     https: bool,
@@ -109,6 +113,7 @@ pub async fn forward(
         &parts.headers,
         &served_root,
         script_rel.as_deref(),
+        path_info.as_deref(),
         https,
         peer_addr,
         server_addr,

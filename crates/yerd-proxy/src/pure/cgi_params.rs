@@ -16,11 +16,16 @@
 //! - `SCRIPT_FILENAME = document_root / "index.php"`
 //! - `SCRIPT_NAME     = "/index.php"`
 //!
-//! `PATH_INFO` is always `<original path>` either way - WordPress and
+//! `PATH_INFO` is `<original path>` in both cases - WordPress and
 //! Laravel both route on `REQUEST_URI`, not `PATH_INFO`, so leaving it as the
 //! full original path (rather than splitting "extra path after the script",
 //! full CGI/1.1 `PATH_INFO` semantics) keeps this a minimal, low-risk change
-//! on top of already-pinned behavior.
+//! on top of already-pinned behavior. The exception is a `PATH_INFO`-style
+//! request the resolver *split* (`/styles.php/extra` - see
+//! `forward::script_file::ScriptResolution::ScriptWithPathInfo`): there the
+//! caller passes the split remainder as `path_info` and `PATH_INFO` carries
+//! exactly that, which is what nginx's `fastcgi_split_path_info` produces and
+//! what Moodle-style slash-argument routing reads.
 //!
 //! Plus the standard CGI/1.1 vars and `HTTP_*`-translated headers.
 //!
@@ -57,7 +62,10 @@ pub struct AutoLoginParams<'a> {
 
 /// Build the CGI parameter pairs. `script_rel`, if given, is a real,
 /// on-disk `.php` file's path relative to `document_root` (see the module
-/// doc) - `None` falls back to the root `index.php` policy. `auto_login`, if
+/// doc) - `None` falls back to the root `index.php` policy. `path_info`, if
+/// given, is the decoded remainder of a `PATH_INFO`-style split resolved by
+/// `forward::script_file` and overrides the default `PATH_INFO` value (the
+/// full request path). `auto_login`, if
 /// given, adds a `PHP_VALUE: auto_prepend_file=<path>` param plus a custom
 /// `YERD_LOGIN_USER` param carrying the target username - see
 /// [`AutoLoginParams`].
@@ -69,6 +77,7 @@ pub fn build_params(
     headers: &http::HeaderMap,
     document_root: &Path,
     script_rel: Option<&Path>,
+    path_info: Option<&str>,
     https: bool,
     remote_addr: SocketAddr,
     server_addr: SocketAddr,
@@ -101,7 +110,7 @@ pub fn build_params(
         b"DOCUMENT_ROOT",
         document_root.to_string_lossy().as_bytes(),
     );
-    push(&mut out, b"PATH_INFO", path.as_bytes());
+    push(&mut out, b"PATH_INFO", path_info.unwrap_or(path).as_bytes());
     push(
         &mut out,
         b"REMOTE_ADDR",
@@ -221,6 +230,7 @@ mod tests {
             &make_headers("app.test"),
             &root,
             None,
+            None,
             false,
             "127.0.0.1:54321".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
@@ -261,6 +271,7 @@ mod tests {
             &make_headers("app.test"),
             Path::new("/srv"),
             None,
+            None,
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
@@ -282,6 +293,7 @@ mod tests {
             "/login",
             &make_headers("app.test"),
             &served,
+            None,
             None,
             false,
             "127.0.0.1:1".parse().unwrap(),
@@ -306,6 +318,7 @@ mod tests {
             &make_headers("app.test"),
             Path::new("/srv/www/app"),
             None,
+            None,
             true,
             "1.2.3.4:1000".parse().unwrap(),
             "127.0.0.1:443".parse().unwrap(),
@@ -324,6 +337,7 @@ mod tests {
             "/",
             &headers,
             Path::new("/srv"),
+            None,
             None,
             false,
             "127.0.0.1:1".parse().unwrap(),
@@ -351,6 +365,7 @@ mod tests {
             &headers,
             Path::new("/srv"),
             None,
+            None,
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
@@ -373,6 +388,7 @@ mod tests {
             &make_headers("a.test"),
             Path::new("/srv"),
             None,
+            None,
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
@@ -390,6 +406,7 @@ mod tests {
             &make_headers("blog.test"),
             Path::new("/srv/www/blog"),
             Some(Path::new("wp-admin/index.php")),
+            None,
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
@@ -415,6 +432,7 @@ mod tests {
             "/wp-admin/",
             &make_headers("blog.test"),
             Path::new("/srv/www/blog"),
+            None,
             None,
             false,
             "127.0.0.1:1".parse().unwrap(),
@@ -442,6 +460,7 @@ mod tests {
             &make_headers("blog.test"),
             Path::new("/srv/www/blog"),
             None,
+            None,
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
@@ -461,6 +480,7 @@ mod tests {
             &make_headers("app.test"),
             Path::new("/srv/www/app"),
             None,
+            None,
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
@@ -478,6 +498,7 @@ mod tests {
             &make_headers("blog.test"),
             Path::new("/srv/www/blog"),
             Some(Path::new("wp-login.php")),
+            None,
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
