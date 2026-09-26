@@ -1,5 +1,5 @@
-//! `CreateSite` - scaffold a new project (`laravel new` or WP-CLI) then
-//! register it.
+//! `CreateSite` - scaffold a new project (`laravel new`, WP-CLI or
+//! `composer create-project`) then register it.
 //!
 //! Scaffolding runs far longer than one request/response round-trip and streams
 //! output, so this runs as a background [job](crate::jobs): [`start`] spawns the
@@ -8,10 +8,11 @@
 //!
 //! This module holds the framework-agnostic job orchestration (name
 //! reservation, the per-job scratch dir, `JobRegistry` wiring, the streamed-
-//! process runner, registration); [`laravel`] and [`wordpress`] hold each
-//! framework's own scaffolding body, dispatched on `spec.framework` from
-//! [`run_inner`].
+//! process runner, registration); [`laravel`], [`wordpress`] and
+//! [`composer_project`] hold each framework's own scaffolding body, dispatched
+//! on `spec.framework` from [`run_inner`].
 
+mod composer_project;
 mod laravel;
 mod registration;
 mod wordpress;
@@ -39,7 +40,11 @@ pub async fn start(spec: CreateSiteSpec, state: Arc<DaemonState>) -> Response {
     // The enum is `#[non_exhaustive]`, so a catch-all is required and guards
     // future variants.
     match &spec.framework {
-        Framework::Laravel { .. } | Framework::Wordpress { .. } => {}
+        Framework::Laravel { .. }
+        | Framework::Wordpress { .. }
+        | Framework::Codeigniter
+        | Framework::Cakephp
+        | Framework::Slim => {}
         _ => return error(ErrorCode::Internal, "unsupported framework".to_owned()),
     }
 
@@ -122,7 +127,12 @@ async fn run_inner(
         Framework::Wordpress { options } => {
             wordpress::run(id, name, spec, options, state, cancel_rx).await
         }
-        _ => Outcome::Failed("unsupported framework".to_owned()),
+        framework => match composer_project::Template::from_framework(framework) {
+            Some(template) => {
+                composer_project::run(id, name, spec, template, job_dir, state, cancel_rx).await
+            }
+            None => Outcome::Failed("unsupported framework".to_owned()),
+        },
     }
 }
 
@@ -419,6 +429,104 @@ fn kill_group(pgid: Option<u32>, signal: nix::sys::signal::Signal) {
     }
 }
 
+/// The Composer a job runs: Yerd's managed phar, or one from the user's PATH.
+#[derive(Debug, PartialEq, Eq)]
+enum Composer {
+    Managed(PathBuf),
+    /// A `composer` from the user's PATH. Executed directly rather than as a
+    /// PHP script, because it may be a shell shim (mise, asdf, Nix); its own
+    /// `php` still resolves to the job's PHP through the composed PATH.
+    External(PathBuf),
+}
+
+impl Composer {
+    fn managed_phar(&self) -> Option<&Path> {
+        match self {
+            Self::Managed(phar) => Some(phar.as_path()),
+            Self::External(_) => None,
+        }
+    }
+}
+
+fn resolve_composer(
+    managed_phar: &Path,
+    user_dirs: &[PathBuf],
+    data_bin: &Path,
+    data_root: &Path,
+) -> Option<Composer> {
+    if managed_phar.is_file() {
+        return Some(Composer::Managed(managed_phar.to_path_buf()));
+    }
+    crate::tools::external::find_in_path(user_dirs, "composer", data_bin, data_root)
+        .map(Composer::External)
+}
+
+/// Compose `PATH` = `<per-job bin> : <{data}/bin> : <user PATH> : <inherited>`.
+/// The user's resolved PATH is appended so externally-installed
+/// composer/node/bun/git/laravel are findable, while the per-job bin (managed
+/// `php`) and Yerd shims keep precedence.
+fn composed_path(job_bin: &Path, data_bin: &Path, user_dirs: &[PathBuf]) -> std::ffi::OsString {
+    let mut entries = vec![job_bin.to_path_buf(), data_bin.to_path_buf()];
+    entries.extend(user_dirs.iter().cloned());
+    if let Some(existing) = std::env::var_os("PATH") {
+        entries.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(entries).unwrap_or_else(|_| std::ffi::OsString::from(job_bin))
+}
+
+/// Single-quote a path for safe inclusion in a `/bin/sh` script, escaping any
+/// embedded single quotes (`'` → `'\''`). Without this a data dir containing a
+/// `'` (e.g. `/Users/o'brien/…`) would produce a broken wrapper script.
+#[cfg(unix)]
+fn sh_quote(p: &Path) -> String {
+    format!("'{}'", p.to_string_lossy().replace('\'', "'\\''"))
+}
+
+/// Build `{job_dir}/bin` containing a `php` symlink to the chosen version and,
+/// when `composer_phar` is `Some` (Yerd-managed Composer), a `composer` wrapper
+/// that runs that same PHP so every `composer` call on the job's PATH (the
+/// Laravel installer's nested `create-project` included) uses the requested
+/// runtime (Composer derives its child PHP from `PHP_BINARY`).
+/// When `None` (external Composer), no wrapper is written - Composer is found on
+/// the composed PATH and runs under the managed `php` via its shebang. Unix-only.
+#[cfg(unix)]
+fn build_job_bin(
+    job_dir: &Path,
+    php_cli: &Path,
+    composer_phar: Option<&Path>,
+) -> Result<PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = job_dir.join("bin");
+    std::fs::create_dir_all(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+
+    let php_link = bin.join("php");
+    let _ = std::fs::remove_file(&php_link);
+    std::os::unix::fs::symlink(php_cli, &php_link).map_err(|e| format!("link php: {e}"))?;
+
+    if let Some(phar) = composer_phar {
+        let composer = bin.join("composer");
+        let script = format!(
+            "#!/bin/sh\nexec {} {} \"$@\"\n",
+            sh_quote(php_cli),
+            sh_quote(phar)
+        );
+        std::fs::write(&composer, script).map_err(|e| format!("write composer wrapper: {e}"))?;
+        std::fs::set_permissions(&composer, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("chmod composer wrapper: {e}"))?;
+    }
+    Ok(bin)
+}
+
+#[cfg(not(unix))]
+fn build_job_bin(
+    _job_dir: &Path,
+    _php_cli: &Path,
+    _composer_phar: Option<&Path>,
+) -> Result<PathBuf, String> {
+    Err("site creation is not yet supported on this platform".to_owned())
+}
+
 fn error(code: ErrorCode, message: String) -> Response {
     Response::Error { code, message }
 }
@@ -571,6 +679,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn start_accepts_composer_frameworks() {
+        for framework in [Framework::Codeigniter, Framework::Cakephp, Framework::Slim] {
+            let tmp = tempfile::tempdir().unwrap();
+            let state = Arc::new(crate::test_support::state_in(tmp.path()));
+            let spec = CreateSiteSpec {
+                name: "app".to_owned(),
+                parent_dir: tmp.path().to_path_buf(),
+                php: PhpVersion::new(8, 3),
+                secure: false,
+                framework,
+            };
+            match start(spec, state).await {
+                Response::JobStarted { .. } => {}
+                other => panic!("expected JobStarted, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn ensure_managed_tool_short_circuits_on_managed_marker() {
         let tmp = tempfile::tempdir().unwrap();
         let state = Arc::new(crate::test_support::state_in(tmp.path()));
@@ -608,5 +735,110 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("failed to install WP-CLI"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn composed_path_puts_job_bin_first() {
+        let job_bin = Path::new("/jobs/abc/bin");
+        let data_bin = Path::new("/data/bin");
+        let user = vec![PathBuf::from("/opt/homebrew/bin")];
+        let composed = composed_path(job_bin, data_bin, &user);
+        let entries: Vec<PathBuf> = std::env::split_paths(&composed).collect();
+        assert_eq!(entries.first().unwrap(), job_bin);
+        assert_eq!(entries.get(1).unwrap(), data_bin);
+        assert!(entries.iter().any(|p| p == Path::new("/opt/homebrew/bin")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sh_quote_escapes_embedded_single_quotes() {
+        assert_eq!(sh_quote(Path::new("/Users/obrien")), "'/Users/obrien'");
+        assert_eq!(
+            sh_quote(Path::new("/Users/o'brien/data")),
+            "'/Users/o'\\''brien/data'"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_job_bin_links_php_and_writes_composer_wrapper() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let job_dir = tmp.path().join("job");
+        let php = tmp.path().join("php-bin");
+        std::fs::write(&php, b"#!fake-php").unwrap();
+        let phar = tmp.path().join("composer.phar");
+        std::fs::write(&phar, b"phar").unwrap();
+
+        let bin = build_job_bin(&job_dir, &php, Some(phar.as_path())).unwrap();
+        assert_eq!(std::fs::read_link(bin.join("php")).unwrap(), php);
+        let wrapper = std::fs::read_to_string(bin.join("composer")).unwrap();
+        assert!(wrapper.starts_with("#!/bin/sh\n"));
+        assert!(wrapper.contains(&php.to_string_lossy().into_owned()));
+        assert!(wrapper.contains(&phar.to_string_lossy().into_owned()));
+        let mode = std::fs::metadata(bin.join("composer"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o111, 0o111, "wrapper should be executable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_job_bin_without_phar_writes_no_composer_wrapper() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job_dir = tmp.path().join("job");
+        let php = tmp.path().join("php-bin");
+        std::fs::write(&php, b"#!fake-php").unwrap();
+
+        let bin = build_job_bin(&job_dir, &php, None).unwrap();
+        assert!(bin.join("php").exists());
+        assert!(!bin.join("composer").exists());
+    }
+
+    #[test]
+    fn resolve_composer_prefers_managed_phar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let phar = tmp.path().join("composer.phar");
+        std::fs::write(&phar, b"phar").unwrap();
+        let got = resolve_composer(&phar, &[], &tmp.path().join("bin"), tmp.path());
+        assert_eq!(got, Some(Composer::Managed(phar)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_composer_falls_back_to_external_on_path() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let ext = tmp.path().join("extbin");
+        std::fs::create_dir_all(&ext).unwrap();
+        let shim = ext.join("composer");
+        std::fs::write(&shim, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let data = tmp.path().join("data");
+        std::fs::create_dir_all(&data).unwrap();
+
+        let got = resolve_composer(
+            &data.join("composer.phar"),
+            &[ext],
+            &data.join("bin"),
+            &data,
+        );
+        assert_eq!(got, Some(Composer::External(shim)));
+    }
+
+    #[test]
+    fn resolve_composer_none_without_managed_or_external() {
+        let tmp = tempfile::tempdir().unwrap();
+        let got = resolve_composer(
+            &tmp.path().join("missing.phar"),
+            &[],
+            &tmp.path().join("bin"),
+            tmp.path(),
+        );
+        assert_eq!(got, None);
     }
 }

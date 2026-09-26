@@ -1,52 +1,28 @@
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, reactive, ref, watch } from "vue";
-import {
-  Check,
-  CheckCircle2,
-  ChevronLeft,
-  Circle,
-  ExternalLink,
-  FolderOpen,
-  Loader2,
-  RefreshCw,
-  TriangleAlert,
-} from "lucide-vue-next";
+import { computed, reactive, ref, watch } from "vue";
+import { ExternalLink, RefreshCw } from "lucide-vue-next";
 
+import CreateSiteWizardShell from "@/components/site-create/CreateSiteWizardShell.vue";
+import SiteBasicsStep from "@/components/site-create/SiteBasicsStep.vue";
 import Button from "@/components/ui/Button.vue";
 import Combobox from "@/components/ui/Combobox.vue";
 import Input from "@/components/ui/Input.vue";
-import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
-import Switch from "@/components/ui/Switch.vue";
-import Spinner from "@/components/ui/Spinner.vue";
+import { useSiteBasics } from "@/composables/useSiteBasics";
+import { type PrereqRow, useToolPrereqs } from "@/composables/useToolPrereqs";
 import { isLegacyVersion, phpVersionInRange } from "@/lib/phpVersion";
-import { isUnbound, siteUrl, wpAdminLoginUrl, wpAdminUrl } from "@/lib/siteUrl";
+import { isUnbound, wpAdminLoginUrl, wpAdminUrl } from "@/lib/siteUrl";
 import { WORDPRESS_LOCALES } from "@/lib/wordpressLocales";
-import { useDaemon } from "@/composables/useDaemon";
-import { useToast } from "@/composables/useToast";
 import {
-  availablePhp,
   availableWordPressVersions,
-  createSite,
-  installPhpWithProgress,
-  installToolStreamed,
-  IpcError,
-  jobCancel,
-  jobStatus,
   listServices,
-  listTools,
   mintWordPressLoginToken,
   openInBrowser,
-  openPath,
-  pickDirectory,
-  pollJobToEnd,
 } from "@/ipc/client";
 import type {
   CreateSiteSpec,
-  JobState,
   ServiceStatus,
   StatusReport,
-  ToolStatus,
   WordPressDbEngine,
   WordPressOptions,
   WordPressVersionInfo,
@@ -67,21 +43,22 @@ const emit = defineEmits<{
   (e: "created"): void;
 }>();
 
-const toast = useToast();
-const { refresh } = useDaemon();
-
-// ── wizard state ─────────────────────────────────────────────────────────────
-type Step = 0 | 1 | 2 | 3 | 4; // Basics, WordPress, Database, Review, Progress
-const step = ref<Step>(0);
-
-const STEP_LABELS = ["Basics", "WordPress", "Database", "Review"];
+/** Mirrors the `set_phase` strings `bin/yerdd/src/create_site/wordpress.rs::run` emits, in order. */
+const PHASES = [
+  "Preflight",
+  "Provisioning database",
+  "Downloading WordPress",
+  "Configuring",
+  "Installing",
+  "Registering",
+  "Done",
+];
 
 const form = reactive({
   name: "",
   location: "",
   php: "",
   secure: false,
-  // WordPress
   coreVersion: "",
   locale: "en_US",
   adminUser: "admin",
@@ -89,14 +66,17 @@ const form = reactive({
   adminPassword: randomPassword(),
   siteTitle: "",
   tablePrefix: "wp_",
-  // database
   dbEngine: "mysql" as WordPressDbEngine,
   dbName: "",
 });
 let dbNameTouched = false;
+const { siteName, nameValid, projectPath, domain, openUrl, basicsValid } = useSiteBasics(
+  form,
+  props,
+);
 
-// A native <select> can't host a Badge, so legacy is called out in the option
-// label itself and expanded on by the hint below the picker.
+/** A native `<select>` can't host a Badge, so legacy is called out in the option
+ *  label itself and expanded on by the hint below the picker. */
 const phpOptions = computed(() =>
   props.phpVersions.map((v) => ({
     value: v,
@@ -104,49 +84,30 @@ const phpOptions = computed(() =>
   })),
 );
 const phpIsLegacy = computed(() => !!form.php && isLegacyVersion(form.php));
-const locationOptions = computed(() => {
-  const opts = props.parkedFolders.map((f) => ({ value: f, label: `${f}  (parked)` }));
-  if (form.location && !props.parkedFolders.includes(form.location)) {
-    opts.unshift({ value: form.location, label: form.location });
-  }
-  return opts;
-});
 
-const nameValid = computed(() => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(form.name.trim()));
-const projectPath = computed(() =>
-  form.location ? `${form.location}/${form.name.trim()}` : "",
-);
-const domain = computed(() => `${form.name.trim().toLowerCase() || "name"}.${props.tld}`);
-const openUrl = computed(() =>
-  siteUrl({ name: form.name.trim().toLowerCase() || "name", secure: form.secure }, props.report),
-);
 const adminUrl = computed(() =>
-  wpAdminUrl({ name: form.name.trim().toLowerCase() || "name", secure: form.secure }, props.report),
+  wpAdminUrl({ name: siteName.value || "name", secure: form.secure }, props.report),
 );
 
 /**
- * "WP Admin" action on the post-creation success screen: one-click,
- * pre-authenticated login when possible, falling back to the plain
- * (not signed-in) link when unbound/resolver-off, or if minting a token
- * fails for any reason - never blocks or surfaces an error.
+ * "WP Admin" on the success screen: a one-click, pre-authenticated login when
+ * possible, falling back to the plain (not signed-in) link when unbound or if
+ * minting a token fails for any reason. It never blocks or surfaces an error.
  */
 async function openWpAdmin(): Promise<void> {
-  const site = { name: form.name.trim().toLowerCase(), secure: form.secure };
+  const site = { name: siteName.value, secure: form.secure };
   if (!isUnbound(props.report)) {
-    try {
-      const token = await mintWordPressLoginToken(site.name);
-      await openInBrowser(wpAdminLoginUrl(site, props.report, token));
-      return;
-    } catch {
-      /* fall through to the plain link below */
-    }
+    const signedIn = await mintWordPressLoginToken(site.name)
+      .then((token) => openInBrowser(wpAdminLoginUrl(site, props.report, token)))
+      .then(
+        () => true,
+        () => false,
+      );
+    if (signedIn) return;
   }
   await openInBrowser(adminUrl.value);
 }
 
-const basicsValid = computed(
-  () => nameValid.value && form.location.trim() !== "" && form.php !== "",
-);
 const emailValid = computed(() => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.adminEmail.trim()));
 const wordpressValid = computed(
   () =>
@@ -157,16 +118,17 @@ const wordpressValid = computed(
 );
 const dbNameValid = computed(() => /^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(form.dbName));
 
-// Derive a valid database name from the site name (mirrors
-// `bin/yerdd/src/create_site/wordpress.rs::derive_db_name` - the daemon is the
-// authority and re-validates whatever is submitted, but pre-filling with the
-// same rule avoids surprising the user with a rejected default): map hyphens
-// to underscores, prefix with a letter if the result still doesn't start with
-// one, then cap at 63 chars.
-function deriveDbName(siteName: string): string {
-  let name = siteName.replace(/-/g, "_");
-  if (!/^[A-Za-z_]/.test(name)) name = `wp_${name}`;
-  return name.slice(0, 63);
+/**
+ * A valid database name derived from the site name, mirroring
+ * `bin/yerdd/src/create_site/wordpress.rs::derive_db_name`. The daemon is the
+ * authority and re-validates, but pre-filling with the same rule avoids a
+ * rejected default: hyphens become underscores, a leading letter is added if
+ * needed, and the result is capped at 63 characters.
+ */
+function deriveDbName(name: string): string {
+  let db = name.replace(/-/g, "_");
+  if (!/^[A-Za-z_]/.test(db)) db = `wp_${db}`;
+  return db.slice(0, 63);
 }
 
 watch(
@@ -183,152 +145,64 @@ function randomPassword(): string {
   return Array.from(bytes, (b) => chars[b % chars.length]).join("");
 }
 
-function generatePassword(): void {
-  form.adminPassword = randomPassword();
-}
-
-// ── prerequisites ────────────────────────────────────────────────────────────
-const tools = ref<ToolStatus[]>([]);
-const toolsLoading = ref(false);
-const installingTool = ref<string | null>(null);
-const installingAll = ref(false);
-const installLog = ref<string[]>([]);
-const installLogBox = ref<HTMLElement | null>(null);
-
-async function appendInstallLog(lines: string[]): Promise<void> {
-  installLog.value.push(...lines);
-  await nextTick();
-  const el = installLogBox.value;
-  if (el) el.scrollTop = el.scrollHeight;
-}
-
-function toolAvailable(id: string): boolean {
-  return tools.value.some((t) => t.id === id && (t.installed || t.external));
-}
-// Managed-only: building WP-CLI requires Yerd's own Composer (an external
-// Composer can't build it) - same asymmetry as the Laravel installer. The
-// daemon never reports WP-CLI itself as `external`, since scaffolding execs
-// Yerd's own boot-fs.php rather than a PATH-resolved `wp`.
-const managedComposer = computed(() =>
-  tools.value.some((t) => t.id === "composer" && t.installed),
-);
-const needsWpCli = computed(() => !toolAvailable("wp-cli"));
-// Composer's only role here is building WP-CLI, so it's a prerequisite exactly
-// when WP-CLI still has to be built - scaffolding an installed WP-CLI never
-// shells out to Composer.
+const prereqs = reactive(useToolPrereqs(() => props.open));
+/** Building WP-CLI needs Yerd's own Composer, the same asymmetry as the Laravel
+ *  installer. The daemon never reports WP-CLI as `external`: scaffolding execs
+ *  Yerd's own boot-fs.php rather than a PATH-resolved `wp`. */
+const managedComposer = computed(() => prereqs.managed("composer"));
+const needsWpCli = computed(() => !prereqs.available("wp-cli"));
+/** Composer only builds WP-CLI here, so it's needed exactly while WP-CLI is. */
 const needsComposer = computed(() => needsWpCli.value && !managedComposer.value);
 const noPhp = computed(() => props.phpVersions.length === 0);
-
 const ready = computed(() => !noPhp.value && !needsComposer.value && !needsWpCli.value);
 
-interface PrereqRow {
-  id: "php" | "composer" | "wp-cli";
-  label: string;
-  sub: string;
-  ok: boolean;
+function installPhp(): Promise<boolean> {
+  return prereqs.installPhp(() => true, "No installable PHP versions were found.");
 }
 
-// Composer is listed only while it's actually required: its role here is
-// building WP-CLI, so once WP-CLI is installed it isn't a prerequisite and
-// showing it as "Installed" would claim something we haven't checked.
+/** Composer is listed only while WP-CLI still has to be built; once WP-CLI is
+ *  present, "Installed" would claim something that wasn't checked. */
 const prereqRows = computed<PrereqRow[]>(() => [
-  { id: "php", label: "PHP", sub: "Runtime", ok: !noPhp.value },
+  { id: "php", label: "PHP", sub: "Runtime", ok: !noPhp.value, install: installPhp },
   ...(needsWpCli.value
     ? [
         {
-          id: "composer" as const,
+          id: "composer",
           label: "Composer",
           sub: "Builds WP-CLI",
           ok: !needsComposer.value,
+          install: () => prereqs.installTool("composer"),
         },
       ]
     : []),
-  { id: "wp-cli", label: "WP-CLI", sub: "wp command", ok: !needsWpCli.value },
+  {
+    id: "wp-cli",
+    label: "WP-CLI",
+    sub: "wp command",
+    ok: !needsWpCli.value,
+    install: () => prereqs.installTool("wp-cli"),
+    blockedReason: managedComposer.value
+      ? undefined
+      : "Yerd's own Composer is required to build WP-CLI",
+  },
 ]);
-const installBusy = computed(() => installingAll.value || installingTool.value !== null);
 
-async function refreshTools(): Promise<void> {
-  toolsLoading.value = true;
-  try {
-    tools.value = await listTools();
-  } catch {
-    tools.value = [];
-  } finally {
-    toolsLoading.value = false;
-  }
-}
-
-async function installPrereq(id: "composer" | "wp-cli"): Promise<boolean> {
-  installingTool.value = id;
-  installLog.value = [];
-  try {
-    const jobId = await installToolStreamed(id);
-    const final = await pollJobToEnd(
-      jobId,
-      (lines) => void appendInstallLog(lines),
-      () => props.open,
-    );
-    await refreshTools();
-    if (final.state === "running") return false;
-    if (final.state !== "succeeded") {
-      toast.error(`Couldn't install ${id}`, final.error ?? "install failed");
-      return false;
-    }
+function installAll(): Promise<void> {
+  return prereqs.installAll(async () => {
+    if (noPhp.value && !(await installPhp())) return false;
+    if (needsComposer.value && !(await prereqs.installTool("composer"))) return false;
+    if (needsWpCli.value && !(await prereqs.installTool("wp-cli"))) return false;
     return true;
-  } catch (e) {
-    toast.error(`Couldn't install ${id}`, (e as IpcError).message);
-    return false;
-  } finally {
-    installingTool.value = null;
-  }
+  });
 }
 
-async function installFirstPhp(): Promise<boolean> {
-  installingTool.value = "php";
-  installLog.value = [];
-  try {
-    const { available } = await availablePhp();
-    const version = available[available.length - 1];
-    if (!version) {
-      toast.error("Couldn't install PHP", "No installable PHP versions were found.");
-      return false;
-    }
-    void appendInstallLog([`Installing PHP ${version}…`]);
-    await installPhpWithProgress(version, (lines) => void appendInstallLog(lines));
-    await refresh();
-    void appendInstallLog([`Installed PHP ${version}`]);
-    return true;
-  } catch (e) {
-    toast.error("Couldn't install PHP", (e as IpcError).message);
-    return false;
-  } finally {
-    installingTool.value = null;
-  }
-}
-
-async function installAllMissing(): Promise<void> {
-  installingAll.value = true;
-  try {
-    if (noPhp.value && !(await installFirstPhp())) return;
-    if (needsComposer.value && !(await installPrereq("composer"))) return;
-    if (needsWpCli.value && !(await installPrereq("wp-cli"))) return;
-    await nextTick();
-    toast.success("Toolchain ready");
-  } finally {
-    installingAll.value = false;
-  }
-}
-
-// ── database engine detection (informational only - provisioning happens
-// inline in the create job, see the Progress step's "Provisioning database"
-// phase) ─────────────────────────────────────────────────────────────────────
 const services = ref<ServiceStatus[]>([]);
 const servicesLoading = ref(false);
 let dbEngineTouched = false;
 
-/** Prefer a running engine over a merely-installed one (WP-P1-07: "Reuse a
- *  running SQL engine" - preselect whichever engine is actually available),
- *  `null` when neither MySQL nor MariaDB is installed (leaves the default). */
+/** Prefer a running MySQL/MariaDB over a merely installed one; `null` when
+ *  neither is installed, which leaves the default. Provisioning itself happens
+ *  inside the create job. */
 function preferredEngine(statuses: ServiceStatus[]): WordPressDbEngine | null {
   const candidates = statuses.filter(
     (s) => (s.service === "mysql" || s.service === "mariadb") && s.installed_versions.length > 0,
@@ -358,8 +232,22 @@ function selectDbEngine(engine: WordPressDbEngine): void {
   form.dbEngine = engine;
 }
 
-// ── WordPress core version (from meta/wordpress-versions.json in the yerd
-// repo, daemon-fetched and cached - see bin/yerdd/src/wordpress_versions.rs)
+const selectedEngineStatus = computed(() =>
+  services.value.find((s) => s.service === form.dbEngine),
+);
+const engineStateText = computed(() => {
+  const s = selectedEngineStatus.value;
+  if (!s) return "";
+  if (s.installed_versions.length === 0) {
+    return `No ${s.display_name} found - Yerd will install and start it as part of creating this site.`;
+  }
+  if (s.state !== "running") {
+    return `${s.display_name} is installed but not running - Yerd will start it as part of creating this site.`;
+  }
+  return `${s.display_name} is running and ready.`;
+});
+
+/** Core releases from the daemon-cached `meta/wordpress-versions.json` (see `wordpress_versions.rs`). */
 const wordpressVersions = ref<WordPressVersionInfo[]>([]);
 const wordpressVersionsLoading = ref(false);
 
@@ -380,10 +268,9 @@ const compatibleVersions = computed(() =>
     : wordpressVersions.value,
 );
 
-// The Select's value is the concrete latest patch (`wp core download
-// --version=` needs an exact release - a bare branch like "6.7" resolves to
-// that branch's original, unpatched release), labelled by its friendlier
-// branch name.
+/** Values are the concrete latest patch (`wp core download --version=` needs an
+ *  exact release; a bare branch resolves to its unpatched original), labelled
+ *  by the friendlier branch name. */
 const versionOptions = computed(() => [
   { value: "", label: "Latest" },
   ...compatibleVersions.value.map((v) => ({ value: v.latest, label: v.branch })),
@@ -397,21 +284,6 @@ watch(
     }
   },
 );
-
-const selectedEngineStatus = computed(() =>
-  services.value.find((s) => s.service === form.dbEngine),
-);
-const engineStateText = computed(() => {
-  const s = selectedEngineStatus.value;
-  if (!s) return "";
-  if (s.installed_versions.length === 0) {
-    return `No ${s.display_name} found - Yerd will install and start it as part of creating this site.`;
-  }
-  if (s.state !== "running") {
-    return `${s.display_name} is installed but not running - Yerd will start it as part of creating this site.`;
-  }
-  return `${s.display_name} is running and ready.`;
-});
 
 function buildSpec(): CreateSiteSpec {
   const options: WordPressOptions = {
@@ -436,111 +308,7 @@ function buildSpec(): CreateSiteSpec {
   };
 }
 
-// ── progress / job polling ───────────────────────────────────────────────────
-const jobId = ref<string | null>(null);
-const jobStateRef = ref<JobState>("running");
-const phase = ref("Starting");
-const log = ref<string[]>([]);
-const jobError = ref<string | null>(null);
-const logBox = ref<HTMLElement | null>(null);
-let cursor = 0;
-let pollTimer: number | null = null;
-
-// Mirrors the exact `state.jobs.set_phase(id, "...")` strings emitted by
-// `bin/yerdd/src/create_site/wordpress.rs::run`, in order.
-const PHASES = [
-  "Preflight",
-  "Provisioning database",
-  "Downloading WordPress",
-  "Configuring",
-  "Installing",
-  "Registering",
-  "Done",
-];
-function phaseStatus(p: string): "done" | "active" | "todo" {
-  const cur = phase.value;
-  const ci = PHASES.indexOf(cur);
-  const pi = PHASES.indexOf(p);
-  if (jobStateRef.value === "succeeded") return "done";
-  if (ci === -1) return p === "Preflight" ? "active" : "todo";
-  if (pi < ci) return "done";
-  if (pi === ci) return "active";
-  return "todo";
-}
-
-async function chooseLocation(): Promise<void> {
-  const dir = await pickDirectory(form.location || undefined);
-  if (dir) form.location = dir;
-}
-
-async function startCreate(): Promise<void> {
-  step.value = 4;
-  jobStateRef.value = "running";
-  phase.value = "Starting";
-  log.value = [];
-  jobError.value = null;
-  cursor = 0;
-  try {
-    jobId.value = await createSite(buildSpec());
-    poll();
-  } catch (e) {
-    jobStateRef.value = "failed";
-    jobError.value = (e as IpcError).message;
-  }
-}
-
-function poll(): void {
-  if (!jobId.value) return;
-  void (async () => {
-    try {
-      const r = await jobStatus(jobId.value as string, cursor);
-      if (r.log.length) {
-        log.value.push(...r.log);
-        void scrollLog();
-      }
-      cursor = r.next_cursor;
-      phase.value = r.phase;
-      jobStateRef.value = r.state;
-      jobError.value = r.error;
-      if (r.state === "running" && props.open) {
-        pollTimer = window.setTimeout(poll, 600);
-      } else if (r.state === "succeeded") {
-        emit("created");
-      }
-    } catch (e) {
-      jobStateRef.value = "failed";
-      jobError.value = (e as IpcError).message;
-    }
-  })();
-}
-
-async function scrollLog(): Promise<void> {
-  await nextTick();
-  const el = logBox.value;
-  if (el) el.scrollTop = el.scrollHeight;
-}
-
-const cancelRequested = ref(false);
-async function cancelJob(): Promise<void> {
-  if (!jobId.value || cancelRequested.value) return;
-  cancelRequested.value = true;
-  try {
-    await jobCancel(jobId.value);
-  } catch {
-    /* the job may already be finishing; ignore */
-  }
-}
-
-function stopPolling(): void {
-  if (pollTimer !== null) {
-    window.clearTimeout(pollTimer);
-    pollTimer = null;
-  }
-}
-
-// ── lifecycle ────────────────────────────────────────────────────────────────
-function resetForm(): void {
-  step.value = 0;
+function reset(): void {
   form.name = "";
   form.location = props.parkedFolders[0] ?? "";
   form.php = props.defaultPhp || props.phpVersions[0] || "";
@@ -556,31 +324,11 @@ function resetForm(): void {
   form.dbName = "";
   dbNameTouched = false;
   dbEngineTouched = false;
-  jobId.value = null;
-  jobError.value = null;
-  log.value = [];
-  installLog.value = [];
-  jobStateRef.value = "running";
-  phase.value = "Starting";
-  cursor = 0;
-  installingTool.value = null;
-  installingAll.value = false;
-  cancelRequested.value = false;
+  prereqs.reset();
+  void prereqs.refresh();
+  void refreshServices();
+  void refreshWordpressVersions();
 }
-
-watch(
-  () => props.open,
-  (open) => {
-    if (open) {
-      resetForm();
-      void refreshTools();
-      void refreshServices();
-      void refreshWordpressVersions();
-    } else {
-      stopPolling();
-    }
-  },
-);
 
 watch(
   () => props.phpVersions,
@@ -590,445 +338,210 @@ watch(
     }
   },
 );
-
-onUnmounted(stopPolling);
-
-const busy = computed(() => jobStateRef.value === "running" && step.value === 4);
 </script>
 
 <template>
-  <Modal
+  <CreateSiteWizardShell
     :open="open"
     title="Create a new WordPress site"
-    size="lg"
+    :steps="['Basics', 'WordPress', 'Database', 'Review']"
+    :step-valid="[basicsValid, wordpressValid, dbNameValid, true]"
+    :build-spec="buildSpec"
+    :phases="PHASES"
+    :domain="domain"
+    :project-path="projectPath"
+    :open-url="openUrl"
+    :prereqs="prereqs"
+    :prereq-rows="prereqRows"
+    prereq-summary="Creating a WordPress site needs PHP and WP-CLI (which Yerd's own Composer builds)."
+    :ready="ready"
+    :install-all="installAll"
     @update:open="(v) => emit('update:open', v)"
+    @created="emit('created')"
+    @reset="reset"
   >
-    <div v-if="toolsLoading" class="flex items-center justify-center py-12">
-      <Spinner class="size-6" />
-    </div>
-
-    <!-- ── Prerequisites gate ── -->
-    <div v-else-if="!ready" class="space-y-4">
-      <div class="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 p-3">
-        <TriangleAlert class="mt-0.5 size-4 shrink-0 text-warning" />
-        <div>
-          <p class="text-sm font-medium">A few tools are needed first</p>
-          <p class="text-xs text-muted-foreground">
-            Creating a WordPress site needs PHP and WP-CLI (which Yerd's own Composer builds).
-            Install the missing ones to continue.
-          </p>
-        </div>
-      </div>
-
-      <div class="divide-y rounded-lg border">
-        <div
-          v-for="row in prereqRows"
-          :key="row.id"
-          class="flex items-center justify-between gap-3 px-3 py-2.5"
-        >
-          <div class="min-w-0">
-            <p class="text-sm font-medium">{{ row.label }}</p>
-            <p class="text-xs text-muted-foreground">{{ row.sub }}</p>
-          </div>
-          <div class="flex shrink-0 items-center gap-2">
-            <span v-if="row.ok" class="flex items-center gap-1 text-xs text-success">
-              <CheckCircle2 class="size-4" /> Installed
-            </span>
-            <template v-else>
-              <Spinner v-if="installingTool === row.id" class="size-4" />
-              <Button
-                v-else
-                size="sm"
-                variant="outline"
-                :disabled="installBusy || (row.id === 'wp-cli' && !managedComposer)"
-                :title="row.id === 'wp-cli' && !managedComposer ? 'Yerd\'s own Composer is required to build WP-CLI' : ''"
-                @click="row.id === 'php' ? installFirstPhp() : installPrereq(row.id)"
-              >
-                Install
-              </Button>
-            </template>
-          </div>
-        </div>
-      </div>
-
-      <pre
-        v-if="installLog.length"
-        ref="installLogBox"
-        class="h-40 overflow-y-auto whitespace-pre-wrap rounded-lg bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-zinc-200"
-      >{{ installLog.join("\n") }}</pre>
-    </div>
-
-    <!-- ── Wizard ── -->
-    <template v-else>
-    <div v-if="step < 4" class="mb-6 flex w-full">
-      <div
-        v-for="(label, i) in STEP_LABELS"
-        :key="label"
-        class="step-chevron -ml-2.5 flex h-9 flex-1 items-center justify-center gap-1.5 pl-5 pr-1 text-xs font-medium transition-colors first:ml-0 first:pl-3"
-        :class="[
-          i < step
-            ? 'bg-brand/70 text-white'
-            : i === step
-              ? 'bg-brand text-white'
-              : 'bg-muted text-muted-foreground',
-          i !== step && i !== 0 ? 'step-chevron-sep' : '',
-        ]"
+    <template #step-0>
+      <SiteBasicsStep
+        v-model:name="form.name"
+        v-model:location="form.location"
+        v-model:php="form.php"
+        v-model:secure="form.secure"
+        id-prefix="wp-cs"
+        :parked-folders="parkedFolders"
+        :php-options="phpOptions"
+        :domain="domain"
+        :project-path="projectPath"
+        :name-valid="nameValid"
+        no-php-text="No PHP installed."
       >
-        <Check v-if="i < step" class="size-3.5 shrink-0" />
-        <span>{{ label }}</span>
-      </div>
-    </div>
+        <template #php-hint>
+          <template v-if="phpIsLegacy">
+            Out of support: no dumps or coverage, and it can't be your default.
+          </template>
+          <template v-else>The version this site runs on.</template>
+        </template>
+      </SiteBasicsStep>
+    </template>
 
-    <!-- ── Step 1: Basics ── -->
-    <div v-if="step === 0" class="space-y-4">
-      <div>
-        <label class="text-sm font-medium" for="wp-cs-name">Project name</label>
-        <Input id="wp-cs-name" v-model="form.name" placeholder="e.g. blog" class="mt-2" />
-        <p class="mt-1 text-xs text-muted-foreground">
-          Served at
-          <span class="font-mono text-foreground">{{ domain }}</span>
-          <span v-if="projectPath"> · creates <span class="font-mono">{{ projectPath }}</span></span>
-        </p>
-        <p v-if="form.name && !nameValid" class="mt-1 text-xs text-destructive">
-          Use a single label: letters, numbers and hyphens only.
-        </p>
-      </div>
-
-      <div>
-        <label class="text-sm font-medium" for="wp-cs-location">Location</label>
-        <div class="mt-2 flex gap-2">
-          <Select
-            v-if="locationOptions.length"
-            id="wp-cs-location"
-            :model-value="form.location"
-            :options="locationOptions"
-            class="w-full"
-            aria-label="Location"
-            @update:model-value="(v: string) => (form.location = v)"
-          />
-          <Input v-else :model-value="form.location" readonly placeholder="Choose a folder…" />
-          <Button variant="outline" @click="chooseLocation">
-            <FolderOpen class="size-4" /> Browse
-          </Button>
-        </div>
-        <p class="mt-1 text-xs text-muted-foreground">
-          A parked folder serves the new site automatically; any other folder is linked.
-        </p>
-      </div>
-
-      <div class="flex items-center justify-between gap-4 rounded-lg border p-3">
-        <div>
-          <p class="text-sm font-medium">PHP version</p>
-          <p class="text-xs text-muted-foreground">
-            <template v-if="phpIsLegacy">
-              Out of support: no dumps or coverage, and it can't be your default.
-            </template>
-            <template v-else>The version this site runs on.</template>
-          </p>
-        </div>
-        <Select
-          v-if="phpOptions.length"
-          id="wp-cs-php"
-          :model-value="form.php"
-          :options="phpOptions"
-          class="w-40 shrink-0"
-          aria-label="PHP version"
-          @update:model-value="(v: string) => (form.php = v)"
-        />
-        <span v-else class="shrink-0 text-xs text-destructive">No PHP installed.</span>
-      </div>
-
-      <div class="flex items-center justify-between gap-4 rounded-lg border p-3">
-        <div>
-          <p class="text-sm font-medium">HTTPS</p>
-          <p class="text-xs text-muted-foreground">Serve this site over TLS.</p>
-        </div>
-        <Switch v-model="form.secure" aria-label="Serve over HTTPS" />
-      </div>
-    </div>
-
-    <!-- ── Step 2: WordPress ── -->
-    <div v-else-if="step === 1" class="space-y-4">
-      <div class="flex gap-4">
-        <div class="flex-1">
-          <label class="text-sm font-medium" for="wp-cs-version">Core version</label>
-          <Select
-            id="wp-cs-version"
-            :model-value="form.coreVersion"
-            :options="versionOptions"
-            :disabled="wordpressVersionsLoading"
-            class="mt-2 w-full"
-            aria-label="Core version"
-            @update:model-value="(v: string) => (form.coreVersion = v)"
-          />
-        </div>
-        <div class="flex-1">
-          <label class="text-sm font-medium" for="wp-cs-locale">Locale</label>
-          <Combobox
-            v-model="form.locale"
-            :options="WORDPRESS_LOCALES"
-            placeholder="en_US"
-            search-placeholder="Search locales…"
-            empty-text="No matching locale."
-            aria-label="Locale"
-            class="mt-2"
-          />
-        </div>
-      </div>
-
-      <div>
-        <label class="text-sm font-medium" for="wp-cs-title">Site title</label>
-        <Input id="wp-cs-title" v-model="form.siteTitle" placeholder="My Blog" class="mt-2" />
-      </div>
-
-      <div class="flex gap-4">
-        <div class="flex-1">
-          <label class="text-sm font-medium" for="wp-cs-admin-user">Admin username</label>
-          <Input id="wp-cs-admin-user" v-model="form.adminUser" class="mt-2" />
-        </div>
-        <div class="flex-1">
-          <label class="text-sm font-medium" for="wp-cs-admin-email">Admin email</label>
-          <Input id="wp-cs-admin-email" v-model="form.adminEmail" type="email" class="mt-2" />
-          <p v-if="form.adminEmail && !emailValid" class="mt-1 text-xs text-destructive">
-            Enter a valid email address.
-          </p>
-        </div>
-      </div>
-
-      <div>
-        <label class="text-sm font-medium" for="wp-cs-admin-password">Admin password</label>
-        <div class="mt-2 flex gap-2">
-          <Input
-            id="wp-cs-admin-password"
-            v-model="form.adminPassword"
-            type="text"
-            placeholder="At least 8 characters"
-            class="font-mono"
-          />
-          <Button variant="outline" @click="generatePassword">
-            <RefreshCw class="size-4" /> Generate
-          </Button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ── Step 3: Database ── -->
-    <div v-else-if="step === 2" class="space-y-4">
-      <div>
-        <span class="text-sm font-medium">Database engine</span>
-        <div class="mt-2 grid grid-cols-2 gap-2">
-          <button
-            v-for="opt in [
-              { value: 'mysql', label: 'MySQL' },
-              { value: 'mariadb', label: 'MariaDB' },
-            ]"
-            :key="opt.value"
-            type="button"
-            class="rounded-lg border p-2.5 text-left transition-colors"
-            :class="
-              form.dbEngine === opt.value
-                ? 'border-brand bg-brand/5 ring-1 ring-brand'
-                : 'hover:border-brand/40'
-            "
-            @click="selectDbEngine(opt.value as WordPressDbEngine)"
-          >
-            <span class="block text-sm font-medium">{{ opt.label }}</span>
-          </button>
-        </div>
-      </div>
-
-      <div class="flex gap-4">
-        <div class="flex-1">
-          <label class="text-sm font-medium" for="wp-cs-dbname">Database name</label>
-          <Input
-            id="wp-cs-dbname"
-            v-model="form.dbName"
-            class="mt-2 font-mono"
-            @update:model-value="dbNameTouched = true"
-          />
-          <p v-if="form.dbName && !dbNameValid" class="mt-1 text-xs text-destructive">
-            Use letters, numbers and underscores, starting with a letter or underscore.
-          </p>
-        </div>
-        <div class="w-32 shrink-0">
-          <label class="text-sm font-medium" for="wp-cs-table-prefix">Table prefix</label>
-          <Input id="wp-cs-table-prefix" v-model="form.tablePrefix" class="mt-2 font-mono" />
-        </div>
-      </div>
-
-      <div v-if="!servicesLoading && engineStateText" class="rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground">
-        {{ engineStateText }}
-      </div>
-      <p class="text-xs text-muted-foreground">
-        Only MySQL and MariaDB are supported for WordPress core. Yerd provisions the database as
-        part of creating this site.
-      </p>
-    </div>
-
-    <!-- ── Step 4: Review ── -->
-    <div v-else-if="step === 3" class="space-y-4">
-      <div class="rounded-lg border p-3 text-sm">
-        <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5">
-          <dt class="text-muted-foreground">Site</dt>
-          <dd class="font-mono">{{ domain }}</dd>
-          <dt class="text-muted-foreground">Path</dt>
-          <dd class="truncate font-mono">{{ projectPath }}</dd>
-          <dt class="text-muted-foreground">PHP</dt>
-          <dd>{{ form.php }}{{ form.secure ? " · HTTPS" : "" }}</dd>
-          <dt class="text-muted-foreground">WordPress</dt>
-          <dd>{{ form.coreVersion || "Latest" }} · {{ form.locale }}</dd>
-          <dt class="text-muted-foreground">Admin</dt>
-          <dd>{{ form.adminUser }} ({{ form.adminEmail }})</dd>
-          <dt class="text-muted-foreground">Database</dt>
-          <dd>{{ form.dbEngine }} · {{ form.dbName }}</dd>
-        </dl>
-      </div>
-      <p v-if="!wordpressValid" class="text-xs text-destructive">
-        Fill in the admin username, a valid email and a password of at least 8 characters on the
-        WordPress step before continuing.
-      </p>
-      <p v-else-if="!dbNameValid" class="text-xs text-destructive">
-        Fix the database name on the Database step before continuing.
-      </p>
-    </div>
-
-    <!-- ── Step 5: Progress ── -->
-    <div v-else class="space-y-4">
-      <div class="grid grid-cols-7">
-        <div v-for="(p, i) in PHASES" :key="p" class="flex flex-col items-center gap-1.5 px-0.5">
-          <div class="relative flex w-full items-center justify-center">
-            <span
-              v-if="i < PHASES.length - 1"
-              class="absolute left-1/2 top-1/2 z-0 h-0.5 w-full -translate-y-1/2 rounded-full transition-colors"
-              :class="phaseStatus(p) === 'done' ? 'bg-success' : 'bg-border'"
+    <template #step-1>
+      <div class="space-y-4">
+        <div class="flex gap-4">
+          <div class="flex-1">
+            <label class="text-sm font-medium" for="wp-cs-version">Core version</label>
+            <Select
+              id="wp-cs-version"
+              :model-value="form.coreVersion"
+              :options="versionOptions"
+              :disabled="wordpressVersionsLoading"
+              class="mt-2 w-full"
+              aria-label="Core version"
+              @update:model-value="(v: string) => (form.coreVersion = v)"
             />
-            <span
-              class="relative z-10 flex size-6 shrink-0 items-center justify-center rounded-full transition-colors"
-              :class="
-                phaseStatus(p) === 'done'
-                  ? 'bg-success text-white'
-                  : phaseStatus(p) === 'active'
-                    ? 'bg-brand text-white'
-                    : 'bg-muted text-muted-foreground'
-              "
-            >
-              <Check v-if="phaseStatus(p) === 'done'" class="size-3.5" />
-              <Loader2 v-else-if="phaseStatus(p) === 'active'" class="size-3.5 animate-spin" />
-              <Circle v-else class="size-2 fill-current" />
-            </span>
           </div>
-          <span
-            class="text-center text-[11px] leading-tight"
-            :class="phaseStatus(p) === 'todo' ? 'text-muted-foreground' : 'font-medium'"
-          >{{ p }}</span>
+          <div class="flex-1">
+            <label class="text-sm font-medium" for="wp-cs-locale">Locale</label>
+            <Combobox
+              v-model="form.locale"
+              :options="WORDPRESS_LOCALES"
+              placeholder="en_US"
+              search-placeholder="Search locales…"
+              empty-text="No matching locale."
+              aria-label="Locale"
+              class="mt-2"
+            />
+          </div>
+        </div>
+
+        <div>
+          <label class="text-sm font-medium" for="wp-cs-title">Site title</label>
+          <Input id="wp-cs-title" v-model="form.siteTitle" placeholder="My Blog" class="mt-2" />
+        </div>
+
+        <div class="flex gap-4">
+          <div class="flex-1">
+            <label class="text-sm font-medium" for="wp-cs-admin-user">Admin username</label>
+            <Input id="wp-cs-admin-user" v-model="form.adminUser" class="mt-2" />
+          </div>
+          <div class="flex-1">
+            <label class="text-sm font-medium" for="wp-cs-admin-email">Admin email</label>
+            <Input id="wp-cs-admin-email" v-model="form.adminEmail" type="email" class="mt-2" />
+            <p v-if="form.adminEmail && !emailValid" class="mt-1 text-xs text-destructive">
+              Enter a valid email address.
+            </p>
+          </div>
+        </div>
+
+        <div>
+          <label class="text-sm font-medium" for="wp-cs-admin-password">Admin password</label>
+          <div class="mt-2 flex gap-2">
+            <Input
+              id="wp-cs-admin-password"
+              v-model="form.adminPassword"
+              type="text"
+              placeholder="At least 8 characters"
+              class="font-mono"
+            />
+            <Button variant="outline" @click="form.adminPassword = randomPassword()">
+              <RefreshCw class="size-4" /> Generate
+            </Button>
+          </div>
         </div>
       </div>
-      <p v-if="phase && !PHASES.includes(phase) && jobStateRef === 'running'" class="text-xs text-muted-foreground">
-        {{ phase }}…
-      </p>
-
-      <pre
-        ref="logBox"
-        class="h-56 overflow-y-auto whitespace-pre-wrap rounded-lg bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-zinc-200"
-      >{{ log.join("\n") || "Starting…" }}</pre>
-
-      <div
-        v-if="jobStateRef === 'succeeded'"
-        class="flex items-center gap-2 rounded-lg border border-success/40 bg-success/10 p-3 text-sm text-success"
-      >
-        <CheckCircle2 class="size-4" /> {{ domain }} is ready.
-      </div>
-      <div
-        v-else-if="jobStateRef === 'failed'"
-        class="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
-      >
-        {{ jobError || "Creation failed." }}
-      </div>
-      <div
-        v-else-if="jobStateRef === 'cancelled'"
-        class="rounded-lg border p-3 text-sm text-muted-foreground"
-      >
-        Cancelled.
-      </div>
-    </div>
     </template>
 
-    <template #footer="{ close: modalClose }">
-      <template v-if="toolsLoading">
-        <Button variant="ghost" @click="modalClose">Cancel</Button>
-      </template>
+    <template #step-2>
+      <div class="space-y-4">
+        <div>
+          <span class="text-sm font-medium">Database engine</span>
+          <div class="mt-2 grid grid-cols-2 gap-2">
+            <button
+              v-for="opt in [
+                { value: 'mysql', label: 'MySQL' },
+                { value: 'mariadb', label: 'MariaDB' },
+              ]"
+              :key="opt.value"
+              type="button"
+              class="rounded-lg border p-2.5 text-left transition-colors"
+              :class="
+                form.dbEngine === opt.value
+                  ? 'border-brand bg-brand/5 ring-1 ring-brand'
+                  : 'hover:border-brand/40'
+              "
+              @click="selectDbEngine(opt.value as WordPressDbEngine)"
+            >
+              <span class="block text-sm font-medium">{{ opt.label }}</span>
+            </button>
+          </div>
+        </div>
 
-      <template v-else-if="!ready">
-        <Button variant="ghost" @click="modalClose">Cancel</Button>
-        <Button :disabled="installBusy" @click="installAllMissing">
-          <Spinner v-if="installingAll" class="size-4" /> Install missing tools
-        </Button>
-      </template>
+        <div class="flex gap-4">
+          <div class="flex-1">
+            <label class="text-sm font-medium" for="wp-cs-dbname">Database name</label>
+            <Input
+              id="wp-cs-dbname"
+              v-model="form.dbName"
+              class="mt-2 font-mono"
+              @update:model-value="dbNameTouched = true"
+            />
+            <p v-if="form.dbName && !dbNameValid" class="mt-1 text-xs text-destructive">
+              Use letters, numbers and underscores, starting with a letter or underscore.
+            </p>
+          </div>
+          <div class="w-32 shrink-0">
+            <label class="text-sm font-medium" for="wp-cs-table-prefix">Table prefix</label>
+            <Input id="wp-cs-table-prefix" v-model="form.tablePrefix" class="mt-2 font-mono" />
+          </div>
+        </div>
 
-      <template v-else-if="step === 4">
-        <template v-if="busy">
-          <Button variant="ghost" :disabled="cancelRequested" @click="cancelJob">
-            {{ cancelRequested ? "Cancelling…" : "Cancel" }}
-          </Button>
-        </template>
-        <template v-else-if="jobStateRef === 'succeeded'">
-          <Button variant="outline" @click="openPath(projectPath)">
-            <FolderOpen class="size-4" /> Open folder
-          </Button>
-          <Button
-            variant="outline"
-            title="Signs you in as the site's admin when possible"
-            @click="openWpAdmin"
-          >
-            <ExternalLink class="size-4" /> WP Admin
-          </Button>
-          <Button variant="outline" @click="openInBrowser(openUrl)">
-            <ExternalLink class="size-4" /> Open in browser
-          </Button>
-          <Button @click="modalClose">Done</Button>
-        </template>
-        <template v-else>
-          <Button variant="ghost" @click="step = 3">
-            <ChevronLeft class="size-4" /> Back
-          </Button>
-          <Button @click="modalClose">Close</Button>
-        </template>
-      </template>
-
-      <template v-else>
-        <Button v-if="step > 0" variant="ghost" @click="step = (step - 1) as Step">
-          <ChevronLeft class="size-4" /> Back
-        </Button>
-        <Button v-else variant="ghost" @click="modalClose">Cancel</Button>
-
-        <Button v-if="step === 0" :disabled="!basicsValid" @click="step = 1">Next</Button>
-        <Button v-else-if="step === 1" :disabled="!wordpressValid" @click="step = 2">Next</Button>
-        <Button v-else-if="step === 2" :disabled="!dbNameValid" @click="step = 3">Next</Button>
-        <Button v-else :disabled="!ready" @click="startCreate">Create site</Button>
-      </template>
+        <div
+          v-if="!servicesLoading && engineStateText"
+          class="rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground"
+        >
+          {{ engineStateText }}
+        </div>
+        <p class="text-xs text-muted-foreground">
+          Only MySQL and MariaDB are supported for WordPress core. Yerd provisions the database as
+          part of creating this site.
+        </p>
+      </div>
     </template>
-  </Modal>
+
+    <template #step-3>
+      <div class="space-y-4">
+        <div class="rounded-lg border p-3 text-sm">
+          <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5">
+            <dt class="text-muted-foreground">Site</dt>
+            <dd class="font-mono">{{ domain }}</dd>
+            <dt class="text-muted-foreground">Path</dt>
+            <dd class="truncate font-mono">{{ projectPath }}</dd>
+            <dt class="text-muted-foreground">PHP</dt>
+            <dd>{{ form.php }}{{ form.secure ? " · HTTPS" : "" }}</dd>
+            <dt class="text-muted-foreground">WordPress</dt>
+            <dd>{{ form.coreVersion || "Latest" }} · {{ form.locale }}</dd>
+            <dt class="text-muted-foreground">Admin</dt>
+            <dd>{{ form.adminUser }} ({{ form.adminEmail }})</dd>
+            <dt class="text-muted-foreground">Database</dt>
+            <dd>{{ form.dbEngine }} · {{ form.dbName }}</dd>
+          </dl>
+        </div>
+        <p v-if="!wordpressValid" class="text-xs text-destructive">
+          Fill in the admin username, a valid email and a password of at least 8 characters on the
+          WordPress step before continuing.
+        </p>
+        <p v-else-if="!dbNameValid" class="text-xs text-destructive">
+          Fix the database name on the Database step before continuing.
+        </p>
+      </div>
+    </template>
+
+    <template #success-actions>
+      <Button
+        variant="outline"
+        title="Signs you in as the site's admin when possible"
+        @click="openWpAdmin"
+      >
+        <ExternalLink class="size-4" /> WP Admin
+      </Button>
+    </template>
+  </CreateSiteWizardShell>
 </template>
-
-<style scoped>
-/* Chevron/arrow breadcrumb - identical to CreateLaravelWizard.vue's. */
-.step-chevron {
-  clip-path: polygon(
-    0 0,
-    calc(100% - 10px) 0,
-    100% 50%,
-    calc(100% - 10px) 100%,
-    0 100%,
-    10px 50%
-  );
-}
-.step-chevron:first-child {
-  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%);
-}
-.step-chevron:last-child {
-  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 10px 50%);
-}
-.step-chevron-sep {
-  filter: drop-shadow(-2.5px 0 0 #a1a1aa);
-}
-</style>

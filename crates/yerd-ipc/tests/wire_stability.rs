@@ -2680,6 +2680,32 @@ fn request_create_site_wordpress_byte_shape() {
 }
 
 #[test]
+fn request_create_site_composer_frameworks_byte_shape() {
+    use yerd_ipc::{CreateSiteSpec, Framework};
+    for (framework, tag) in [
+        (Framework::Codeigniter, "codeigniter"),
+        (Framework::Cakephp, "cakephp"),
+        (Framework::Slim, "slim"),
+    ] {
+        let r = Request::CreateSite {
+            spec: CreateSiteSpec {
+                name: "app".into(),
+                parent_dir: PathBuf::from("/srv"),
+                php: PhpVersion::new(8, 3),
+                secure: false,
+                framework,
+            },
+        };
+        let s = serde_json::to_string(&r).unwrap();
+        let expected = format!(
+            r#"{{"type":"create_site","spec":{{"name":"app","parent_dir":"/srv","php":"8.3","secure":false,"framework":{{"framework":"{tag}"}}}}}}"#
+        );
+        assert_eq!(s, expected);
+        assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+    }
+}
+
+#[test]
 fn request_job_status_byte_shape() {
     let r = Request::JobStatus {
         job_id: "j1".into(),

@@ -100,6 +100,7 @@ The daemon's modules (`src/lib.rs` re-exports each as `pub mod`):
 | `state` | `DaemonState` - the shared config + router + lifecycle channel. |
 | `ipc_server` | IPC accept loop and per-request dispatch. |
 | `cert_store` | `DaemonCertStore` - per-SNI leaf issuance/cache for the proxy. |
+| `codeigniter_url_sync` | Keeps an active `app.baseURL` in a `CodeIgniter` 4 site's `.env` in sync with its HTTPS toggle and primary domain. Left unchanged when the primary domain routes to a different site (a shadowed apex). |
 | `backend_resolver` | `DaemonBackendResolver` - routes a `Site` to a live FPM pool. |
 | `detect_cache` | `DetectCache` - memoises web-root detection per project, keyed on a freshness stamp. |
 | `fs_watch` | Debounced filesystem watcher that re-scans parked roots as projects appear/change. |
@@ -107,11 +108,12 @@ The daemon's modules (`src/lib.rs` re-exports each as `pub mod`):
 | `site_domains` | Infallible, collision-resolving router builder (`build`) plus `collisions`, which reports the losing side of each domain clash (surfaced as `StatusReport.shadows`). Resolves domains for whole-host proxies as well as sites - every site is considered before any proxy. |
 | `php_install` | Download + unpack prebuilt PHP builds; `reqwest` downloader. |
 | `php_updates` | PHP update poller + cache (notify-only). |
+| `public_url` | Site URLs mirroring the GUI's `siteUrl` (scheme, host, and the bound port on an unredirected rootless fallback): `site_url` for values written into projects, and `browser_url` for job-log links, which switches to the `http://localhost/~{host}` fallback when `.test` names don't resolve. |
 | `self_update` | Yerd self-update poller: fetches the GitHub Releases API, decides via the pure `yerd-update` crate, and persists a snapshot (`checked_at` + decision) both to disk and in `DaemonState` (notify-only). |
 | `dump_server` | Loopback TCP server reading newline-delimited JSON dump frames from the native `yerd-dump` extension into a bounded ring buffer; serves the ring to the GUI over IPC (`ListDumps`/`DumpsStatus`/…). |
 | `ext_install` | Downloads + SHA-256-verifies native PHP extension `.so`s per installed PHP version (from the `forjedio/yerd-php-ext` releases) into `{data}/php-ext/php-<ver>/`. An `ExtSpec` abstraction drives one fetch loop for **both** `yerd-dump` (`DUMP_SPEC`, gated on dumps) and `pcov` (`PCOV_SPEC`, ungated) - two manifests, one release. |
 | `tools` | Dev-tool installers (Composer, Node, Bun, the Laravel installer, WP-CLI): download/build + verify into `{data}/tools/<id>/` and reconcile their `{data}/bin` shims. See [Dev-tool installers](../dev-tools). |
-| `create_site` | Site-scaffolding job bodies for the GUI wizard (`laravel.rs`, `wordpress.rs`) - see [WordPress support](#wordpress-support) below. |
+| `create_site` | Site-scaffolding job bodies for the GUI wizards (`laravel.rs`, `wordpress.rs`, and `composer_project.rs` for the CodeIgniter/CakePHP/Slim `composer create-project` templates) - see [WordPress support](#wordpress-support) below. |
 | `wordpress_detect` | Narrow marker-file check for whether a site is a `WordPress` install (`wp-config.php`/`wp-load.php`). |
 | `wordpress_login` | One-click `WordPress` admin login: token registry + the `auto_prepend_file` bootstrap script. |
 | `wordpress_url_sync` | Keeps a `WordPress` site's own `siteurl`/`home` options in sync with its HTTP/HTTPS toggle. |
@@ -240,7 +242,7 @@ After `run_until_shutdown` returns, the signal task is **aborted** rather than a
 - **Dumps (Laravel telemetry):** `ListDumps` (pages the ring), `ClearDumps`, `DeleteDump`, `DumpsStatus`, `SetDumpsEnabled` (first enable fetches the `.so` and restarts started pools), `SetDumpsPort` (test-binds then triggers a hot rebind), `SetDumpsPersist`, `SetDumpFeature` → `dump_server::*`.
 - **Mail capture:** `ListMails`, `GetMail`, `ClearMails`, `DeleteMails`, `MarkMailsRead` (marks the given mails read in the store), `SetMailPort`, `SetMailEnabled` (port/enabled persist to config and take effect on the next restart - no hot rebind) → the `mail_store` / `set_mail_*` handlers. `Status` reports the store's total and unread counts via `MailStatus`.
 - **Dev tools:** `ListTools` (pure fs status), `InstallTool`/`UninstallTool` → `tools::*` then a `{data}/bin` shim reconcile. See [Dev-tool installers](../dev-tools).
-- **WordPress:** `CreateSite` (WordPress or Laravel spec) → a background job under `create_site::*`, polled via `JobStatus`. `MintWordpressLoginToken`, `SetWordpressAutoLogin` → `handle_mutation`, `WordpressAdminUsers`, `AvailableWordpressVersions` → `wordpress_login::*` / `wordpress_users::*` / `wordpress_versions::*`. See [WordPress support](#wordpress-support) above.
+- **WordPress:** `CreateSite` (Laravel, WordPress, CodeIgniter, CakePHP or Slim spec) → a background job under `create_site::*`, polled via `JobStatus`. `MintWordpressLoginToken`, `SetWordpressAutoLogin` → `handle_mutation`, `WordpressAdminUsers`, `AvailableWordpressVersions` → `wordpress_login::*` / `wordpress_users::*` / `wordpress_versions::*`. See [WordPress support](#wordpress-support) above.
 - **Lifecycle:** `RestartDaemon` (Unix only).
 
 The dispatch also routes the **services / database-admin** families (`ListServices`, `InstallService`, `StartService`/`StopService`/`RestartService`, `CreateDatabase`/`ListDatabases`/`DropDatabase`/`BackupDatabase`/`RestoreDatabase`, …) to `services::*` / `db_admin::*`.

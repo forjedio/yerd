@@ -462,7 +462,11 @@ export interface WordPressOptions {
  */
 export type Framework =
   | { framework: "laravel"; options: LaravelOptions }
-  | { framework: "wordpress"; options: WordPressOptions };
+  | { framework: "wordpress"; options: WordPressOptions }
+  | { framework: ComposerFramework };
+
+/** Frameworks scaffolded with `composer create-project`, which take no options. */
+export type ComposerFramework = "codeigniter" | "cakephp" | "slim";
 
 /** crates/yerd-ipc/src/create.rs - CreateSiteSpec. */
 export interface CreateSiteSpec {
