@@ -760,7 +760,7 @@ mod tests {
                 // The untrusted client must terminate the TLS handshake.
                 if let Ok(mut stream) = acceptor.accept(socket).await {
                     let mut request = [0; 4096];
-                    stream.read(&mut request).await.unwrap();
+                    assert!(stream.read(&mut request).await.unwrap() > 0);
                     stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\nConnection: close\r\n\r\ntrusted download").await.unwrap();
                     stream.shutdown().await.unwrap();
                 }
