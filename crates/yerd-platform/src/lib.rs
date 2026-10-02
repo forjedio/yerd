@@ -30,6 +30,7 @@ pub mod helper;
 pub mod ide;
 pub mod lan_ip;
 pub mod metrics;
+pub mod node;
 pub mod nss_exec;
 pub mod opener;
 pub mod paths;

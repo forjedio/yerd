@@ -114,8 +114,23 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             }
         }
         Command::Install {
-            target: crate::cli::InstallTarget::Tool { id },
-        } => Request::InstallTool { tool: id.clone() },
+            target: crate::cli::InstallTarget::Tool { id, version },
+        } => match version {
+            None => Request::InstallTool { tool: id.clone() },
+            Some(version) if id == "node" => {
+                if !matches!(version.as_str(), "node" | "lts/*") {
+                    yerd_core::node::numeric_selector(version).map_err(ClientError::Usage)?;
+                }
+                Request::InstallNode {
+                    version: version.clone(),
+                }
+            }
+            Some(_) => {
+                return Err(ClientError::Usage(
+                    "only Node supports a tool version selector".to_owned(),
+                ))
+            }
+        },
         Command::Restart {
             target: crate::cli::RestartTarget::Php { version },
         } => match version {
@@ -143,6 +158,25 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             ));
         }
         Command::Tools => Request::ListTools,
+        Command::Node {
+            action: crate::cli::NodeAction::Use { version, site },
+        } => {
+            yerd_core::node::numeric_selector(version).map_err(ClientError::Usage)?;
+            if let Some(site) = site {
+                validate_name(site)?;
+            }
+            Request::SetNodeVersion {
+                version: version.clone(),
+                site: site.clone(),
+            }
+        }
+        Command::Node {
+            action: crate::cli::NodeAction::List,
+        } => {
+            return Err(ClientError::Usage(
+                "Node listing is handled locally".to_owned(),
+            ))
+        }
         Command::List {
             target: crate::cli::ListTarget::Php { check, available },
         } => {
@@ -2150,7 +2184,10 @@ mod tests {
         assert_eq!(to_request(&Command::Tools).unwrap(), Request::ListTools);
         assert_eq!(
             to_request(&Command::Install {
-                target: crate::cli::InstallTarget::Tool { id: "node".into() }
+                target: crate::cli::InstallTarget::Tool {
+                    id: "node".into(),
+                    version: None
+                }
             })
             .unwrap(),
             Request::InstallTool {

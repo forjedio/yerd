@@ -129,13 +129,25 @@ The model mirrors [PHP versions](./php-versions) and [services](./services):
   `PATH` once (see below) and `composer`, `node`, `npm`, `bun`, … just work.
 - **Rootless.** Everything runs as your user, no elevation.
 
-### Latest only
+### Node versions
 
-Yerd installs the **latest stable** release of each tool (the latest **LTS** for
-Node). There is no per-project version picker - **Update** simply re-fetches the
-current latest and replaces it in place. If you need to pin a specific Node
-version per project, a system version manager like `nvm`/`fnm` is still the right
-tool; Yerd's goal here is a good default that's always there.
+Node releases can be installed side by side and selected from the CLI:
+
+```sh
+yerd install tool node 24
+yerd install tool node 22
+yerd node use 24
+yerd node use 22 --site blog
+yerd exec npm install
+```
+
+`yerd exec node`, `npm`, and `npx` honor a project's `.nvmrc`, then its saved
+preference, then the global default. Bare managed commands use the global
+default. The GUI continues to install and select the newest LTS; a versioned CLI
+install preserves the existing default. See [Node version commands](../reference/cli/tooling#node-versions)
+and [resolution rules](../reference/cli/exec#node-resolution).
+
+Other tools install the latest stable release, replacing their previous files.
 
 ## Put Yerd's bin directory on your PATH
 

@@ -1,4 +1,4 @@
-//! Node.js installer - fetch the latest **LTS** tarball into `{data}/tools/node/`
+//! Node.js installer - verified side-by-side releases in `{data}/tools/node-versions/`
 //! and expose `node`/`npm`/`npx`.
 //!
 //! Node's `.tar.gz` bundles `node` plus npm/npx (relative symlinks into
@@ -11,9 +11,7 @@ use serde::Deserialize;
 use yerd_php::{current_os_arch, is_safe_member, Arch, Downloader, Os};
 use yerd_platform::PlatformDirs;
 
-use super::{
-    extract_root_dir, sha_for_asset, stage_and_swap, tool_dir, verify_sha256, Tool, ToolError,
-};
+use super::{sha_for_asset, stage_at, verify_sha256, ToolError};
 
 const DIST_INDEX: &str = "https://nodejs.org/dist/index.json";
 const DIST_BASE: &str = "https://nodejs.org/dist";
@@ -38,26 +36,48 @@ fn host_platform() -> Option<&'static str> {
     })
 }
 
-/// Latest LTS version (`v24.17.0`) from a dist `index.json` body. The index is
-/// newest-first, so the first entry with a string `lts` is the latest LTS.
-fn latest_lts(index_json: &[u8]) -> Option<String> {
-    let releases: Vec<Release> = serde_json::from_slice(index_json).ok()?;
-    releases
-        .into_iter()
-        .find(|r| r.lts.as_str().is_some())
-        .map(|r| r.version)
+/// Install the latest LTS and retain the previous releases.
+pub async fn install(dirs: &PlatformDirs, dl: &dyn Downloader) -> Result<(), ToolError> {
+    let version = install_version(dirs, dl, None).await?;
+    let root = dirs.data.join("tools/node");
+    std::fs::create_dir_all(&root).map_err(|e| ToolError::Io(e.to_string()))?;
+    std::fs::write(root.join(".default"), version).map_err(|e| ToolError::Io(e.to_string()))
 }
 
-/// Install the latest Node LTS for the host into `{data}/tools/node/`.
-pub async fn install(dirs: &PlatformDirs, dl: &dyn Downloader) -> Result<(), ToolError> {
+/// Install an optional numeric selector, resolving it against Node's upstream index.
+pub async fn install_version(
+    dirs: &PlatformDirs,
+    dl: &dyn Downloader,
+    selector: Option<&str>,
+) -> Result<String, ToolError> {
+    if let Some(selector) = selector {
+        if !matches!(selector, "node" | "lts/*") {
+            yerd_core::node::numeric_selector(selector).map_err(ToolError::Download)?;
+        }
+    }
     let plat = host_platform().ok_or(ToolError::UnsupportedHost("Node.js"))?;
     let index = dl
         .download(DIST_INDEX)
         .await
         .map_err(|e| ToolError::Download(format!("node index.json: {e}")))?;
-    let version = latest_lts(&index)
-        .ok_or_else(|| ToolError::Download("node: no LTS release found".to_owned()))?;
-
+    let releases: Vec<Release> = serde_json::from_slice(&index)
+        .map_err(|e| ToolError::Download(format!("node index.json: {e}")))?;
+    let exact = yerd_core::node::select_release(
+        selector.unwrap_or("lts/*"),
+        releases
+            .iter()
+            .map(|r| (r.version.as_str(), r.lts.as_str().is_some())),
+    )
+    .map_err(|_| {
+        ToolError::Download(format!(
+            "no upstream Node release matches {}",
+            selector.unwrap_or("latest LTS")
+        ))
+    })?;
+    let version = format!("v{exact}");
+    let lts = releases
+        .iter()
+        .any(|r| r.version == version && r.lts.as_str().is_some());
     let asset = format!("node-{version}-{plat}.tar.gz");
     let tarball_url = format!("{DIST_BASE}/{version}/{asset}");
     let sums_url = format!("{DIST_BASE}/{version}/SHASUMS256.txt");
@@ -75,21 +95,45 @@ pub async fn install(dirs: &PlatformDirs, dl: &dyn Downloader) -> Result<(), Too
         .map_err(|e| ToolError::Download(format!("{asset}: {e}")))?;
     verify_sha256(&bytes, &want_sha, &asset)?;
 
-    stage_and_swap(dirs, Tool::Node, &version, |staging| {
-        unpack_tar_gz(&bytes, staging, &asset)
-    })?;
+    stage_at(
+        &yerd_platform::node::versions_dir(dirs).join(&exact),
+        &exact,
+        |staging| {
+            unpack_tar_gz(&bytes, staging, &asset)?;
+            let bin = super::extract_root_dir(staging)?.join("bin");
+            if ["node", "npm", "npx"]
+                .iter()
+                .any(|name| !bin.join(name).is_file())
+            {
+                return Err(ToolError::Unpack(
+                    "Node archive is missing node/npm/npx".to_owned(),
+                ));
+            }
+            if lts {
+                std::fs::write(staging.join(".lts"), "")
+                    .map_err(|e| ToolError::Io(e.to_string()))?;
+            }
+            Ok(())
+        },
+    )?;
     tracing::info!(version = %version, "installed Node.js");
-    Ok(())
+    Ok(exact)
 }
 
 /// `(name_in_bin, target)` links for an installed Node: `node`/`npm`/`npx` →
 /// the dist `bin/`. Empty if the install root can't be resolved.
 #[cfg(unix)]
 pub(crate) fn shim_links(dirs: &PlatformDirs) -> Vec<(String, PathBuf)> {
-    let Ok(root) = extract_root_dir(&tool_dir(dirs, Tool::Node)) else {
+    let configured = yerd_config::Config::load(&dirs.config.join("yerd.toml"))
+        .ok()
+        .and_then(|c| c.node.default);
+    let Some(version) = configured.or_else(|| yerd_platform::node::legacy_default(dirs)) else {
         return Vec::new();
     };
-    let bin = root.join("bin");
+    let Ok(selected) = yerd_platform::node::resolve(dirs, &version) else {
+        return Vec::new();
+    };
+    let bin = selected.bin;
     ["node", "npm", "npx"]
         .into_iter()
         .map(|n| (n.to_owned(), bin.join(n)))
@@ -133,22 +177,119 @@ fn unpack_tar_gz(gz_bytes: &[u8], dest: &Path, label: &str) -> Result<(), ToolEr
 mod tests {
     use super::*;
 
-    #[test]
-    fn latest_lts_picks_first_string_lts() {
-        let json = br#"[
-            {"version":"v26.3.1","lts":false},
-            {"version":"v24.17.0","lts":"Krypton"},
-            {"version":"v22.9.0","lts":"Jod"}
-        ]"#;
-        assert_eq!(latest_lts(json).as_deref(), Some("v24.17.0"));
+    struct FakeDownloader {
+        corrupt: bool,
+        requests: std::sync::Mutex<Vec<String>>,
     }
 
-    #[test]
-    fn latest_lts_none_when_no_lts() {
-        let json = br#"[{"version":"v26.0.0","lts":false}]"#;
-        assert_eq!(latest_lts(json), None);
+    fn archive(version: &str) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut tar = tar::Builder::new(encoder);
+        let root = format!("node-v{version}-{}", host_platform().unwrap());
+        for name in ["node", "npm", "npx"] {
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(0o755);
+            header.set_size(4);
+            header.set_cksum();
+            tar.append_data(&mut header, format!("{root}/bin/{name}"), &b"fake"[..])
+                .unwrap();
+        }
+        tar.into_inner().unwrap().finish().unwrap()
     }
 
+    #[async_trait::async_trait]
+    impl Downloader for FakeDownloader {
+        async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
+            self.requests.lock().unwrap().push(url.to_owned());
+            if url == DIST_INDEX {
+                return Ok(br#"[
+                {"version":"v25.1.0","lts":false},
+                {"version":"v24.2.0","lts":"Krypton"},
+                {"version":"v22.9.0","lts":"Jod"}
+            ]"#
+                .to_vec());
+            }
+            let version = if url.contains("v22.9.0") {
+                "22.9.0"
+            } else if url.contains("v25.1.0") {
+                "25.1.0"
+            } else {
+                "24.2.0"
+            };
+            let bytes = archive(version);
+            if url.ends_with("SHASUMS256.txt") {
+                let asset = format!("node-v{version}-{}.tar.gz", host_platform().unwrap());
+                return Ok(
+                    format!("{}  {asset}\n", crate::ext_install::sha256_hex(&bytes)).into_bytes(),
+                );
+            }
+            Ok(if self.corrupt {
+                b"corrupt".to_vec()
+            } else {
+                bytes
+            })
+        }
+    }
+
+    fn dirs(tmp: &Path) -> PlatformDirs {
+        PlatformDirs {
+            config: tmp.join("c"),
+            data: tmp.join("d"),
+            state: tmp.join("s"),
+            cache: tmp.join("ca"),
+            runtime: tmp.join("r"),
+        }
+    }
+
+    #[tokio::test]
+    async fn installs_side_by_side_verifies_integrity_and_preserves_prior_release() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs(tmp.path());
+        let dl = FakeDownloader {
+            corrupt: false,
+            requests: std::sync::Mutex::new(Vec::new()),
+        };
+        assert_eq!(
+            install_version(&dirs, &dl, Some("v22")).await.unwrap(),
+            "22.9.0"
+        );
+        install(&dirs, &dl).await.unwrap();
+        let versions = yerd_platform::node::installed(&dirs);
+        assert_eq!(
+            versions
+                .iter()
+                .map(|v| v.version.as_str())
+                .collect::<Vec<_>>(),
+            ["22.9.0", "24.2.0"]
+        );
+        assert_eq!(
+            yerd_platform::node::legacy_default(&dirs).as_deref(),
+            Some("24.2.0")
+        );
+        assert!(versions.iter().all(|v| v.lts));
+        assert_eq!(
+            install_version(&dirs, &dl, Some("node")).await.unwrap(),
+            "25.1.0"
+        );
+        let bad = FakeDownloader {
+            corrupt: true,
+            requests: std::sync::Mutex::new(Vec::new()),
+        };
+        assert!(install_version(&dirs, &bad, Some("22")).await.is_err());
+        let old = yerd_platform::node::resolve(&dirs, "22").unwrap();
+        assert_eq!(std::fs::read(old.bin.join("node")).unwrap(), b"fake");
+        let invalid = FakeDownloader {
+            corrupt: false,
+            requests: std::sync::Mutex::new(Vec::new()),
+        };
+        assert!(install_version(&dirs, &invalid, Some("../24"))
+            .await
+            .is_err());
+        assert!(invalid.requests.lock().unwrap().is_empty());
+        assert!(install_version(&dirs, &dl, Some("23")).await.is_err());
+        super::super::uninstall(&dirs, super::super::Tool::Node).unwrap();
+        assert!(yerd_platform::node::installed(&dirs).is_empty());
+    }
     #[test]
     fn host_platform_known() {
         assert!(host_platform().is_some());

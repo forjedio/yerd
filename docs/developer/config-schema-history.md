@@ -28,7 +28,11 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v23 (current)
+### v24 (current)
+
+Adds optional `[node]` global defaults and `[node.sites]` preferences keyed by canonical project roots. The v23 to v24 migration is a version bump; absent Node configuration defaults to empty and legacy installations remain discoverable.
+
+### v23
 
 **Added:** the optional `[domains.proxy]` table - routable-domain deltas for **whole-host proxies**, keyed by proxy name. It sits alongside the existing `[domains.linked]` (by site name) and `[domains.parked]` (by document-root string) maps and carries the same three keys: `added`, `suppressed`, and `primary`. It defaults to empty when absent, so an uncustomised file omits it entirely.
 

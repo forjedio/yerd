@@ -29,7 +29,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 
 | Key         | TOML type            | Meaning                                                            | Default        |
 | ----------- | -------------------- | ----------------------------------------------------------------- | -------------- |
-| `version`   | integer              | On-disk schema version. **Mandatory**; written as `23` by this release. | `n/a (required)` |
+| `version`   | integer              | On-disk schema version. **Mandatory**; written as `24` by this release. | `n/a (required)` |
 | `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
 | `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
 | `update_channel` | string          | Self-update channel: `"stable"` or `"edge"`.                      | `"stable"`     |
@@ -60,7 +60,7 @@ The free-form maps are the exception, because their keys *are* the data. `[servi
 
 ### `version`
 
-The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `23`, and Yerd always writes `version = 23`. Older `version = 1` through `version = 22` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `24`, and Yerd always writes `version = 24`. Older `version = 1` through `version = 23` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
 
 ### `tld`
 
@@ -595,7 +595,7 @@ and no `index.php` gets SPA routing automatically, with no rule stored here.
 
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `23`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `24`.
 
 When the daemon loads a file, it routes on the version it finds:
 
@@ -628,6 +628,7 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v19 → v20`** is a bare version bump: v20 only **added** the optional `[php.pool]` table (per-version FPM pool settings), which defaults to empty when absent.
 - **`v20 → v21`** is a bare version bump: v21 only **added** the optional `[route_rules]` table (per-site path-prefix routing rules), which defaults to empty when absent.
 - **`v21 → v22`** is a bare version bump: v22 only **added** the optional `[services.<id>.overrides]` sub-table (free-form engine config directives), which defaults to empty when absent.
+- **`v23 → v24`** adds optional `[node]` defaults and per-project preferences; absent sections remain empty.
 - **`v22 → v23`** is a bare version bump: v23 only **added** the optional `[domains.proxy]` table (routable-domain deltas for whole-host proxies), which defaults to empty when absent.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
@@ -639,6 +640,25 @@ Because later versions changed shapes the parser checks strictly (keys *inside* 
 ::: tip Forward-compatible by design
 The parser tolerates older shapes: a v1 file written before `web_subpath`/`web_root` existed migrates to v2 and parses fine (the new fields default). New optional fields are added additively, so upgrades don't break your existing config.
 :::
+
+## Node preferences
+
+The optional `[node]` section stores the global default. `[node.sites]` stores
+preferences for linked and parked projects, keyed by their canonical absolute
+project root. The daemon saves exact installed releases when using `yerd node use`.
+
+```toml
+[node]
+default = "24.2.0"
+
+[node.sites]
+"/srv/example" = "22.9.0"
+```
+
+A project `.nvmrc` overrides its saved preference. Absent preferences use the
+global default; an old single-version Node installation remains the default
+until one is saved. Stored selectors must be numeric and project keys absolute.
+See [Node resolution](./cli/exec#node-resolution).
 
 ## Atomic saves
 
@@ -655,8 +675,8 @@ Yerd does not `fsync` the file or its parent directory after a save. For a devel
 This is a valid `yerd.toml` covering the core fields (see the sections above for the newer optional tables - `update_channel`, `[tunnel]`, `[groups]`, `[php.extensions]`, `[php.pool]`, `[domains]`, `[[proxies]]`, `[proxy_rules]`, `[route_rules]`, `[services.<id>.overrides]`, `wp_auto_login` - omitted here for brevity):
 
 ```toml
-# Schema version - mandatory, always written as 23 by this release.
-version = 23
+# Schema version - mandatory, always written as 24 by this release.
+version = 24
 
 # TLD served by the resolver; sites resolve as <name>.test
 tld = "test"
