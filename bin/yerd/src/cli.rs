@@ -76,7 +76,7 @@ pub enum Command {
         #[command(subcommand)]
         target: UnsetTarget,
     },
-    /// Install a component (currently: a PHP version).
+    /// Install a PHP version or developer tool.
     Install {
         /// What to install.
         #[command(subcommand)]
@@ -137,6 +137,12 @@ pub enum Command {
     Services,
     /// List installable dev tools (Composer, Node, Bun) and their install status.
     Tools,
+    /// Manage installed Node versions and defaults.
+    Node {
+        /// What to do.
+        #[command(subcommand)]
+        action: NodeAction,
+    },
     /// Manage a local service (redis, mysql, mariadb, postgres, meilisearch).
     Service {
         /// What to do.
@@ -258,23 +264,21 @@ pub enum Command {
         )]
         args: Vec<std::ffi::OsString>,
     },
-    /// Run a tool under the PHP version pinned to a site - the one its web
-    /// requests use - instead of the global default. The site is the one
-    /// containing the current directory, or `--site <name>`; outside any site,
-    /// the global default is used. Everything after the tool is passed
-    /// straight through, so `--site`/`--json` must come *before* it (e.g.
-    /// `yerd exec --site blog php -v`). The bare `php` and `composer` shims are
-    /// unaffected and still use the global default. `-h`/`--help` go to the
-    /// tool, so use `yerd help exec` for this command's own help. Local -
-    /// execs PHP directly. (Unix only.)
+    /// Run a tool under the project's selected PHP or Node version. PHP uses
+    /// the site's pinned version; Node uses .nvmrc, then the saved site
+    /// preference, then the global default. Use --site <name> to select a
+    /// named project's root. Node resolution requires a running daemon.
+    /// Everything after the tool is passed through, so Yerd flags must come
+    /// before it (e.g. `yerd exec --site blog npm install`). Bare managed
+    /// commands still use the global default. -h/--help go to the tool; use
+    /// `yerd help exec` for this command's own help. (Unix only.)
     // `disable_help_flag` because clap otherwise matches `-h`/`--help` before
     // `trailing_var_arg` starts collecting, so `yerd exec composer --help`
     // would print yerd's help instead of Composer's.
     #[command(disable_help_flag = true)]
     Exec {
-        /// Run under this site's pinned version instead of the current
-        /// directory's. Unlike the cwd lookup this never falls back: an
-        /// unknown name is an error.
+        /// Resolve this site's project instead of the current directory.
+        /// An unknown name is an error.
         #[arg(long, value_name = "NAME")]
         site: Option<String>,
         /// Which tool to run.
@@ -328,13 +332,19 @@ pub enum LanAction {
     Status,
 }
 
-/// A tool `yerd exec` can run under a site's pinned PHP version.
+/// A tool `yerd exec` can run under a project's selected PHP or Node version.
 #[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecTool {
     /// The PHP CLI itself.
     Php,
     /// The bundled Composer phar, run under that PHP.
     Composer,
+    /// Managed Node.js.
+    Node,
+    /// npm bundled with the selected Node.
+    Npm,
+    /// npx bundled with the selected Node.
+    Npx,
 }
 
 /// A tool `yerd which` can report the path of. Deliberately separate from
@@ -344,6 +354,12 @@ pub enum ExecTool {
 pub enum WhichTool {
     /// The PHP CLI binary.
     Php,
+    /// Managed Node.js binary.
+    Node,
+    /// Selected npm entry point.
+    Npm,
+    /// Selected npx entry point.
+    Npx,
 }
 
 /// A binary on/off toggle argument (e.g. `yerd front-controller <name> on`).
@@ -910,6 +926,8 @@ pub enum InstallTarget {
     Tool {
         /// Tool id: `composer`, `node`, `bun`, `laravel`, or `wp-cli`.
         id: String,
+        /// Optional Node release selector, e.g. 24 or v24.1.0.
+        version: Option<String>,
     },
 }
 
@@ -955,6 +973,21 @@ pub enum ElevateTarget {
     /// only; on Linux this reuses the `ports` setcap grant). Run after
     /// `yerd lan enable`.
     Lan,
+}
+
+/// Node version management.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum NodeAction {
+    /// Select an installed version globally, or for a named site.
+    Use {
+        /// Numeric major, minor, or exact version (optional v prefix).
+        version: String,
+        /// Save a preference for this site instead of the global default.
+        #[arg(long)]
+        site: Option<String>,
+    },
+    /// List installed versions and the global default.
+    List,
 }
 
 #[cfg(test)]

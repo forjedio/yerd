@@ -60,6 +60,8 @@ pub struct Config {
     pub ports: Ports,
     /// PHP defaults.
     pub php: PhpSection,
+    /// Global and per-project Node selections.
+    pub node: NodeSection,
     /// Parked directories.
     pub parked: ParkedSection,
     /// Explicitly linked sites. Order is preserved on round-trip.
@@ -115,6 +117,7 @@ impl Default for Config {
             lan_setup_port: DEFAULT_LAN_SETUP_PORT,
             ports: Ports::default(),
             php: PhpSection::default(),
+            node: NodeSection::default(),
             parked: ParkedSection::default(),
             linked: Vec::new(),
             overrides: BTreeMap::new(),
@@ -685,6 +688,15 @@ impl Default for MailSection {
             port: DEFAULT_MAIL_PORT,
         }
     }
+}
+
+/// Node defaults and project preferences, keyed by canonical project root.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NodeSection {
+    /// Exact global version. `None` preserves legacy installation discovery.
+    pub default: Option<String>,
+    /// Exact versions for linked and parked projects.
+    pub sites: BTreeMap<String, String>,
 }
 
 #[cfg(test)]

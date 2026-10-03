@@ -34,6 +34,8 @@ struct WireSer<'a> {
     lan_setup_port: u16,
     ports: PortsSer<'a>,
     php: PhpSectionSer<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node: Option<NodeSectionSer<'a>>,
     parked: ParkedSectionSer<'a>,
     linked: &'a [yerd_core::Site],
     // Array-of-tables (`[[overrides]]`), a sub-table region like `linked` - any
@@ -444,6 +446,14 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 Some(ProxyRulesSectionSer { linked, parked })
             }
         },
+        node: if c.node == crate::NodeSection::default() {
+            None
+        } else {
+            Some(NodeSectionSer {
+                default: c.node.default.as_deref(),
+                sites: &c.node.sites,
+            })
+        },
         route_rules: {
             let linked = route_rule_map(&c.route_rules.linked);
             let parked = route_rule_map(&c.route_rules.parked);
@@ -522,6 +532,14 @@ fn domain_delta_map(
         .collect()
 }
 
+#[derive(Serialize)]
+struct NodeSectionSer<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default: Option<&'a str>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    sites: &'a BTreeMap<String, String>,
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -536,8 +554,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 23\n"),
-            "expected `version = 23` first line; got: {s}"
+            s.starts_with("version = 24\n"),
+            "expected `version = 24` first line; got: {s}"
         );
     }
 
