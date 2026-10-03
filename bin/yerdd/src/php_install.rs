@@ -703,6 +703,108 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
+    // Run each client in a separate process: native-root loading reads process
+    // environment, and changing it here would race unrelated parallel tests.
+    #[test]
+    fn reqwest_downloader_tls_child() {
+        let Ok(url) = std::env::var("YERD_TEST_TLS_URL") else {
+            return;
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let result = runtime.block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                ReqwestDownloader::new().download(&url),
+            )
+            .await
+            .unwrap()
+        });
+        if std::env::var("YERD_TEST_TLS_TRUSTED").unwrap() == "yes" {
+            assert_eq!(result.unwrap(), b"trusted download");
+        } else {
+            assert!(matches!(result, Err(DownloadError::Transport { .. })));
+        }
+    }
+
+    #[tokio::test]
+    async fn reqwest_downloader_trusts_native_roots_and_rejects_untrusted_ca() {
+        use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let now = time::OffsetDateTime::now_utc();
+        let validity =
+            yerd_tls::Validity::new(now - time::Duration::days(1), now + time::Duration::days(1))
+                .unwrap();
+        let ca = yerd_tls::CertAuthority::generate("Downloader test CA", validity).unwrap();
+        let leaf = ca.issue_leaf(&["localhost".to_owned()], validity).unwrap();
+        let config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![CertificateDer::from_pem_slice(leaf.cert_pem().as_bytes()).unwrap()],
+            PrivateKeyDer::from_pem_slice(leaf.key_pem().as_bytes()).unwrap(),
+        )
+        .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "https://localhost:{}/download",
+            listener.local_addr().unwrap().port()
+        );
+        let server = tokio::spawn(async move {
+            loop {
+                let (socket, _) = listener.accept().await.unwrap();
+                // The untrusted client must terminate the TLS handshake.
+                if let Ok(mut stream) = acceptor.accept(socket).await {
+                    let mut request = [0; 4096];
+                    assert!(stream.read(&mut request).await.unwrap() > 0);
+                    stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\nConnection: close\r\n\r\ntrusted download").await.unwrap();
+                    stream.shutdown().await.unwrap();
+                }
+            }
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let ca_path = tmp.path().join("ca.pem");
+        std::fs::write(&ca_path, ca.cert_pem()).unwrap();
+        let empty_roots = tmp.path().join("empty-roots");
+        std::fs::create_dir(&empty_roots).unwrap();
+        for trusted in [false, true] {
+            let mut child = tokio::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "php_install::tests::reqwest_downloader_tls_child",
+                    "--nocapture",
+                ])
+                .env("YERD_TEST_TLS_URL", &url)
+                .env("YERD_TEST_TLS_TRUSTED", if trusted { "yes" } else { "no" })
+                .env("NO_PROXY", "localhost,127.0.0.1")
+                .env("no_proxy", "localhost,127.0.0.1")
+                .env_remove("SSL_CERT_FILE")
+                .env_remove("SSL_CERT_DIR")
+                .kill_on_drop(true);
+            if trusted {
+                child
+                    .env("SSL_CERT_FILE", &ca_path)
+                    .env("SSL_CERT_DIR", &empty_roots);
+            }
+            let output = tokio::time::timeout(Duration::from_secs(20), child.output())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "trusted={trusted}: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        server.abort();
+    }
+
     fn gzip_tar_single(name: &str, body: &[u8], mode: u32) -> Vec<u8> {
         let mut header = tar::Header::new_gnu();
         header.set_path(name).unwrap();

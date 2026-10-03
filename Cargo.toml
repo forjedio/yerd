@@ -41,7 +41,9 @@ hickory-server     = { version = "=0.24.4", default-features = false }
 hickory-client     = "=0.24.4"
 async-trait        = "0.1"
 nix                = { version = "0.29", default-features = false, features = ["process", "signal"] }
-reqwest            = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# Keep Mozilla roots and also trust locally installed CAs (for example corporate
+# HTTPS proxies). Certificate and hostname verification remain enabled.
+reqwest            = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots"] }
 hyper              = { version = "1", default-features = false, features = ["http1", "server", "client"] }
 hyper-util         = { version = "0.1", default-features = false, features = ["http1", "server", "client", "tokio"] }
 http-body          = "1"
@@ -117,6 +119,10 @@ strip = "symbols"
 #     which is only activated by yerd-php's optional `download` feature — so
 #     this trap is invisible to the default build and only bites
 #     `--all-features`.
+#   * security-framework 3.7+ requires rustc 1.85; native Reqwest roots pull
+#     the 3.x line on macOS. Cargo.lock pins it to 3.6.0 via
+#     `cargo update -p security-framework@3.7.0 --precise 3.6.0` to preserve
+#     the library MSRV.
 #   * zip (bin/yerdd, for Bun's archive) is held at 2.x: zip 4+ requires
 #     edition2024 / rust-version 1.88. The `version = "2"` req keeps the resolver
 #     on the 2.x line; do not bump to 4 until MSRV moves past edition2024. Built
