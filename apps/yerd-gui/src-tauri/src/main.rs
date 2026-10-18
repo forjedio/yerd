@@ -9,6 +9,8 @@ mod error;
 mod ipc;
 #[cfg(target_os = "macos")]
 mod launch_probe;
+#[cfg(target_os = "linux")]
+mod linux_gfx;
 mod logging;
 #[cfg(target_os = "macos")]
 mod mac_trust;
@@ -31,10 +33,19 @@ use tauri_plugin_autostart::MacosLauncher;
 const AUTOSTART_ARG: &str = "--autostarted";
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    let nv_explicit_sync_off = linux_gfx::apply();
+
     logging::init();
 
     #[cfg(target_os = "linux")]
     {
+        if nv_explicit_sync_off {
+            tracing::info!(
+                "NVIDIA + Wayland detected: set {}=1 to avoid the WebKitGTK Error 71 crash",
+                linux_gfx::NV_EXPLICIT_SYNC_VAR
+            );
+        }
         glib::set_prgname(Some("yerd-gui"));
         glib::set_application_name("Yerd");
     }
