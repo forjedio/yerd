@@ -73,7 +73,7 @@ pub enum ReadinessKind {
     PostgresStartup,
     /// Meilisearch `GET /health` returning 200 and `{ "status": "available" }`.
     MeilisearchHealth,
-    /// `RustFS` `GET /health` returning 200 and `{ "status": "ok" }`.
+    /// `RustFS` `GET /health/ready` returning 200 and `{ "status": "ok" }`.
     RustFsHealth,
     /// A bare TCP connect succeeds (the listener is open). Used by app servers
     /// (Reverb) whose readiness is "the socket accepts connections".

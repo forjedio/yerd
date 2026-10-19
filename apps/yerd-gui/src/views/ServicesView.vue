@@ -1325,7 +1325,7 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
         <p v-if="configTarget?.service === 'rustfs'" class="text-xs text-muted-foreground">
           Install <code>league/flysystem-aws-s3-v3</code>. RustFS does not create buckets on
           its own: create <code>your_bucket</code> once with any S3 client, e.g.
-          <code>aws --endpoint-url http://127.0.0.1:{{ configTarget?.port }} s3 mb s3://your_bucket</code>.
+          <code>AWS_ACCESS_KEY_ID=rustfsadmin AWS_SECRET_ACCESS_KEY=rustfsadmin AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url http://127.0.0.1:{{ configTarget?.port }} s3 mb s3://your_bucket</code>.
           Yerd does not change project files or run Composer for you.
         </p>
 

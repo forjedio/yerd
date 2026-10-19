@@ -334,7 +334,7 @@ AWS_USE_PATH_STYLE_ENDPOINT=true
   passwordless local `root` of the SQL engines, they only guard a loopback-only
   development instance.
 - **Buckets** are not created for you: make one once with any S3 client, e.g.
-  `aws --endpoint-url http://127.0.0.1:9000 s3 mb s3://your_bucket`.
+  `AWS_ACCESS_KEY_ID=rustfsadmin AWS_SECRET_ACCESS_KEY=rustfsadmin AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url http://127.0.0.1:9000 s3 mb s3://your_bucket`.
 - **Path-style addressing** is required (`AWS_USE_PATH_STYLE_ENDPOINT=true`):
   virtual-hosted buckets would need a wildcard DNS name.
 - **The web console is off.** RustFS would otherwise open it on every network
