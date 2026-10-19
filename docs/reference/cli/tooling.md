@@ -7,13 +7,10 @@ short `id`: `composer`, `node`, `bun`, `laravel`, or `wp-cli`. The
 [Tooling guide](../../guide/tooling) covers the model in depth; this page is the
 command reference.
 
-::: info Latest only
-Yerd installs the latest stable release of each tool (latest **LTS** for Node).
-There is no per-version selection - installing again updates to the current
-latest. Installing your first tool from the CLI **automatically adds** Yerd's bin
-directory to your `PATH`; you can also manage it yourself with
-[`yerd path install`](#path-setup). If the bin directory isn't on your `PATH`,
-[`yerd doctor`](./diagnostics) flags it with the one-line fix.
+::: info Managed versions
+Node releases are retained side by side. Other tools install their latest release.
+Installing your first tool from the CLI automatically adds Yerd's bin directory
+to your `PATH`; you can also run [`yerd path install`](#path-setup).
 :::
 
 ## Listing
@@ -72,6 +69,40 @@ Yerd's `wp-cli` is a Composer install, so WP-CLI's own `wp cli update`
 subcommand isn't applicable and will error - run `yerd install tool wp-cli`
 again instead to update.
 :::
+
+## Node versions
+
+```sh
+yerd install tool node 24       # latest available 24.x release
+yerd install tool node v22.9.0  # exact release
+yerd node list                 # installed releases and global default
+yerd node use 24                # select highest installed 24.x globally
+yerd node use 22 --site blog    # save a preference for blog
+yerd exec npm install          # use the project's selected Node and npm
+yerd which --json node         # show version, path, site, and source
+```
+
+Numeric selectors accept a major, major.minor, or exact major.minor.patch, with
+an optional `v` prefix. Partial selectors choose the highest matching version.
+Install resolves against Node's upstream release index; `node use`, `exec`, and
+`which` resolve only against complete installed releases. No runtime is downloaded
+when executing a command.
+
+A versioned install preserves an existing global default. The first installation
+becomes the default if none exists. `yerd install tool node` installs the newest
+LTS and makes it the default, retaining previously installed releases. The
+existing GUI Install and Update buttons keep this newest-LTS behavior.
+
+`yerd exec node`, `npm`, and `npx` select the nearest project `.nvmrc`, then a
+saved site preference, then the global default. See [Node resolution](./exec#node-resolution).
+Bare `node`, `npm`, and `npx` commands on Yerd's `PATH` continue to use the global
+default. `yerd tools` and the GUI show that default's version.
+
+`yerd uninstall tool node` removes all managed Node releases and their commands,
+and clears the global default. Saved site preferences remain; executing a site
+with a missing preference fails with an installation hint. Existing installations
+in `{data}/tools/node` remain usable without migration. New releases live in
+`{data}/tools/node-versions/<version>`.
 
 ## PATH setup
 

@@ -1,6 +1,6 @@
 # Exec and Which
 
-`yerd exec` runs a CLI tool under the PHP version a **site** uses, rather than
+`yerd exec` runs PHP tools under the PHP version a **site** uses, rather than
 the [global default](../../guide/php-versions#the-global-default). `yerd which`
 reports which binary that would be, without running anything.
 
@@ -17,8 +17,8 @@ either over IPC is an explicit usage error.) The one daemon round-trip is the
 site lookup behind the scenes.
 
 ```sh
-yerd exec [--site <NAME>] <php|composer> [ARGS...]
-yerd which [--json] [--site <NAME>] php
+yerd exec [--site <NAME>] <php|composer|node|npm|npx> [ARGS...]
+yerd which [--json] [--site <NAME>] <php|node|npm|npx>
 ```
 
 | Command | Description |
@@ -71,6 +71,41 @@ for why, and how to move a site's version deliberately.
 
 In `--json` mode, `source` is `site` when the version came from a site and
 `default` otherwise, with `site` then `null`.
+
+## Node resolution
+
+For `node`, `npm`, and `npx`, both commands share this priority:
+
+1. The nearest `.nvmrc` in the current directory or its parents, stopping at the
+   registered project's root.
+2. The saved preference from `yerd node use <version> --site <name>`.
+3. The global default from `yerd node use <version>`.
+
+Outside registered sites, the nearest `.nvmrc` in any parent applies. With
+`--site`, the search starts at that named site's project root, so its root
+`.nvmrc` applies from any caller directory. Nested registered sites use the most
+specific root. A subdirectory `.nvmrc` overrides a root file within its project.
+
+`.nvmrc` accepts a single numeric major, minor, or exact release with an optional
+`v` prefix, plus `node` (newest installed release) and `lts/*` (newest installed
+release recorded as LTS). Leading and trailing whitespace is ignored. Named LTS
+aliases, `default`, comments, and other nvm syntax are unsupported and fail
+clearly. Legacy installations without recorded LTS metadata remain selectable
+numerically and with `node`; `lts/*` only considers newer managed installations.
+The two supported aliases also work with `yerd install tool node <alias>`.
+
+An empty, unreadable, unsupported, or unmatched `.nvmrc` is an error (exit `2`);
+it never falls through to a site preference or default. Missing installed
+versions also fail with an installation hint. Config I/O failures exit `74`.
+Node project resolution requires the daemon's live site list: an unreachable
+daemon exits `69`, including outside sites. PHP's existing warning and default
+fallback behavior remains unchanged.
+
+npm and npx run their bundled entry point through the selected Node interpreter.
+The selected release's bin directory is prepended to `PATH`, so spawned `node`,
+`npm`, and `npx` processes use the same release. `which` reports the node binary
+or npm/npx entry point and, with `--json`, an exact version and `source` of
+`nvmrc`, `site`, or `default`.
 
 ## Passthrough behaviour
 

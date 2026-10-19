@@ -169,6 +169,17 @@ pub(crate) fn bin_dir(dirs: &PlatformDirs) -> PathBuf {
 
 /// Read a tool's installed version from its `.version` marker, or `None`.
 pub(crate) fn installed_version(dirs: &PlatformDirs, tool: Tool) -> Option<String> {
+    if tool == Tool::Node {
+        return yerd_config::Config::load(&dirs.config.join("yerd.toml"))
+            .ok()
+            .and_then(|c| c.node.default)
+            .or_else(|| yerd_platform::node::legacy_default(dirs))
+            .and_then(|v| {
+                yerd_platform::node::resolve(dirs, &v)
+                    .ok()
+                    .map(|v| format!("v{}", v.version))
+            });
+    }
     let v = std::fs::read_to_string(tool_dir(dirs, tool).join(VERSION_MARKER)).ok()?;
     let v = v.trim().to_owned();
     if v.is_empty() {
@@ -242,6 +253,12 @@ pub async fn install(
 /// Remove `tool`'s files. The `{data}/bin` shims are pruned by a subsequent
 /// `reconcile_tool_shims` (the caller runs it under the shim mutex).
 pub fn uninstall(dirs: &PlatformDirs, tool: Tool) -> Result<(), ToolError> {
+    if tool == Tool::Node {
+        let versions = yerd_platform::node::versions_dir(dirs);
+        if versions.exists() {
+            std::fs::remove_dir_all(&versions).map_err(|e| ToolError::Io(e.to_string()))?;
+        }
+    }
     let d = tool_dir(dirs, tool);
     if d.exists() {
         std::fs::remove_dir_all(&d).map_err(|e| ToolError::Io(format!("{}: {e}", d.display())))?;
@@ -362,16 +379,27 @@ pub(crate) fn stage_and_swap(
     version: &str,
     unpack: impl FnOnce(&Path) -> Result<(), ToolError>,
 ) -> Result<(), ToolError> {
+    stage_at(&tool_dir(dirs, tool), version, unpack)
+}
+
+/// Atomically replace an isolated tool or release directory.
+pub(crate) fn stage_at(
+    final_dir: &Path,
+    version: &str,
+    unpack: impl FnOnce(&Path) -> Result<(), ToolError>,
+) -> Result<(), ToolError> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
 
-    let tools_root = dirs.data.join("tools");
-    std::fs::create_dir_all(&tools_root)
+    let tools_root = final_dir
+        .parent()
+        .ok_or_else(|| ToolError::Io("missing install parent".to_owned()))?;
+    std::fs::create_dir_all(tools_root)
         .map_err(|e| ToolError::Io(format!("{}: {e}", tools_root.display())))?;
     let staging = tools_root.join(format!(
         ".staging-{}-{}-{seq}",
-        tool.id(),
+        final_dir.file_name().unwrap_or_default().to_string_lossy(),
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&staging);
@@ -389,22 +417,21 @@ pub(crate) fn stage_and_swap(
         return Err(e);
     }
 
-    let final_dir = tool_dir(dirs, tool);
     let backup = tools_root.join(format!(
         ".previous-{}-{}-{seq}",
-        tool.id(),
+        final_dir.file_name().unwrap_or_default().to_string_lossy(),
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&backup);
     if final_dir.exists() {
-        if let Err(e) = std::fs::rename(&final_dir, &backup) {
+        if let Err(e) = std::fs::rename(final_dir, &backup) {
             let _ = std::fs::remove_dir_all(&staging);
             return Err(ToolError::Io(format!("{}: {e}", final_dir.display())));
         }
     }
-    if let Err(e) = std::fs::rename(&staging, &final_dir) {
+    if let Err(e) = std::fs::rename(&staging, final_dir) {
         if backup.exists() {
-            let _ = std::fs::rename(&backup, &final_dir);
+            let _ = std::fs::rename(&backup, final_dir);
         }
         let _ = std::fs::remove_dir_all(&staging);
         return Err(ToolError::Io(format!("{}: {e}", final_dir.display())));
@@ -564,6 +591,11 @@ mod tests {
         let d = tool_dir(&dirs, Tool::Node);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join(VERSION_MARKER), "v24.17.0").unwrap();
+        let bin = d.join("node-v24.17.0-test/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        for name in ["node", "npm", "npx"] {
+            std::fs::write(bin.join(name), "fake").unwrap();
+        }
         let s = status(&dirs, Tool::Node);
         assert!(s.installed);
         assert_eq!(s.version.as_deref(), Some("v24.17.0"));

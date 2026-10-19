@@ -24,7 +24,7 @@ mod serialize;
 pub use error::{ConfigError, MigrationErrorReason, ValidateErrorReason};
 pub use schema::{
     Config, DomainDelta, DomainsSection, DumpsSection, ExtEntry, GroupsSection, MailSection,
-    ParkedSection, PhpSection, Ports, ServiceInstance, ServicesSection, SiteOverride,
+    NodeSection, ParkedSection, PhpSection, Ports, ServiceInstance, ServicesSection, SiteOverride,
     TunnelSection, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
 };
 
@@ -107,4 +107,5 @@ pub use schema::{
 ///
 /// The per-version detail, including how to hand-edit a file back down for an
 /// older binary, lives in `docs/developer/config-schema-history.md`.
-pub const CURRENT_VERSION: u32 = 23;
+/// v24 adds optional Node defaults and per-project preferences.
+pub const CURRENT_VERSION: u32 = 24;

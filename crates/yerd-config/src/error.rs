@@ -114,6 +114,8 @@ pub enum ValidateErrorReason {
     WebRootEscapes,
     /// `update_channel` was not one of the accepted values (`"stable"` / `"edge"`).
     InvalidUpdateChannel,
+    /// Node preferences require numeric versions and absolute project roots.
+    InvalidNodeSelection,
     /// A `ports.fallback_*` value is below the first unprivileged port (1024).
     /// The rootless fallback must not need elevation, so 80/443 is rejected.
     FallbackPortPrivileged,
@@ -197,6 +199,9 @@ impl fmt::Display for ValidateErrorReason {
             Self::InvalidPhpSetting => "php.settings contains an unsupported key or invalid value",
             Self::WebRootEscapes => {
                 "a web root must be a plain relative path (no leading '/' or '..')"
+            }
+            Self::InvalidNodeSelection => {
+                "Node preferences require numeric versions and absolute project roots"
             }
             Self::InvalidUpdateChannel => "update_channel must be \"stable\" or \"edge\"",
             Self::FallbackPortPrivileged => {

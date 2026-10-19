@@ -344,7 +344,7 @@ with a new entry in `migrate::STEPS`.
 
 `migrate.rs` holds the steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**
 - matching `migrate::up`, which indexes `STEPS[current]` (the version being
-migrated *from*). At v23 there are twenty-three (`STEPS.len() == CURRENT_VERSION`,
+migrated *from*). At v24 there are twenty-four (`STEPS.len() == CURRENT_VERSION`,
 pinned by `steps_cover_every_version_below_current`). Most entries are **bare
 version bumps** - the version added an optional table or scalar that defaults
 when absent, so the step only rewrites the `version` line. `v14 → v15` (the

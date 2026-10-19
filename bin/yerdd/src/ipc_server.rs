@@ -403,6 +403,10 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             tools: list_tools_with_external(state).await,
         },
         Request::InstallTool { tool } => install_tool(&tool, state).await,
+        Request::InstallNode { version } => install_node(&version, state).await,
+        Request::SetNodeVersion { version, site } => {
+            set_node_version(&version, site.as_deref(), state).await
+        }
         Request::UninstallTool { tool } => uninstall_tool(&tool, state).await,
         Request::CheckUpdate { channel } => {
             let dl = crate::php_install::ReqwestDownloader::new();
@@ -1568,6 +1572,14 @@ async fn install_tool(tool: &str, state: &DaemonState) -> Response {
     let _mutate = state.tool_mutate.lock().await;
     match crate::tools::install(t, &state.dirs, &dl, None).await {
         Ok(()) => {
+            if t == crate::tools::Tool::Node {
+                if let Some(version) = yerd_platform::node::legacy_default(&state.dirs) {
+                    let result = save_node_version(&version, None, state).await;
+                    if !matches!(result, Response::Ok) {
+                        return result;
+                    }
+                }
+            }
             reconcile_tool_shims_now(state).await;
             Response::Ok
         }
@@ -1607,17 +1619,29 @@ pub(crate) async fn install_tool_streamed(tool: String, state: Arc<DaemonState>)
             .set_phase(&id, format!("Installing {}", t.display_name()))
             .await;
         let dl = crate::php_install::ReqwestDownloader::new();
-        let guard = state.tool_mutate.lock().await;
+        let _guard = state.tool_mutate.lock().await;
         let result = tokio::select! {
             r = crate::tools::install(t, &state.dirs, &dl, Some(&tx)) => Some(r),
             _ = cancel.changed() => None,
         };
-        drop(guard);
         drop(tx);
         let _ = drain.await;
 
         match result {
             Some(Ok(())) => {
+                if t == crate::tools::Tool::Node {
+                    if let Some(version) = yerd_platform::node::legacy_default(&state.dirs) {
+                        if let Response::Error { message, .. } =
+                            save_node_version(&version, None, &state).await
+                        {
+                            state
+                                .jobs
+                                .finish(&id, yerd_ipc::JobState::Failed, Some(message))
+                                .await;
+                            return;
+                        }
+                    }
+                }
                 reconcile_tool_shims_now(&state).await;
                 state
                     .jobs
@@ -1652,6 +1676,15 @@ async fn uninstall_tool(tool: &str, state: &DaemonState) -> Response {
     let _mutate = state.tool_mutate.lock().await;
     match crate::tools::uninstall(&state.dirs, t) {
         Ok(()) => {
+            if t == crate::tools::Tool::Node {
+                let mut guard = state.config.lock().await;
+                let mut new = guard.clone();
+                new.node.default = None;
+                if let Err(e) = new.save(&state.config_path) {
+                    return internal(format!("config save failed: {e}"));
+                }
+                *guard = new;
+            }
             reconcile_tool_shims_now(state).await;
             Response::Ok
         }
@@ -2963,6 +2996,83 @@ fn lan_not_ready(message: String) -> Response {
         code: ErrorCode::LanNotReady,
         message,
     }
+}
+
+/// Install an explicit Node selector without replacing an existing default.
+async fn install_node(version: &str, state: &DaemonState) -> Response {
+    let _mutate = state.tool_mutate.lock().await;
+    let had_default = state.config.lock().await.node.default.is_some()
+        || yerd_platform::node::legacy_default(&state.dirs).is_some();
+    let dl = crate::php_install::ReqwestDownloader::new();
+    match crate::tools::node::install_version(&state.dirs, &dl, Some(version)).await {
+        Ok(exact) => {
+            if !had_default {
+                let result = save_node_version(&exact, None, state).await;
+                if !matches!(result, Response::Ok) {
+                    return result;
+                }
+            }
+            reconcile_tool_shims_now(state).await;
+            Response::Ok
+        }
+        Err(e) => Response::Error {
+            code: tool_error_code(&e),
+            message: e.to_string(),
+        },
+    }
+}
+
+async fn set_node_version(version: &str, site: Option<&str>, state: &DaemonState) -> Response {
+    let _mutate = state.tool_mutate.lock().await;
+    let result = save_node_version(version, site, state).await;
+    if matches!(result, Response::Ok) {
+        reconcile_tool_shims_now(state).await;
+    }
+    result
+}
+
+async fn save_node_version(version: &str, site: Option<&str>, state: &DaemonState) -> Response {
+    let selected = match yerd_platform::node::resolve(&state.dirs, version) {
+        Ok(v) => v,
+        Err(message) => {
+            return Response::Error {
+                code: ErrorCode::NotFound,
+                message,
+            }
+        }
+    };
+    let mut guard = state.config.lock().await;
+    let mut new = guard.clone();
+    if let Some(name) = site {
+        let root = {
+            let router = state.router.read().await;
+            let root = router
+                .iter()
+                .find(|s| s.name() == name.to_lowercase())
+                .map(|s| s.document_root().to_path_buf());
+            root
+        };
+        let Some(root) = root else {
+            return Response::Error {
+                code: ErrorCode::NotFound,
+                message: format!("no site named '{name}'"),
+            };
+        };
+        let root = match std::fs::canonicalize(root) {
+            Ok(root) => root,
+            Err(e) => return internal(format!("cannot resolve site root: {e}")),
+        };
+        new.node
+            .sites
+            .insert(root.to_string_lossy().into_owned(), selected.version);
+    } else {
+        new.node.default = Some(selected.version);
+    }
+    if let Err(e) = new.save(&state.config_path) {
+        return internal(format!("config save failed: {e}"));
+    }
+    *guard = new;
+    Response::Ok
 }
 
 #[cfg(test)]
@@ -5922,5 +6032,81 @@ Subject: Captured\r\n\r\nhi\r\n";
             dispatch(Request::DeleteDump { id: 42 }, &state).await,
             Response::Ok
         ));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod node_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn selections_persist_exact_releases_and_tool_status_tracks_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state_in(tmp.path());
+        for version in ["22.9.0", "24.2.0"] {
+            let root = yerd_platform::node::versions_dir(&state.dirs).join(version);
+            let bin = root.join(format!("node-v{version}-test/bin"));
+            std::fs::create_dir_all(&bin).unwrap();
+            std::fs::write(root.join(".version"), version).unwrap();
+            for name in ["node", "npm", "npx"] {
+                std::fs::write(bin.join(name), "fake").unwrap();
+            }
+        }
+        let project = tmp.path().join("example");
+        std::fs::create_dir(&project).unwrap();
+        let project = std::fs::canonicalize(project).unwrap();
+        state
+            .router
+            .write()
+            .await
+            .insert(
+                yerd_core::Site::linked("example", &project, yerd_core::PhpVersion::new(8, 3))
+                    .unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            save_node_version("22", None, &state).await,
+            Response::Ok
+        ));
+        assert!(matches!(
+            save_node_version("24", Some("EXAMPLE"), &state).await,
+            Response::Ok
+        ));
+        let cfg = yerd_config::Config::load(&state.config_path).unwrap();
+        assert_eq!(cfg.node.default.as_deref(), Some("22.9.0"));
+        assert_eq!(
+            cfg.node
+                .sites
+                .get(project.to_string_lossy().as_ref())
+                .map(String::as_str),
+            Some("24.2.0")
+        );
+        assert_eq!(
+            crate::tools::status(&state.dirs, crate::tools::Tool::Node)
+                .version
+                .as_deref(),
+            Some("v22.9.0")
+        );
+        assert!(matches!(
+            save_node_version("23", None, &state).await,
+            Response::Error { .. }
+        ));
+        assert_eq!(yerd_config::Config::load(&state.config_path).unwrap(), cfg);
+        assert!(matches!(
+            save_node_version("24", None, &state).await,
+            Response::Ok
+        ));
+        assert_eq!(
+            crate::tools::status(&state.dirs, crate::tools::Tool::Node)
+                .version
+                .as_deref(),
+            Some("v24.2.0")
+        );
+        assert!(matches!(uninstall_tool("node", &state).await, Response::Ok));
+        let cfg = yerd_config::Config::load(&state.config_path).unwrap();
+        assert!(cfg.node.default.is_none());
+        assert_eq!(cfg.node.sites.len(), 1);
+        assert!(!crate::tools::status(&state.dirs, crate::tools::Tool::Node).installed);
     }
 }

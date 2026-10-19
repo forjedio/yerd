@@ -24,6 +24,8 @@ pub mod exec_cmd;
 pub mod laravel_shim;
 pub mod map;
 pub mod mcp_cmd;
+#[cfg(unix)]
+pub mod node_cmd;
 pub mod path_cmd;
 #[cfg(unix)]
 pub mod shim;
@@ -51,6 +53,10 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Unelevate { target } => return elevate::run_elevate(*target, true).await,
         Command::Path { action } => return path_cmd::run(*action),
         Command::Mcp => return mcp_cmd::run().await,
+        #[cfg(unix)]
+        Command::Node {
+            action: crate::cli::NodeAction::List,
+        } => return node_cmd::list(cli.json),
         #[cfg_attr(not(unix), allow(unused_variables))]
         Command::Coverage { args } => {
             #[cfg(unix)]
@@ -95,7 +101,7 @@ pub async fn run(cli: Cli) -> ExitCode {
         } => return run_route_list(site, cli.json).await,
         Command::Uninstall { target: None, yes } => return uninstall::run(*yes),
         Command::Install {
-            target: crate::cli::InstallTarget::Tool { id },
+            target: crate::cli::InstallTarget::Tool { id, version: None },
         } if !cli.json => return stream_install_tool(id, cli.json).await,
         Command::Tunnel {
             action: crate::cli::TunnelAction::Install,

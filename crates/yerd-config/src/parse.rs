@@ -95,6 +95,8 @@ struct Wire {
     #[serde(default)]
     php: PhpSectionWire,
     #[serde(default)]
+    node: NodeSectionWire,
+    #[serde(default)]
     parked: ParkedSectionWire,
     #[serde(default)]
     linked: Vec<SiteWire>,
@@ -621,6 +623,10 @@ impl TryFrom<Wire> for Config {
             lan_setup_port: w.lan_setup_port,
             ports,
             php,
+            node: crate::NodeSection {
+                default: w.node.default,
+                sites: w.node.sites,
+            },
             parked,
             linked,
             overrides,
@@ -872,6 +878,14 @@ fn convert_service_overrides(
 }
 
 pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
+    let valid_node = |value: &str| yerd_core::node::numeric_selector(value).is_ok();
+    if c.node.default.as_deref().is_some_and(|v| !valid_node(v))
+        || c.node.sites.iter().any(|(root, version)| {
+            !std::path::Path::new(root).is_absolute() || !valid_node(version)
+        })
+    {
+        return Err(ve(ValidateErrorReason::InvalidNodeSelection));
+    }
     validate_ports(c)?;
     validate_unique_linked(c)?;
     validate_nonempty_paths(c)?;
@@ -1297,6 +1311,14 @@ fn web_root_escapes(p: &std::path::Path) -> bool {
         .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
 }
 
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NodeSectionWire {
+    default: Option<String>,
+    #[serde(default)]
+    sites: BTreeMap<String, String>,
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -1352,7 +1374,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 23,
+                current: 24,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -1580,7 +1602,7 @@ mod tests {
             },
         );
         let v23 = c.to_toml().unwrap();
-        let v22 = v23.replacen("version = 23\n", "version = 22\n", 1);
+        let v22 = v23.replacen("version = 24\n", "version = 22\n", 1);
         assert_ne!(
             v22, v23,
             "the replace must actually downgrade the version line"

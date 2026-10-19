@@ -148,3 +148,21 @@ fn default_to_toml_then_from_toml_pins_php_version_default() {
     let back = Config::from_toml(&s).unwrap();
     assert_eq!(back.php.default, PhpVersion::new(8, 3));
 }
+
+#[test]
+fn node_preferences_round_trip_and_old_configs_default_to_none() {
+    let mut cfg = Config::default();
+    cfg.node.default = Some("24.1.0".to_owned());
+    cfg.node
+        .sites
+        .insert("/srv/example".to_owned(), "22.9.0".to_owned());
+    let text = cfg.to_toml().unwrap();
+    assert!(text.contains("[node.sites]"));
+    assert_eq!(Config::from_toml(&text).unwrap(), cfg);
+    let old = Config::from_toml("version = 23\n").unwrap();
+    assert_eq!(old.node, yerd_config::NodeSection::default());
+    for invalid in ["../24", "latest", "24.x"] {
+        cfg.node.default = Some(invalid.to_owned());
+        assert!(cfg.validate().is_err());
+    }
+}

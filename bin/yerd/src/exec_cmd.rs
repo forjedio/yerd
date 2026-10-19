@@ -203,6 +203,14 @@ async fn resolve(site: Option<&str>) -> Result<(PlatformDirs, PhpSelection), Sel
 /// `yerd exec <tool> [args…]`: run `tool` under the resolved PHP, replacing
 /// this process. Only returns on failure.
 pub async fn run_exec(tool: ExecTool, site: Option<&str>, args: &[OsString]) -> ExitCode {
+    if let Some(name) = match tool {
+        ExecTool::Node => Some("node"),
+        ExecTool::Npm => Some("npm"),
+        ExecTool::Npx => Some("npx"),
+        _ => None,
+    } {
+        return crate::node_cmd::run_exec(name, site, args).await;
+    }
     let (dirs, selection) = match resolve(site).await {
         Ok(pair) => pair,
         Err(e) => return e.report(),
@@ -241,7 +249,14 @@ pub async fn run_exec(tool: ExecTool, site: Option<&str>, args: &[OsString]) -> 
 /// every failure mode match [`run_exec`] exactly - this must never print a path
 /// that `exec` wouldn't actually run.
 pub async fn run_which(tool: WhichTool, site: Option<&str>, json: bool) -> ExitCode {
-    let WhichTool::Php = tool;
+    if let Some(name) = match tool {
+        WhichTool::Node => Some("node"),
+        WhichTool::Npm => Some("npm"),
+        WhichTool::Npx => Some("npx"),
+        WhichTool::Php => None,
+    } {
+        return crate::node_cmd::run_which(name, site, json).await;
+    }
     let selection = match resolve(site).await {
         Ok((_dirs, selection)) => selection,
         Err(e) => return e.report(),

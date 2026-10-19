@@ -572,6 +572,18 @@ pub enum Request {
     },
     /// List the installable dev tools (Composer, Node, Bun) with install status.
     ListTools,
+    /// Install a Node release selector alongside existing releases.
+    InstallNode {
+        /// Major, minor, exact numeric selector, `node`, or `lts/*`.
+        version: String,
+    },
+    /// Select an installed Node release globally or for a named site.
+    SetNodeVersion {
+        /// Installed release selector.
+        version: String,
+        /// Named site; absent selects the global default.
+        site: Option<String>,
+    },
     /// Download + install a dev tool's latest release into yerd's data dir and
     /// expose its commands on `PATH`. Idempotent (reinstalls/updates to latest).
     InstallTool {
@@ -922,6 +934,8 @@ mod variant_name_pinning {
             Request::SetDnsPort { .. } => {}
             Request::SetMailEnabled { .. } => {}
             Request::ListTools => {}
+            Request::InstallNode { .. } => {}
+            Request::SetNodeVersion { .. } => {}
             Request::InstallTool { .. } => {}
             Request::UninstallTool { .. } => {}
             Request::InstallToolStreamed { .. } => {}
