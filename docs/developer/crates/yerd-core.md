@@ -444,8 +444,8 @@ sidecar file extension, and the engine's native include directive (rendered by
 all total functions of it, so they cannot disagree. `dialect_for` is therefore
 the single source of truth for "does this service accept overrides at all" - it
 backs `Service::override_capability`, the CLI's client-side check, and
-`yerd-ipc`'s `ServiceStatus::supports_overrides`. Meilisearch and Reverb are
-argv/env driven and map to `None`.
+`yerd-ipc`'s `ServiceStatus::supports_overrides`. Meilisearch, RustFS and Reverb
+are argv/env driven and map to `None`.
 
 Validation is the **injection boundary**, and it runs four times: when an
 override is set (CLI and daemon), when the config is loaded from disk

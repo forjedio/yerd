@@ -33,6 +33,8 @@ pub enum ServiceKind {
     Database,
     /// Search/index server (no SQL databases).
     Search,
+    /// S3-compatible object storage (no SQL databases).
+    ObjectStorage,
     /// A supervised application server (e.g. Laravel Reverb) - no databases, no
     /// downloadable version; runs against a linked site's PHP.
     AppServer,
@@ -71,6 +73,8 @@ pub enum ReadinessKind {
     PostgresStartup,
     /// Meilisearch `GET /health` returning 200 and `{ "status": "available" }`.
     MeilisearchHealth,
+    /// `RustFS` `GET /health/ready` returning 200 and `{ "status": "ok" }`.
+    RustFsHealth,
     /// A bare TCP connect succeeds (the listener is open). Used by app servers
     /// (Reverb) whose readiness is "the socket accepts connections".
     TcpConnect,
@@ -332,8 +336,8 @@ pub struct ServiceRegistry {
 }
 
 impl ServiceRegistry {
-    /// The built-in registry: the four database/cache engines plus the Reverb
-    /// per-site app server.
+    /// The built-in registry: the database, cache, search and object-storage
+    /// engines plus the Reverb per-site app server.
     #[must_use]
     pub fn builtin() -> Self {
         Self {
@@ -343,6 +347,7 @@ impl ServiceRegistry {
                 Arc::new(MariaDb),
                 Arc::new(Postgres),
                 Arc::new(Meilisearch),
+                Arc::new(RustFs),
                 Arc::new(Reverb),
             ],
         }
@@ -753,6 +758,78 @@ impl ServiceDefinition for Meilisearch {
     }
 }
 
+/// `RustFS`: shared local S3-compatible object storage, so presigned URLs and
+/// multipart uploads behave locally as they do against a production bucket.
+///
+/// Configured entirely through argv and env (no config file, no overrides).
+/// The datadir is passed as the single volume and is shared across versions:
+/// upgrades keep the stored objects.
+///
+/// `RustFS` also starts a web console that binds every interface (`:9001`)
+/// unless it is switched off explicitly, even when `--console-enable` is not
+/// passed. That would expose a second, unmanaged listener on the LAN and clash
+/// with anything else on 9001, so the console is disabled and only the S3 API
+/// listens, on loopback.
+///
+/// Credentials are the fixed upstream defaults (`rustfsadmin`/`rustfsadmin`),
+/// set explicitly so a change of upstream default cannot break existing apps.
+/// They are passed as env, not argv, so they do not show up in a process list.
+/// Like the passwordless local `root` of the SQL engines, they only guard a
+/// loopback-only development instance.
+pub struct RustFs;
+
+/// The access key and secret `RustFS` is started with.
+pub const RUSTFS_CREDENTIALS: (&str, &str) = ("rustfsadmin", "rustfsadmin");
+
+impl ServiceDefinition for RustFs {
+    fn id(&self) -> &'static str {
+        "rustfs"
+    }
+    fn display_name(&self) -> &'static str {
+        "RustFS"
+    }
+    fn kind(&self) -> ServiceKind {
+        ServiceKind::ObjectStorage
+    }
+    fn multiplicity(&self) -> Multiplicity {
+        Multiplicity::Single
+    }
+    fn default_autostart(&self) -> bool {
+        true
+    }
+    fn default_port(&self) -> u16 {
+        9000
+    }
+    fn requires_version(&self) -> bool {
+        true
+    }
+    fn server_binary(&self) -> Option<&'static str> {
+        Some("rustfs")
+    }
+    fn supervisor_policy(&self) -> SupervisorPolicy {
+        SupervisorPolicy::database()
+    }
+    fn readiness(&self) -> ReadinessKind {
+        ReadinessKind::RustFsHealth
+    }
+    fn plan_launch(&self, ctx: &LaunchContext<'_>) -> Result<LaunchPlan, ServiceError> {
+        let (access_key, secret_key) = RUSTFS_CREDENTIALS;
+        let mut command = base_command(ctx);
+        command
+            .arg("server")
+            .arg("--address")
+            .arg(format!("127.0.0.1:{}", ctx.port))
+            .arg(ctx.datadir)
+            .env("RUSTFS_ACCESS_KEY", access_key)
+            .env("RUSTFS_SECRET_KEY", secret_key)
+            .env("RUSTFS_CONSOLE_ENABLE", "false");
+        Ok(LaunchPlan {
+            command,
+            capture_output_to_log: true,
+        })
+    }
+}
+
 /// Laravel Reverb: a per-site WebSocket app server, supervised as
 /// `php{ver} artisan reverb:start` on a loopback port. No installed version, no
 /// datadir, no config file - it runs against the linked site's PHP and code.
@@ -852,18 +929,32 @@ mod tests {
     #[test]
     fn registry_lookup_round_trips_every_type() {
         let r = reg();
-        for id in ["redis", "mysql", "mariadb", "postgres", "meilisearch"] {
+        for id in [
+            "redis",
+            "mysql",
+            "mariadb",
+            "postgres",
+            "meilisearch",
+            "rustfs",
+        ] {
             assert_eq!(r.get(id).map(|d| d.id()), Some(id));
         }
         assert!(r.get("nope").is_none());
     }
 
     #[test]
-    fn registry_has_five_single_and_one_per_site() {
+    fn registry_has_six_single_and_one_per_site() {
         let r = reg();
-        assert_eq!(r.iter().count(), 6);
-        assert_eq!(r.single_instance().count(), 5);
-        for id in ["redis", "mysql", "mariadb", "postgres", "meilisearch"] {
+        assert_eq!(r.iter().count(), 7);
+        assert_eq!(r.single_instance().count(), 6);
+        for id in [
+            "redis",
+            "mysql",
+            "mariadb",
+            "postgres",
+            "meilisearch",
+            "rustfs",
+        ] {
             assert!(matches!(
                 r.get(id).unwrap().multiplicity(),
                 Multiplicity::Single
@@ -969,6 +1060,101 @@ mod tests {
             ]
         );
         assert!(plan.capture_output_to_log);
+    }
+
+    fn rustfs_ctx<'a>() -> LaunchContext<'a> {
+        LaunchContext {
+            port: 9002,
+            program: std::path::Path::new("/bin/rustfs"),
+            config_path: std::path::Path::new(""),
+            datadir: std::path::Path::new("/data/rustfs"),
+            log_path: std::path::Path::new("/logs/rustfs.log"),
+            geo_env: &[],
+            cwd: None,
+        }
+    }
+
+    fn command_env(plan: &LaunchPlan) -> Vec<(String, Option<String>)> {
+        plan.command
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rustfs_metadata_is_shared_object_storage() {
+        let d = reg().get("rustfs").unwrap();
+        assert_eq!(d.kind(), ServiceKind::ObjectStorage);
+        assert_eq!(d.display_name(), "RustFS");
+        assert_eq!(d.default_port(), 9000);
+        assert!(d.default_autostart());
+        assert!(d.requires_version());
+        assert_eq!(d.server_binary(), Some("rustfs"));
+        assert_eq!(d.datadir_scope(), DatadirScope::Shared);
+        assert_eq!(d.readiness(), ReadinessKind::RustFsHealth);
+        assert!(d.as_database().is_none());
+        assert!(!d.needs_init());
+        assert!(d.override_capability().is_none());
+    }
+
+    #[test]
+    fn rustfs_serves_the_s3_api_on_loopback_from_the_datadir() {
+        let plan = reg()
+            .get("rustfs")
+            .unwrap()
+            .plan_launch(&rustfs_ctx())
+            .unwrap();
+        let args: Vec<_> = plan
+            .command
+            .get_args()
+            .map(|a| a.to_string_lossy())
+            .collect();
+        assert_eq!(
+            args,
+            ["server", "--address", "127.0.0.1:9002", "/data/rustfs"]
+        );
+        assert!(plan.capture_output_to_log);
+    }
+
+    /// Regression: without an explicit opt-out `RustFS` opens its console on
+    /// every interface at `:9001`, a second unmanaged listener on the LAN.
+    #[test]
+    fn rustfs_disables_its_all_interfaces_console() {
+        let plan = reg()
+            .get("rustfs")
+            .unwrap()
+            .plan_launch(&rustfs_ctx())
+            .unwrap();
+        let env = command_env(&plan);
+        assert!(env.contains(&("RUSTFS_CONSOLE_ENABLE".to_owned(), Some("false".to_owned()))));
+        let args: Vec<_> = plan
+            .command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(!args.iter().any(|a| a.starts_with("--console")));
+    }
+
+    #[test]
+    fn rustfs_credentials_travel_in_env_not_argv() {
+        let plan = reg()
+            .get("rustfs")
+            .unwrap()
+            .plan_launch(&rustfs_ctx())
+            .unwrap();
+        let (access_key, secret_key) = RUSTFS_CREDENTIALS;
+        let env = command_env(&plan);
+        assert!(env.contains(&("RUSTFS_ACCESS_KEY".to_owned(), Some(access_key.to_owned()))));
+        assert!(env.contains(&("RUSTFS_SECRET_KEY".to_owned(), Some(secret_key.to_owned()))));
+        assert!(!plan
+            .command
+            .get_args()
+            .any(|a| a.to_string_lossy().contains(secret_key)));
     }
 
     /// Regression: both dirs default to cwd-relative, and the daemon's cwd is the

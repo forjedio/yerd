@@ -1,12 +1,13 @@
 # Services & Databases
 
-Yerd installs and supervises local **database, cache, and search** engines as native,
+Yerd installs and supervises local **database, cache, search, and object-storage**
+engines as native,
 per-user processes - the way [DBngin](https://dbngin.com) does, but folded into
 the same [`yerdd` daemon](./daemon) that already runs your sites, PHP, HTTPS, and
 DNS. No Docker, no containers, no VM. A single `yerd status` shows the whole
 stack.
 
-The five engines:
+The six engines:
 
 | Service | `id` | Kind | Default port |
 |---|---|---|---|
@@ -15,6 +16,7 @@ The five engines:
 | MariaDB | `mariadb` | SQL database | 3306 |
 | PostgreSQL | `postgres` | SQL database | 5432 |
 | Meilisearch | `meilisearch` | Search index | 7700 |
+| RustFS | `rustfs` | S3-compatible object storage | 9000 |
 
 ::: info Redis is served by Valkey
 The `redis` slot is filled by **Valkey**, the BSD-licensed fork, because recent
@@ -23,7 +25,7 @@ your Redis clients work unchanged. Yerd shows it as `Redis (Valkey)`.
 :::
 
 ::: tip Engine availability
-All five engines are implemented end-to-end. Whether a specific engine/version
+All six engines are implemented end-to-end. Whether a specific engine/version
 installs depends on whether a prebuilt build is published for your platform in
 Yerd's hosted distribution - run `yerd service available` to see what you can
 install right now. MySQL/MariaDB share port 3306, so only one can be enabled on it
@@ -186,9 +188,9 @@ precedence comes from.
 **Precedence:** `50-local` beats `10-yerd`, which beats Yerd's own defaults.
 
 ::: info Which engines support this
-`mysql`, `mariadb`, `postgres`, and `redis`. Meilisearch takes its settings from
-command-line flags and environment variables rather than a config file, so it
-refuses with `does not support configuration overrides` (the same goes for
+`mysql`, `mariadb`, `postgres`, and `redis`. Meilisearch and RustFS take their
+settings from command-line flags and environment variables rather than a config
+file, so they refuse with `does not support configuration overrides` (the same goes for
 per-site app servers such as Reverb). In the desktop app the **Override
 settings** item simply doesn't appear for them.
 :::
@@ -302,6 +304,44 @@ inspect for you. If the offending line came from `yerd service set` instead,
 raises a warning per line that names a directive Yerd manages or that isn't a
 directive at all, with the file and line number. It never edits the file - that
 one is yours, which is the whole point of it.
+
+## RustFS: local S3 storage
+
+[RustFS](https://github.com/rustfs/rustfs) gives your app a real S3 API on
+loopback, so code that relies on presigned URLs or multipart uploads behaves
+locally the way it does against a production bucket - something the `local`
+disk can't do.
+
+```sh
+yerd service install rustfs 1.0.3
+yerd service start rustfs
+```
+
+Point Laravel's `s3` disk at it (the **Configuration** action in the desktop app
+prints this block with the right port):
+
+```ini
+FILESYSTEM_DISK=s3
+AWS_ACCESS_KEY_ID=rustfsadmin
+AWS_SECRET_ACCESS_KEY=rustfsadmin
+AWS_DEFAULT_REGION=us-east-1
+AWS_BUCKET=your_bucket
+AWS_ENDPOINT=http://127.0.0.1:9000
+AWS_USE_PATH_STYLE_ENDPOINT=true
+```
+
+- **Credentials** are the fixed `rustfsadmin` / `rustfsadmin` pair. Like the
+  passwordless local `root` of the SQL engines, they only guard a loopback-only
+  development instance.
+- **Buckets** are not created for you: make one once with any S3 client, e.g.
+  `AWS_ACCESS_KEY_ID=rustfsadmin AWS_SECRET_ACCESS_KEY=rustfsadmin AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url http://127.0.0.1:9000 s3 mb s3://your_bucket`.
+- **Path-style addressing** is required (`AWS_USE_PATH_STYLE_ENDPOINT=true`):
+  virtual-hosted buckets would need a wildcard DNS name.
+- **The web console is off.** RustFS would otherwise open it on every network
+  interface at port 9001, outside Yerd's port management; only the S3 API
+  listens, on loopback.
+- **Data survives version changes.** One datadir is shared by every installed
+  version, so upgrading keeps your objects; `uninstall --purge` removes them.
 
 ## PostgreSQL: base and PostGIS (`full`) builds
 

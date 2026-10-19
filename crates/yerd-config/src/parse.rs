@@ -22,8 +22,14 @@ use crate::ConfigError;
 ///
 /// Duplicated here rather than read from the `yerd-services` registry: this crate
 /// sits *below* `yerd-services` in the dependency order and must not depend on it.
-pub(crate) const KNOWN_SINGLE_SERVICES: &[&str] =
-    &["mysql", "mariadb", "meilisearch", "postgres", "redis"];
+pub(crate) const KNOWN_SINGLE_SERVICES: &[&str] = &[
+    "mysql",
+    "mariadb",
+    "meilisearch",
+    "postgres",
+    "redis",
+    "rustfs",
+];
 
 /// Per-site service type ids (keyed by `"{type}:{site}"`). See
 /// [`KNOWN_SINGLE_SERVICES`] for why the list is duplicated here.
@@ -848,8 +854,9 @@ fn convert_pool(
 /// [`convert_directives`], keyed by dialect instead of PHP version: the
 /// instance's type part decides the dialect, and an entry with an invalid or
 /// reserved name, or an invalid value, is dropped rather than failing the load.
-/// A type that accepts no overrides at all (Meilisearch, Reverb, or an unknown
-/// id) keeps none, so a hand-edited table there is inert instead of fatal.
+/// A type that accepts no overrides at all (Meilisearch, `RustFS`, Reverb, or an
+/// unknown id) keeps none, so a hand-edited table there is inert instead of
+/// fatal.
 ///
 /// Strictness lives at set time in the daemon, which refuses the same entries
 /// with the hint naming the typed path that manages them.

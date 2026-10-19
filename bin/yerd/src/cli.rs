@@ -137,7 +137,7 @@ pub enum Command {
     Services,
     /// List installable dev tools (Composer, Node, Bun) and their install status.
     Tools,
-    /// Manage a local service (redis, mysql, mariadb, postgres, meilisearch).
+    /// Manage a local service (redis, mysql, mariadb, postgres, meilisearch, rustfs).
     Service {
         /// What to do.
         #[command(subcommand)]
@@ -484,7 +484,7 @@ pub enum ServiceAction {
     Available,
     /// Install a service version (downloads a prebuilt build).
     Install {
-        /// Service id: `redis`, `mysql`, `mariadb`, `postgres`, or `meilisearch`.
+        /// Service id: `redis`, `mysql`, `mariadb`, `postgres`, `meilisearch`, or `rustfs`.
         service: String,
         /// Version to install, e.g. `8` (see `yerd service available`).
         version: String,
@@ -565,7 +565,8 @@ pub enum ServiceAction {
     /// Add a new service instance (a DB/cache/search engine, or a per-site app
     /// server like `reverb`).
     Add {
-        /// Service type id: `redis`, `mysql`, `mariadb`, `postgres`, `meilisearch`, or `reverb`.
+        /// Service type id: `redis`, `mysql`, `mariadb`, `postgres`, `meilisearch`, `rustfs`,
+        /// or `reverb`.
         #[arg(long = "type")]
         type_id: String,
         /// Linked site name (required for a per-site type like `reverb`).

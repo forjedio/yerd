@@ -5,8 +5,8 @@
 //! machine (under the database [`yerd_supervise::supervisor::SupervisorPolicy`]),
 //! and reports their live state. Mirrors `yerd-php` in structure.
 //!
-//! The engines - **Redis (Valkey)**, `MySQL`, `MariaDB`, Postgres, and
-//! Meilisearch - are
+//! The engines - **Redis (Valkey)**, `MySQL`, `MariaDB`, Postgres, Meilisearch,
+//! and `RustFS` - are
 //! implemented end-to-end (supervision, datadir init, config rendering, health
 //! probing, and SQL database administration for the three SQL engines). Whether a
 //! given engine/version installs depends only on whether a prebuilt build is
@@ -26,7 +26,9 @@ pub mod version;
 
 pub use database::{DbNameError, ExistingDbNameError};
 pub use error::ServiceError;
-pub use health::{MeilisearchProbe, ReadinessProbe, RedisProbe, ServiceProbes, TcpConnectProbe};
+pub use health::{
+    MeilisearchProbe, ReadinessProbe, RedisProbe, RustFsProbe, ServiceProbes, TcpConnectProbe,
+};
 pub use manager::{ServiceManager, ServiceRunState, ServiceSnapshot};
 pub use port::candidate_ports;
 pub use release::{
@@ -35,7 +37,8 @@ pub use release::{
 };
 pub use service::{
     DatadirScope, LaunchContext, LaunchPlan, MariaDb, Meilisearch, Multiplicity, MySql, Postgres,
-    ReadinessKind, Redis, Reverb, ServiceDefinition, ServiceKind, ServiceRegistry, SqlEngine,
+    ReadinessKind, Redis, Reverb, RustFs, ServiceDefinition, ServiceKind, ServiceRegistry,
+    SqlEngine, RUSTFS_CREDENTIALS,
 };
 pub use version::{discover_installed, ServiceVersion};
 
