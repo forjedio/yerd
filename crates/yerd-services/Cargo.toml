@@ -5,7 +5,7 @@ edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
 publish.workspace      = true
-description            = "Local service supervision and version management for Yerd (Redis/Valkey, MySQL, MariaDB, Postgres, Meilisearch)."
+description            = "Local service supervision and version management for Yerd (Redis/Valkey, MySQL, MariaDB, Postgres, Meilisearch, RustFS)."
 
 [dependencies]
 yerd-core      = { path = "../yerd-core" }

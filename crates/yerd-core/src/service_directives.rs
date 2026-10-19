@@ -57,8 +57,8 @@ pub enum OverrideDialect {
 }
 
 /// The dialect a service type accepts overrides in, or `None` when it accepts
-/// none at all (Meilisearch and Reverb are argv/env driven, and an unknown id
-/// is never override-capable).
+/// none at all (Meilisearch, `RustFS` and Reverb are argv/env driven, and an
+/// unknown id is never override-capable).
 ///
 /// `type_id` is the service type part of a wire id, matching how
 /// `ServicesSection` is keyed. This lives here rather than in `yerd-services`
@@ -577,6 +577,7 @@ mod tests {
             ("postgres", Some(OverrideDialect::PostgresConf)),
             ("redis", Some(OverrideDialect::RedisConf)),
             ("meilisearch", None),
+            ("rustfs", None),
             ("reverb", None),
             ("", None),
             ("MySQL", None),

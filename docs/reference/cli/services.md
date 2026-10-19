@@ -1,8 +1,9 @@
 # Services
 
-Yerd installs and supervises local database, cache, and search engines as native,
-per-user processes - no Docker. Each service is identified by a short `id`:
-`redis`, `mysql`, `mariadb`, `postgres`, `meilisearch`, or - per site -
+Yerd installs and supervises local database, cache, search, and object-storage
+engines as native, per-user processes - no Docker. Each service is identified by
+a short `id`: `redis`, `mysql`, `mariadb`, `postgres`, `meilisearch`, `rustfs`,
+or - per site -
 `reverb:<site>` (see [Instances](#instances)). The [Services & Databases
 guide](../../guide/services) covers the model in depth; this page is the command
 reference. For creating and managing the databases *inside* a SQL engine, see
@@ -88,7 +89,8 @@ yerd service logs mysql --lines 50
 ```
 
 Default ports: Redis `6379`, MySQL / MariaDB `3306` (they share the port, so only
-one can be enabled on it at a time), PostgreSQL `5432`, Meilisearch `7700`.
+one can be enabled on it at a time), PostgreSQL `5432`, Meilisearch `7700`, RustFS
+`9000`.
 
 ### Configuration overrides
 
@@ -107,7 +109,7 @@ yerd service restart mysql           # overrides apply on the next start
 ```
 
 Supported by the config-backed engines only: `mysql`, `mariadb`, `postgres`, and
-`redis`. Meilisearch and Reverb are argv/env driven, so they answer
+`redis`. Meilisearch, RustFS and Reverb are argv/env driven, so they answer
 `does not support configuration overrides`.
 
 Names and values are **shape-validated** client-side before connecting (and again
@@ -158,7 +160,7 @@ yerd service remove reverb:blog --purge
 ```
 
 - `--type` is a type id (`redis`, `mysql`, `mariadb`, `postgres`, `meilisearch`,
-  `reverb`), not a wire id.
+  `rustfs`, `reverb`), not a wire id.
 - `--site` is **required** for a per-site type, and must name a **linked Laravel**
   site (one with an `artisan` file). The instance runs against that site's PHP and
   document root, which is why `--version` doesn't apply to it.

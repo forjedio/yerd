@@ -1334,8 +1334,9 @@ fn unknown_service_type(id: &str) -> Response {
     )
 }
 
-/// Refusal for a service that declares no override capability: Meilisearch and
-/// Reverb are argv/env driven, so there is no config file to override.
+/// Refusal for a service that declares no override capability: Meilisearch,
+/// `RustFS` and Reverb are argv/env driven, so there is no config file to
+/// override.
 fn no_override_support(def: &Arc<dyn ServiceDefinition>) -> Response {
     err(
         ErrorCode::InvalidPath,

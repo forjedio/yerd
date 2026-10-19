@@ -615,7 +615,8 @@ async function doRestoreDb(): Promise<void> {
 // Shows the .env block to connect a Laravel app to this engine. For SQL engines
 // the user can pick a database to pre-populate DB_DATABASE; for Redis it's the
 // cache/session/queue block. Credentials mirror the daemon's: SQL engines bind
-// localhost with no password (root for MySQL/MariaDB, postgres for Postgres).
+// localhost with no password (root for MySQL/MariaDB, postgres for Postgres),
+// and RustFS runs with its fixed rustfsadmin/rustfsadmin key pair.
 const configOpen = ref(false);
 const configTarget = ref<ServiceStatus | null>(null);
 const configDbs = ref<DatabaseSummary[]>([]);
@@ -764,6 +765,16 @@ const configSnippet = computed(() => {
         `MEILISEARCH_HOST=http://127.0.0.1:${s.port}`,
         "MEILISEARCH_KEY=",
       ].join("\n");
+    case "rustfs":
+      return [
+        "FILESYSTEM_DISK=s3",
+        "AWS_ACCESS_KEY_ID=rustfsadmin",
+        "AWS_SECRET_ACCESS_KEY=rustfsadmin",
+        "AWS_DEFAULT_REGION=us-east-1",
+        "AWS_BUCKET=your_bucket",
+        `AWS_ENDPOINT=http://127.0.0.1:${s.port}`,
+        "AWS_USE_PATH_STYLE_ENDPOINT=true",
+      ].join("\n");
     default:
       return "";
   }
@@ -786,7 +797,7 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
   <div class="flex h-full flex-col">
     <PageHeader
       title="Services"
-      subtitle="Databases, caches, search, and per-site app servers Yerd supervises"
+      subtitle="Databases, caches, search, object storage, and per-site app servers Yerd supervises"
       docs="/guide/services"
     >
       <template #actions>
@@ -1310,6 +1321,13 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
             change project files or run Composer or Artisan for you.
           </p>
         </div>
+
+        <p v-if="configTarget?.service === 'rustfs'" class="text-xs text-muted-foreground">
+          Install <code>league/flysystem-aws-s3-v3</code>. RustFS does not create buckets on
+          its own: create <code>your_bucket</code> once with any S3 client, e.g.
+          <code>aws --endpoint-url http://127.0.0.1:{{ configTarget?.port }} s3 mb s3://your_bucket</code>.
+          Yerd does not change project files or run Composer for you.
+        </p>
 
         <!-- .env snippet -->
         <div class="relative">
