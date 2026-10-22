@@ -29,6 +29,7 @@ pub mod error;
 pub mod helper;
 pub mod ide;
 pub mod lan_ip;
+pub mod login_path;
 pub mod metrics;
 pub mod nss_exec;
 pub mod opener;
@@ -50,6 +51,9 @@ pub use error::{
 pub use helper::{ArgvParseError, HelperInvocation};
 pub use ide::{DetectedIde, FakeIdeLauncher, IdeLauncher, LaunchTarget};
 pub use lan_ip::{ActiveLanIpProvider, FakeLanIpProvider, LanIpProvider};
+#[cfg(unix)]
+pub use login_path::RealLoginShell;
+pub use login_path::{bin_dir_needs_setup, LoginShellProbe};
 pub use metrics::SystemMetrics;
 pub use opener::{FakeSystemOpener, SystemOpener};
 pub use paths::{Paths, PlatformDirs};
