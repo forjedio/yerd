@@ -51,6 +51,16 @@ export default withMermaid({
         crossorigin: '',
       },
     ],
+    // Plausible analytics (self-hosted at annie.forjed.io).
+    [
+      'script',
+      { async: '', src: 'https://annie.forjed.io/js/pa-DCYl0BxgJ-QjKNq6qzmUd.js' },
+    ],
+    [
+      'script',
+      {},
+      'window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};\nplausible.init()',
+    ],
     ['meta', { name: 'author', content: 'Forjed' }],
     [
       'meta',
