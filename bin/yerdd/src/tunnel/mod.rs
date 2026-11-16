@@ -215,14 +215,14 @@ pub(super) async fn resolve_site(
 }
 
 /// The loopback ports a tunnel origin should dial: the well-known pair when
-/// the proxy bound it directly or a live privileged-port redirect (macOS `pf`,
-/// via `yerd elevate ports`) carries it, the rootless fallbacks otherwise.
+/// the proxy bound it directly or a live privileged-port redirect (the macOS
+/// launchd port forwarder, via `yerd elevate ports`) carries it, the rootless
+/// fallbacks otherwise.
 ///
-/// While that `pf` `rdr` is live, a direct loopback connect to the *fallback*
-/// port is unreliable: the kernel's SYN-ACK from `:8443` is matched against
-/// the redirect's state table and dropped, so `cloudflared` times out dialing
-/// the origin and the public hostname answers `502`. The redirect makes the
-/// well-known port reachable, so the origin dials that instead. Probes the
+/// The well-known port is what browsers use once the redirect is live, so the
+/// origin dials the same port. Machines still on a legacy pf redirect from an
+/// older Yerd also need this: there a direct loopback connect to the fallback
+/// port was dropped by pf's state table and `cloudflared` answered `502`. Probes the
 /// redirect right now (rather than trusting `state.redirect_https_port`, which
 /// the background prober refreshes only every minute) so a tunnel started
 /// straight after `yerd elevate ports` or a daemon restart picks the right port.

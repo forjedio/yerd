@@ -47,7 +47,7 @@ pub struct StatusReport {
     /// could not determine it (treat as "unknown", **not** as `false`).
     pub resolver_installed: Option<bool>,
     /// Whether a privileged-port redirect is active so 80/443 reach the
-    /// daemon's rootless ports (macOS pf `rdr`). `Some(true)` lets the doctor
+    /// daemon's rootless ports (the macOS launchd port forwarder). `Some(true)` lets the doctor
     /// treat a port *fallback* as satisfied; `None` = not applicable (Linux,
     /// where elevation binds 80/443 directly) or undeterminable. `#[serde(default,
     /// skip_serializing_if)]` keeps the Linux wire bytes unchanged and older
@@ -55,8 +55,8 @@ pub struct StatusReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port_redirect: Option<bool>,
     /// `Some(true)` when a privileged web port (80/443) is held by a listener
-    /// that is **not** this daemon's proxy - a foreign process (or stale `pf`
-    /// rule) squatting the port Yerd wants. Confirmed via the proxy's `Server:`
+    /// that is **not** this daemon's proxy - a foreign process (or an
+    /// undelivering forwarder) squatting the port Yerd wants. Confirmed via the proxy's `Server:`
     /// marker, so it never mistakes Yerd for a foreign listener. `Some(false)` =
     /// no conflict; `None` = not probed. Cross-platform (unlike `port_redirect`).
     /// `#[serde(default, skip_serializing_if)]` keeps the wire additive for older
@@ -166,23 +166,23 @@ pub struct StatusReport {
     /// is on but the listener couldn't bind (degraded).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lan_setup_bound: Option<bool>,
-    /// Destination ports of the installed macOS loopback (`dev.yerd`) pf anchor,
-    /// read from disk at status time. Compare with [`Self::http`]/[`Self::https`]
+    /// Destination ports of the installed macOS loopback port forwarder (or a
+    /// legacy `dev.yerd` pf anchor), read from disk at status time. Compare with [`Self::http`]/[`Self::https`]
     /// `bound` to detect a stale redirect that black-holes on-host 80/443. `None`
     /// = not installed, unreadable, or not macOS. `#[serde(default,
     /// skip_serializing_if)]` keeps the wire additive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port_redirect_targets: Option<PortRedirectTargets>,
-    /// Same as [`Self::port_redirect_targets`] for the macOS LAN (`dev.yerd.lan`)
-    /// anchor. A stale target here black-holes other devices' access while LAN
+    /// Same as [`Self::port_redirect_targets`] for the macOS LAN port forwarder
+    /// (or legacy `dev.yerd.lan` anchor). A stale target here black-holes other devices' access while LAN
     /// mode is on. `None` = not installed, unreadable, or not macOS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lan_redirect_targets: Option<PortRedirectTargets>,
 }
 
-/// Destination ports `(http, https)` an installed macOS pf redirect anchor
-/// carries 80/443 to. A wire-side mirror of the platform layer's parsed anchor
-/// targets (`yerd-ipc` must not depend on `yerd-platform`).
+/// Destination ports `(http, https)` an installed macOS port forwarder (or
+/// legacy pf anchor) carries 80/443 to. A wire-side mirror of the platform
+/// layer's parsed targets (`yerd-ipc` must not depend on `yerd-platform`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortRedirectTargets {
     /// Port the anchor redirects inbound 80 to.
@@ -677,13 +677,13 @@ pub enum DiagnosisCode {
     /// filesystem scan order of parked directories, so the winner may change
     /// across restarts. See [`StatusReport::shadows`].
     DomainShadowed,
-    /// The installed macOS loopback pf redirect targets a port the daemon is no
+    /// The installed macOS loopback port forwarder targets a port the daemon is no
     /// longer serving, so on-host 80/443 are black-holed even though the daemon
     /// is up. Remedy: restart the daemon if it recently changed ports, then
     /// `sudo yerd elevate ports`; if LAN mode is on, also `sudo yerd elevate lan`.
     /// See [`StatusReport::port_redirect_targets`].
     PortRedirectStale,
-    /// The installed macOS LAN pf redirect (`dev.yerd.lan`) targets a port the
+    /// The installed macOS LAN port forwarder targets a port the
     /// daemon is no longer serving, so other devices reach a dead port while LAN
     /// mode is on. Remedy: `sudo yerd elevate lan` (restart the daemon first if it
     /// still holds a privileged port). See [`StatusReport::lan_redirect_targets`].

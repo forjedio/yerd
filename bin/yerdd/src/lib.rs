@@ -340,7 +340,8 @@ async fn run_until_shutdown(
 
 /// Spawns the background task that keeps
 /// [`crate::state::DaemonState::redirect_https_port`] in sync with a live
-/// privileged-port redirect (macOS `pf`, installed by `yerd elevate ports`) -
+/// privileged-port redirect (the macOS port forwarder, installed by
+/// `yerd elevate ports`) -
 /// the only case where the daemon's own bound HTTPS port can diverge from
 /// what's actually reachable without a restart. Returns `None` (spawning
 /// nothing) when the proxy isn't running or the HTTPS listener bound its
@@ -466,7 +467,7 @@ fn spawn_redirect_probe(
 ///
 /// When the daemon bound the well-known port directly there's nothing to
 /// correct. When it fell back to a rootless port, a live privileged-port
-/// redirect (macOS `pf`, installed by `yerd elevate ports`) makes the
+/// redirect (the macOS port forwarder, installed by `yerd elevate ports`) makes the
 /// well-known port reachable too, so the redirect should advertise it instead
 /// of leaking the internal fallback port into the browser's address bar. This
 /// holds in LAN mode too: the loopback probe measures exactly whether `:443` is

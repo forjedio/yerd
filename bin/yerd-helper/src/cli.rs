@@ -82,7 +82,8 @@ pub enum Op {
         #[arg(long, value_name = "PATH")]
         binary: PathBuf,
     },
-    /// Install a pf redirect 80/443 → rootless ports (macOS only).
+    /// Install the launchd port forwarder 127.0.0.1:80/443 → rootless ports
+    /// (macOS only).
     InstallPortRedirect {
         /// Privileged HTTP port to redirect from (80).
         #[arg(long, value_name = "PORT")]
@@ -96,15 +97,16 @@ pub enum Op {
         /// Rootless HTTPS port the daemon listens on.
         #[arg(long, value_name = "PORT")]
         https_to: u16,
+        /// The non-root user the forwarder runs as.
+        #[arg(long, value_name = "UID")]
+        uid: u32,
     },
-    /// Remove the pf redirect (macOS only).
+    /// Remove the loopback port forwarder and any legacy pf redirect (macOS
+    /// only).
     UninstallPortRedirect,
-    /// Install the LAN pf redirect 80/443 → rootless ports on the LAN IP
-    /// (macOS only).
+    /// Install the LAN port forwarder 0.0.0.0:80/443 → rootless ports (macOS
+    /// only).
     InstallLanPortRedirect {
-        /// The host's LAN IPv4 (redirect destination + source-scope match).
-        #[arg(long, value_name = "IP")]
-        lan_ip: std::net::Ipv4Addr,
         /// Privileged HTTP port to redirect from (80).
         #[arg(long, value_name = "PORT")]
         http_from: u16,
@@ -117,8 +119,11 @@ pub enum Op {
         /// Rootless HTTPS port the daemon listens on.
         #[arg(long, value_name = "PORT")]
         https_to: u16,
+        /// The non-root user the forwarder runs as.
+        #[arg(long, value_name = "UID")]
+        uid: u32,
     },
-    /// Remove the LAN pf redirect (macOS only).
+    /// Remove the LAN port forwarder and any legacy pf redirect (macOS only).
     UninstallLanPortRedirect,
 }
 
@@ -200,25 +205,27 @@ impl Op {
                 http_to,
                 https_from,
                 https_to,
+                uid,
             } => Ok(HelperInvocation::InstallPortRedirect {
                 http_from,
                 http_to,
                 https_from,
                 https_to,
+                uid,
             }),
             Self::UninstallPortRedirect => Ok(HelperInvocation::UninstallPortRedirect),
             Self::InstallLanPortRedirect {
-                lan_ip,
                 http_from,
                 http_to,
                 https_from,
                 https_to,
+                uid,
             } => Ok(HelperInvocation::InstallLanPortRedirect {
-                lan_ip,
                 http_from,
                 http_to,
                 https_from,
                 https_to,
+                uid,
             }),
             Self::UninstallLanPortRedirect => Ok(HelperInvocation::UninstallLanPortRedirect),
         }

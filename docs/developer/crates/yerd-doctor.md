@@ -8,7 +8,7 @@ For the user-facing walkthrough of `yerd doctor`, see [Diagnostics](../../guide/
 
 ## Why this crate exists separately
 
-Diagnosis is a pile of conditional rules: "a privileged port that fell back is a warning - unless a pf redirect makes it reachable anyway"; "an undeterminable CA-trust probe must stay silent rather than cry wolf"; "no PHP at all should suppress the narrower *default-not-installed* finding." That logic is worth testing exhaustively and in isolation, with no daemon, no sockets, and no OS. Pulling it into a `#![forbid(unsafe_code)]`, dependency-light crate (`yerd-core` + `yerd-ipc` only) makes the rules a pure function of an input struct - trivially unit-testable, and impossible to accidentally entangle with I/O.
+Diagnosis is a pile of conditional rules: "a privileged port that fell back is a warning - unless a port forwarder makes it reachable anyway"; "an undeterminable CA-trust probe must stay silent rather than cry wolf"; "no PHP at all should suppress the narrower *default-not-installed* finding." That logic is worth testing exhaustively and in isolation, with no daemon, no sockets, and no OS. Pulling it into a `#![forbid(unsafe_code)]`, dependency-light crate (`yerd-core` + `yerd-ipc` only) makes the rules a pure function of an input struct - trivially unit-testable, and impossible to accidentally entangle with I/O.
 
 ```toml
 # crates/yerd-doctor/Cargo.toml
@@ -63,7 +63,7 @@ Two cross-cutting invariants hold for the output:
 
 - **Always non-empty.** When no `Warn`/`Fail` finding is produced, a single [`DiagnosisCode::AllGood`] `Ok` finding is appended, so a caller always has something to render.
 - **No false alarms from unknowns.** Probes typed as `Option<bool>` that come back `None` ("couldn't determine") emit **no** finding. Only an explicit `Some(false)` raises a warning. This is why the CA and resolver checks compare against `Some(false)` rather than `!= Some(true)`.
-- **Most-specific port finding wins.** `port_findings` raises `ForeignWebListener` when `report.foreign_web_listener == Some(true)` (a non-Yerd process on 80/443) and *suppresses* the generic `PortFallback` in that case - telling the user to free the port, not to elevate (which can't bind a port someone else owns). An active macOS redirect (`port_redirect == Some(true)`) likewise suppresses `PortFallback`.
+- **Most-specific port finding wins.** `port_findings` raises `ForeignWebListener` when `report.foreign_web_listener == Some(true)` (a non-Yerd process on 80/443) and *suppresses* the generic `PortFallback` in that case - telling the user to free the port, not to elevate (which can't bind a port someone else owns). An active macOS redirect (`port_redirect == Some(true)`) likewise suppresses `PortFallback`. When a Yerd forwarder (or a legacy pf redirect) is installed but not delivering, `ForeignWebListener` is held back and `PortFallback` is raised instead, with a detail sentence saying the redirect is installed but port 80 isn't reaching Yerd.
 
 ### `plan_auto_fixes(&StatusReport) -> Vec<FixAction>`
 
@@ -85,7 +85,7 @@ pub fn plan_auto_fixes(report: &StatusReport) -> Vec<FixAction> {
 }
 ```
 
-Conservative by design: the auto-fixes are restarting a failed FPM pool and rebuilding the bundled PHP's CA bundle (`{data}/cacert.pem`) when it's missing or stale - both fast, idempotent, and unprivileged (each writes only user-owned files). Privileged or slow remediation - CA trust, resolver install, `setcap`/pf, PHP install - is never auto-applied; it is left to the user to run the suggested command.
+Conservative by design: the auto-fixes are restarting a failed FPM pool and rebuilding the bundled PHP's CA bundle (`{data}/cacert.pem`) when it's missing or stale - both fast, idempotent, and unprivileged (each writes only user-owned files). Privileged or slow remediation - CA trust, resolver install, `setcap`/port forwarder, PHP install - is never auto-applied; it is left to the user to run the suggested command.
 
 ### `is_auto_fixable(DiagnosisCode) -> bool`
 
@@ -200,7 +200,7 @@ fn privileged_fallback(report: &StatusReport) -> bool {
 }
 ```
 
-Only a port configured **below 1024** that fell back counts - a user who deliberately runs on `8080` and sees it bump to `8081` is not nagged. And even a genuine privileged fallback is suppressed when `report.port_redirect == Some(true)`: on macOS the daemon keeps binding the rootless ports after elevation, but an active pf `rdr` makes 80/443 reachable anyway, so the warning would be misleading. `Some(false)` (redirect present but inactive) and `None` (Linux / not applicable) both leave the warning in place. See [Elevation & Privileges](../../guide/elevation).
+Only a port configured **below 1024** that fell back counts - a user who deliberately runs on `8080` and sees it bump to `8081` is not nagged. And even a genuine privileged fallback is suppressed when `report.port_redirect == Some(true)`: on macOS the daemon keeps binding the rootless ports after elevation, but an active port forwarder makes 80/443 reachable anyway, so the warning would be misleading. `Some(false)` (redirect present but inactive) and `None` (Linux / not applicable) both leave the warning in place. See [Elevation & Privileges](../../guide/elevation).
 
 ### "Unknown is silent" probes
 

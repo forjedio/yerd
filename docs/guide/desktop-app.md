@@ -34,7 +34,7 @@ The landing dashboard. With the daemon running it shows a **serving** summary - 
 
 App- and daemon-level settings (one of the pages that stays usable when the daemon is down, since it can start or install it):
 
-- **Daemon.** Whether `yerdd` is running (with pid), a Start or Stop button, and a list of the daemon's in-process subsystems - the DNS resolver, the HTTP and HTTPS proxy listeners (with bound ports, including when macOS's `pf` redirect carries `:80`/`:443`), **Mail capture** (by port), and **Dump capture** (by port). The daemon row has a Restart button. Start/Stop/Restart go through your per-user service manager (systemd `--user` on Linux, a launchd LaunchAgent on macOS), with a detached-process fallback where none exists; the same actions are in the tray menu.
+- **Daemon.** Whether `yerdd` is running (with pid), a Start or Stop button, and a list of the daemon's in-process subsystems - the DNS resolver, the HTTP and HTTPS proxy listeners (with bound ports, including when macOS's launchd port forwarder carries `:80`/`:443`), **Mail capture** (by port), and **Dump capture** (by port). The daemon row has a Restart button. Start/Stop/Restart go through your per-user service manager (systemd `--user` on Linux, a launchd LaunchAgent on macOS), with a detached-process fallback where none exists; the same actions are in the tray menu.
 - **Application Ports** (while the daemon is running). Editable HTTP/HTTPS (the rootless fallback ports used when 80/443 need elevation), DNS, mail-capture, and dumps ports. If a port is in use elsewhere the page flags it here (site serving or `.test` resolution shows as unbound) so you can pick a free one. Change a value and **Save & restart** validates it, saves, restarts the daemon, and rechecks. HTTP/HTTPS are locked while ports are elevated - un-elevate them on the Doctor page first.
 - **Start at login.** Three toggles - start the daemon at login, start the app at login, and start the app minimized (hidden to the tray). The daemon-at-login toggle is disabled where no per-user service manager is available.
 - **Terminal CLI** (macOS and Linux). Installs `yerd` - and your installed tools (`php`, `composer`, ...) - onto your shell `PATH`. On a packaged Linux install `yerd` itself is already on `PATH`, so this is mainly how Linux users get the PHP/tool shims on `PATH` too.
@@ -138,6 +138,8 @@ Mirrors [`yerd doctor`](./diagnostics):
 
 ::: info "Fix" actions never run the GUI as root
 The Fix buttons run the audited `yerd elevate` helper under an OS prompt; the GUI never runs elevated. On Linux this uses `pkexec`, on macOS an `osascript … with administrator privileges` prompt. You may be asked for your password. See [Elevation & Privileges](./elevation).
+
+On macOS, fixing Privileged ports from the app also removes any `pf` LAN redirect left by an older Yerd, without a message. If you use [LAN access](../reference/cli/lan), run `sudo yerd elevate lan` from a terminal afterwards.
 :::
 
 ### About

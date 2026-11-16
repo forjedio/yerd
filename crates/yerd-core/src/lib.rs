@@ -27,7 +27,7 @@ mod tld;
 /// `Server` header value the proxy stamps on its own (synthetic, non-forwarded)
 /// responses. It doubles as the signature the macOS privileged-port redirect
 /// probe looks for: confirming a connection to `127.0.0.1:80` reaches *this*
-/// daemon's proxy - rather than some other process or a stale `pf` rule holding
+/// daemon's proxy - rather than some other process or an undelivering forwarder holding
 /// the port - instead of merely confirming *something* answers.
 ///
 /// It is a cross-crate contract: `yerd-proxy` sets it (`server.rs`) and

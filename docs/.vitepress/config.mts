@@ -293,6 +293,10 @@ export default withMermaid({
               text: 'yerd-helper (privileged)',
               link: '/developer/binaries/yerd-helper',
             },
+            {
+              text: 'yerd-forward (macOS ports)',
+              link: '/developer/binaries/yerd-forward',
+            },
           ],
         },
         {

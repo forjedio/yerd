@@ -92,7 +92,7 @@ Hand the three system hooks to Yerd. In the desktop app this is the **Doctor →
 sudo yerd elevate          # trust the CA · route *.test · allow 80/443
 ```
 
-This trusts Yerd's local CA, points the `*.test` resolver at Yerd's DNS, and lets the daemon serve on 80/443 (a `pf` redirect on macOS, `setcap` on Linux). See [Elevation & Privileges](./elevation) for exactly what each step does.
+This trusts Yerd's local CA, points the `*.test` resolver at Yerd's DNS, and lets the daemon serve on 80/443 (a launchd port forwarder on macOS, `setcap` on Linux). See [Elevation & Privileges](./elevation) for exactly what each step does.
 
 ::: tip macOS backs up your old resolver
 On macOS, if a `/etc/resolver/test` already exists (a Valet/Herd leftover), `yerd elevate resolver` **saves a backup** before replacing it - so [switching back](#switching-back) can restore your previous DNS exactly. Linux has no backup mechanism; the drop-in is simply added/removed.
@@ -139,7 +139,7 @@ Switching back is the reverse: hand the three hooks back to the other tool.
    ```sh
    sudo yerd unelevate        # revert all three
    ```
-   - On **macOS**, `unelevate resolver` **restores the resolver backup** taken in Step 3 (returning DNS to its pre-Yerd state), and `unelevate ports` removes the `pf` redirect.
+   - On **macOS**, `unelevate resolver` **restores the resolver backup** taken in Step 3 (returning DNS to its pre-Yerd state), and `unelevate ports` removes the port forwarder.
    - On **Linux**, it removes all Yerd-owned systemd-resolved and NetworkManager resolver snippets. `setcap` has no clean reverse, so `unelevate ports` just prints the manual command (`sudo setcap -r <path-to-yerdd>`) - harmless to leave, but run it if you want it gone.
 
 2. **Stop Yerd's daemon** so it isn't holding ports when the other tool starts:

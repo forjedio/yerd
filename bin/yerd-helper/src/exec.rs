@@ -20,16 +20,19 @@ pub fn dispatch(inv: HelperInvocation) -> Result<(), HelperError> {
             http_to,
             https_from,
             https_to,
-        } => ops::port_redirect::install_port_redirect(http_from, http_to, https_from, https_to),
+            uid,
+        } => {
+            ops::port_redirect::install_port_redirect(http_from, http_to, https_from, https_to, uid)
+        }
         HelperInvocation::UninstallPortRedirect => ops::port_redirect::uninstall_port_redirect(),
         HelperInvocation::InstallLanPortRedirect {
-            lan_ip,
             http_from,
             http_to,
             https_from,
             https_to,
+            uid,
         } => ops::lan_port_redirect::install_lan_port_redirect(
-            lan_ip, http_from, http_to, https_from, https_to,
+            http_from, http_to, https_from, https_to, uid,
         ),
         HelperInvocation::UninstallLanPortRedirect => {
             ops::lan_port_redirect::uninstall_lan_port_redirect()

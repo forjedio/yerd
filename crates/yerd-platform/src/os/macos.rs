@@ -36,7 +36,7 @@ use crate::pure::ide_spec::{
     ide_cli_candidates_macos, mac_app_name_matches, mac_application_locations, spec_for, IdeSpec,
     IDE_SPECS,
 };
-use crate::pure::{pem_match, pf_anchor, port_plan, ps_metrics, resolver_file};
+use crate::pure::{launchd_ports, pem_match, pf_anchor, port_plan, ps_metrics, resolver_file};
 use crate::resolver::ResolverInstaller;
 use crate::terminal::TerminalLauncher;
 use crate::trust_store::{BrowserCaTrust, CaFingerprint, NssOutcome, TrustStore};
@@ -635,14 +635,14 @@ impl PortBinder for MacosPortBinder {
 }
 
 /// macOS uses the M2 LAN strategy: even in LAN mode the daemon binds the rootless
-/// ports on `0.0.0.0`, and a privileged `pf rdr` (installed by `yerd elevate lan`)
+/// ports on `0.0.0.0`, and the LAN port forwarder (installed by `yerd elevate lan`)
 /// carries inbound 80/443 to `<lan_ip>:<rootless>`. So `lan` here only widens the
 /// bind address; the privileged-port redirect is a separate concern.
 ///
 /// The daemon must never hold a privileged port directly, so a privileged
 /// `desired` pair is replaced by `fallback` before any bind is attempted (see
 /// [`port_plan::strip_privileged_desired`]). This keeps the daemon deterministically
-/// on the rootless ports the `pf rdr` targets, regardless of whether a privileged
+/// on the rootless ports the forwarder targets, regardless of whether a privileged
 /// bind would have been permitted.
 fn bind_pair_impl(
     lan: bool,
@@ -791,30 +791,61 @@ impl MacosPortRedirector {
     }
 }
 
+/// The launchd port forwarder installs 80 and 443 together. `is_active`
+/// requires the HTTP half to reach *this* proxy (the `Server: yerd` marker),
+/// not merely that something answers on :80: launchd keeps accepting on its
+/// socket even when the forwarder can't deliver, and a foreign listener could
+/// also hold the port. The HTTPS half only needs reachability, since confirming
+/// it would need a TLS handshake.
+///
+/// The target readers prefer the forwarder plists and fall back to a legacy pf
+/// anchor file, so stale-redirect findings keep working on machines elevated by
+/// an older Yerd that haven't re-run `elevate` yet.
 impl PortRedirector for MacosPortRedirector {
     fn is_active(&self) -> Option<bool> {
-        // The pf redirect installs 80 and 443 together. Require the HTTP half to
-        // actually reach *this* proxy (the `Server: yerd` marker), not merely
-        // that something answers on :80, which would false-green when a foreign
-        // listener or a stale `pf` rule still holds the port after the user
-        // removed the redirect. The HTTPS half only needs reachability: it's
-        // installed by the same rule, and confirming it would need a TLS
-        // handshake. So a yerd-confirmed :80 plus a reachable :443 means the
-        // redirect is live and ours.
         Some(loopback_redirect_reaches_proxy(80) && loopback_port_reachable(443))
     }
 
     fn redirect_targets(&self) -> Option<(u16, u16)> {
-        anchor_targets_at(Path::new(pf_anchor::ANCHOR_PATH))
+        targets_with_legacy_fallback(
+            Path::new(launchd_ports::PORTS_HTTP_PLIST),
+            Path::new(launchd_ports::PORTS_HTTPS_PLIST),
+            Path::new(pf_anchor::ANCHOR_PATH),
+        )
     }
 
     fn lan_redirect_targets(&self) -> Option<(u16, u16)> {
-        anchor_targets_at(Path::new(pf_anchor::LAN_ANCHOR_PATH))
+        targets_with_legacy_fallback(
+            Path::new(launchd_ports::LAN_PORTS_HTTP_PLIST),
+            Path::new(launchd_ports::LAN_PORTS_HTTPS_PLIST),
+            Path::new(pf_anchor::LAN_ANCHOR_PATH),
+        )
     }
 }
 
-/// Read and parse the destination ports of an installed pf anchor file. The
-/// helper writes both anchors world-readable, so the unprivileged daemon can
+/// Forwarder targets when either forwarder plist exists, otherwise the legacy
+/// pf anchor's targets.
+fn targets_with_legacy_fallback(http: &Path, https: &Path, legacy: &Path) -> Option<(u16, u16)> {
+    if http.exists() || https.exists() {
+        forwarder_targets_at(http, https)
+    } else {
+        anchor_targets_at(legacy)
+    }
+}
+
+/// Read the rootless target ports from the two forwarder plists of one scope.
+/// The helper writes them world-readable; `None` unless both parse.
+fn forwarder_targets_at(http: &Path, https: &Path) -> Option<(u16, u16)> {
+    let read = |path: &Path| {
+        fs::read_to_string(path)
+            .ok()
+            .and_then(|text| launchd_ports::parse_forwarder_target(&text))
+    };
+    Some((read(http)?, read(https)?))
+}
+
+/// Read and parse the destination ports of a legacy pf anchor file. Older
+/// helpers wrote both anchors world-readable, so the unprivileged daemon can
 /// read them; any read or parse failure collapses to `None` (never a false
 /// finding).
 fn anchor_targets_at(path: &Path) -> Option<(u16, u16)> {
@@ -1184,13 +1215,59 @@ mod tests {
 
     // ---- PortRedirector anchor target reads ---------------------------
 
-    /// A composed anchor file parses to its rootless target ports.
+    const LEGACY_ANCHOR: &str =
+        "rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 8080\n\
+rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 8443\n";
+
+    fn forwarder_plist(from: u16, to: u16) -> String {
+        launchd_ports::compose_forwarder_plist(
+            launchd_ports::Scope::Loopback,
+            "dev.yerd.test",
+            Path::new("/Applications/Yerd.app/Contents/MacOS/yerd-forward"),
+            "someone",
+            from,
+            to,
+        )
+    }
+
+    /// A legacy anchor file parses to its rootless target ports.
     #[test]
-    fn anchor_targets_at_reads_composed_rules() {
+    fn anchor_targets_at_reads_legacy_rules() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("dev.yerd");
-        std::fs::write(&path, pf_anchor::compose_anchor_rules(80, 8080, 443, 8443)).unwrap();
+        std::fs::write(&path, LEGACY_ANCHOR).unwrap();
         assert_eq!(anchor_targets_at(&path), Some((8080, 8443)));
+    }
+
+    #[test]
+    fn forwarder_targets_need_both_plists() {
+        let dir = tempfile::tempdir().unwrap();
+        let http = dir.path().join("http.plist");
+        let https = dir.path().join("https.plist");
+        let legacy = dir.path().join("dev.yerd");
+        std::fs::write(&legacy, LEGACY_ANCHOR).unwrap();
+
+        assert_eq!(
+            targets_with_legacy_fallback(&http, &https, &legacy),
+            Some((8080, 8443)),
+            "no forwarder plists: legacy anchor is read"
+        );
+
+        std::fs::write(&http, forwarder_plist(80, 9080)).unwrap();
+        assert_eq!(
+            targets_with_legacy_fallback(&http, &https, &legacy),
+            None,
+            "one forwarder plist: no legacy fallback, and no targets"
+        );
+
+        std::fs::write(&https, forwarder_plist(443, 9443)).unwrap();
+        assert_eq!(
+            targets_with_legacy_fallback(&http, &https, &legacy),
+            Some((9080, 9443))
+        );
+
+        std::fs::write(&https, "garbage").unwrap();
+        assert_eq!(forwarder_targets_at(&http, &https), None);
     }
 
     /// A missing or garbage anchor file collapses to `None`, never a false read.

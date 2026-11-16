@@ -238,7 +238,7 @@ export interface StatusReport {
   ca: CaStatus;
   /** Tri-state - null means "unknown", never coerce to false. */
   resolver_installed: boolean | null;
-  /** macOS: is the pf redirect carrying 80/443 to the rootless ports? true =
+  /** macOS: is the port forwarder carrying 80/443 to the rootless ports? true =
    *  privileged ports served via the redirect, false = not, null/undefined =
    *  unknown / not applicable (Linux binds directly after setcap). Omitted on the
    *  wire when not set (the Rust field is `#[serde(default, skip_serializing_if)]`,
@@ -295,8 +295,8 @@ export interface StatusReport {
   /** Whether `yerd mcp` serves Yerd's tools to local AI agents. Defaults to
    *  `false` (opt-in) when omitted by a daemon predating the field. */
   mcp_enabled?: boolean;
-  /** macOS: destination ports the installed loopback (`dev.yerd`) pf anchor
-   *  carries 80/443 to. Compare with `http.bound`/`https.bound` to detect a
+  /** macOS: destination ports the installed loopback port forwarder (or a
+   *  legacy pf anchor) carries 80/443 to. Compare with `http.bound`/`https.bound` to detect a
    *  stale redirect that black-holes on-host access. Omitted when not installed,
    *  unreadable, or not macOS. */
   port_redirect_targets?: { http: number; https: number } | null;

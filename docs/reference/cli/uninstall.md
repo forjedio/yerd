@@ -23,11 +23,11 @@ yerd uninstall --yes         # skip the prompt (non-interactive)
 
 It removes, in order:
 
-1. **System changes from [`elevate`](./elevation)** - the CA in the system trust store, the DNS resolver entry, and (macOS) the `pf` port redirect. **Root only** - see [Run it with `sudo`](#run-it-with-sudo).
+1. **System changes from [`elevate`](./elevation)** - the CA in the system trust store, the DNS resolver entry, and (macOS) the launchd port forwarders, plus any legacy `pf` redirect left by an older Yerd. **Root only** - see [Run it with `sudo`](#run-it-with-sudo).
 2. **The daemon** - stops and disables the per-user service (systemd `--user` / launchd) and reaps the running `yerdd` (which in turn stops its PHP-FPM pools and any managed services).
 3. **The PATH entry** - removes the yerd block from your shell startup files (the same block [`yerd path`](./tooling) manages).
 4. **Config, data, and cache** - the `yerd.toml` config, installed PHP versions, dev tools, downloads, the local CA, and the runtime socket directory.
-5. **The binaries** - `yerd`, `yerdd`, and `yerd-helper`. A package install is left for your package manager instead (`sudo apt purge yerd` on Debian/Ubuntu, `sudo pacman -R yerd` on Arch, `sudo dnf remove yerd` on Fedora) - yerd never `rm`s package-managed files.
+5. **The binaries** - `yerd`, `yerdd`, `yerd-helper`, and (macOS) `yerd-forward`. A package install is left for your package manager instead (`sudo apt purge yerd` on Debian/Ubuntu, `sudo pacman -R yerd` on Arch, `sudo dnf remove yerd` on Fedora) - yerd never `rm`s package-managed files.
 
 When something can't be removed automatically, it's listed at the end as a leftover to handle manually.
 

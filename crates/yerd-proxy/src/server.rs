@@ -62,7 +62,7 @@ pub struct HttpsBinding<C: CertStore> {
     /// Public port the HTTP→HTTPS redirect should target - not
     /// necessarily what `listener.local_addr()` reports (rootless mode may
     /// bind 8443 while a live privileged-port redirect, e.g. `yerd elevate
-    /// ports`'s macOS `pf` rule, makes 443 the port to advertise instead).
+    /// ports`'s macOS port forwarder, makes 443 the port to advertise instead).
     /// Shared (not a plain `u16`) so the daemon can flip it as that redirect
     /// goes up or down, without restarting the proxy to pick up the change.
     pub public_port: Arc<AtomicU16>,

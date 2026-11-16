@@ -1,19 +1,19 @@
 //! `PortRedirector` trait - probe whether the privileged-port redirect is live.
 //!
 //! On macOS the unprivileged daemon can't bind 80/443, so `yerd elevate ports`
-//! installs a pf `rdr` redirect to its rootless ports (see
-//! `crate::pure::pf_anchor`). Because the daemon still *binds* the high ports,
+//! installs launchd daemons whose sockets hand 80/443 to the user-level
+//! `yerd-forward`, which relays to the daemon's rootless ports (see
+//! `crate::pure::launchd_ports`). Because the daemon still *binds* the high ports,
 //! `StatusReport.http.fell_back` stays `true` even once the redirect works - so
 //! the doctor needs a separate signal to know 80/443 are actually reachable.
 //!
 //! This probe is **active and unprivileged**, and it confirms the redirect
 //! reaches **this proxy** rather than merely confirming *something* answers:
 //! a bare TCP connect to `127.0.0.1:80` succeeds for any listener (a foreign
-//! web server, or a stale `pf` rule the user thinks they removed), so it would
-//! report a redirect as live after it had actually been torn down. Instead we
+//! web server, or a launchd socket whose forwarder can't reach the daemon), so
+//! it would report a redirect as live when it isn't delivering. Instead we
 //! speak HTTP to the port and require the yerd proxy's `Server:` marker
-//! ([`yerd_core::PROXY_SERVER_ID`]) on the response - reading pf's own state
-//! would need root, which the daemon doesn't have.
+//! ([`yerd_core::PROXY_SERVER_ID`]) on the response.
 
 use std::io::{Read as _, Write as _};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
@@ -37,8 +37,8 @@ pub trait PortRedirector {
     fn is_active(&self) -> Option<bool>;
 
     /// Whether a privileged web port (80/443) is currently held by a listener
-    /// that is **not** this daemon's proxy - a foreign process (or a stale `pf`
-    /// rule) squatting the port Yerd wants. Cross-platform, unlike
+    /// that is **not** this daemon's proxy - a foreign process (or a Yerd
+    /// forwarder that can't deliver) squatting the port Yerd wants. Cross-platform, unlike
     /// [`Self::is_active`]: a port answers, but the proxy's `Server:` marker
     /// ([`yerd_core::PROXY_SERVER_ID`]) is absent.
     ///
@@ -52,15 +52,17 @@ pub trait PortRedirector {
         Some(loopback_port_reachable(80) || loopback_port_reachable(443))
     }
 
-    /// Destination ports `(http_to, https_to)` of the installed loopback
-    /// (`dev.yerd`) pf anchor, read from disk. Compared against the daemon's
-    /// live bound ports to detect a stale redirect. `None` = not installed,
-    /// unreadable, or not applicable on this OS (only macOS uses a pf anchor).
+    /// Destination ports `(http_to, https_to)` of the installed loopback port
+    /// forwarder (or a legacy pf anchor from an older Yerd), read from disk.
+    /// Compared against the daemon's live bound ports to detect a stale
+    /// redirect. `None` = not installed, unreadable, or not applicable on this
+    /// OS (only macOS installs a forwarder).
     fn redirect_targets(&self) -> Option<(u16, u16)> {
         None
     }
 
-    /// Same as [`Self::redirect_targets`] for the LAN (`dev.yerd.lan`) anchor.
+    /// Same as [`Self::redirect_targets`] for the LAN forwarder (or legacy
+    /// `dev.yerd.lan` anchor).
     fn lan_redirect_targets(&self) -> Option<(u16, u16)> {
         None
     }
@@ -78,7 +80,7 @@ pub fn loopback_port_reachable(port: u16) -> bool {
 /// Returns `true` iff a connection to `127.0.0.1:port` is answered by *the yerd
 /// proxy* - verified via the `Server: yerd` ([`yerd_core::PROXY_SERVER_ID`])
 /// marker on the proxy's synthetic responses. This distinguishes a live yerd
-/// privileged-port redirect from any other process (or stale `pf` rule) merely
+/// privileged-port redirect from any other process (or undelivering forwarder) merely
 /// holding the port, which [`loopback_port_reachable`] alone cannot.
 #[must_use]
 pub fn loopback_redirect_reaches_proxy(port: u16) -> bool {

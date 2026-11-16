@@ -116,7 +116,7 @@ pub struct DaemonState {
     /// Port the HTTP→HTTPS redirect `Location` header currently advertises.
     /// Starts at `https.bound`; when `https.fell_back`, a background prober
     /// (`redirect_probe_handle` in `lib.rs`) flips it to `https.requested`
-    /// once it observes a live privileged-port redirect (macOS `pf`, via
+    /// once it observes a live privileged-port redirect (the macOS port forwarder, via
     /// `yerd elevate ports`) via `yerd_platform::PortRedirector::is_active`,
     /// and back when that redirect goes away - so the proxy can advertise a
     /// portless `https://site.test` without restarting. Shared with

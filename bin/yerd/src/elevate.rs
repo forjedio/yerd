@@ -52,18 +52,22 @@ mod unix_impl {
         tld: String,
         ca_path: PathBuf,
         ca_fingerprint: String,
-        /// Rootless ports the daemon bound; the macOS pf redirect maps
+        /// Rootless ports the daemon bound; the macOS port forwarder maps
         /// 80 → `http_port` and 443 → `https_port`. Unused on Linux (setcap
         /// binds the privileged ports directly).
         #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
         http_port: u16,
         #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
         https_port: u16,
-        /// The host's LAN IPv4 when LAN mode is on (the M2 `rdr` dest). Read
-        /// only in the macOS `elevate lan` arm; unused on Linux (setcap covers
-        /// the wildcard privileged bind directly).
+        /// The host's LAN IPv4 when LAN mode is on. The macOS `elevate lan`
+        /// arm requires it as proof LAN mode is on; unused on Linux (setcap
+        /// covers the wildcard privileged bind directly).
         #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
         lan_ip: Option<std::net::Ipv4Addr>,
+        /// The user who ran sudo (from `SUDO_UID`), whom the macOS port
+        /// forwarder runs as. Unused on Linux.
+        #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+        invoking_uid: Option<u32>,
     }
 
     /// Expand an optional target into the concrete list (None = all, in
@@ -196,9 +200,16 @@ mod unix_impl {
         let inv = plan_invocation(target, facts, yerdd, undo)?;
         println!("==> {}", describe(target, undo, facts));
 
+        #[cfg(target_os = "macos")]
+        let notices = legacy_removal_notices(target, legacy_redirects_present());
+
         match spawn_helper(helper, &inv)? {
             Some(0) => {
                 println!("    ok");
+                #[cfg(target_os = "macos")]
+                for notice in notices {
+                    println!("    {notice}");
+                }
                 if !undo && (target == ElevateTarget::Ports || target == ElevateTarget::Lan) {
                     #[cfg(not(target_os = "macos"))]
                     {
@@ -211,14 +222,24 @@ mod unix_impl {
                     }
                     #[cfg(target_os = "macos")]
                     if target == ElevateTarget::Ports {
-                        println!("    the pf redirect is live now; no daemon restart needed.");
-                        println!(
-                            "    secure sites' HTTP→HTTPS redirects will drop the :{} port within a few seconds.",
-                            facts.https_port
-                        );
+                        if port_80_reaches_yerd() {
+                            println!(
+                                "    the port forwarder is live now; no daemon restart needed."
+                            );
+                            println!(
+                                "    secure sites' HTTP→HTTPS redirects will drop the :{} port within a few seconds.",
+                                facts.https_port
+                            );
+                        } else {
+                            println!(
+                                "    installed, but port 80 isn't reaching Yerd yet; if another web \
+                                 server (Apache, nginx, Valet) holds 80/443, stop it and re-run \
+                                 `sudo yerd elevate ports`; see `yerd doctor`"
+                            );
+                        }
                     } else {
                         println!(
-                            "    the LAN pf redirect is live now; other devices can reach 80/443 on {}.",
+                            "    the LAN port forwarder is live now; other devices can reach 80/443 on {}.",
                             facts
                                 .lan_ip
                                 .map_or_else(|| "your LAN IP".to_owned(), |ip| ip.to_string())
@@ -234,11 +255,7 @@ mod unix_impl {
                 }
                 Ok(())
             }
-            Some(65) => Err(ClientError::Refused(
-                "yerd-helper declined: it refused to remove a certificate it couldn't \
-                 confirm is yerd's (or the input failed validation)"
-                    .to_owned(),
-            )),
+            Some(65) => Err(ClientError::Refused(declined_message(target).to_owned())),
             Some(code) => Err(ClientError::Usage(format!(
                 "yerd-helper exited with status {code}"
             ))),
@@ -309,13 +326,11 @@ mod unix_impl {
                     http_to: facts.http_port,
                     https_from: 443,
                     https_to: facts.https_port,
+                    uid: forwarder_uid(facts)?,
                 }
             }
             #[cfg(target_os = "macos")]
             (ElevateTarget::Ports, true) => HelperInvocation::UninstallPortRedirect,
-            // LAN: Linux reuses the same `setcap` grant (a wildcard privileged
-            // bind needs the same capability); macOS installs/removes the M2 pf
-            // rule targeting the discovered LAN IP.
             #[cfg(not(target_os = "macos"))]
             (ElevateTarget::Lan, false) => HelperInvocation::Setcap {
                 daemon_binary: yerdd.to_path_buf(),
@@ -337,18 +352,18 @@ mod unix_impl {
                     ));
                 }
                 require_rootless_web_facts(facts, LAN_RESTART_REMEDY)?;
-                let lan_ip = facts.lan_ip.ok_or_else(|| {
-                    ClientError::Usage(
+                if facts.lan_ip.is_none() {
+                    return Err(ClientError::Usage(
                         "LAN IP unknown — run `yerd lan enable` (and check `yerd lan status`) first"
                             .to_owned(),
-                    )
-                })?;
+                    ));
+                }
                 HelperInvocation::InstallLanPortRedirect {
-                    lan_ip,
                     http_from: 80,
                     http_to: facts.http_port,
                     https_from: 443,
                     https_to: facts.https_port,
+                    uid: forwarder_uid(facts)?,
                 }
             }
             #[cfg(target_os = "macos")]
@@ -374,12 +389,87 @@ mod unix_impl {
          `sudo yerd elevate lan` (and `sudo yerd elevate ports` if the host redirect has not \
          been refreshed since the restart)";
 
-    /// Refuse to install a macOS pf redirect while the daemon is holding a
+    /// The non-root user the macOS port forwarder runs as. Elevation must come
+    /// from a user account via sudo (or the app, which sets `SUDO_UID`), never
+    /// from a root login, so the forwarder is never root.
+    #[cfg(target_os = "macos")]
+    fn forwarder_uid(facts: &Facts) -> Result<u32, ClientError> {
+        facts.invoking_uid.filter(|uid| *uid != 0).ok_or_else(|| {
+            ClientError::Usage(
+                "run elevate via sudo (or the app) from your user account".to_owned(),
+            )
+        })
+    }
+
+    /// Why the helper declined (exit 65). Its own stderr line, printed just
+    /// above, names the exact cause.
+    fn declined_message(target: ElevateTarget) -> &'static str {
+        if target == ElevateTarget::Trust {
+            "yerd-helper declined: it refused to remove a certificate it couldn't confirm \
+             is yerd's (or the input failed validation)"
+        } else {
+            "yerd-helper declined: the request failed validation (see its message above)"
+        }
+    }
+
+    /// Which pf redirects from an older Yerd are installed, as
+    /// `(loopback, lan)`.
+    #[cfg(target_os = "macos")]
+    fn legacy_redirects_present() -> (bool, bool) {
+        use yerd_platform::pure::pf_anchor;
+        let exists = |path: &str| Path::new(path).exists();
+        (
+            exists(pf_anchor::PLIST_PATH) || exists(pf_anchor::ANCHOR_PATH),
+            exists(pf_anchor::LAN_PLIST_PATH) || exists(pf_anchor::LAN_ANCHOR_PATH),
+        )
+    }
+
+    /// Pure: what to tell the user after a successful `ports` or `lan` op.
+    /// The helper removes every legacy pf redirect on either op, so a run that
+    /// doesn't reinstall a scope names the command that restores it.
+    #[cfg(target_os = "macos")]
+    fn legacy_removal_notices(
+        target: ElevateTarget,
+        (loopback, lan): (bool, bool),
+    ) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if !matches!(target, ElevateTarget::Ports | ElevateTarget::Lan) {
+            return out;
+        }
+        if loopback && target != ElevateTarget::Ports {
+            out.push(
+                "the old pf port redirect was removed; run `sudo yerd elevate ports` to restore \
+                 80/443 on this Mac",
+            );
+        }
+        if lan && target != ElevateTarget::Lan {
+            out.push(
+                "the old pf LAN redirect was removed; run `sudo yerd elevate lan` to restore LAN \
+                 access on 80/443",
+            );
+        }
+        out
+    }
+
+    /// launchd can load a job whose bind failed (another server on `*:80`), so
+    /// confirm port 80 actually reaches Yerd before calling it live. Polls for
+    /// up to two seconds to cover the forwarder's on-demand spawn.
+    #[cfg(target_os = "macos")]
+    fn port_80_reaches_yerd() -> bool {
+        (0..10).any(|attempt| {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            yerd_platform::port_redirect::loopback_redirect_reaches_proxy(80)
+        })
+    }
+
+    /// Refuse to install the macOS port forwarder while the daemon is holding a
     /// privileged web port directly. `facts.http_port`/`https_port` are the
-    /// daemon's *bound* ports; a redirect whose target is the privileged port
-    /// itself produces an identity rule (`80 -> 80`) that black-holes traffic
-    /// once the daemon moves to its rootless ports. Only reachable while a
-    /// pre-fix daemon still squats 80/443; `remedy` names the arm's own recovery.
+    /// daemon's *bound* ports; a forwarder whose target is the privileged port
+    /// itself would loop into its own socket and black-hole traffic once the
+    /// daemon moves to its rootless ports. Only reachable while a pre-fix
+    /// daemon still squats 80/443; `remedy` names the arm's own recovery.
     #[cfg(target_os = "macos")]
     fn require_rootless_web_facts(facts: &Facts, remedy: &str) -> Result<(), ClientError> {
         if facts.http_port < PRIVILEGED_PORT_CEILING || facts.https_port < PRIVILEGED_PORT_CEILING {
@@ -417,11 +507,11 @@ mod unix_impl {
             (ElevateTarget::Ports, true) => "ports: (no-op)".into(),
             #[cfg(target_os = "macos")]
             (ElevateTarget::Ports, false) => format!(
-                "ports: installing a pf redirect 80→{}, 443→{}",
+                "ports: installing the launchd port forwarder 80→{}, 443→{}",
                 facts.http_port, facts.https_port
             ),
             #[cfg(target_os = "macos")]
-            (ElevateTarget::Ports, true) => "ports: removing the pf redirect".into(),
+            (ElevateTarget::Ports, true) => "ports: removing the port forwarder".into(),
             #[cfg(not(target_os = "macos"))]
             (ElevateTarget::Lan, false) => {
                 "lan: granting cap_net_bind_service to yerdd (same as ports)".into()
@@ -430,15 +520,11 @@ mod unix_impl {
             (ElevateTarget::Lan, true) => "lan: (no-op)".into(),
             #[cfg(target_os = "macos")]
             (ElevateTarget::Lan, false) => format!(
-                "lan: installing a pf LAN redirect on {} (80→{}, 443→{})",
-                facts
-                    .lan_ip
-                    .map_or_else(|| "<unknown>".to_owned(), |ip| ip.to_string()),
-                facts.http_port,
-                facts.https_port
+                "lan: installing the launchd LAN port forwarder 80→{}, 443→{}",
+                facts.http_port, facts.https_port
             ),
             #[cfg(target_os = "macos")]
-            (ElevateTarget::Lan, true) => "lan: removing the pf LAN redirect".into(),
+            (ElevateTarget::Lan, true) => "lan: removing the LAN port forwarder".into(),
         }
     }
 
@@ -478,6 +564,7 @@ mod unix_impl {
                         http_port,
                         https_port,
                         lan_ip,
+                        invoking_uid: sudo_uid(),
                     });
                 }
                 Ok(other) => {
@@ -611,6 +698,7 @@ mod unix_impl {
                 http_port: 8080,
                 https_port: 8443,
                 lan_ip: Some("192.168.1.42".parse().unwrap()),
+                invoking_uid: Some(501),
             }
         }
 
@@ -708,10 +796,73 @@ mod unix_impl {
             assert!(a.contains(&"8080".to_string()));
             assert!(a.contains(&"443".to_string()));
             assert!(a.contains(&"8443".to_string()));
+            assert!(a.windows(2).any(|w| w[0] == "--uid" && w[1] == "501"));
 
             let undo = plan_invocation(ElevateTarget::Ports, &facts(), Path::new("/x/yerdd"), true)
                 .unwrap();
             assert_eq!(argv(&undo)[0], "uninstall-port-redirect");
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn macos_forwarder_install_needs_a_non_root_invoking_user() {
+            for uid in [None, Some(0)] {
+                let mut f = facts();
+                f.invoking_uid = uid;
+                for target in [ElevateTarget::Ports, ElevateTarget::Lan] {
+                    let err = plan_invocation(target, &f, Path::new("/x/yerdd"), false)
+                        .unwrap_err()
+                        .to_string();
+                    assert!(err.contains("user account"), "{target:?} {uid:?}: {err}");
+                    assert!(plan_invocation(target, &f, Path::new("/x/yerdd"), true).is_ok());
+                }
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn legacy_removal_notices_name_the_scope_not_reinstalled() {
+            use ElevateTarget::{Lan, Ports, Resolver};
+            let ports = |n: &[&str]| n.iter().any(|m| m.contains("elevate ports"));
+            let lan = |n: &[&str]| n.iter().any(|m| m.contains("elevate lan"));
+
+            let n = legacy_removal_notices(Lan, (true, true));
+            assert!(ports(&n) && !lan(&n));
+            let n = legacy_removal_notices(Ports, (true, true));
+            assert!(!ports(&n) && lan(&n));
+            assert!(legacy_removal_notices(Ports, (true, false)).is_empty());
+            assert!(legacy_removal_notices(Lan, (false, true)).is_empty());
+            assert!(legacy_removal_notices(Resolver, (true, true)).is_empty());
+        }
+
+        #[test]
+        fn declined_message_only_mentions_certificates_for_trust() {
+            assert!(declined_message(ElevateTarget::Trust).contains("certificate"));
+            for target in [
+                ElevateTarget::Ports,
+                ElevateTarget::Lan,
+                ElevateTarget::Resolver,
+            ] {
+                assert!(!declined_message(target).contains("certificate"));
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn macos_lan_needs_lan_mode_and_passes_no_ip() {
+            let inv = plan_invocation(ElevateTarget::Lan, &facts(), Path::new("/x/yerdd"), false)
+                .unwrap();
+            let a = argv(&inv);
+            assert_eq!(a[0], "install-lan-port-redirect");
+            assert!(!a.iter().any(|s| s == "--lan-ip" || s == "192.168.1.42"));
+            assert!(a.windows(2).any(|w| w[0] == "--uid" && w[1] == "501"));
+
+            let mut off = facts();
+            off.lan_ip = None;
+            let err = plan_invocation(ElevateTarget::Lan, &off, Path::new("/x/yerdd"), false)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("yerd lan enable"), "{err}");
         }
 
         #[cfg(target_os = "macos")]

@@ -6398,6 +6398,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "yerd-forward"
+version = "2.1.0-rc.1"
+dependencies = [
+ "nix",
+ "thiserror 1.0.69",
+ "yerd-core",
+ "yerd-depcheck",
+ "yerd-platform",
+]
+
+[[package]]
 name = "yerd-gui"
 version = "2.1.0-rc.1"
 dependencies = [
@@ -6443,6 +6454,7 @@ version = "2.1.0-rc.1"
 dependencies = [
  "clap",
  "hex",
+ "nix",
  "pem",
  "tempfile",
  "thiserror 1.0.69",

@@ -298,7 +298,7 @@ The formatters render tab-separated tables (`sites`), annotated version lists
 (marking the default and any available updates), and a multi-line `status`
 block. `status` carries small but real semantics - for example `fmt_port`
 distinguishes a plain rootless fallback (`80 → 8080 (fallback)`) from a macOS
-`pf` redirect that makes the privileged port reachable (`80 → 8080
+port forwarder that makes the privileged port reachable (`80 → 8080
 (redirected)`), and empty `daemon_version` (an older daemon, `#[serde(default)]`)
 renders as `unknown` rather than blank.
 
@@ -400,7 +400,7 @@ single IPC request. Its design follows a strict trust model (see
 | --- | --- | --- |
 | `trust` | `InstallCa` / `UninstallCa` | same |
 | `resolver` | `InstallResolver` / `UninstallResolver` | same |
-| `ports` | `InstallPortRedirect` / `UninstallPortRedirect` (a `pf` redirect 80→http, 443→https; reversible) | `Setcap` (grants `cap_net_bind_service` to `yerdd`); **no clean reverse**, so `unelevate ports` prints `setcap -r` guidance |
+| `ports` | `InstallPortRedirect` / `UninstallPortRedirect` (launchd port-forwarder jobs 80→http, 443→https run as the invoking user via `--uid`; reversible; also removes any legacy pf redirect) | `Setcap` (grants `cap_net_bind_service` to `yerdd`); **no clean reverse**, so `unelevate ports` prints `setcap -r` guidance |
 
 Helper exit codes are classified: `0` is success, `78` (`EX_CONFIG`) is treated
 as a *skip* ("unsupported on this host", e.g. resolver without

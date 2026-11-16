@@ -1836,7 +1836,7 @@ fn fmt_tristate(b: Option<bool>) -> &'static str {
     }
 }
 
-/// A `ports` status line when an installed macOS pf redirect targets a port the
+/// A `ports` status line when an installed macOS port forwarder targets a port the
 /// daemon is no longer serving. The host (loopback) case takes precedence and
 /// names both elevate commands; a LAN-only mismatch (host fine) names the LAN
 /// step. `None` when nothing is stale. Mirrors the doctor's stale findings.
@@ -1845,7 +1845,7 @@ fn redirect_stale_line(r: &StatusReport) -> Option<String> {
         |t: yerd_ipc::PortRedirectTargets| t.http != r.http.bound || t.https != r.https.bound;
     if r.port_redirect_targets.is_some_and(mismatched) {
         return Some(
-            "ports     stale redirect: pf targets a dead port (run `sudo yerd elevate ports`, \
+            "ports     stale redirect: forwarder targets a dead port (run `sudo yerd elevate ports`, \
              then `sudo yerd elevate lan` if LAN is on; see `yerd doctor`)"
                 .to_owned(),
         );

@@ -1,0 +1,27 @@
+[package]
+name                   = "yerd-forward"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+publish.workspace      = true
+description            = "Unprivileged TCP forwarder that launchd spawns to carry 80/443 to Yerd's rootless ports (macOS)."
+readme                 = "README.md"
+
+[[bin]]
+name = "yerd-forward"
+path = "src/main.rs"
+
+[dependencies]
+yerd-core = { path = "../../crates/yerd-core" }
+thiserror = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nix = { workspace = true, features = ["user"] }
+
+[dev-dependencies]
+yerd-depcheck = { path = "../../crates/yerd-depcheck" }
+yerd-platform = { path = "../../crates/yerd-platform" }
+
+[lints]
+workspace = true

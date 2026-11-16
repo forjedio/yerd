@@ -14,7 +14,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use yerd_platform::{CaFingerprint, HelperInvocation};
+use yerd_platform::{ArgvParseError, CaFingerprint, HelperInvocation};
 
 fn argv_strs(inv: &HelperInvocation) -> Vec<String> {
     inv.to_argv()
@@ -111,6 +111,7 @@ fn install_port_redirect_argv_frozen() {
         http_to: 8080,
         https_from: 443,
         https_to: 8443,
+        uid: 501,
     };
     assert_eq!(
         argv_strs(&inv),
@@ -124,6 +125,8 @@ fn install_port_redirect_argv_frozen() {
             "443".to_string(),
             "--https-to".to_string(),
             "8443".to_string(),
+            "--uid".to_string(),
+            "501".to_string(),
         ]
     );
 }
@@ -137,18 +140,16 @@ fn uninstall_port_redirect_argv_frozen() {
 #[test]
 fn install_lan_port_redirect_argv_frozen() {
     let inv = HelperInvocation::InstallLanPortRedirect {
-        lan_ip: "192.168.1.42".parse().unwrap(),
         http_from: 80,
         http_to: 8080,
         https_from: 443,
         https_to: 8443,
+        uid: 501,
     };
     assert_eq!(
         argv_strs(&inv),
         vec![
             "install-lan-port-redirect".to_string(),
-            "--lan-ip".to_string(),
-            "192.168.1.42".to_string(),
             "--http-from".to_string(),
             "80".to_string(),
             "--http-to".to_string(),
@@ -157,6 +158,8 @@ fn install_lan_port_redirect_argv_frozen() {
             "443".to_string(),
             "--https-to".to_string(),
             "8443".to_string(),
+            "--uid".to_string(),
+            "501".to_string(),
         ]
     );
 }
@@ -174,11 +177,11 @@ fn uninstall_lan_port_redirect_argv_frozen() {
 fn lan_port_redirect_round_trips_through_argv() {
     for inv in [
         HelperInvocation::InstallLanPortRedirect {
-            lan_ip: "10.1.2.3".parse().unwrap(),
             http_from: 80,
             http_to: 8080,
             https_from: 443,
             https_to: 8443,
+            uid: 502,
         },
         HelperInvocation::UninstallLanPortRedirect,
     ] {
@@ -243,6 +246,7 @@ fn first_argv_element_is_always_the_op_tag() {
                 http_to: 8080,
                 https_from: 443,
                 https_to: 8443,
+                uid: 501,
             },
             "install-port-redirect",
         ),
@@ -255,4 +259,64 @@ fn first_argv_element_is_always_the_op_tag() {
         let v = argv_strs(inv);
         assert_eq!(v[0], *expected);
     }
+}
+
+fn os_argv(parts: &[&str]) -> Vec<OsString> {
+    parts.iter().map(OsString::from).collect()
+}
+
+#[test]
+fn port_redirect_uid_is_validated() {
+    let base = [
+        "--http-from",
+        "80",
+        "--http-to",
+        "8080",
+        "--https-from",
+        "443",
+        "--https-to",
+        "8443",
+    ];
+    for op in ["install-port-redirect", "install-lan-port-redirect"] {
+        let mut missing = vec![op];
+        missing.extend(base);
+        assert!(matches!(
+            HelperInvocation::from_argv(&os_argv(&missing)),
+            Err(ArgvParseError::MissingFlag { flag: "--uid", .. })
+        ));
+        for bad in ["0", "-1", "+5", "abc", "", "99999999999"] {
+            let mut argv = missing.clone();
+            argv.extend(["--uid", bad]);
+            assert!(
+                matches!(
+                    HelperInvocation::from_argv(&os_argv(&argv)),
+                    Err(ArgvParseError::BadUid(_))
+                ),
+                "{op} --uid {bad:?} must be rejected"
+            );
+        }
+    }
+}
+
+#[test]
+fn lan_port_redirect_rejects_stale_lan_ip_flag() {
+    let argv = os_argv(&[
+        "install-lan-port-redirect",
+        "--lan-ip",
+        "192.168.1.42",
+        "--http-from",
+        "80",
+        "--http-to",
+        "8080",
+        "--https-from",
+        "443",
+        "--https-to",
+        "8443",
+        "--uid",
+        "501",
+    ]);
+    assert!(matches!(
+        HelperInvocation::from_argv(&argv),
+        Err(ArgvParseError::UnknownFlag { .. })
+    ));
 }

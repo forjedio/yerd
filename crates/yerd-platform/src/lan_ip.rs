@@ -1,7 +1,7 @@
 //! `LanIpProvider` - discover the host's own LAN IPv4.
 //!
 //! LAN mode needs the machine's routable IPv4 as *data* (the `.test` DNS answer
-//! served to other devices, the macOS `pf rdr` target, and the bootstrap URL) -
+//! served to other devices and the bootstrap URL) -
 //! never as a bind address (the listeners bind `0.0.0.0`). Reading it is I/O, so
 //! it sits behind this trait at the platform edge with a real impl and a fake.
 //!

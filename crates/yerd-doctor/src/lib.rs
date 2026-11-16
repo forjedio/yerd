@@ -369,8 +369,17 @@ pub fn is_auto_fixable(code: DiagnosisCode) -> bool {
 /// misattribute to "needs elevation", so when it's detected we surface that
 /// instead and suppress the fallback advice (elevation can't bind a port
 /// another process owns). On macOS the daemon still binds the rootless ports
-/// even once elevated, so an active pf redirect (`port_redirect == Some(true)`)
-/// means 80/443 are in fact reachable - also suppressing the fallback warning.
+/// even once elevated, so an active port forwarder (`port_redirect ==
+/// Some(true)`) means 80/443 are in fact reachable - also suppressing the
+/// fallback warning.
+///
+/// A launchd socket keeps accepting even when Yerd's forwarder can't deliver
+/// (stale targets, the app moved, or only the LAN job installed, whose
+/// forwarder drops loopback connections). The bare-connect foreign-listener
+/// probe would then blame "another program", so while a Yerd redirect is
+/// installed and not delivering, the stale or fallback finding is reported
+/// instead. With only the LAN forwarder installed the probe can't tell it from
+/// another web server, so the fallback finding names both possibilities.
 fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
     let mut out = Vec::new();
     if let Some(dns_port) = report.dns_unbound {
@@ -385,7 +394,13 @@ fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
              If you changed the port, re-run Trust so the OS resolver points at the new one.",
         ));
     }
-    let foreign_listener = report.foreign_web_listener == Some(true);
+    let host_stale = redirect_stale_finding(report);
+    let redirect_installed =
+        report.port_redirect_targets.is_some() || report.lan_redirect_targets.is_some();
+    let installed_not_delivering = redirect_installed && report.port_redirect != Some(true);
+    let foreign_listener = report.foreign_web_listener == Some(true)
+        && host_stale.is_none()
+        && !installed_not_delivering;
     if foreign_listener {
         out.push(warn(
             DiagnosisCode::ForeignWebListener,
@@ -413,7 +428,6 @@ fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
         ));
         return out;
     }
-    let host_stale = redirect_stale_finding(report);
     let host_stale_present = host_stale.is_some();
     if let Some(finding) = host_stale {
         out.push(finding);
@@ -426,27 +440,44 @@ fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
         && !foreign_listener
         && !host_stale_present
     {
+        let mut detail = format!(
+            "HTTP {}→{}, HTTPS {}→{}: 80/443 need elevation, serving on the rootless ports.",
+            report.http.requested, report.http.bound, report.https.requested, report.https.bound
+        );
+        let remedy = if report.port_redirect_targets.is_some() {
+            detail.push_str(
+                " A Yerd port redirect is installed (the launchd port forwarder, or a legacy pf \
+                 redirect from an older Yerd) but port 80 isn't reaching Yerd.",
+            );
+            OTHER_SERVER_REMEDY
+        } else if report.foreign_web_listener == Some(true) {
+            detail.push_str(
+                " Something on this Mac answers on port 80/443 but isn't Yerd: either Yerd's LAN \
+                 forwarder (which refuses on-Mac connections) or another web server.",
+            );
+            OTHER_SERVER_REMEDY
+        } else {
+            port_fallback_remedy(report.lan_enabled)
+        };
         out.push(warn(
             DiagnosisCode::PortFallback,
             "Privileged ports not bound",
-            format!(
-                "HTTP {}→{}, HTTPS {}→{}: 80/443 need elevation, serving on the rootless ports.",
-                report.http.requested,
-                report.http.bound,
-                report.https.requested,
-                report.https.bound
-            ),
-            port_fallback_remedy(report.lan_enabled),
+            detail,
+            remedy,
         ));
     }
     out
 }
 
-/// Warn when the installed macOS loopback (`dev.yerd`) pf redirect targets a
+/// Remedy when 80 isn't reaching Yerd and another web server may hold it.
+const OTHER_SERVER_REMEDY: &str = "sudo yerd elevate ports; if another web server (Apache, nginx, \
+     Valet) holds 80/443, stop it, then re-run sudo yerd elevate ports";
+
+/// Warn when the installed macOS loopback port forwarder targets a
 /// port the daemon is no longer serving, so on-host 80/443 are black-holed even
-/// though the daemon is up. Not gated on `lan_enabled`: the loopback anchor
-/// governs host access regardless of LAN mode. `None` targets emit nothing (the
-/// anchor is not installed, unreadable, or this is not macOS).
+/// though the daemon is up. Not gated on `lan_enabled`: the loopback forwarder
+/// governs host access regardless of LAN mode. `None` targets emit nothing (no
+/// forwarder installed, unreadable, or this is not macOS).
 fn redirect_stale_finding(report: &StatusReport) -> Option<Diagnosis> {
     let t = report.port_redirect_targets?;
     if t.http == report.http.bound && t.https == report.https.bound {
@@ -456,7 +487,7 @@ fn redirect_stale_finding(report: &StatusReport) -> Option<Diagnosis> {
         DiagnosisCode::PortRedirectStale,
         "Port redirect is stale",
         format!(
-            "The pf redirect sends 80→{} and 443→{}, but Yerd is listening on {} and {}, so \
+            "The port forwarder sends 80→{} and 443→{}, but Yerd is listening on {} and {}, so \
              http/https on this Mac fail even though the daemon is running.",
             t.http, t.https, report.http.bound, report.https.bound
         ),
@@ -465,10 +496,9 @@ fn redirect_stale_finding(report: &StatusReport) -> Option<Diagnosis> {
     ))
 }
 
-/// Warn when LAN mode is on and the installed macOS LAN (`dev.yerd.lan`) pf
-/// redirect targets a port the daemon is no longer serving, so other devices
-/// reach a dead port. Gated on `lan_enabled`: `yerd lan disable` leaves the
-/// anchor in place (only `yerd unelevate lan` removes it), and a deliberately
+/// Warn when LAN mode is on and the installed macOS LAN port forwarder targets
+/// a port the daemon is no longer serving, so other devices reach a dead port.
+/// Gated on `lan_enabled`: `yerd lan disable` leaves the forwarder in place (only `yerd unelevate lan` removes it), and a deliberately
 /// disabled machine has no remote path left to break.
 fn lan_redirect_stale_finding(report: &StatusReport) -> Option<Diagnosis> {
     if !report.lan_enabled {
@@ -482,7 +512,7 @@ fn lan_redirect_stale_finding(report: &StatusReport) -> Option<Diagnosis> {
         DiagnosisCode::LanRedirectStale,
         "LAN redirect is stale",
         format!(
-            "The LAN pf redirect sends 80→{} and 443→{}, but Yerd is listening on {} and {}, so \
+            "The LAN port forwarder sends 80→{} and 443→{}, but Yerd is listening on {} and {}, so \
              other devices on your network reach a dead port.",
             t.http, t.https, report.http.bound, report.https.bound
         ),
@@ -494,7 +524,7 @@ fn lan_redirect_stale_finding(report: &StatusReport) -> Option<Diagnosis> {
 /// Remediation for the privileged-ports-not-bound warning. The loopback probe
 /// this warning is gated on measures `elevate ports`, so that is always the fix.
 /// On macOS with LAN mode on, other devices additionally need the separate
-/// `elevate lan` pf rule; on Linux `elevate lan` reuses the same `setcap` grant,
+/// `elevate lan` forwarder; on Linux `elevate lan` reuses the same `setcap` grant,
 /// so `elevate ports` alone already covers LAN and mentioning both would be
 /// redundant.
 fn port_fallback_remedy(lan_enabled: bool) -> &'static str {
@@ -846,7 +876,7 @@ mod tests {
         #[cfg(target_os = "macos")]
         assert!(
             lan.contains("elevate lan"),
-            "macOS LAN needs the separate pf rule"
+            "macOS LAN needs the separate LAN forwarder"
         );
         #[cfg(not(target_os = "macos"))]
         assert!(
@@ -875,7 +905,7 @@ mod tests {
     }
 
     /// Build the rootless-serving fallback state: the daemon requested 80/443 but
-    /// bound the rootless pair, with the pf redirect live.
+    /// bound the rootless pair, with the port forwarder live.
     fn rootless_fallback() -> StatusReport {
         let mut r = healthy();
         r.http = PortStatus {
@@ -1036,6 +1066,74 @@ mod tests {
 
         r.foreign_web_listener = None;
         assert!(codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PortFallback));
+    }
+
+    #[test]
+    fn installed_redirect_suppresses_foreign_listener() {
+        let bound = PortRedirectTargets {
+            http: 8080,
+            https: 8443,
+        };
+        let stale = PortRedirectTargets {
+            http: 9080,
+            https: 9443,
+        };
+
+        let mut r = rootless_fallback();
+        r.port_redirect = Some(false);
+        r.foreign_web_listener = Some(true);
+        r.port_redirect_targets = Some(stale);
+        let cs = codes(&diagnose(&r, None, &[]));
+        assert!(cs.contains(&DiagnosisCode::PortRedirectStale));
+        assert!(!cs.contains(&DiagnosisCode::ForeignWebListener));
+        assert!(!cs.contains(&DiagnosisCode::PortFallback));
+
+        r.port_redirect_targets = Some(bound);
+        let ds = diagnose(&r, None, &[]);
+        let fallback = ds
+            .iter()
+            .find(|d| d.code == DiagnosisCode::PortFallback)
+            .expect("installed but not delivering -> fallback");
+        assert!(fallback
+            .detail
+            .contains("A Yerd port redirect is installed"));
+        assert!(fallback
+            .remedy
+            .as_deref()
+            .is_some_and(|m| m.contains("Apache")));
+        assert!(!codes(&ds).contains(&DiagnosisCode::ForeignWebListener));
+
+        r.port_redirect_targets = None;
+        r.lan_redirect_targets = Some(bound);
+        r.lan_enabled = true;
+        let ds = diagnose(&r, None, &[]);
+        let fallback = ds
+            .iter()
+            .find(|d| d.code == DiagnosisCode::PortFallback)
+            .expect("only LAN installed -> fallback naming both possibilities");
+        assert!(!fallback
+            .detail
+            .contains("A Yerd port redirect is installed"));
+        assert!(fallback.detail.contains("LAN forwarder"));
+        assert!(fallback.detail.contains("another web server"));
+        assert_eq!(fallback.remedy.as_deref(), Some(OTHER_SERVER_REMEDY));
+        assert!(!codes(&ds).contains(&DiagnosisCode::ForeignWebListener));
+
+        r.foreign_web_listener = Some(false);
+        let ds = diagnose(&r, None, &[]);
+        let fallback = ds
+            .iter()
+            .find(|d| d.code == DiagnosisCode::PortFallback)
+            .expect("only LAN installed, nothing on 80 -> plain fallback");
+        assert!(!fallback.detail.contains("isn't Yerd"));
+        assert_eq!(fallback.remedy.as_deref(), Some(port_fallback_remedy(true)));
+        r.foreign_web_listener = Some(true);
+
+        r.lan_redirect_targets = None;
+        r.lan_enabled = false;
+        let cs = codes(&diagnose(&r, None, &[]));
+        assert!(cs.contains(&DiagnosisCode::ForeignWebListener));
+        assert!(!cs.contains(&DiagnosisCode::PortFallback));
     }
 
     #[test]

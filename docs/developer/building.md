@@ -123,6 +123,18 @@ The three binaries map to the three-process privilege model: the
 privileged one-shot [`yerd-helper`](./binaries/yerd-helper). See
 [Elevation & Privileges](../guide/elevation) for why they are separate.
 
+On macOS, `sudo yerd elevate ports` also needs the
+[`yerd-forward`](./binaries/yerd-forward) port forwarder installed **next to
+`yerd-helper`** (the helper looks for it as a sibling of its own executable):
+
+```sh
+cargo build --release -p yerd-forward
+install -m755 target/release/yerd-forward ~/.local/bin/   # same dir as yerd-helper
+```
+
+It must not be group- or world-writable, or the helper refuses it. `yerd
+uninstall` removes it along with the other binaries.
+
 ## Running a from-source build with a production Yerd installed
 
 Most contributors keep the released Yerd app installed for day-to-day work and
@@ -433,7 +445,9 @@ The shipped artifacts are the **GUI bundle** (`.dmg` on macOS, `.deb` on Linux),
 **plus a native Arch package** (`.pkg.tar.zst`, x86-64) **and a Fedora package**
 (`.rpm`, x86-64 and arm64). The three binaries
 (`yerd`/`yerdd`/`yerd-helper`) are embedded via Tauri `externalBin`
-(per-platform overlays in `apps/yerd-gui/src-tauri/`). Tauri builds the `.app`
+(per-platform overlays in `apps/yerd-gui/src-tauri/`), and the macOS overlay
+adds a fourth, the [`yerd-forward`](./binaries/yerd-forward) port forwarder,
+which lands in `Yerd.app/Contents/MacOS/` next to `yerd-helper`. Tauri builds the `.app`
 (macOS) and `.deb` (Linux) directly; the macOS `.dmg` is built as a separate
 headless step (`apps/yerd-gui/scripts/build-macos-dmg.sh`, via `appdmg`) after
 the `.app`, not by Tauri's own dmg bundler - see
@@ -533,7 +547,7 @@ the GUI `.app` (signed, notarised and stapled by Tauri) and its `.dmg`
 builds the `.app` - not notarised or stapled, and deliberately so: only the
 `.app` staple is enforced in CI, the `.dmg`'s own notarisation/staple is
 advisory and non-fatal, since the stapled `.app` inside is the gate). The
-three embedded binaries (`yerd`/`yerdd`/`yerd-helper`) are signed by Tauri **as
+four embedded binaries (`yerd`/`yerdd`/`yerd-helper`/`yerd-forward`) are signed by Tauri **as
 part of the bundle** (Hardened Runtime + secure timestamp + the app's Developer ID
 team) and covered by the single `.app` notarisation - so there are no loose,
 separately-notarised CLI binaries. Notarisation uses an **App Store Connect API

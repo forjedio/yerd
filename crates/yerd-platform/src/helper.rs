@@ -66,6 +66,9 @@ pub enum ArgvParseError {
         /// The offending value as observed in argv.
         value: OsString,
     },
+    /// A uid did not parse as a non-root decimal number.
+    #[error("invalid uid (need a non-zero decimal number): {0:?}")]
+    BadUid(OsString),
     /// Trailing argv after the parser had consumed every expected flag.
     #[error("trailing argv after parse: {0:?}")]
     Trailing(OsString),
@@ -114,8 +117,10 @@ pub enum HelperInvocation {
         /// Path to the `yerdd` binary that should receive the capability.
         daemon_binary: PathBuf,
     },
-    /// Install a macOS pf redirect so inbound `http_from`/`https_from`
-    /// (80/443) reach the daemon's rootless `http_to`/`https_to` ports.
+    /// Install the macOS loopback port forwarder: launchd daemons that
+    /// bind `127.0.0.1:http_from`/`https_from` (80/443) and hand each socket to
+    /// `yerd-forward`, running as `uid`, which relays to the daemon's rootless
+    /// `http_to`/`https_to` ports.
     InstallPortRedirect {
         /// Privileged HTTP port to redirect from (80).
         http_from: u16,
@@ -125,16 +130,17 @@ pub enum HelperInvocation {
         https_from: u16,
         /// Rootless HTTPS port the daemon actually listens on.
         https_to: u16,
+        /// The user the forwarder runs as. Never 0.
+        uid: u32,
     },
-    /// Remove the macOS pf redirect installed by `InstallPortRedirect`.
+    /// Remove the macOS loopback port forwarder installed by
+    /// `InstallPortRedirect`, plus any legacy pf redirect.
     UninstallPortRedirect,
-    /// Install the macOS **LAN** pf redirect (M2): inbound `http_from`/
-    /// `https_from` (80/443) on the host's `lan_ip` reach the daemon's rootless
-    /// `http_to`/`https_to` ports on that same `lan_ip`. A separate anchor from
-    /// [`Self::InstallPortRedirect`], so the two coexist.
+    /// Install the macOS **LAN** port forwarder: like
+    /// [`Self::InstallPortRedirect`] but bound on `0.0.0.0`, so LAN devices
+    /// reach the daemon's rootless ports on the host's LAN address. Separate
+    /// jobs from the loopback forwarder, so the two coexist.
     InstallLanPortRedirect {
-        /// The host's LAN IPv4 (the `rdr` dest, and the source-scope match).
-        lan_ip: std::net::Ipv4Addr,
         /// Privileged HTTP port to redirect from (80).
         http_from: u16,
         /// Rootless HTTP port the daemon actually listens on.
@@ -143,8 +149,11 @@ pub enum HelperInvocation {
         https_from: u16,
         /// Rootless HTTPS port the daemon actually listens on.
         https_to: u16,
+        /// The user the forwarder runs as. Never 0.
+        uid: u32,
     },
-    /// Remove the macOS LAN pf redirect installed by `InstallLanPortRedirect`.
+    /// Remove the macOS LAN port forwarder installed by
+    /// `InstallLanPortRedirect`, plus any legacy pf redirect.
     UninstallLanPortRedirect,
 }
 
@@ -222,6 +231,7 @@ impl HelperInvocation {
                 http_to,
                 https_from,
                 https_to,
+                uid,
             } => {
                 v.push(OsString::from(ops::INSTALL_PORT_REDIRECT));
                 v.push(OsString::from("--http-from"));
@@ -232,20 +242,20 @@ impl HelperInvocation {
                 v.push(OsString::from(https_from.to_string()));
                 v.push(OsString::from("--https-to"));
                 v.push(OsString::from(https_to.to_string()));
+                v.push(OsString::from("--uid"));
+                v.push(OsString::from(uid.to_string()));
             }
             Self::UninstallPortRedirect => {
                 v.push(OsString::from(ops::UNINSTALL_PORT_REDIRECT));
             }
             Self::InstallLanPortRedirect {
-                lan_ip,
                 http_from,
                 http_to,
                 https_from,
                 https_to,
+                uid,
             } => {
                 v.push(OsString::from(ops::INSTALL_LAN_PORT_REDIRECT));
-                v.push(OsString::from("--lan-ip"));
-                v.push(OsString::from(lan_ip.to_string()));
                 v.push(OsString::from("--http-from"));
                 v.push(OsString::from(http_from.to_string()));
                 v.push(OsString::from("--http-to"));
@@ -254,6 +264,8 @@ impl HelperInvocation {
                 v.push(OsString::from(https_from.to_string()));
                 v.push(OsString::from("--https-to"));
                 v.push(OsString::from(https_to.to_string()));
+                v.push(OsString::from("--uid"));
+                v.push(OsString::from(uid.to_string()));
             }
             Self::UninstallLanPortRedirect => {
                 v.push(OsString::from(ops::UNINSTALL_LAN_PORT_REDIRECT));
@@ -437,12 +449,22 @@ fn parse_port(value: &OsStr, flag: &'static str) -> Result<u16, ArgvParseError> 
         })
 }
 
+fn parse_uid(value: &OsStr) -> Result<u32, ArgvParseError> {
+    value
+        .to_str()
+        .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|s| s.parse().ok())
+        .filter(|uid: &u32| *uid != 0)
+        .ok_or_else(|| ArgvParseError::BadUid(value.to_owned()))
+}
+
 #[allow(clippy::similar_names)]
 fn parse_install_port_redirect(rest: &[OsString]) -> Result<HelperInvocation, ArgvParseError> {
     let mut http_from: Option<u16> = None;
     let mut http_to: Option<u16> = None;
     let mut https_from: Option<u16> = None;
     let mut https_to: Option<u16> = None;
+    let mut uid: Option<u32> = None;
     let mut iter = rest.iter();
     while let Some((flag, value)) = next_pair(&mut iter) {
         match flag.to_str() {
@@ -450,6 +472,7 @@ fn parse_install_port_redirect(rest: &[OsString]) -> Result<HelperInvocation, Ar
             Some("--http-to") => http_to = Some(parse_port(value, "--http-to")?),
             Some("--https-from") => https_from = Some(parse_port(value, "--https-from")?),
             Some("--https-to") => https_to = Some(parse_port(value, "--https-to")?),
+            Some("--uid") => uid = Some(parse_uid(value)?),
             _ => {
                 return Err(ArgvParseError::UnknownFlag {
                     op: ops::INSTALL_PORT_REDIRECT,
@@ -470,6 +493,7 @@ fn parse_install_port_redirect(rest: &[OsString]) -> Result<HelperInvocation, Ar
         http_to: http_to.ok_or(miss("--http-to"))?,
         https_from: https_from.ok_or(miss("--https-from"))?,
         https_to: https_to.ok_or(miss("--https-to"))?,
+        uid: uid.ok_or(miss("--uid"))?,
     })
 }
 
@@ -480,29 +504,21 @@ fn parse_uninstall_port_redirect(rest: &[OsString]) -> Result<HelperInvocation, 
     Ok(HelperInvocation::UninstallPortRedirect)
 }
 
-fn parse_lan_ip(value: &OsStr) -> Result<std::net::Ipv4Addr, ArgvParseError> {
-    value
-        .to_str()
-        .and_then(|s| s.parse().ok())
-        .filter(|ip: &std::net::Ipv4Addr| !ip.is_loopback() && !ip.is_unspecified())
-        .ok_or_else(|| ArgvParseError::BadAddr(value.to_owned()))
-}
-
 #[allow(clippy::similar_names)]
 fn parse_install_lan_port_redirect(rest: &[OsString]) -> Result<HelperInvocation, ArgvParseError> {
-    let mut lan_ip: Option<std::net::Ipv4Addr> = None;
     let mut http_from: Option<u16> = None;
     let mut http_to: Option<u16> = None;
     let mut https_from: Option<u16> = None;
     let mut https_to: Option<u16> = None;
+    let mut uid: Option<u32> = None;
     let mut iter = rest.iter();
     while let Some((flag, value)) = next_pair(&mut iter) {
         match flag.to_str() {
-            Some("--lan-ip") => lan_ip = Some(parse_lan_ip(value)?),
             Some("--http-from") => http_from = Some(parse_port(value, "--http-from")?),
             Some("--http-to") => http_to = Some(parse_port(value, "--http-to")?),
             Some("--https-from") => https_from = Some(parse_port(value, "--https-from")?),
             Some("--https-to") => https_to = Some(parse_port(value, "--https-to")?),
+            Some("--uid") => uid = Some(parse_uid(value)?),
             _ => {
                 return Err(ArgvParseError::UnknownFlag {
                     op: ops::INSTALL_LAN_PORT_REDIRECT,
@@ -519,11 +535,11 @@ fn parse_install_lan_port_redirect(rest: &[OsString]) -> Result<HelperInvocation
         flag,
     };
     Ok(HelperInvocation::InstallLanPortRedirect {
-        lan_ip: lan_ip.ok_or(miss("--lan-ip"))?,
         http_from: http_from.ok_or(miss("--http-from"))?,
         http_to: http_to.ok_or(miss("--http-to"))?,
         https_from: https_from.ok_or(miss("--https-from"))?,
         https_to: https_to.ok_or(miss("--https-to"))?,
+        uid: uid.ok_or(miss("--uid"))?,
     })
 }
 
@@ -626,6 +642,7 @@ mod tests {
             http_to: 8080,
             https_from: 443,
             https_to: 8443,
+            uid: 501,
         };
         assert_eq!(
             argv_strs(&inv),
@@ -639,6 +656,8 @@ mod tests {
                 "443",
                 "--https-to",
                 "8443",
+                "--uid",
+                "501",
             ]
         );
     }
@@ -656,6 +675,7 @@ mod tests {
             http_to: 8080,
             https_from: 443,
             https_to: 8443,
+            uid: 501,
         };
         let parsed = HelperInvocation::from_argv(&inv.to_argv()).unwrap();
         assert!(matches!(
@@ -665,6 +685,7 @@ mod tests {
                 http_to: 8080,
                 https_from: 443,
                 https_to: 8443,
+                uid: 501,
             }
         ));
     }
