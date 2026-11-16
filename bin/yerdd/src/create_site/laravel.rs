@@ -82,6 +82,14 @@ pub(super) async fn run(
         Ok(b) => b,
         Err(msg) => return Outcome::Failed(msg),
     };
+    if options.js == JsRuntime::Pnpm {
+        let Some(real_pnpm) = resolve_pnpm(state, &user_dirs, &data_bin) else {
+            return Outcome::Failed("pnpm was not found after installing it".to_owned());
+        };
+        if let Err(msg) = super::write_pnpm_wrapper(&job_bin, &real_pnpm) {
+            return Outcome::Failed(msg);
+        }
+    }
     let path_env = super::composed_path(&job_bin, &data_bin, &user_dirs);
     let composer_home = tools::laravel::composer_home(dirs);
 
@@ -145,7 +153,8 @@ pub(super) async fn run(
 /// with no ANSI interpreter; it is forwarded to the composer/npm commands the
 /// installer shells out to, cutting down on raw escape sequences (the daemon
 /// also forces NO_COLOR/TERM=dumb on the child, see `super::run_streamed`).
-/// Anything that still slips through is stripped defensively in
+/// pnpm rejects the flag, so a pnpm job strips it in a per-job wrapper (see
+/// `super::write_pnpm_wrapper`). Anything that still slips through is stripped defensively in
 /// `crate::jobs::JobRegistry::push_log`.
 fn build_new_args(name: &str, o: &LaravelOptions) -> Vec<String> {
     let mut a = vec![
@@ -234,6 +243,21 @@ async fn ensure_js_runtime(
         super::ensure_tool(id, tool, user_dirs, state).await?;
     }
     Ok(())
+}
+
+/// The pnpm the job's PATH would pick without the per-job wrapper: Yerd's
+/// managed one when installed (`{data}/bin` precedes the user's PATH), else
+/// the first external one on the user's PATH.
+fn resolve_pnpm(
+    state: &Arc<DaemonState>,
+    user_dirs: &[PathBuf],
+    data_bin: &Path,
+) -> Option<PathBuf> {
+    let managed = data_bin.join(Tool::Pnpm.primary_bin());
+    if tools::installed_version(&state.dirs, Tool::Pnpm).is_some() && managed.exists() {
+        return Some(managed);
+    }
+    tools::external::external_tool(user_dirs, Tool::Pnpm, data_bin, &state.dirs.data)
 }
 
 /// `git --version` resolves on the composed PATH.
