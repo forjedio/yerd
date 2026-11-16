@@ -424,7 +424,7 @@ export type StarterKit = StarterKitTag | { community: string };
 export type AuthProvider = "laravel" | "work_os";
 export type Testing = "pest" | "php_unit";
 export type Database = "sqlite" | "mysql" | "mariadb" | "pgsql" | "sqlsrv";
-export type JsRuntime = "npm" | "bun" | "skip";
+export type JsRuntime = "npm" | "bun" | "pnpm" | "skip";
 
 /** crates/yerd-ipc/src/create.rs - LaravelOptions. */
 export interface LaravelOptions {

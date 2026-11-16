@@ -1,8 +1,8 @@
 //! Dev-tool installer subsystem - Composer, Node (node/npm/npx), Bun (bun/bunx),
-//! the Laravel installer, and WP-CLI.
+//! pnpm (pnpm/pnpx), the Laravel installer, and WP-CLI.
 //!
 //! Most tools ship as a self-contained, relocatable binary (no global install):
-//! Node's tarball, Bun's zip, Composer's phar. yerd downloads + sha256-verifies
+//! Node's tarball, Bun's zip, pnpm's tarball, Composer's phar. yerd downloads + sha256-verifies
 //! the latest release into `{data}/tools/<id>/` and symlinks the commands it
 //! provides into `{data}/bin` (on `PATH` via `yerd path`). Same I/O-edge pattern
 //! as `php_install`/`ext_install`: a `Downloader` trait is injected; the pure
@@ -15,6 +15,7 @@ pub mod composer;
 pub mod external;
 pub mod laravel;
 pub mod node;
+pub mod pnpm;
 pub mod wp_cli;
 
 use std::path::{Path, PathBuf};
@@ -34,6 +35,8 @@ pub enum Tool {
     Node,
     /// Bun - `bun`, `bunx`.
     Bun,
+    /// pnpm - `pnpm`, `pnpx`.
+    Pnpm,
     /// The Laravel installer (`laravel new`) - a Composer package run via the
     /// managed PHP, exposed as the `laravel` multi-call shim.
     Laravel,
@@ -48,10 +51,11 @@ const VERSION_MARKER: &str = ".version";
 
 impl Tool {
     /// Every tool, for `list_status` / reconcile.
-    pub const ALL: [Tool; 5] = [
+    pub const ALL: [Tool; 6] = [
         Tool::Composer,
         Tool::Node,
         Tool::Bun,
+        Tool::Pnpm,
         Tool::Laravel,
         Tool::WpCli,
     ];
@@ -63,6 +67,7 @@ impl Tool {
             Tool::Composer => "composer",
             Tool::Node => "node",
             Tool::Bun => "bun",
+            Tool::Pnpm => "pnpm",
             Tool::Laravel => "laravel",
             Tool::WpCli => "wp-cli",
         }
@@ -75,6 +80,7 @@ impl Tool {
             Tool::Composer => "Composer",
             Tool::Node => "Node.js",
             Tool::Bun => "Bun",
+            Tool::Pnpm => "pnpm",
             Tool::Laravel => "Laravel Installer",
             Tool::WpCli => "WP-CLI",
         }
@@ -88,6 +94,7 @@ impl Tool {
             Tool::Composer => "composer",
             Tool::Node => "node",
             Tool::Bun => "bun",
+            Tool::Pnpm => "pnpm",
             Tool::Laravel => "laravel",
             Tool::WpCli => "wp",
         }
@@ -100,6 +107,7 @@ impl Tool {
             Tool::Composer => &["composer"],
             Tool::Node => &["node", "npm", "npx"],
             Tool::Bun => &["bun", "bunx"],
+            Tool::Pnpm => &["pnpm", "pnpx"],
             Tool::Laravel => &["laravel"],
             Tool::WpCli => &["wp"],
         }
@@ -121,7 +129,7 @@ impl Tool {
     #[must_use]
     pub const fn accepts_external(self) -> bool {
         match self {
-            Tool::Composer | Tool::Node | Tool::Bun | Tool::Laravel => true,
+            Tool::Composer | Tool::Node | Tool::Bun | Tool::Pnpm | Tool::Laravel => true,
             Tool::WpCli => false,
         }
     }
@@ -229,6 +237,7 @@ pub async fn install(
         Tool::Composer => composer::install(dirs, dl).await,
         Tool::Node => node::install(dirs, dl).await,
         Tool::Bun => bun::install(dirs, dl).await,
+        Tool::Pnpm => pnpm::install(dirs, dl).await,
         Tool::Laravel => laravel::install(dirs, progress).await,
         Tool::WpCli => wp_cli::install(dirs, progress).await,
     };
@@ -257,6 +266,7 @@ fn shim_links(dirs: &PlatformDirs, tool: Tool, yerd_bin: &Path) -> Vec<(String, 
         Tool::Composer => vec![("composer".to_owned(), yerd_bin.to_path_buf())],
         Tool::Node => node::shim_links(dirs),
         Tool::Bun => bun::shim_links(dirs),
+        Tool::Pnpm => pnpm::shim_links(dirs),
         Tool::Laravel => vec![("laravel".to_owned(), yerd_bin.to_path_buf())],
         Tool::WpCli => vec![("wp".to_owned(), yerd_bin.to_path_buf())],
     }
@@ -469,6 +479,7 @@ mod tests {
         }
         assert_eq!(Tool::Node.exposed_bins(), &["node", "npm", "npx"]);
         assert_eq!(Tool::Bun.exposed_bins(), &["bun", "bunx"]);
+        assert_eq!(Tool::Pnpm.exposed_bins(), &["pnpm", "pnpx"]);
         assert_eq!(Tool::Composer.primary_bin(), "composer");
         assert_eq!(Tool::Laravel.display_name(), "Laravel Installer");
     }

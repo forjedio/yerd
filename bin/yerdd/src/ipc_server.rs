@@ -1531,7 +1531,7 @@ async fn reconcile_shims_now(state: &DaemonState) {
     reconcile_shims_for(state).await;
 }
 
-/// Reconcile the dev-tool shims (`composer`/`node`/`npm`/`npx`/`bun`/`bunx`) under
+/// Reconcile the dev-tool shims (`composer`/`node`/`npm`/`npx`/`bun`/`bunx`/`pnpm`/`pnpx`) under
 /// the **shared** `shim_reconcile` mutex (same dir as the PHP reconcile).
 /// Best-effort: failures are logged. Used at startup and after install/uninstall.
 pub(crate) async fn reconcile_tool_shims_now(state: &DaemonState) {

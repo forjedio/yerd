@@ -2653,6 +2653,21 @@ fn request_create_site_byte_shape() {
 }
 
 #[test]
+fn js_runtime_byte_shapes() {
+    use yerd_ipc::JsRuntime;
+    let cases = [
+        (JsRuntime::Npm, r#""npm""#),
+        (JsRuntime::Bun, r#""bun""#),
+        (JsRuntime::Pnpm, r#""pnpm""#),
+        (JsRuntime::Skip, r#""skip""#),
+    ];
+    for (js, expected) in cases {
+        assert_eq!(serde_json::to_string(&js).unwrap(), expected);
+        assert_eq!(serde_json::from_str::<JsRuntime>(expected).unwrap(), js);
+    }
+}
+
+#[test]
 fn request_create_site_community_kit_byte_shape() {
     use yerd_ipc::StarterKit;
     let s = serde_json::to_string(&StarterKit::Community("acme/kit".into())).unwrap();

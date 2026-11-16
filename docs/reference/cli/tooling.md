@@ -1,9 +1,9 @@
 # Tooling
 
 Yerd installs developer tools - **Composer**, **Node.js** (`node`/`npm`/`npx`),
-**Bun** (`bun`/`bunx`), the **Laravel installer** (`laravel`), and **WP-CLI**
+**Bun** (`bun`/`bunx`), **pnpm** (`pnpm`/`pnpx`), the **Laravel installer** (`laravel`), and **WP-CLI**
 (`wp`) - as self-contained binaries on your `PATH`. Each is identified by a
-short `id`: `composer`, `node`, `bun`, `laravel`, or `wp-cli`. The
+short `id`: `composer`, `node`, `bun`, `pnpm`, `laravel`, or `wp-cli`. The
 [Tooling guide](../../guide/tooling) covers the model in depth; this page is the
 command reference.
 
@@ -31,6 +31,7 @@ TOOL      STATUS          COMMANDS       LOCATION
 composer  2.10.1          composer       -
 node      external        node,npm,npx   /opt/homebrew/bin/node
 bun       not installed   bun,bunx       -
+pnpm      not installed   pnpm,pnpx      -
 ```
 
 `LOCATION` is only populated for `external` tools - ones already on your
@@ -44,25 +45,26 @@ Add `--json` for machine-readable output.
 
 | Command | Description | Example |
 | --- | --- | --- |
-| `yerd install tool <ID>` | Install the tool's latest version, then expose its commands on `PATH` - a **verified release download** for `node` / `bun` / `composer`, or a **Composer build** (`create-project`) for `laravel` / `wp-cli`. **Idempotent** - run again to update to the current latest. | `yerd install tool node` |
+| `yerd install tool <ID>` | Install the tool's latest version, then expose its commands on `PATH` - a **verified release download** for `node` / `bun` / `pnpm` / `composer`, or a **Composer build** (`create-project`) for `laravel` / `wp-cli`. **Idempotent** - run again to update to the current latest. | `yerd install tool node` |
 | `yerd uninstall tool <ID>` | Remove the tool's files and its `PATH` commands. | `yerd uninstall tool bun` |
 
 ```sh
 yerd install tool composer    # PHP dependency manager (needs a PHP version)
 yerd install tool node        # latest Node LTS - node, npm, npx
 yerd install tool bun         # bun + bunx
+yerd install tool pnpm        # pnpm + pnpx
 yerd install tool laravel     # the laravel new installer (needs Composer)
 yerd install tool wp-cli      # the wp command for WordPress (needs Composer)
 yerd install tool node        # run again to update to the newest LTS
 yerd uninstall tool bun       # remove bun and prune its shims
 ```
 
-`<ID>` is one of `composer`, `node`, `bun`, `laravel`, or `wp-cli`. An unknown
+`<ID>` is one of `composer`, `node`, `bun`, `pnpm`, `laravel`, or `wp-cli`. An unknown
 id returns a `not_found` error.
 
 ::: warning Composer requires PHP
 `composer` runs under Yerd's managed PHP, so install at least one
-[PHP version](./php) first. Node and Bun are standalone. The Laravel installer
+[PHP version](./php) first. Node, Bun, and pnpm are standalone. The Laravel installer
 and WP-CLI are Composer packages, so they also need Yerd's own Composer
 installed first.
 :::

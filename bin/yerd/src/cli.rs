@@ -135,7 +135,7 @@ pub enum Command {
     },
     /// List local managed services and their status.
     Services,
-    /// List installable dev tools (Composer, Node, Bun) and their install status.
+    /// List installable dev tools (Composer, Node, Bun, pnpm) and their install status.
     Tools,
     /// Manage a local service (redis, mysql, mariadb, postgres, meilisearch).
     Service {
@@ -900,9 +900,9 @@ pub enum UninstallTarget {
         /// PHP version, e.g. `8.5`.
         version: String,
     },
-    /// Uninstall a dev tool (`composer`, `node`, `bun`, `laravel`, `wp-cli`).
+    /// Uninstall a dev tool (`composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`).
     Tool {
-        /// Tool id: `composer`, `node`, `bun`, `laravel`, or `wp-cli`.
+        /// Tool id: `composer`, `node`, `bun`, `pnpm`, `laravel`, or `wp-cli`.
         id: String,
     },
 }
@@ -920,10 +920,10 @@ pub enum InstallTarget {
         #[arg(long)]
         legacy: bool,
     },
-    /// Install a dev tool (`composer`, `node`, `bun`, `laravel`, `wp-cli`) at
+    /// Install a dev tool (`composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`) at
     /// its latest release.
     Tool {
-        /// Tool id: `composer`, `node`, `bun`, `laravel`, or `wp-cli`.
+        /// Tool id: `composer`, `node`, `bun`, `pnpm`, `laravel`, or `wp-cli`.
         id: String,
     },
 }

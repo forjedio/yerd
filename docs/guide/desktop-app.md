@@ -90,7 +90,7 @@ If your local CA isn't trusted in the system store, the Sites view shows a banne
 
 <ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="Tooling page" />
 
-Installs self-contained developer tools - Composer, Node, and Bun - onto your PATH alongside PHP, each managed by Yerd (install / update / uninstall) so they don't collide with system installs. See [Tooling](./tooling).
+Installs self-contained developer tools - Composer, Node, Bun, and pnpm - onto your PATH alongside PHP, each managed by Yerd (install / update / uninstall) so they don't collide with system installs. See [Tooling](./tooling).
 
 ### Proxies
 

@@ -2,7 +2,7 @@
 
 Yerd can install the **developer tools** a typical PHP/Laravel/WordPress project
 reaches for - [Composer](https://getcomposer.org), [Node.js](https://nodejs.org)
-(with `npm`/`npx`), [Bun](https://bun.sh), the **Laravel installer**, and
+(with `npm`/`npx`), [Bun](https://bun.sh), [pnpm](https://pnpm.io), the **Laravel installer**, and
 **WP-CLI** - the same way it installs [PHP versions](./php-versions):
 self-contained binaries fetched on demand (the Laravel installer and WP-CLI are
 built via Composer) and dropped onto your `PATH`. No system package manager, no
@@ -15,6 +15,7 @@ instead.
 | Composer | `composer` | `composer` | getcomposer.org (phar) |
 | Node.js | `node` | `node`, `npm`, `npx` | nodejs.org (latest LTS) |
 | Bun | `bun` | `bun`, `bunx` | github.com/oven-sh/bun |
+| pnpm | `pnpm` | `pnpm`, `pnpx` | github.com/pnpm/pnpm |
 | Laravel installer | `laravel` | `laravel` | Composer (`laravel/installer`) |
 | WP-CLI | `wp-cli` | `wp` | Composer (`wp-cli/wp-cli-bundle`) |
 
@@ -32,7 +33,7 @@ lists the developer tools Yerd manages and their install status:
 
 <ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="The Tooling page in the Yerd desktop app" />
 
-- **Composer**, **Node**, **Bun**, the **Laravel installer**, and **WP-CLI**,
+- **Composer**, **Node**, **Bun**, **pnpm**, the **Laravel installer**, and **WP-CLI**,
   each showing the commands it provides.
 - Click **Install** to fetch the latest release; once installed you get
   **Update** (re-fetch the current latest) and **Uninstall**.
@@ -71,7 +72,7 @@ Composer.
 ## External tools
 
 You don't have to let Yerd manage most of these tools. If you already have
-`composer`, `node`, `bun`, or the `laravel` installer available on your `PATH` -
+`composer`, `node`, `bun`, `pnpm`, or the `laravel` installer available on your `PATH` -
 via Homebrew, `nvm`/`fnm`, a global `composer require`, etc. - Yerd **detects**
 it and treats it as already available:
 
@@ -80,7 +81,7 @@ it and treats it as already available:
   can still press **Install** to take Yerd's own copy alongside it, which you'll
   need if you want Yerd to build the Laravel installer or WP-CLI.
 - The [Laravel site wizard](./sites#create-a-new-laravel-site) and site scaffolding
-  accept external Composer / Node / Bun / Laravel as satisfying their
+  accept external Composer / Node / Bun / pnpm / Laravel as satisfying their
   prerequisites, so you won't be asked to install a second copy. Externally
   installed Composer and the Laravel installer still run under the **Yerd PHP
   version you select**, so versions stay consistent.
@@ -116,10 +117,12 @@ mistaken for an external install.
 The model mirrors [PHP versions](./php-versions) and [services](./services):
 
 - **Self-contained binaries.** Each tool is a relocatable build - Node's tarball
-  bundles `node` + `npm` + `npx`, Bun is a single binary, Composer is a phar run
+  bundles `node` + `npm` + `npx`, Bun is a single binary, pnpm is a native
+  binary with its bundled `dist/`, Composer is a phar run
   by Yerd's managed PHP. Nothing is compiled and nothing touches system paths.
 - **Verified downloads.** Every artifact is checked against the publisher's
-  `SHASUMS256.txt` (Node, Bun) or `composer.phar.sha256sum` (Composer) before it
+  `SHASUMS256.txt` (Node, Bun), the GitHub release `digest` (pnpm), or
+  `composer.phar.sha256sum` (Composer) before it
   is installed.
 - **Installed under Yerd's data dir.** Tools live in `{data}/tools/<id>/`
   (e.g. `~/Library/Application Support/io.yerd.Yerd/tools` on macOS), a sibling of
@@ -173,7 +176,7 @@ installs ever shadows a tool you didn't ask it to manage.
 Composer is a phar, so it runs under Yerd's managed PHP - `composer` resolves to
 your [default PHP version](./php-versions). Install at least one PHP version
 first (`yerd install php 8.4`); otherwise `composer` reports that no PHP is
-available. Node and Bun are standalone and have no such dependency.
+available. Node, Bun, and pnpm are standalone and have no such dependency.
 
 The `composer` shim always uses the **global default**, including inside a site
 pinned to another version. To run Composer under a site's pinned version instead,
@@ -195,9 +198,10 @@ extension list.
 | `{data}/tools/composer/composer.phar` | The Composer phar. |
 | `{data}/tools/node/node-<ver>-<os>-<arch>/` | The unpacked Node distribution. |
 | `{data}/tools/bun/bun-<os>-<arch>/bun` | The Bun binary. |
+| `{data}/tools/pnpm/pnpm-<os>-<arch>/pnpm` | The pnpm binary (`pnpx` beside it). |
 | `{data}/tools/laravel/bin/laravel` | The Laravel installer (built via Composer). |
 | `{data}/tools/wp-cli/vendor/wp-cli/wp-cli/php/boot-fs.php` | WP-CLI (built via Composer). |
-| `{data}/bin/{composer,node,npm,npx,bun,bunx,laravel,wp}` | The `PATH` shims. |
+| `{data}/bin/{composer,node,npm,npx,bun,bunx,pnpm,pnpx,laravel,wp}` | The `PATH` shims. |
 | `{data}/bin/{mysql,mysqldump,mariadb,mariadb-dump,psql,pg_dump,pg_dumpall,pg_restore,createdb,valkey-cli,cloudflared}` | Service client and `cloudflared` commands, present while the engine (or `cloudflared`) is installed. See [Services & Databases](./services#client-commands-on-your-path). |
 
 `{data}` is Yerd's per-user data directory (`yerd status` and

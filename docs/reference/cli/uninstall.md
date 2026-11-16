@@ -5,7 +5,7 @@
 | Command | Description |
 | --- | --- |
 | `yerd uninstall php <VERSION>` | Uninstall a PHP version (removes its files; blocked if a site uses it). See [PHP](./php). |
-| `yerd uninstall tool <ID>` | Uninstall a dev tool (`composer`, `node`, `bun`). See [Tooling](./tooling). |
+| `yerd uninstall tool <ID>` | Uninstall a dev tool (`composer`, `node`, `bun`, `pnpm`). See [Tooling](./tooling). |
 | `yerd uninstall` | **Full uninstall** - remove yerd entirely from this machine. |
 | `yerd uninstall --yes`, `-y` | Full uninstall without the confirmation prompt (for scripts / the desktop app). |
 
