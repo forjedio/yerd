@@ -66,6 +66,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   DISPLAY_ERRORS_HINT,
   DISPLAY_ERRORS_OPTIONS,
+  FFI_HINT,
+  FFI_KEY,
+  FFI_LABEL,
+  LIBVIPS_HINT,
+  NO_FFI_VERSIONS_HINT,
   overrideCount,
   TEXT_SETTINGS,
 } from "@/lib/phpSettings";
@@ -126,6 +131,7 @@ function applySettings(settings: Record<string, string> | undefined): void {
   const next: Record<string, string> = {};
   for (const s of TEXT_SETTINGS) next[s.key] = settings?.[s.key] ?? "";
   next.display_errors = settings?.display_errors ?? "";
+  next[FFI_KEY] = settings?.[FFI_KEY] ?? "";
   settingsForm.value = next;
   lastSeeded = { ...next };
 }
@@ -152,6 +158,21 @@ watch(
   },
   { immediate: true },
 );
+
+// The FFI switch maps On to the stored "On" and off to "" (removes the key, so
+// PHP's own `preload` default applies). It is disabled when no installed
+// version has FFI, unless the saved value is on, so a CLI-set value can be
+// cleared and the unsaved toggle never locks itself.
+// "No version has FFI" is only claimed once the PHP list has actually loaded.
+const ffiVersions = computed<PhpVersion[]>(() => data.value?.ffi_versions ?? []);
+const noFfiVersions = computed(() => data.value != null && ffiVersions.value.length === 0);
+const ffiOn = computed(() => settingsForm.value[FFI_KEY] === "On");
+const ffiSavedOn = computed(() => data.value?.settings?.[FFI_KEY] === "On");
+const ffiSwitchDisabled = computed(() => noFfiVersions.value && !ffiSavedOn.value);
+
+function setFfi(on: boolean): void {
+  settingsForm.value[FFI_KEY] = on ? "On" : "";
+}
 
 async function saveSettings(): Promise<void> {
   busy.value = "settings";
@@ -706,6 +727,37 @@ onUnmounted(
           </div>
           </TooltipProvider>
 
+          <div class="mt-5 border-t border-border pt-4" data-testid="ffi-global">
+            <div class="flex items-start gap-3">
+              <Switch
+                :model-value="ffiOn"
+                :disabled="ffiSwitchDisabled"
+                :aria-label="FFI_LABEL"
+                data-testid="toggle-ffi"
+                @update:model-value="setFfi"
+              />
+              <div class="min-w-0">
+                <p class="text-xs font-medium">{{ FFI_LABEL }}</p>
+                <p class="mt-0.5 text-xs text-muted-foreground">{{ FFI_HINT }}</p>
+                <p
+                  v-if="noFfiVersions"
+                  class="mt-1 text-xs text-muted-foreground"
+                  data-testid="ffi-unavailable"
+                >
+                  {{ NO_FFI_VERSIONS_HINT }}
+                </p>
+                <p
+                  v-if="ffiOn && data?.libvips_found === false"
+                  class="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground"
+                  data-testid="libvips-hint"
+                >
+                  <TriangleAlert class="size-3.5 shrink-0 text-warning" />
+                  {{ LIBVIPS_HINT }}
+                </p>
+              </div>
+            </div>
+          </div>
+
           <div class="mt-5 flex justify-end">
             <Button size="sm" :disabled="busy === 'settings'" @click="saveSettings">
               <Spinner v-if="busy === 'settings'" class="size-4" />
@@ -770,6 +822,8 @@ onUnmounted(
                     :overrides="data?.version_settings?.[v] ?? {}"
                     :directives="data?.directives?.[v] ?? {}"
                     :pool="data?.pool?.[v] ?? {}"
+                    :ffi-available="ffiVersions.includes(v)"
+                    :libvips-found="data?.libvips_found ?? null"
                     :extensions="extensionsFor(v)"
                     :installed-version="installed.includes(v)"
                     :extensions-loading="extLoading"

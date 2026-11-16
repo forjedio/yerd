@@ -144,6 +144,7 @@ PHP defaults applied across sites.
 | `post_max_size`       | byte size (`64M`)                                             |
 | `display_errors`      | boolean flag (`On` / `Off`, rendered as a `php_flag`)         |
 | `error_reporting`     | integer or constant expression (e.g. `E_ALL & ~E_DEPRECATED`) |
+| `ffi.enable`          | on/off; absent by default (PHP's `preload`). On renders `php_admin_value[ffi.enable] = true` into FPM pools only, never into legacy (< 8.2) pools |
 
 ```toml
 [php.settings]
@@ -151,6 +152,8 @@ memory_limit = "512M"
 max_execution_time = "300"
 upload_max_filesize = "64M"
 ```
+
+`ffi.enable` contains a dot, so its TOML key must be quoted: `"ffi.enable" = "On"`. Yerd writes it that way itself.
 
 ::: warning Setting an unsupported directive fails the load
 An unknown directive name or a malformed value makes the whole config invalid (`InvalidPhpSetting`). Stick to the table above.

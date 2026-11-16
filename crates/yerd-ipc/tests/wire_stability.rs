@@ -753,6 +753,8 @@ fn response_php_versions_byte_shape() {
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
+        ffi_versions: Box::new(vec![]),
+        libvips_found: None,
         pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -761,6 +763,40 @@ fn response_php_versions_byte_shape() {
         r#"{"type":"php_versions","installed":["8.3","8.5"],"default":"8.5"}"#
     );
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_php_versions_ffi_and_libvips_byte_shape() {
+    let r = Response::PhpVersions {
+        installed: vec![PhpVersion::new(8, 5)],
+        default: PhpVersion::new(8, 5),
+        updates: vec![],
+        settings: BTreeMap::new(),
+        version_settings: Box::new(BTreeMap::new()),
+        directives: Box::new(BTreeMap::new()),
+        pool: Box::new(BTreeMap::new()),
+        ffi_versions: Box::new(vec![PhpVersion::new(8, 5)]),
+        libvips_found: Some(false),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"php_versions","installed":["8.5"],"default":"8.5","ffi_versions":["8.5"],"libvips_found":false}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+
+    let old = r#"{"type":"php_versions","installed":["8.5"],"default":"8.5"}"#;
+    match serde_json::from_str::<Response>(old).unwrap() {
+        Response::PhpVersions {
+            ffi_versions,
+            libvips_found,
+            ..
+        } => {
+            assert!(ffi_versions.is_empty());
+            assert_eq!(libvips_found, None);
+        }
+        other => panic!("expected PhpVersions, got {other:?}"),
+    }
 }
 
 #[test]
@@ -797,6 +833,8 @@ fn response_php_versions_with_updates_byte_shape() {
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
+        ffi_versions: Box::new(vec![]),
+        libvips_found: None,
         pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -819,6 +857,8 @@ fn response_php_versions_with_settings_byte_shape() {
         ]),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
+        ffi_versions: Box::new(vec![]),
+        libvips_found: None,
         pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -844,6 +884,8 @@ fn response_php_versions_with_version_settings_and_directives_byte_shape() {
             PhpVersion::new(8, 3),
             BTreeMap::from([("xdebug.mode".to_string(), "debug".to_string())]),
         )])),
+        ffi_versions: Box::new(vec![]),
+        libvips_found: None,
         pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -875,6 +917,8 @@ fn response_php_versions_with_pool_byte_shape() {
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
+        ffi_versions: Box::new(vec![]),
+        libvips_found: None,
         pool: Box::new(BTreeMap::from([(
             PhpVersion::new(8, 4),
             BTreeMap::from([("max_children".to_string(), "32".to_string())]),

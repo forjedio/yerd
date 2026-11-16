@@ -48,12 +48,16 @@ const RESERVED: &[(&str, &str)] = &[
     ("curl.cainfo", "Yerd manages the CA bundle for this"),
 ];
 
+/// Hint for `ffi.enable`, which is managed as a typed setting.
+const FFI_HINT: &str = "FFI in web requests is managed with the \"Allow FFI in web requests\" toggle or `yerd set php ffi.enable on` (add --only <version> for one version)";
+
 /// If `name` is a directive Yerd manages elsewhere, the human-readable hint
 /// explaining where; `None` when the name is free for custom use.
 ///
 /// Covers the typed settings allowlist (use `yerd set php <name>` /
 /// `yerd unset php <name>`, optionally with `--only <version>`), extension
-/// loading, and the CA bundle paths.
+/// loading, and the CA bundle paths. `ffi.enable` gets its own hint naming
+/// the GUI's FFI toggle, since that is where most users will look for it.
 ///
 /// The `pm.` prefix is denied wholesale: those are FPM pool-block settings,
 /// not ini directives, so rendering one as `php_value[pm.…]` makes FPM log
@@ -62,6 +66,9 @@ const RESERVED: &[(&str, &str)] = &[
 /// other reserved name.
 #[must_use]
 pub fn reserved(name: &str) -> Option<&'static str> {
+    if name == "ffi.enable" {
+        return Some(FFI_HINT);
+    }
     if php_settings::is_supported(name) {
         return Some("this setting is managed with `yerd set php` (add --only <version> for a per-version value)");
     }
@@ -299,11 +306,19 @@ mod tests {
             "post_max_size",
             "display_errors",
             "error_reporting",
+            "ffi.enable",
         ] {
             assert!(reserved(name).is_some(), "{name}");
         }
         assert!(reserved("xdebug.mode").is_none());
         assert!(reserved("opcache.enable").is_none());
+    }
+
+    #[test]
+    fn ffi_enable_hint_points_at_the_toggle() {
+        let hint = reserved("ffi.enable").unwrap();
+        assert!(hint.contains("Allow FFI in web requests"), "{hint}");
+        assert!(hint.contains("yerd set php ffi.enable"), "{hint}");
     }
 
     #[test]

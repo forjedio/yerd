@@ -21,6 +21,7 @@ pub mod detect_cache;
 pub mod dump_server;
 pub mod error;
 pub mod ext_install;
+pub mod ffi_cache;
 pub mod fs_watch;
 pub mod ipc_server;
 pub mod jobs;

@@ -500,9 +500,43 @@ fn installed_versions(state: &DaemonState) -> Vec<yerd_core::PhpVersion> {
     installed
 }
 
+/// Each version paired with its CLI binary, the input to FFI probes.
+fn cli_bins(
+    state: &DaemonState,
+    versions: &[yerd_core::PhpVersion],
+) -> Vec<(yerd_core::PhpVersion, std::path::PathBuf)> {
+    versions
+        .iter()
+        .map(|v| (*v, crate::php_install::cli_binary_path(&state.dirs, *v)))
+        .collect()
+}
+
+/// The per-version ini overrides to hand the live `PhpManager`: the config's
+/// overrides, FFI-gated so a build without FFI never gets an `ffi.enable` pool
+/// line (see [`crate::ffi_cache::FfiCache::gate_ini_overrides`]). Every path
+/// that pushes settings into the manager goes through this.
+pub(crate) async fn manager_ini_overrides(
+    state: &DaemonState,
+    global: &std::collections::BTreeMap<String, String>,
+    overrides: &std::collections::BTreeMap<
+        yerd_core::PhpVersion,
+        std::collections::BTreeMap<String, String>,
+    >,
+) -> std::collections::BTreeMap<yerd_core::PhpVersion, std::collections::BTreeMap<String, String>> {
+    let bins = cli_bins(state, &installed_versions(state));
+    state
+        .ffi_cache
+        .gate_ini_overrides(global, overrides, &bins)
+        .await
+}
+
 /// Build the `PhpVersions` reply: installed versions, the live global default,
-/// cached update annotations, and the global ini settings. Read-only; no network.
+/// cached update annotations, the global ini settings, which versions include
+/// FFI (cached probe), and whether libvips was found. Read-only; no network.
 async fn php_versions_response(state: &DaemonState) -> Response {
+    let installed = installed_versions(state);
+    let bins = cli_bins(state, &installed);
+    let ffi_versions = state.ffi_cache.capable_versions(&bins).await;
     let (default, settings, version_settings, directives, pool) = {
         let cfg = state.config.lock().await;
         (
@@ -514,13 +548,15 @@ async fn php_versions_response(state: &DaemonState) -> Response {
         )
     };
     Response::PhpVersions {
-        installed: installed_versions(state),
+        installed,
         default,
         updates: crate::php_updates::cached_updates(state).await,
         settings,
         version_settings: Box::new(version_settings),
         directives: Box::new(directives),
         pool: Box::new(pool),
+        ffi_versions: Box::new(ffi_versions),
+        libvips_found: state.libvips_probe.libvips_found(),
     }
 }
 
@@ -1140,12 +1176,20 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
 /// instead of the stale process. A never-started / stopped ondemand pool is left
 /// alone (the next request spawns it from the new binary), matching
 /// [`restart_all_php`]'s semantics. Per-pool failures are logged, not fatal - the
-/// update itself already succeeded. Runs under the caller's `php_mutate` guard.
+/// update itself already succeeded. The FFI-gated overrides are re-pushed first,
+/// since an updated build may have gained or lost FFI. Runs under the caller's
+/// `php_mutate` guard.
 async fn restart_updated_pools(state: &DaemonState, updated: &[yerd_core::PhpVersion]) {
     if updated.is_empty() {
         return;
     }
+    let (global, overrides) = {
+        let cfg = state.config.lock().await;
+        (cfg.php.settings.clone(), cfg.php.version_settings.clone())
+    };
+    let gated = manager_ini_overrides(state, &global, &overrides).await;
     let mut mgr = state.php_manager.lock().await;
+    mgr.set_ini_overrides(gated);
     let active: std::collections::HashSet<yerd_core::PhpVersion> =
         mgr.snapshots().into_iter().map(|s| s.version).collect();
     for minor in pools_needing_restart(&active, updated) {
@@ -1385,7 +1429,14 @@ async fn refresh_php_binaries(state: &DaemonState) {
                 return;
             }
         };
-    state.php_manager.lock().await.set_binaries(binaries);
+    let (global, overrides) = {
+        let cfg = state.config.lock().await;
+        (cfg.php.settings.clone(), cfg.php.version_settings.clone())
+    };
+    let gated = manager_ini_overrides(state, &global, &overrides).await;
+    let mut mgr = state.php_manager.lock().await;
+    mgr.set_binaries(binaries);
+    mgr.set_ini_overrides(gated);
 }
 
 /// Absolute path to the `yerd` CLI binary, assumed a sibling of the running
@@ -2127,12 +2178,15 @@ async fn set_php_settings(
         return internal(format!("config save failed: {e}"));
     }
     let applied = new.php.settings.clone();
+    let overrides = new.php.version_settings.clone();
     *cfg_guard = new;
     drop(cfg_guard);
+    let gated = manager_ini_overrides(state, &applied, &overrides).await;
 
     {
         let mut mgr = state.php_manager.lock().await;
         mgr.set_ini_settings(applied);
+        mgr.set_ini_overrides(gated);
         for snap in mgr.snapshots() {
             if let Err(e) = mgr.restart(snap.version).await {
                 tracing::warn!(version = %snap.version, error = %e, "failed to restart FPM pool after settings change");
@@ -2167,7 +2221,7 @@ async fn set_php_version_settings(
             }
             continue;
         }
-        if let Err(e) = yerd_core::php_settings::validate_value(&key, &value) {
+        if let Err(e) = yerd_core::php_settings::validate_version_value(&key, &value, version) {
             return Response::Error {
                 code: ErrorCode::InvalidPath,
                 message: e.to_string(),
@@ -2380,17 +2434,19 @@ fn require_installed(version: yerd_core::PhpVersion, state: &DaemonState) -> Opt
 /// settings mutation. The pool map never reaches `write_cli_ini`, so pool
 /// settings cannot leak into a CLI `php.ini`.
 async fn apply_version_php_config(state: &DaemonState, affected: yerd_core::PhpVersion) {
-    let (version_settings, directives, pool) = {
+    let (global, version_settings, directives, pool) = {
         let cfg = state.config.lock().await;
         (
+            cfg.php.settings.clone(),
             cfg.php.version_settings.clone(),
             cfg.php.directives.clone(),
             cfg.php.pool.clone(),
         )
     };
+    let gated = manager_ini_overrides(state, &global, &version_settings).await;
     {
         let mut mgr = state.php_manager.lock().await;
-        mgr.set_ini_overrides(version_settings);
+        mgr.set_ini_overrides(gated);
         mgr.set_directives(directives);
         mgr.set_pool_overrides(pool);
         if mgr.snapshots().iter().any(|s| s.version == affected) {
@@ -4378,6 +4434,188 @@ Subject: Captured\r\n\r\nhi\r\n";
                 assert!(settings.contains_key("display_errors"));
             }
             other => panic!("expected PhpVersions, got {other:?}"),
+        }
+    }
+
+    async fn set_global_setting(state: &DaemonState, name: &str, value: &str) -> Response {
+        dispatch(
+            Request::SetPhpSettings {
+                settings: std::collections::BTreeMap::from([(name.to_string(), value.to_string())]),
+            },
+            state,
+        )
+        .await
+    }
+
+    struct FfiOnlyForRunner {
+        php_bin: std::path::PathBuf,
+    }
+
+    #[async_trait::async_trait]
+    impl yerd_php::CommandRunner for FfiOnlyForRunner {
+        async fn run(&self, cmd: std::process::Command) -> std::io::Result<yerd_php::ProbeOutput> {
+            let stdout = if std::path::Path::new(cmd.get_program()) == self.php_bin {
+                "[PHP Modules]\nCore\nFFI\n"
+            } else {
+                "[PHP Modules]\nCore\n"
+            };
+            Ok(yerd_php::ProbeOutput {
+                status_ok: true,
+                stdout: stdout.to_owned(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn list_php_reports_ffi_versions_and_libvips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut state = state_in(tmp.path());
+        let v84 = PhpVersion::new(8, 4);
+        fake_install_patch(&state.dirs, v84, "8.4.1");
+        fake_install_patch(&state.dirs, PhpVersion::new(7, 4), "7.4.33");
+        state.ffi_cache = Arc::new(crate::ffi_cache::FfiCache::new(Arc::new(
+            FfiOnlyForRunner {
+                php_bin: crate::php_install::cli_binary_path(&state.dirs, v84),
+            },
+        )));
+        state.libvips_probe = Arc::new(yerd_platform::FakeLibvipsProbe { found: Some(false) });
+
+        match dispatch(Request::ListPhp, &state).await {
+            Response::PhpVersions {
+                installed,
+                ffi_versions,
+                libvips_found,
+                ..
+            } => {
+                assert_eq!(installed.len(), 2, "{installed:?}");
+                assert_eq!(*ffi_versions, vec![v84]);
+                assert_eq!(libvips_found, Some(false));
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+    }
+
+    fn render_pool_for(
+        state: &DaemonState,
+        global: &std::collections::BTreeMap<String, String>,
+        overrides: &std::collections::BTreeMap<
+            PhpVersion,
+            std::collections::BTreeMap<String, String>,
+        >,
+        v: PhpVersion,
+    ) -> String {
+        let empty = std::collections::BTreeMap::new();
+        let listen = yerd_php::Listen::UnixSocket(state.dirs.runtime.join("fpm.sock"));
+        let mut cfg = yerd_php::PoolConfig::dev_defaults(v, listen, &state.dirs, 1);
+        cfg.ini =
+            yerd_core::php_settings::merge_effective(global, overrides.get(&v).unwrap_or(&empty))
+                .into_iter()
+                .collect();
+        yerd_php::pure::fpm_conf::render_fpm_conf(&cfg)
+    }
+
+    #[tokio::test]
+    async fn manager_overrides_drop_ffi_for_a_build_without_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut state = state_in(tmp.path());
+        let with_ffi = PhpVersion::new(8, 5);
+        let without_ffi = PhpVersion::new(8, 4);
+        fake_install_patch(&state.dirs, with_ffi, "8.5.1");
+        fake_install_patch(&state.dirs, without_ffi, "8.4.1");
+        state.ffi_cache = Arc::new(crate::ffi_cache::FfiCache::new(Arc::new(
+            FfiOnlyForRunner {
+                php_bin: crate::php_install::cli_binary_path(&state.dirs, with_ffi),
+            },
+        )));
+        let global =
+            std::collections::BTreeMap::from([("ffi.enable".to_string(), "On".to_string())]);
+
+        let gated =
+            manager_ini_overrides(&state, &global, &std::collections::BTreeMap::new()).await;
+
+        assert!(render_pool_for(&state, &global, &gated, with_ffi)
+            .contains("php_admin_value[ffi.enable] = true"));
+        assert!(!render_pool_for(&state, &global, &gated, without_ffi).contains("ffi.enable"));
+    }
+
+    #[tokio::test]
+    async fn ffi_enable_override_is_refused_for_legacy_but_clearable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let v81 = PhpVersion::new(8, 1);
+        fake_install(&state.dirs, v81);
+
+        match set_version_setting(&state, v81, "ffi.enable", "on").await {
+            Response::Error { message, .. } => {
+                assert!(message.contains("not available for PHP 8.1"), "{message}");
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+        assert!(matches!(
+            set_version_setting(&state, v81, "ffi.enable", "").await,
+            Response::PhpVersions { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn set_php_settings_ffi_enable_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        match set_global_setting(&state, "ffi.enable", "on").await {
+            Response::PhpVersions { settings, .. } => {
+                assert_eq!(settings.get("ffi.enable").map(String::as_str), Some("On"));
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+        assert_eq!(
+            state
+                .config
+                .lock()
+                .await
+                .php
+                .settings
+                .get("ffi.enable")
+                .cloned(),
+            Some("On".to_string())
+        );
+
+        assert!(matches!(
+            set_global_setting(&state, "ffi.enable", "preload").await,
+            Response::Error { .. }
+        ));
+
+        match set_global_setting(&state, "ffi.enable", "").await {
+            Response::PhpVersions { settings, .. } => {
+                assert!(!settings.contains_key("ffi.enable"));
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ffi_enable_per_version_override_and_directive_refusal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let v83 = PhpVersion::new(8, 3);
+        fake_install(&state.dirs, v83);
+
+        match set_version_setting(&state, v83, "ffi.enable", "off").await {
+            Response::PhpVersions {
+                version_settings, ..
+            } => {
+                let map = version_settings.get(&v83).expect("8.3 overrides present");
+                assert_eq!(map.get("ffi.enable").map(String::as_str), Some("Off"));
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+
+        match set_directive(&state, v83, "ffi.enable", "true").await {
+            Response::Error { message, .. } => {
+                assert!(message.contains("Allow FFI in web requests"), "{message}");
+            }
+            other => panic!("expected Error, got {other:?}"),
         }
     }
 

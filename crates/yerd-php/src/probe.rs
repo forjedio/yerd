@@ -11,10 +11,15 @@
 use std::io;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::pure::ext_probe::{interpret_probe, ExtLoadError};
+use crate::pure::ext_probe::{ffi_listed, interpret_probe, ExtLoadError};
+
+/// Upper bound on one `php -n -m` FFI probe. A cold first run (macOS
+/// Gatekeeper) takes about a second; anything past this is treated as unknown.
+const FFI_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The captured result of a one-shot command: whether it exited successfully and
 /// both of its output streams (UTF-8 lossy). Both are captured because PHP routes
@@ -43,14 +48,17 @@ pub trait CommandRunner: Send + Sync + 'static {
     async fn run(&self, cmd: Command) -> Result<ProbeOutput, io::Error>;
 }
 
-/// Production [`CommandRunner`] backed by `tokio::process`.
+/// Production [`CommandRunner`] backed by `tokio::process`. The child is
+/// killed if the returned future is dropped early (e.g. by a timeout).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TokioCommandRunner;
 
 #[async_trait]
 impl CommandRunner for TokioCommandRunner {
     async fn run(&self, cmd: Command) -> Result<ProbeOutput, io::Error> {
-        let out = tokio::process::Command::from(cmd).output().await?;
+        let mut cmd = tokio::process::Command::from(cmd);
+        cmd.kill_on_drop(true);
+        let out = cmd.output().await?;
         Ok(ProbeOutput {
             status_ok: out.status.success(),
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -92,6 +100,21 @@ pub async fn probe_extension(
         .map_err(|_| ExtLoadError::SpawnFailed)?;
     let diagnostics = format!("{}{}", out.stdout, out.stderr);
     interpret_probe(out.status_ok, &diagnostics)
+}
+
+/// Whether the PHP build at `php_bin` includes the FFI extension, by running
+/// `php -n -m` (Yerd's builds are static, so `-n` still lists every module).
+/// `None` when the probe could not answer: the process failed to spawn, exited
+/// unsuccessfully, or ran past [`FFI_PROBE_TIMEOUT`]. Callers must not cache a
+/// `None`.
+pub async fn probe_ffi(runner: &dyn CommandRunner, php_bin: &Path) -> Option<bool> {
+    let mut cmd = Command::new(php_bin);
+    cmd.arg("-n").arg("-m").stdin(Stdio::null());
+    let out = tokio::time::timeout(FFI_PROBE_TIMEOUT, runner.run(cmd))
+        .await
+        .ok()?
+        .ok()?;
+    out.status_ok.then(|| ffi_listed(&out.stdout))
 }
 
 #[cfg(test)]
@@ -198,5 +221,29 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(e, ExtLoadError::SpawnFailed);
+    }
+
+    #[tokio::test]
+    async fn probe_ffi_reports_presence_absence_and_failures() {
+        let with = FakeRunner {
+            status_ok: true,
+            stdout: "[PHP Modules]\nCore\nFFI\n".to_owned(),
+            stderr: String::new(),
+        };
+        let without = FakeRunner {
+            status_ok: true,
+            stdout: "[PHP Modules]\nCore\n".to_owned(),
+            stderr: String::new(),
+        };
+        let failed_exit = FakeRunner {
+            status_ok: false,
+            stdout: "[PHP Modules]\nFFI\n".to_owned(),
+            stderr: String::new(),
+        };
+        let php = Path::new("/php");
+        assert_eq!(probe_ffi(&with, php).await, Some(true));
+        assert_eq!(probe_ffi(&without, php).await, Some(false));
+        assert_eq!(probe_ffi(&failed_exit, php).await, None);
+        assert_eq!(probe_ffi(&FailingRunner, php).await, None);
     }
 }

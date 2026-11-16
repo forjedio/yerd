@@ -157,6 +157,17 @@ pub enum Response {
         /// decodable. Boxed like `version_settings`.
         #[serde(default, skip_serializing_if = "boxed_version_map_is_empty")]
         pool: Box<BTreeMap<PhpVersion, BTreeMap<String, String>>>,
+        /// Installed versions whose PHP build includes the FFI extension, so
+        /// clients only offer the FFI toggle where it can work. Empty when none
+        /// do; `#[serde(default)]` keeps older daemons (which omit it) decodable.
+        /// Boxed like `version_settings` to keep `Response` small.
+        #[serde(default, skip_serializing_if = "boxed_versions_is_empty")]
+        ffi_versions: Box<Vec<PhpVersion>>,
+        /// Whether the libvips shared library (needed by php-vips) was found on
+        /// the host. `None` when the daemon does not check on this OS, or is
+        /// older and omits it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        libvips_found: Option<bool>,
     },
     /// Reply to [`crate::Request::AvailablePhp`].
     AvailablePhp {
@@ -565,6 +576,12 @@ fn boxed_version_map_is_empty(m: &BTreeMap<PhpVersion, BTreeMap<String, String>>
     m.is_empty()
 }
 
+/// `skip_serializing_if` predicate for [`Response::PhpVersions`]'s boxed
+/// `ffi_versions` list.
+fn boxed_versions_is_empty(v: &[PhpVersion]) -> bool {
+    v.is_empty()
+}
+
 /// An available newer patch for an installed PHP minor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhpUpdate {
@@ -747,6 +764,8 @@ mod variant_name_pinning {
             settings: BTreeMap::new(),
             version_settings: Box::new(BTreeMap::new()),
             directives: Box::new(BTreeMap::new()),
+            ffi_versions: Box::new(vec![]),
+            libvips_found: None,
             pool: Box::new(BTreeMap::new()),
         });
         pin_response(Response::AvailablePhp {

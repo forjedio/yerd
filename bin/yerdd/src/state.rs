@@ -24,6 +24,7 @@ use yerd_proxy::SharedRouter;
 
 use crate::backend_resolver::DaemonPhpManager;
 use crate::detect_cache::DetectCache;
+use crate::ffi_cache::FfiCache;
 
 /// Mail-capture runtime fact captured at startup: whether the SMTP listener
 /// actually bound. `Status` sources `enabled`/`port` from the live config (so a
@@ -173,6 +174,11 @@ pub struct DaemonState {
     /// Web-root detection cache, shared between the mutation path and the
     /// filesystem watcher so repeated parked-root rescans stay cheap.
     pub detect_cache: Arc<DetectCache>,
+    /// Which installed PHP versions include the FFI extension, cached per
+    /// version on the CLI binary's freshness stamp.
+    pub ffi_cache: Arc<FfiCache>,
+    /// Host probe for libvips, reported next to the GUI's FFI toggle.
+    pub libvips_probe: Arc<dyn yerd_platform::LibvipsProbe + Send + Sync>,
     /// Pinged after a config mutation commits so the filesystem watcher
     /// reconciles its watch set (e.g. a newly-parked root) without waiting for
     /// an unrelated filesystem event.

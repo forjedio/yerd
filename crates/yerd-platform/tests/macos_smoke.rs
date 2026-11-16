@@ -196,3 +196,9 @@ fn process_table_reads_this_process_command_line() {
     assert!(!table.is_alive(0));
     assert!(!table.is_alive(1));
 }
+
+#[test]
+fn libvips_probe_checks_this_host() {
+    use yerd_platform::{ActiveLibvipsProbe, LibvipsProbe};
+    assert!(ActiveLibvipsProbe.libvips_found().is_some());
+}

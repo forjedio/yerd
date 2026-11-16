@@ -539,8 +539,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 24\n"),
-            "expected `version = 24` first line; got: {s}"
+            s.starts_with("version = 26\n"),
+            "expected `version = 26` first line; got: {s}"
         );
     }
 

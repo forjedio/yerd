@@ -320,15 +320,18 @@ The allowlist (extend here to support more directives):
 | `post_max_size`       | byte size                     | `php_value` |
 | `display_errors`      | flag (boolean)                | `php_flag`  |
 | `error_reporting`     | int or constant expression    | `php_value` |
+| `ffi.enable`          | admin switch (on/off, unseeded) | `php_admin_value` (`true` when on, omitted when off or for legacy versions) |
 
 Public surface:
 
 ```rust
 pub fn is_supported(name: &str) -> bool;
 pub fn supported_names() -> Vec<&'static str>;       // declaration order
-pub fn directive(name: &str) -> Option<&'static str>; // "php_flag" | "php_value"
+pub fn directive(name: &str) -> Option<&'static str>; // "php_flag" | "php_admin_value" | "php_value"
 pub fn validate_value(name: &str, value: &str) -> Result<(), PhpSettingError>;
 pub fn canonical_value(name: &str, value: &str) -> String;
+pub fn fpm_value(name: &str, value: &str) -> Option<String>; // None = emit no line
+pub fn applies_to_version(name: &str, version: PhpVersion) -> bool;
 ```
 
 `validate_value` enforces a global invariant *before* the per-kind shape:

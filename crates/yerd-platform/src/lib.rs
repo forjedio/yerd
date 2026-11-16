@@ -29,6 +29,7 @@ pub mod error;
 pub mod helper;
 pub mod ide;
 pub mod lan_ip;
+pub mod libvips;
 pub mod metrics;
 pub mod nss_exec;
 pub mod opener;
@@ -51,6 +52,7 @@ pub use error::{
 pub use helper::{ArgvParseError, HelperInvocation};
 pub use ide::{DetectedIde, FakeIdeLauncher, IdeLauncher, LaunchTarget};
 pub use lan_ip::{ActiveLanIpProvider, FakeLanIpProvider, LanIpProvider};
+pub use libvips::{FakeLibvipsProbe, LibvipsProbe};
 pub use metrics::SystemMetrics;
 pub use opener::{FakeSystemOpener, SystemOpener};
 pub use paths::{Paths, PlatformDirs};
@@ -64,7 +66,7 @@ pub use trust_store::{
 };
 
 pub use os::active::{
-    ActiveIdeLauncher, ActivePaths, ActivePortBinder, ActivePortRedirector, ActiveProcessTable,
-    ActiveResolverInstaller, ActiveSystemMetrics, ActiveSystemOpener, ActiveTerminalLauncher,
-    ActiveTrustStore,
+    ActiveIdeLauncher, ActiveLibvipsProbe, ActivePaths, ActivePortBinder, ActivePortRedirector,
+    ActiveProcessTable, ActiveResolverInstaller, ActiveSystemMetrics, ActiveSystemOpener,
+    ActiveTerminalLauncher, ActiveTrustStore,
 };

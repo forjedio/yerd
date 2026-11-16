@@ -54,8 +54,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 24\n"),
-        "expected first line `version = 24`; got: {s}"
+        s.starts_with("version = 26\n"),
+        "expected first line `version = 26`; got: {s}"
     );
 }
 
@@ -671,4 +671,35 @@ fn empty_parked_emits_empty_array_and_services_omitted() {
     );
 
     let _: BTreeSet<String> = BTreeSet::new();
+}
+
+#[test]
+fn ffi_enable_emits_quoted_key_and_round_trips() {
+    let mut c = Config::default();
+    c.php
+        .settings
+        .insert("ffi.enable".to_string(), "On".to_string());
+    c.php
+        .version_settings
+        .entry(PhpVersion::new(8, 4))
+        .or_default()
+        .insert("ffi.enable".to_string(), "Off".to_string());
+    let s = c.to_toml().unwrap();
+
+    let settings_at = s.find("[php.settings]").expect("[php.settings] present");
+    let version_at = s
+        .find("[php.version_settings.\"8.4\"]")
+        .expect("[php.version_settings.\"8.4\"] present");
+    let global_line = s.find("\"ffi.enable\" = \"On\"").expect("global ffi line");
+    let version_line = s
+        .find("\"ffi.enable\" = \"Off\"")
+        .expect("per-version ffi line");
+    assert!(settings_at < global_line, "got: {s}");
+    assert!(version_at < version_line, "got: {s}");
+
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
+
+    let default = Config::default().to_toml().unwrap();
+    assert!(!default.contains("ffi"), "got: {default}");
 }
