@@ -23,9 +23,9 @@ helper are all bundled inside it - there is nothing else to install. PHP itself 
 pick a version, so the install stays tiny and fast.
 :::
 
-::: warning Apple Intel not supported
-Intel (x86-64) Macs are not supported at this time. macOS builds target Apple
-Silicon (arm64) only.
+::: warning Intel Macs not supported
+Yerd supports Apple Silicon (arm64) Macs only. There are no Intel (x86-64)
+macOS builds.
 :::
 
 ## Install

@@ -21,7 +21,7 @@ on:
       targets:
         description: >-
           JSON array of build targets, each {id, runner, container, kind}.
-          e.g. [{"id":"macos","runner":"macos-14","container":"","kind":"gui"}].
+          e.g. [{"id":"macos","runner":"macos-latest","container":"","kind":"gui"}].
           Pass "[]" to build nothing (the job is skipped).
         required: true
         type: string
@@ -101,7 +101,7 @@ jobs:
             -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KP" "$KC"
           # Prepend the ephemeral keychain to the existing user search list,
-          # reading each path space-safely. NB the macos-14 runner ships bash 3.2
+          # reading each path space-safely. NB the macOS runner ships bash 3.2
           # (no `mapfile`), so use a while-read loop; guard the empty expansion
           # for `set -u`.
           EXISTING=()
