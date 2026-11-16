@@ -198,10 +198,12 @@ pub async fn wait_settled(
 
 /// Resume sharing on daemon start: rebuild the route map from config, then
 /// start the named tunnel when it has hostnames to serve and is set up. Quick
-/// tunnels are ephemeral and never resumed. Errors are logged, not returned.
-pub async fn resume(state: Arc<DaemonState>) {
+/// tunnels are ephemeral and never resumed. `epoch` is the `named_stop_epoch`
+/// read when the resume was queued (see [`super::named::resume`]). Errors are
+/// logged, not returned.
+pub async fn resume(state: Arc<DaemonState>, epoch: u64) {
     super::rebuild_routes(&state).await;
-    super::named::resume(state).await;
+    super::named::resume(state, epoch).await;
 }
 
 #[cfg(all(test, unix))]
@@ -566,7 +568,7 @@ mod tests {
             .sites
             .insert("app".to_owned(), "app.example.com".to_owned());
 
-        resume(Arc::clone(&state)).await;
+        resume(Arc::clone(&state), 0).await;
 
         named_running(&state).await;
         assert!(state
@@ -583,7 +585,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let state = named_state(tmp.path()).await;
 
-        resume(Arc::clone(&state)).await;
+        resume(Arc::clone(&state), 0).await;
 
         assert!(snapshots(&state).await.is_empty());
         teardown(&state).await;
@@ -602,7 +604,7 @@ mod tests {
             .insert("app".to_owned(), "app.example.com".to_owned());
         state.tunnel_manager.lock().await.shutdown().await.unwrap();
 
-        resume(Arc::clone(&state)).await;
+        resume(Arc::clone(&state), 0).await;
 
         assert!(snapshots(&state).await.is_empty());
         let Err(Response::Error { message, .. }) =

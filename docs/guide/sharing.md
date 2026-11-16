@@ -183,9 +183,10 @@ shared, the sidebar item shows a count.
   box is pre-filled with `{site}.{your-domain}`. Exposing a site creates the DNS
   record and the daemon brings the tunnel up; removing the last one takes it
   back down. Other exposed sites are never interrupted. A **Start** button
-  appears only when sites are exposed but no tunnel is running at all (for
-  example after `yerd tunnel unpublish`); a failed tunnel is already retrying on
-  its own.
+  appears when sites are exposed but no tunnel is running at all (for example
+  after `yerd tunnel unpublish`). A failed tunnel already retries on its own,
+  and also shows a **Retry** button, which picks up a newly installed
+  `cloudflared`.
 - Both cards show each tunnel's state (Connecting, Online, Reconnecting, Failed)
   with the last error beneath it, and any [preflight
   warnings](#preflight-warnings) in amber under the site.

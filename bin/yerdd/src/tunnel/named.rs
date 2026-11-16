@@ -448,7 +448,7 @@ async fn site_key(
 /// Setting a hostname refreshes that site's share warnings and ensures the named
 /// tunnel is running in the background (never restarting a live one); a failure
 /// there, such as no login yet, is logged and does not fail the save, and a stop
-/// that lands before the background start runs wins over it. Clearing
+/// that completes after this request began wins over it. Clearing
 /// the last hostname stops the named tunnel, under `tunnel_mutate` so a
 /// concurrent [`ensure_running`] cannot slip in between the check and the stop.
 pub async fn set_site_hostname(
@@ -456,6 +456,7 @@ pub async fn set_site_hostname(
     hostname: Option<&str>,
     state: &Arc<DaemonState>,
 ) -> Response {
+    let epoch = state.named_stop_epoch.load(Ordering::SeqCst);
     let canonical = match site_key(state, site, hostname.is_some()).await {
         Ok(canonical) => canonical,
         Err(resp) => return resp,
@@ -488,7 +489,6 @@ pub async fn set_site_hostname(
     super::rebuild_routes(state).await;
     if let (Some(_), Some(name)) = (hostname, &canonical) {
         super::refresh_share_warnings(state, name).await;
-        let epoch = state.named_stop_epoch.load(Ordering::SeqCst);
         tokio::spawn(ensure_in_background(Arc::clone(state), epoch));
         return Response::Ok;
     }
@@ -734,9 +734,11 @@ async fn ensure(
 }
 
 /// Start the named tunnel at daemon start when [`should_run_named`] holds,
-/// refreshing every mapped site's share warnings first. Errors are logged and
-/// swallowed; shutdown racing the start is expected and logged at debug.
-pub(super) async fn resume(state: Arc<DaemonState>) {
+/// refreshing every mapped site's share warnings first. `epoch` is the
+/// `named_stop_epoch` seen when the resume was queued, so a stop that completes
+/// in the meantime keeps the tunnel down. Errors are logged and swallowed;
+/// shutdown racing the start is expected and logged at debug.
+pub(super) async fn resume(state: Arc<DaemonState>, epoch: u64) {
     let wanted = should_run_named(cheap_facts(&state).await.0)
         && super::resolved_cloudflared(&state).await.is_some();
     if !wanted {
@@ -744,9 +746,12 @@ pub(super) async fn resume(state: Arc<DaemonState>) {
         return;
     }
     super::refresh_named_share_warnings(&state).await;
-    match ensure(&state, None).await {
+    match ensure(&state, Some(epoch)).await {
         Ok(_) => tracing::info!("resumed named tunnel"),
-        Err(EnsureFailure::Superseded | EnsureFailure::ShuttingDown) => {
+        Err(EnsureFailure::Superseded) => {
+            tracing::debug!("named tunnel not resumed: it was stopped meanwhile");
+        }
+        Err(EnsureFailure::ShuttingDown) => {
             tracing::debug!("named tunnel not resumed: daemon is shutting down");
         }
         Err(EnsureFailure::Reply(resp)) => {
@@ -1292,6 +1297,49 @@ mod tests {
             "{result:?}"
         );
         assert!(state.tunnel_manager.lock().await.snapshots().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_stop_during_a_hostname_request_cancels_its_background_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut state = state_in(tmp.path());
+        state.tunnel_origin_port = Some(1);
+        let site = Site::linked("blog", "/srv/www/blog", PhpVersion::new(8, 3)).unwrap();
+        state.router.write().await.insert(site).unwrap();
+        let state = Arc::new(state);
+        install::install_binary_for_test(&state.dirs, "2026.6.1", b"#!/bin/sh\nsleep 30\n");
+        super::super::refresh_cloudflared_cache_after_install(&state).await;
+        std::fs::create_dir_all(origincert(&state.dirs).parent().unwrap()).unwrap();
+        std::fs::write(origincert(&state.dirs), "cert").unwrap();
+        state
+            .config
+            .lock()
+            .await
+            .tunnel
+            .named
+            .insert("t".into(), "uuid".into());
+
+        let config = state.config.lock().await;
+        let request = {
+            let state = Arc::clone(&state);
+            tokio::spawn(async move {
+                set_site_hostname("blog", Some("blog.example.com"), &state).await
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let stopping = {
+            let state = Arc::clone(&state);
+            tokio::spawn(async move { stop(&state).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        drop(config);
+
+        assert!(matches!(stopping.await.unwrap(), Response::Tunnels { .. }));
+        assert_eq!(request.await.unwrap(), Response::Ok);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        assert!(state.tunnel_manager.lock().await.snapshots().is_empty());
+        state.tunnel_manager.lock().await.shutdown().await.unwrap();
     }
 
     #[tokio::test]

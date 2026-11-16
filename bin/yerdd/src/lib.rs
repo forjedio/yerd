@@ -317,7 +317,13 @@ async fn run_until_shutdown(
     });
 
     let _autostart = tokio::spawn(crate::services::auto_start_installed(daemon.state.clone()));
-    let _tunnel_resume = tokio::spawn(crate::tunnel::supervise::resume(daemon.state.clone()));
+    let _tunnel_resume = tokio::spawn(crate::tunnel::supervise::resume(
+        daemon.state.clone(),
+        daemon
+            .state
+            .named_stop_epoch
+            .load(std::sync::atomic::Ordering::SeqCst),
+    ));
 
     let _ext_install = {
         let state = daemon.state.clone();

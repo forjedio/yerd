@@ -199,6 +199,29 @@ describe("IntegrationsView", () => {
     expect(calls("start_named_tunnel")).toHaveLength(1);
   });
 
+  it("offers Retry for a failed named tunnel and not for a live one", async () => {
+    stubIpc({
+      tunnels: [named("failed")],
+      named: [{ site: "app", hostname: "app.example.com" }],
+    });
+    const wrapper = await mountView();
+
+    await clickByText(wrapper, "Retry");
+    await flushPromises();
+
+    expect(calls("start_named_tunnel")).toHaveLength(1);
+  });
+
+  it("hides Retry while the named tunnel is live", async () => {
+    stubIpc({
+      tunnels: [named("reconnecting")],
+      named: [{ site: "app", hostname: "app.example.com" }],
+    });
+    const wrapper = await mountView();
+    const retryBtn = wrapper.findAll("button").find((b) => b.text().trim() === "Retry");
+    expect(retryBtn).toBeUndefined();
+  });
+
   it("hides Start when nothing is exposed", async () => {
     stubIpc({});
     const wrapper = await mountView();

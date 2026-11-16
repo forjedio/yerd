@@ -88,9 +88,13 @@ const protectedNamed = ref<Set<string>>(new Set());
 const namedEntry = computed(() => tunnels.value.find((t) => t.kind === "named") ?? null);
 // Whether any site is currently exposed on the named tunnel.
 const anyExposed = computed(() => Object.keys(enabledHosts.value).length > 0);
-// Start is only offered when sites are exposed but no instance exists at all: a
-// failed instance is already retrying on its own.
-const canStartNamed = computed(() => anyExposed.value && namedEntry.value === null);
+// Start is offered when sites are exposed but no instance exists. A failed
+// instance retries on its own, but gets a Retry action too: the daemon only
+// replaces it when its command changed (say, after installing the bundled
+// cloudflared), and otherwise leaves it retrying, so it never starts a second one.
+const canStartNamed = computed(
+  () => anyExposed.value && (namedEntry.value === null || namedEntry.value.state === "failed"),
+);
 // v1 allows exactly one named tunnel.
 const hasNamedTunnel = computed(() => namedTunnels.value.length > 0);
 // The authorized Cloudflare zone (domain), once resolved from the account cert.
@@ -384,7 +388,8 @@ async function doDisableSite(site: string): Promise<void> {
 }
 
 /** Start the named tunnel when sites are exposed but nothing is running (for
- *  example after `yerd tunnel unpublish`). Idempotent on the daemon side. */
+ *  example after `yerd tunnel unpublish`), or retry a failed one. Idempotent on
+ *  the daemon side. */
 async function doStartNamed(): Promise<void> {
   busy.value = "named";
   try {
@@ -793,7 +798,7 @@ onUnmounted(registerViewActions({ refresh: () => void reload() }));
                 >
                   <Spinner v-if="busy === 'named'" class="mr-1.5 size-3.5" />
                   <Globe v-else class="mr-1.5 size-3.5" />
-                  Start
+                  {{ namedEntry ? "Retry" : "Start" }}
                 </Button>
               </div>
             </div>
