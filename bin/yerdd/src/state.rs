@@ -158,9 +158,10 @@ pub struct DaemonState {
     /// Dump-telemetry ring buffer + server control, shared with the dump-server
     /// task and the IPC dump handlers.
     pub dumps: Arc<crate::dump_server::DumpStore>,
-    /// Serializes `php_install::reconcile_shims` runs. IPC dispatch is
-    /// `tokio::spawn`-per-connection, so two clients can reconcile the `{data}/bin`
-    /// shims concurrently; this guard keeps the (sync) scan→prune from interleaving.
+    /// Serializes every `{data}/bin` reconcile: the PHP shims, the dev-tool
+    /// shims, and the service client shims (plus the `cloudflared` link). IPC
+    /// dispatch is `tokio::spawn`-per-connection, so two clients can reconcile
+    /// concurrently; this guard keeps the (sync) scan→prune from interleaving.
     pub shim_reconcile: Mutex<()>,
     /// Serializes dev-tool (`composer`/`node`/`bun`) install/uninstall mutations.
     /// IPC dispatch is `tokio::spawn`-per-connection, so two clients could swap

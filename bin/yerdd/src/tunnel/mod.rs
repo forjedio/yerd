@@ -456,6 +456,7 @@ pub async fn install_cloudflared_streamed(state: Arc<DaemonState>) -> Response {
         match result {
             Some(Ok(())) => {
                 refresh_cloudflared_cache_after_install(&state).await;
+                crate::ipc_server::reconcile_client_shims_now(&state).await;
                 state
                     .jobs
                     .finish(&id, yerd_ipc::JobState::Succeeded, None)

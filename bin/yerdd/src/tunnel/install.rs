@@ -515,6 +515,28 @@ fn set_executable(_path: &Path) -> Result<(), CloudflaredInstallError> {
     Ok(())
 }
 
+/// Reconcile the `{data}/bin/cloudflared` link: a plain symlink to the managed
+/// binary while it is installed (its path has no version, so no multi-call shim
+/// is needed), removed when it is not. Only ever removes a symlink. Callers must
+/// hold the shared `shim_reconcile` mutex. Unix-only; no-op elsewhere.
+#[cfg(unix)]
+pub(crate) fn reconcile_cloudflared_shim(dirs: &PlatformDirs) -> std::io::Result<()> {
+    let bin = crate::tools::bin_dir(dirs);
+    let link = bin.join("cloudflared");
+    if is_installed(dirs) {
+        std::fs::create_dir_all(&bin)?;
+        crate::php_install::place_symlink(&link, &binary_path(dirs))
+            .map_err(|e| std::io::Error::other(e.to_string()))
+    } else {
+        crate::php_install::remove_if_symlink(&link)
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn reconcile_cloudflared_shim(_dirs: &PlatformDirs) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Test-only helper exposing `install_binary` to sibling test modules (e.g.
 /// `tunnel::mod`'s cache tests), which can't reach this module's own private
 /// `#[cfg(test)] mod tests`.
@@ -588,6 +610,25 @@ mod tests {
         assert!(!host_is_trusted("http://github.com/x"));
         assert!(!host_is_trusted("https://github.com.evil.example.com/x"));
         assert!(!host_is_trusted("https://evil.example.com/?u=github.com"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_cloudflared_shim_links_then_prunes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let link = dirs.data.join("bin").join("cloudflared");
+
+        reconcile_cloudflared_shim(&dirs).unwrap();
+        assert!(link.symlink_metadata().is_err());
+
+        install_binary_for_test(&dirs, "2026.6.1", b"#!/bin/sh\n");
+        reconcile_cloudflared_shim(&dirs).unwrap();
+        assert_eq!(std::fs::read_link(&link).unwrap(), binary_path(&dirs));
+
+        std::fs::remove_file(binary_path(&dirs)).unwrap();
+        reconcile_cloudflared_shim(&dirs).unwrap();
+        assert!(link.symlink_metadata().is_err());
     }
 
     #[test]

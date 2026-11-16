@@ -290,6 +290,7 @@ async fn run_until_shutdown(
         let state = daemon.state.clone();
         tokio::spawn(async move {
             crate::ipc_server::reconcile_tool_shims_now(&state).await;
+            crate::ipc_server::reconcile_client_shims_now(&state).await;
         })
     };
 

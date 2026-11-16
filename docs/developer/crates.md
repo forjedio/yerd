@@ -124,6 +124,7 @@ flowchart TD
     yerd --> update
     yerd --> servicectl
     yerd --> mcp
+    yerd --> services
 
     helper --> core
     helper --> platform
@@ -183,7 +184,7 @@ crate's `Cargo.toml`):
 - **`yerd-service-ctl`** → *(none - workspace leaf)*
 - **`yerd-helper`** (bin) → `yerd-core`, `yerd-platform`
 - **`yerd-forward`** (bin) → `yerd-core`
-- **`yerd`** (bin) → `yerd-core`, `yerd-ipc` (`transport`), `yerd-platform`, `yerd-update`, `yerd-service-ctl`
+- **`yerd`** (bin) → `yerd-core`, `yerd-ipc` (`transport`), `yerd-platform`, `yerd-update`, `yerd-service-ctl`, `yerd-services`
 - **`yerd-gui`** (app) → `yerd-core`, `yerd-ipc` (`transport`), `yerd-platform`, `yerd-update`
 - **`yerdd`** (bin) → `yerd-core`, `yerd-config`, `yerd-ipc` (`transport`), `yerd-tls`, `yerd-platform`, `yerd-dns`, `yerd-supervise`, `yerd-php`, `yerd-services`, `yerd-proxy`, `yerd-doctor`, `yerd-mail`, `yerd-tunnel`, `yerd-update` - **all fourteen libraries**
 - **`xtask`** → *(no internal deps; `anyhow` + `clap` only)*

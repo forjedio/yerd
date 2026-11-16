@@ -120,6 +120,55 @@ can't be dropped. `backup` writes to a temp file and atomically renames it, so a
 failed dump never clobbers an existing one. See the [Databases CLI
 reference](../reference/cli/db) for details.
 
+## Client commands on your PATH
+
+When an engine is installed, Yerd puts the command-line clients its build ships
+in `{data}/bin`, the same directory as the managed `php` and `composer` commands:
+
+| Service | Commands |
+|---|---|
+| MySQL | `mysql`, `mysqldump` |
+| MariaDB | `mariadb`, `mariadb-dump` |
+| PostgreSQL | `psql`, `pg_dump`, `pg_dumpall`, `pg_restore`, `createdb` |
+| Redis (Valkey) | `valkey-cli` |
+
+Each command runs the client from the version Yerd runs: the configured version
+if it is installed, otherwise the newest installed version. Changing or
+upgrading a service's version needs no relinking, and uninstalling an engine's
+last version removes its commands. Run `yerd path install` once to add
+`{data}/bin` to your `PATH`.
+
+The clients connect to Yerd's instance by default:
+
+- **MySQL / MariaDB** connect over Yerd's Unix socket (the shim sets
+  `MYSQL_UNIX_PORT`), so they work on any port.
+- **PostgreSQL** gets `PGHOST=127.0.0.1` and `PGPORT` set to the service's port,
+  unless you name a host yourself (`-h`, a `host=` connection string, a URI
+  with a host, or `PGHOST`/`PGHOSTADDR` in your environment), in which case
+  neither is added.
+- **Valkey** gets `-p <port>` when the service is not on the default 6379.
+
+Your own settings always win: an explicit `-h`, `-S`, or `--protocol` flag, a
+`[client]` `host` or `socket` in `~/.my.cnf`, or your own `MYSQL_UNIX_PORT`,
+`PGHOST`, or `PGPORT`. Note that pointing a MySQL/MariaDB client at TCP (with
+`-h` or `MYSQL_HOST`) disables the socket default, so a non-default port then
+also needs `-P` or `MYSQL_TCP_PORT`.
+
+Credentials are not injected - pass the user as usual:
+
+```sh
+mysql -u root my_app
+mysqldump -u root my_app > my_app.sql
+psql -U postgres my_app
+valkey-cli ping
+```
+
+::: warning Shadowing other clients
+Once `{data}/bin` is on your `PATH`, Yerd's `mysql`, `psql`, and friends take
+precedence over clients installed another way (for example with Homebrew)
+wherever `{data}/bin` comes first.
+:::
+
 ## Configuration
 
 Installed services are recorded in your [config file](../reference/configuration)

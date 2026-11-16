@@ -453,7 +453,9 @@ async fn ensure_database_engine(
                     .jobs
                     .set_phase(id, format!("Installing {}", def.display_name()))
                     .await;
-                resolve_and_install_latest(def, state).await?
+                let installed = resolve_and_install_latest(def, state).await?;
+                crate::ipc_server::reconcile_client_shims_now(state).await;
+                installed
             }
         };
 
