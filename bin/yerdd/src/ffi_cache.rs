@@ -86,7 +86,9 @@ impl FfiCache {
     }
 
     /// Definitive FFI answers for the applicable versions in `bins`, from the
-    /// cache or from concurrent probes. Unanswered versions are absent.
+    /// cache or from concurrent probes. Unanswered versions are absent, and so
+    /// is a version whose binary was replaced while it was being probed: that
+    /// answer describes the old build, so the next call probes the new one.
     async fn answers(&self, bins: &[(PhpVersion, PathBuf)]) -> HashMap<PhpVersion, bool> {
         let mut known: HashMap<PhpVersion, bool> = HashMap::new();
         let mut probes = tokio::task::JoinSet::new();
@@ -108,7 +110,9 @@ impl FfiCache {
             let runner = Arc::clone(&self.runner);
             let (version, bin) = (*version, bin.clone());
             probes.spawn(async move {
-                let answer = yerd_php::probe_ffi(runner.as_ref(), &bin).await;
+                let answer = yerd_php::probe_ffi(runner.as_ref(), &bin)
+                    .await
+                    .filter(|_| stamp_of(&bin) == Some(stamp));
                 (version, stamp, answer)
             });
         }
@@ -304,6 +308,33 @@ mod tests {
         assert!(cache.capable_versions(&bins).await.is_empty());
         assert!(cache.capable_versions(&bins).await.is_empty());
         assert_eq!(runner.calls(), 2);
+    }
+
+    struct ReplacingRunner {
+        bin: PathBuf,
+    }
+
+    #[async_trait]
+    impl CommandRunner for ReplacingRunner {
+        async fn run(&self, _cmd: Command) -> Result<ProbeOutput, io::Error> {
+            std::fs::write(&self.bin, b"a replaced, longer binary")?;
+            Ok(ProbeOutput {
+                status_ok: true,
+                stdout: "[PHP Modules]\nCore\nFFI\n".to_owned(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn answer_for_a_binary_replaced_mid_probe_is_discarded() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("php");
+        std::fs::write(&bin, b"x").unwrap();
+        let cache = FfiCache::new(Arc::new(ReplacingRunner { bin: bin.clone() }));
+        let bins = vec![(PhpVersion::new(8, 4), bin)];
+        assert!(cache.capable_versions(&bins).await.is_empty());
+        assert!(cache.lock().is_empty());
     }
 
     fn on(name: &str) -> BTreeMap<String, String> {

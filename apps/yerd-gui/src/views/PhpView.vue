@@ -731,7 +731,7 @@ onUnmounted(
             <div class="flex items-start gap-3">
               <Switch
                 :model-value="ffiOn"
-                :disabled="ffiSwitchDisabled"
+                :disabled="ffiSwitchDisabled || busy === 'settings'"
                 :aria-label="FFI_LABEL"
                 data-testid="toggle-ffi"
                 @update:model-value="setFfi"

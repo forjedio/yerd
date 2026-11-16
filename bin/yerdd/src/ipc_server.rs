@@ -1181,11 +1181,13 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
 /// [`restart_all_php`]'s semantics. Per-pool failures are logged, not fatal - the
 /// update itself already succeeded. The FFI-gated overrides are re-pushed first,
 /// since an updated build may have gained or lost FFI. Runs under the caller's
-/// `php_mutate` guard.
+/// `php_mutate` guard and takes `php_settings_mutate` itself, so a concurrent
+/// settings save cannot be overwritten by this stale snapshot.
 async fn restart_updated_pools(state: &DaemonState, updated: &[yerd_core::PhpVersion]) {
     if updated.is_empty() {
         return;
     }
+    let _settings_guard = state.php_settings_mutate.lock().await;
     let (global, overrides) = {
         let cfg = state.config.lock().await;
         (cfg.php.settings.clone(), cfg.php.version_settings.clone())
@@ -1422,7 +1424,9 @@ async fn adopt_default_if_unset(version: yerd_core::PhpVersion, state: &DaemonSt
 }
 
 /// Re-discover installed PHP binaries (bundled) and hand the refreshed map to
-/// the live `PhpManager`. Mirrors the discovery done at startup.
+/// the live `PhpManager`. Mirrors the discovery done at startup. Holds
+/// `php_settings_mutate` while it re-pushes the FFI-gated overrides, so a
+/// concurrent settings save cannot be overwritten by a stale snapshot.
 async fn refresh_php_binaries(state: &DaemonState) {
     let binaries: std::collections::BTreeMap<yerd_core::PhpVersion, std::path::PathBuf> =
         match yerd_php::discover_bundled(&state.dirs) {
@@ -1432,6 +1436,7 @@ async fn refresh_php_binaries(state: &DaemonState) {
                 return;
             }
         };
+    let _settings_guard = state.php_settings_mutate.lock().await;
     let (global, overrides) = {
         let cfg = state.config.lock().await;
         (cfg.php.settings.clone(), cfg.php.version_settings.clone())
