@@ -103,20 +103,16 @@ pub async fn install(dirs: &PlatformDirs, dl: &dyn Downloader) -> Result<(), Too
         .download(&url)
         .await
         .map_err(|e| ToolError::Download(format!("{asset}: {e}")))?;
-    let owned_dirs = dirs.clone();
-    let version = tag.clone();
-    tokio::task::spawn_blocking(move || {
-        verify_and_place(&owned_dirs, plat, &version, &asset, &bytes, &want_sha)
-    })
-    .await
-    .map_err(|e| ToolError::Io(format!("pnpm install task: {e}")))??;
+    verify_and_place(dirs, plat, &tag, &asset, &bytes, &want_sha)?;
     tracing::info!(version = %tag, "installed pnpm");
     Ok(())
 }
 
-/// Verify the downloaded tarball and stage it into `{data}/tools/pnpm/`. Blocking
-/// (hashing, gzip decode, extraction, directory swap), so [`install`] runs it
-/// on the blocking pool rather than the async executor.
+/// Verify the downloaded tarball and stage it into `{data}/tools/pnpm/`.
+/// Deliberately synchronous, like the other tool installers: a cancelled
+/// install job drops the install future while the caller holds `tool_mutate`,
+/// and a detached `spawn_blocking` worker would keep placing files after that
+/// lock is released and the job reported cancelled.
 fn verify_and_place(
     dirs: &PlatformDirs,
     plat: &str,
