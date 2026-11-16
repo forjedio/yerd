@@ -274,13 +274,20 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         }
         Request::InstallService { service, version } => {
             let dl = crate::php_install::ReqwestDownloader::new();
-            crate::services::install_service(&service, &version, state, &dl).await
+            let response = crate::services::install_service(&service, &version, state, &dl).await;
+            reconcile_client_shims_now(state).await;
+            response
         }
         Request::UninstallService {
             service,
             version,
             purge,
-        } => crate::services::uninstall_service(&service, &version, purge, state).await,
+        } => {
+            let response =
+                crate::services::uninstall_service(&service, &version, purge, state).await;
+            reconcile_client_shims_now(state).await;
+            response
+        }
         Request::StartService { service } => crate::services::start_service(&service, state).await,
         Request::StopService { service } => crate::services::stop_service(&service, state).await,
         Request::RestartService { service } => {
@@ -306,7 +313,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             autostart,
         } => {
             let dl = crate::php_install::ReqwestDownloader::new();
-            crate::services::add_service(
+            let response = crate::services::add_service(
                 &type_id,
                 site.as_deref(),
                 port,
@@ -315,7 +322,9 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
                 state,
                 &dl,
             )
-            .await
+            .await;
+            reconcile_client_shims_now(state).await;
+            response
         }
         Request::RemoveService { service, purge } => {
             crate::services::remove_service(&service, purge, state).await
@@ -349,7 +358,10 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         } => crate::db_admin::restore(&service, &name, &path, state).await,
         Request::ChangeServiceVersion { service, version } => {
             let dl = crate::php_install::ReqwestDownloader::new();
-            crate::services::change_service_version(&service, &version, state, &dl).await
+            let response =
+                crate::services::change_service_version(&service, &version, state, &dl).await;
+            reconcile_client_shims_now(state).await;
+            response
         }
         Request::ListDumps { since_id } => crate::dump_server::list(state, since_id).await,
         Request::ClearDumps => crate::dump_server::clear(state).await,
@@ -1525,6 +1537,26 @@ pub(crate) async fn reconcile_tool_shims_now(state: &DaemonState) {
     let _guard = state.shim_reconcile.lock().await;
     if let Err(e) = crate::tools::reconcile_tool_shims(&state.dirs, &yerd_bin) {
         tracing::warn!(error = %e, "tool-shim reconcile failed");
+    }
+}
+
+/// Reconcile the service client shims (`mysql`, `psql`, `valkey-cli`, ...) and
+/// the `cloudflared` link under the **shared** `shim_reconcile` mutex.
+/// Best-effort: failures are logged. The `cloudflared` link needs no `yerd`
+/// binary, so it is reconciled even when the sibling cannot be located. Used at
+/// startup, after every service install/uninstall/version change, and after a
+/// `cloudflared` install.
+pub(crate) async fn reconcile_client_shims_now(state: &DaemonState) {
+    let _guard = state.shim_reconcile.lock().await;
+    if let Err(e) = crate::tunnel::install::reconcile_cloudflared_shim(&state.dirs) {
+        tracing::warn!(error = %e, "cloudflared shim reconcile failed");
+    }
+    let Some(yerd_bin) = yerd_sibling() else {
+        tracing::warn!("cannot locate the `yerd` binary; skipping service-client shim reconcile");
+        return;
+    };
+    if let Err(e) = crate::service_install::reconcile_client_shims(&state.dirs, &yerd_bin) {
+        tracing::warn!(error = %e, "service-client shim reconcile failed");
     }
 }
 
@@ -3091,6 +3123,39 @@ mod tests {
             dispatch(Request::Ping, &state).await,
             Response::Pong
         ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dispatch_uninstall_service_prunes_client_shims() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let bin = state
+            .dirs
+            .data
+            .join("services")
+            .join("mysql")
+            .join("9.7.1")
+            .join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("mysqld"), b"#!/bin/sh\n").unwrap();
+        std::fs::write(bin.join("mysql"), b"#!/bin/sh\n").unwrap();
+        let link = state.dirs.data.join("bin").join("mysql");
+
+        reconcile_client_shims_now(&state).await;
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+
+        let response = dispatch(
+            Request::UninstallService {
+                service: "mysql".to_owned(),
+                version: "9.7.1".to_owned(),
+                purge: false,
+            },
+            &state,
+        )
+        .await;
+        assert!(matches!(response, Response::Ok), "{response:?}");
+        assert!(link.symlink_metadata().is_err());
     }
 
     #[tokio::test]

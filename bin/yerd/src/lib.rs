@@ -26,6 +26,8 @@ pub mod map;
 pub mod mcp_cmd;
 pub mod path_cmd;
 #[cfg(unix)]
+pub mod service_client_shim;
+#[cfg(unix)]
 pub mod shim;
 #[cfg(unix)]
 pub mod site_scope;

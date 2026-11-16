@@ -198,6 +198,7 @@ extension list.
 | `{data}/tools/laravel/bin/laravel` | The Laravel installer (built via Composer). |
 | `{data}/tools/wp-cli/vendor/wp-cli/wp-cli/php/boot-fs.php` | WP-CLI (built via Composer). |
 | `{data}/bin/{composer,node,npm,npx,bun,bunx,laravel,wp}` | The `PATH` shims. |
+| `{data}/bin/{mysql,mysqldump,mariadb,mariadb-dump,psql,pg_dump,pg_dumpall,pg_restore,createdb,valkey-cli,cloudflared}` | Service client and `cloudflared` commands, present while the engine (or `cloudflared`) is installed. See [Services & Databases](./services#client-commands-on-your-path). |
 
 `{data}` is Yerd's per-user data directory (`yerd status` and
 `yerd path print` both show the exact path for your platform).

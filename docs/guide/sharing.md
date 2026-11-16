@@ -39,6 +39,9 @@ Cloudflare account is required for quick share.
 yerd tunnel install
 ```
 
+Once installed, `cloudflared` is also available as a command in `{data}/bin`, so
+it is on your `PATH` after `yerd path install`.
+
 In the desktop app, the **Share** page offers an **Install cloudflared** button
 the first time you visit. If Yerd is using a `cloudflared` it found on your
 `PATH`, the badge is annotated `(system)` and a **Use Yerd's bundled version

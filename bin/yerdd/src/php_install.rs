@@ -567,6 +567,16 @@ pub(crate) fn place_symlink(link: &Path, target: &Path) -> Result<(), PhpError> 
     Ok(())
 }
 
+/// Remove `path` if it is a symlink; leave a regular file, a directory, or a
+/// missing path alone. The shim reconciles only ever prune links they placed.
+#[cfg(unix)]
+pub(crate) fn remove_if_symlink(path: &Path) -> std::io::Result<()> {
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
 /// Ensure the managed `php` shim points at the Yerd multi-call wrapper
 /// (`yerd_bin`), created/replaced atomically. The wrapper resolves the default
 /// version from `config.php.default` at run time, so this is version-independent.

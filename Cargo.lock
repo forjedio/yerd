@@ -6342,6 +6342,7 @@ dependencies = [
  "yerd-mcp",
  "yerd-platform",
  "yerd-service-ctl",
+ "yerd-services",
  "yerd-update",
  "yerdd",
 ]
