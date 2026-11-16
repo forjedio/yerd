@@ -545,6 +545,14 @@ export interface RouteRuleEntry {
   target: string;
 }
 
+/** One per-site custom response header, added to every response the site
+ *  serves. Reply element of a `"response_headers"` response. */
+export interface ResponseHeaderEntry {
+  site: string;
+  name: string;
+  value: string;
+}
+
 /**
  * Response is internally tagged on `type`. The bridge returns the decoded
  * Response directly; helpers below narrow it. A `Response::Error` is converted
@@ -558,6 +566,7 @@ export type Response =
   | { type: "parked"; paths: string[] }
   | { type: "proxies"; proxies: ProxyEntry[]; rules: ProxyRuleEntry[] }
   | { type: "routes"; rules: RouteRuleEntry[] }
+  | { type: "response_headers"; headers: ResponseHeaderEntry[] }
   | {
       type: "info";
       dns_addr: string;

@@ -3453,3 +3453,57 @@ fn response_proxies_customized_domains_byte_shape() {
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
+
+#[test]
+fn request_set_response_header_byte_shape() {
+    let r = Request::SetResponseHeader {
+        site: "api".into(),
+        name: "Access-Control-Allow-Origin".into(),
+        value: "https://app.test".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_response_header","site":"api","name":"Access-Control-Allow-Origin","value":"https://app.test"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_remove_response_header_byte_shape() {
+    let r = Request::RemoveResponseHeader {
+        site: "api".into(),
+        name: "Access-Control-Allow-Origin".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"remove_response_header","site":"api","name":"Access-Control-Allow-Origin"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_list_response_headers_byte_shape() {
+    let r = Request::ListResponseHeaders;
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"list_response_headers"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_response_headers_byte_shape() {
+    let r = Response::ResponseHeaders {
+        headers: vec![yerd_ipc::ResponseHeaderEntry {
+            site: "api".into(),
+            name: "Access-Control-Allow-Origin".into(),
+            value: "https://app.test".into(),
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"response_headers","headers":[{"site":"api","name":"Access-Control-Allow-Origin","value":"https://app.test"}]}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}

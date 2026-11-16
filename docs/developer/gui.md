@@ -50,7 +50,7 @@ apps/yerd-gui/
     │   └── client.test.ts  command-mapping + error-categorisation tests
     ├── composables/        useDaemon (singleton poller), usePoll, useToast, useIdes
     ├── components/         AppShell, SideNav, NavLink, TitleBar, StatusPill, ComingSoon, EnvironmentCard,
-    │                       SiteCard, SiteDetailsSidebar (+ SiteDomainsPanel / SiteRoutesPanel),
+    │                       SiteCard, SiteDetailsSidebar (+ SiteDomainsPanel / SiteRoutesPanel / SiteHeadersPanel),
     │                       PhpVersionPanel, ServiceOverridesModal, ui/ (incl. AsyncState, EmptyState, InfoBanner)
     ├── views/              OverviewView, GeneralView, PhpView, SitesView, ProxiesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView, AboutView
     └── lib/                utils (cn, humanisers), theme, desktop chrome, domainValidation,
@@ -439,7 +439,9 @@ export type Response =
 `Response` for callers - including the domain mutators
 `addDomain` / `removeDomain` / `setPrimaryDomain` / `resetDomains` that back
 `SiteDomainsPanel.vue`, the routing mutators `addRouteRule` / `removeRouteRule` /
-`listRoutes` behind `SiteRoutesPanel.vue`, `setPhpPoolSettings` behind
+`listRoutes` behind `SiteRoutesPanel.vue`, the header mutators
+`setResponseHeader` / `removeResponseHeader` / `listResponseHeaders` behind
+`SiteHeadersPanel.vue`, `setPhpPoolSettings` behind
 `PhpVersionPanel.vue`, and `serviceOverrides` / `setServiceOverride` behind
 `ServiceOverridesModal.vue`. A low-level `call` normalises every rejection into an
 `IpcError`, and `ensureOk` defensively throws if a `type:"error"` ever slips

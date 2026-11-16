@@ -20,7 +20,9 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio_rustls::TlsAcceptor;
-use yerd_core::{match_rule, Route, RouteRule, Site, SiteKind, SiteRouter, UpstreamTarget};
+use yerd_core::{
+    match_rule, ResponseHeader, Route, RouteRule, Site, SiteKind, SiteRouter, UpstreamTarget,
+};
 
 use crate::backend::Backend;
 use crate::client_tls::ProxyClientTls;
@@ -32,9 +34,12 @@ use crate::forward::{
 use crate::pure::cgi_params;
 use crate::pure::query;
 use crate::pure::redirect::{build_redirect_uri, directory_redirect_location};
+use crate::pure::response_headers;
 use crate::pure::route_rules::match_route;
 use crate::pure::try_files::is_php_source;
-use crate::pure::tunnel::{basic_auth_password, normalize_host, password_matches};
+use crate::pure::tunnel::{
+    basic_auth_password, keep_out_of_shared_caches, normalize_host, password_matches,
+};
 use crate::pure::unbound::{self, PickerSite};
 use crate::tls::build_server_config;
 use crate::traits::{BackendResolver, CertStore, LoginTokenConsumer};
@@ -352,21 +357,29 @@ async fn handle_tunnel_request<R: BackendResolver>(
 ) -> Result<Response<BoxBody>, std::convert::Infallible> {
     match dispatch_tunnel(req, peer_addr, server_addr, &ctx).await {
         Ok(resp) => Ok(resp),
-        Err(e) => {
-            tracing::warn!(
-                target: "yerd_proxy::request",
-                error = %e,
-                "tunnel request failed",
-            );
-            Ok(internal_error_response())
-        }
+        Err(e) => Ok(failed_tunnel_response(&e)),
     }
+}
+
+/// The `500` answering a tunnelled request whose handling failed, logged here.
+fn failed_tunnel_response(e: &ProxyError) -> Response<BoxBody> {
+    tracing::warn!(
+        target: "yerd_proxy::request",
+        error = %e,
+        "tunnel request failed",
+    );
+    internal_error_response()
 }
 
 /// Route one tunnelled request: public host lookup, the share-password gate
 /// (stripping `Authorization` once it passes, so the password never reaches PHP
 /// or an upstream), site lookup by name in the live router, then
 /// [`serve_routed`] as HTTPS on port 443.
+///
+/// The gate's `401` carries only the site's CORS headers. Every response
+/// behind a password, including a `404` for a vanished site and the `500` for
+/// a failed request, is kept out of shared caches, since the edge's cache key
+/// ignores `Authorization` and a cached page would bypass the gate.
 async fn dispatch_tunnel<R: BackendResolver>(
     mut req: Request<Incoming>,
     peer_addr: SocketAddr,
@@ -393,18 +406,42 @@ async fn dispatch_tunnel<R: BackendResolver>(
             .and_then(basic_auth_password)
             .is_some_and(|given| password_matches(&given, expected));
         if !authorized {
-            return Ok(unauthorized_response());
+            let headers = ctx.router.read().await.shared_response_headers(&route.site);
+            let mut resp = unauthorized_response();
+            response_headers::apply_cors(&mut resp, headers.as_deref().unwrap_or_default());
+            return Ok(resp);
         }
         req.headers_mut().remove(AUTHORIZATION);
     }
 
-    let (site, matched, rule) = {
+    let result = serve_shared_site(req, &host, &route.site, peer_addr, server_addr, ctx).await;
+    if route.password.is_none() {
+        return result;
+    }
+    let mut resp = result.unwrap_or_else(|e| failed_tunnel_response(&e));
+    keep_out_of_shared_caches(resp.headers_mut());
+    Ok(resp)
+}
+
+/// The part of [`dispatch_tunnel`] after the share-password gate: site lookup
+/// by name in the live router (a miss is `404`), then [`serve_routed`] as
+/// HTTPS on port 443.
+async fn serve_shared_site<R: BackendResolver>(
+    req: Request<Incoming>,
+    host: &str,
+    site_name: &str,
+    peer_addr: SocketAddr,
+    server_addr: SocketAddr,
+    ctx: &TunnelCtx<R>,
+) -> Result<Response<BoxBody>, ProxyError> {
+    let (site, matched, rule, headers) = {
         let guard = ctx.router.read().await;
-        let Some(site) = guard.get(&route.site).cloned() else {
+        let Some(site) = guard.get(site_name).cloned() else {
             return Ok(tunnel_not_found_response());
         };
         let (matched, rule) = site_path_rules(&guard, &site, req.uri().path());
-        (site, matched, rule)
+        let headers = guard.shared_response_headers(site.name());
+        (site, matched, rule, headers)
     };
 
     let prepend = match ctx.public_url_prepend.as_deref() {
@@ -423,12 +460,13 @@ async fn dispatch_tunnel<R: BackendResolver>(
         RoutedCtx {
             resolver: ctx.resolver.as_ref(),
             client_tls: ctx.client_tls.as_ref(),
-            host: &host,
+            host,
             server_addr: SocketAddr::new(server_addr.ip(), 443),
             peer_addr,
             https: true,
             symlink_protection: ctx.symlink_protection.load(Ordering::Relaxed),
             prepend,
+            headers,
         },
     )
     .await
@@ -551,17 +589,26 @@ async fn handle_request<R: BackendResolver, L: LoginTokenConsumer>(
     .await
     {
         Ok(resp) => Ok(resp),
-        Err(e) => {
-            tracing::warn!(
-                target: "yerd_proxy::request",
-                error = %e,
-                "proxy request failed",
-            );
-            Ok(internal_error_response())
-        }
+        Err(e) => Ok(failed_request_response(&e)),
     }
 }
 
+/// The `500` answering a request whose handling failed, logged once here.
+fn failed_request_response(e: &ProxyError) -> Response<BoxBody> {
+    tracing::warn!(
+        target: "yerd_proxy::request",
+        error = %e,
+        "proxy request failed",
+    );
+    internal_error_response()
+}
+
+/// Route one request and produce its response.
+///
+/// For a PHP site every response, including the HTTP→HTTPS redirect and the
+/// `500` for a failed backend, passes through [`finish_site_response`] to pick
+/// up the site's custom response headers. The one exemption is a path-prefix
+/// proxy rule, whose upstream response is returned untouched.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
     req: Request<Incoming>,
@@ -588,40 +635,45 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
 
     let https = matches!(listener, Listener::Https);
 
-    let (site, unbound, matched, route) = match resolve_request(&router, &req, &host).await? {
-        Routed::Site {
-            site,
-            unbound,
-            matched,
-            route,
-        } => (site, unbound, matched, route),
-        Routed::Proxy {
-            forward,
-            secure,
-            unbound,
-        } => {
-            if matches!(listener, Listener::Http) && !unbound {
-                if let (true, Some(port)) = (secure, redirect_port) {
-                    return https_redirect(&host, &req, port);
+    let (site, unbound, matched, route, headers) =
+        match resolve_request(&router, &req, &host).await? {
+            Routed::Site {
+                site,
+                unbound,
+                matched,
+                route,
+                headers,
+            } => (site, unbound, matched, route, headers),
+            Routed::Proxy {
+                forward,
+                secure,
+                unbound,
+            } => {
+                if matches!(listener, Listener::Http) && !unbound {
+                    if let (true, Some(port)) = (secure, redirect_port) {
+                        return https_redirect(&host, &req, port);
+                    }
                 }
+                return proxy_fwd::forward(
+                    req,
+                    &forward.target,
+                    client_tls.as_ref(),
+                    &forward.tld,
+                    peer_addr.ip(),
+                    https,
+                    &host,
+                )
+                .await;
             }
-            return proxy_fwd::forward(
-                req,
-                &forward.target,
-                client_tls.as_ref(),
-                &forward.tld,
-                peer_addr.ip(),
-                https,
-                &host,
-            )
-            .await;
-        }
-        Routed::Respond(resp) => return Ok(resp),
-    };
+            Routed::Respond(resp) => return Ok(resp),
+        };
 
     if matches!(listener, Listener::Http) && !unbound {
         if let (true, Some(port)) = (site.secure(), redirect_port) {
-            return https_redirect(&host, &req, port);
+            return Ok(finish_site_response(
+                https_redirect(&host, &req, port),
+                headers.as_deref(),
+            ));
         }
     }
 
@@ -642,6 +694,7 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
                 tokens: login_tokens.as_ref(),
                 script: login_prepend_script.as_deref(),
             },
+            headers,
         },
     )
     .await
@@ -679,13 +732,16 @@ struct RoutedCtx<'a, R> {
     https: bool,
     symlink_protection: bool,
     prepend: PrependSource<'a>,
+    /// The site's configured response headers, applied by [`serve_routed`].
+    headers: Option<Arc<[ResponseHeader]>>,
 }
 
-/// The post-routing tail of a request: a path-prefix proxy rule forward, then
-/// backend resolution, a WebSocket upgrade, `FrankenPHP`, or the PHP-FPM path
-/// (static files, scripts, routing rules). Shared by [`dispatch`] and
-/// [`dispatch_tunnel`] so both listeners serve a site identically once it is
-/// routed.
+/// The post-routing tail of a request: a path-prefix proxy rule forward, or
+/// [`serve_site`] with the site's custom response headers applied to whatever
+/// it produces, including the `500` for a failed backend. Shared by
+/// [`dispatch`] and [`dispatch_tunnel`] so both listeners serve a site
+/// identically once it is routed. A proxy rule's upstream response is returned
+/// untouched.
 async fn serve_routed<R: BackendResolver>(
     req: Request<Incoming>,
     site: &Site,
@@ -706,6 +762,30 @@ async fn serve_routed<R: BackendResolver>(
         .await;
     }
 
+    let headers = ctx.headers.clone();
+    let result = serve_site(req, site, route, ctx).await;
+    Ok(finish_site_response(result, headers.as_deref()))
+}
+
+/// Turn a site response, or the error that replaced it, into the final
+/// response with the site's custom headers applied.
+fn finish_site_response(
+    result: Result<Response<BoxBody>, ProxyError>,
+    headers: Option<&[ResponseHeader]>,
+) -> Response<BoxBody> {
+    let mut resp = result.unwrap_or_else(|e| failed_request_response(&e));
+    response_headers::apply(&mut resp, headers.unwrap_or_default());
+    resp
+}
+
+/// Backend resolution, a WebSocket upgrade, `FrankenPHP`, or the PHP-FPM path
+/// (static files, scripts, routing rules) for a routed site.
+async fn serve_site<R: BackendResolver>(
+    req: Request<Incoming>,
+    site: &Site,
+    route: Option<RouteRule>,
+    ctx: RoutedCtx<'_, R>,
+) -> Result<Response<BoxBody>, ProxyError> {
     let served_root = site.served_root();
     let allowed_root = site.document_root().to_path_buf();
 
@@ -748,7 +828,7 @@ async fn serve_routed<R: BackendResolver>(
     }
 }
 
-/// The `Backend::PhpFpm`/`PhpFpmTcp` half of [`serve_routed`]: static files,
+/// The `Backend::PhpFpm`/`PhpFpmTcp` half of [`serve_site`]: static files,
 /// then a real script (gated by
 /// [`BackendResolver::allows_direct_script_execution`]), then the site
 /// root's `index.php`.
@@ -1130,6 +1210,8 @@ enum Routed {
         unbound: bool,
         matched: Option<ProxyTarget>,
         route: Option<RouteRule>,
+        /// The site's configured response headers, applied in [`dispatch`].
+        headers: Option<Arc<[ResponseHeader]>>,
     },
     /// A whole-host reverse proxy to forward to.
     Proxy {
@@ -1173,6 +1255,7 @@ async fn resolve_request(
             let site = site.clone();
             let (matched, route) = site_path_rules(&guard, &site, req.uri().path());
             return Ok(Routed::Site {
+                headers: guard.shared_response_headers(site.name()),
                 site,
                 unbound: false,
                 matched,
@@ -1211,6 +1294,7 @@ async fn resolve_request(
         UnboundDecision::Serve(site) => {
             let (matched, route) = site_path_rules(&guard, &site, req.uri().path());
             Ok(Routed::Site {
+                headers: guard.shared_response_headers(site.name()),
                 site,
                 unbound: true,
                 matched,

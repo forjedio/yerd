@@ -28,7 +28,23 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v24 (current)
+### v25 (current)
+
+**Added:** the optional `[response_headers]` table - per-site **custom response headers**, keyed by site class exactly like `[route_rules]`: `[response_headers.linked.<name>]` by site name, `[response_headers.parked."<docroot>"]` by document-root string. Each entry pairs a header `name` with a `value`. It defaults to empty when absent, so an uncustomised file omits it entirely.
+
+```toml
+[[response_headers.linked.api]]
+name = "Access-Control-Allow-Origin"
+value = "https://app.test"
+```
+
+The proxy sets every listed header on every response it produces for the site, replacing any same-named header the app or Yerd already set (issue #234). Each entry is validated at load: the name must be a valid HTTP header name and not one Yerd manages (`Connection`, `Keep-Alive`, `Transfer-Encoding`, `Upgrade`, `TE`, `Trailer`, `Content-Length`, `Host`, `Set-Cookie`, `Content-Encoding`, `Content-Range`, `Location`, or any `Proxy-*`), and the value must be non-empty with no control characters. A hand-edited entry that fails these checks is a hard parse error, exactly like a bad `[route_rules]` target. Two entries for one site with the same name (ignoring case) fail validation.
+
+**Migration from v24:** bare version bump - the table defaults to empty when absent, so a v24 file needs no other change.
+
+**To downgrade to v24:** change `version = 25` to `version = 24` and delete any `[response_headers.*]` tables (a v24 daemon rejects the unknown table under `deny_unknown_fields`). Sites stop sending the custom headers.
+
+### v24
 
 **Added:** the optional `[tunnel.passwords]` table - per-site share passwords, keyed by site name. When a site has a password, every tunnelled request to it (quick or named tunnel) must carry HTTP basic auth with that password; the username is ignored. One password protects every tunnel kind for that site. Each value is 1 to 128 bytes with no control characters, and keys follow the same safe-key rule as `[tunnel.sites]`. It defaults to empty when absent, so a file with no passwords omits it entirely. The file is saved `0600`, and passwords are never returned over IPC.
 

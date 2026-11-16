@@ -267,6 +267,13 @@ yerd tunnel password app --clear    # remove it
   and is never sent back to the CLI or desktop app. Treat it as a lightweight
   gate for a dev share, not as production authentication. There is no rate
   limiting of attempts.
+- Responses served behind the password are kept out of Cloudflare's shared
+  cache: Yerd marks them `Cache-Control: private` (dropping `public` and
+  `s-maxage`) and removes `CDN-Cache-Control`-style headers, since the edge
+  cache does not key on the password. Browsers still cache as your app or
+  [response headers](../reference/cli/headers) say. Pages the edge cached
+  while the share was open can still be served until they expire, so set the
+  password before sharing anything your app marks as publicly cacheable.
 
 ## Preflight warnings
 
