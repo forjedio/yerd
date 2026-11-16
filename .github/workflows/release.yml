@@ -50,7 +50,7 @@ jobs:
         [
           {"id":"linux-x86_64","runner":"ubuntu-22.04","container":"","kind":"gui"},
           {"id":"linux-arm64","runner":"ubuntu-22.04-arm","container":"","kind":"gui"},
-          {"id":"macos","runner":"macos-14","container":"","kind":"gui"},
+          {"id":"macos","runner":"macos-latest","container":"","kind":"gui"},
           {"id":"arch-x86_64","runner":"ubuntu-22.04","container":"archlinux:base-devel","kind":"arch"},
           {"id":"fedora-x86_64","runner":"ubuntu-22.04","container":"","kind":"fedora"},
           {"id":"fedora-arm64","runner":"ubuntu-22.04-arm","container":"","kind":"fedora"}

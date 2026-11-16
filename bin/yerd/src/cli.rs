@@ -949,10 +949,11 @@ pub enum ElevateTarget {
     Trust,
     /// Route `*.<tld>` queries to yerd's DNS responder.
     Resolver,
-    /// Allow the daemon to bind privileged ports 80/443 (setcap).
+    /// Serve privileged ports 80/443: setcap on Linux, the launchd port
+    /// forwarder on macOS.
     Ports,
-    /// Install the macOS LAN pf redirect so other devices reach 80/443 (macOS
-    /// only; on Linux this reuses the `ports` setcap grant). Run after
+    /// Install the macOS LAN port forwarder so other devices reach 80/443
+    /// (macOS only; on Linux this reuses the `ports` setcap grant). Run after
     /// `yerd lan enable`.
     Lan,
 }

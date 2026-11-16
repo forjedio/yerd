@@ -48,7 +48,8 @@ pub trait PortBinder {
     /// reachable from other devices on the LAN. Binding `0.0.0.0` still accepts
     /// loopback traffic, so on-host access keeps working. Privilege for a
     /// sub-1024 wildcard bind is the OS's concern (Linux `setcap`; on macOS the
-    /// daemon binds the rootless fallback and a `pf` redirect carries 80/443).
+    /// daemon binds the rootless fallback and the launchd port forwarder carries
+    /// 80/443).
     ///
     /// Internally: attempt `desired.0` then `desired.1`. If either fails
     /// with one of the retry-trigger kinds - `PermissionDenied`,
@@ -61,7 +62,7 @@ pub trait PortBinder {
     ///
     /// On macOS a privileged `desired` side is never attempted: the pair is
     /// replaced by `fallback` first, so the daemon deterministically owns the
-    /// rootless ports the `pf` redirect targets and never squats 80/443.
+    /// rootless ports the port forwarder targets and never squats 80/443.
     fn bind_pair(
         &self,
         lan: bool,

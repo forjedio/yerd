@@ -47,8 +47,9 @@ Consequences (see `copilot-instructions.md` for the full list):
 - **Side effects go behind traits** (`ProcessSpawner`, `TrustStore`, `PortBinder`,
   `Clock`, …); real impls live in `yerd-platform` or a crate's `os/` module
   behind `#[cfg(...)]`.
-- **Binaries are thin** (`bin/yerdd`, `bin/yerd`, `bin/yerd-helper`, the Tauri
-  `src-tauri` layer) — orchestration, not behaviour.
+- **Binaries are thin** (`bin/yerdd`, `bin/yerd`, `bin/yerd-helper`,
+  `bin/yerd-forward`, the Tauri `src-tauri` layer) — orchestration, not
+  behaviour.
 - **One source of truth:** the daemon owns runtime state; the CLI and GUI are
   both `yerd-ipc` clients and never reimplement daemon logic.
 - **The IPC protocol is a stable contract** — evolve it additively; wire-stability
@@ -62,7 +63,7 @@ no other `yerd-*` crate; libraries never depend on binaries.
 | Path | What it is |
 |---|---|
 | `crates/` | Library crates (`yerd-core`, `yerd-ipc`, `yerd-config`, `yerd-tls`, `yerd-platform`, `yerd-dns`, `yerd-php`, `yerd-proxy`, `yerd-doctor`, …) |
-| `bin/` | The three binaries: `yerdd` (daemon), `yerd` (CLI), `yerd-helper` (privileged one-shot) |
+| `bin/` | The four binaries: `yerdd` (daemon), `yerd` (CLI), `yerd-helper` (privileged one-shot), `yerd-forward` (unprivileged launchd-spawned TCP forwarder for 80/443, macOS) |
 | `apps/yerd-gui/` | Tauri v2 desktop app — `src-tauri/` (Rust bridge) + `src/` (Vue 3 + TS + Tailwind) |
 | `xtask/` | Build/release automation, run as `cargo xtask <cmd>` |
 | `docs/` | VitePress documentation site (published at yerd.app) |

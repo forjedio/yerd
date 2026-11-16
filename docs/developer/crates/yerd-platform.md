@@ -43,8 +43,9 @@ src/
     firefox.rs          parse_profiles_ini
     ide_spec.rs         IDE_SPECS table (id, display_name, rank) + name/id/exec matchers
     opener_spec.rs      ordered system-opener candidates per desktop
+    launchd_ports.rs    compose/parse macOS launchd port-forwarder plists, labels, paths
     pem_match.rs        find_by_fingerprint, sha256, der_to_pem
-    pf_anchor.rs        compose/insert/remove macOS pf redirect rules
+    pf_anchor.rs        legacy macOS pf redirect: detection, removal, release gate
     port_plan.rs        classify_desired / classify_fallback
     proc_metrics.rs     parse_vmrss_bytes / parse_loadavg (Linux /proc)
     ps_metrics.rs       parse_ps_rss_bytes (macOS `ps`)
@@ -171,7 +172,7 @@ pub trait PortRedirector {
 }
 ```
 
-On macOS the unprivileged daemon cannot bind 80/443, so `yerd elevate ports` installs a pf `rdr` redirect to its rootless ports. Because the daemon still binds the high ports, `StatusReport.http.fell_back` stays `true` even when the redirect works - the doctor needs an independent signal that 80/443 are *actually reachable*. `is_active` is therefore an **active, unprivileged** check, and it goes further than "something answers": it speaks HTTP to loopback and requires the proxy's `Server` marker (`yerd_core::PROXY_SERVER_ID`) on the reply, so a foreign listener or a stale `pf` rule can't read as a live Yerd redirect.
+On macOS the unprivileged daemon cannot bind 80/443, so `yerd elevate ports` installs launchd socket-activated port forwarders (`yerd-forward`) that relay to its rootless ports. Because the daemon still binds the high ports, `StatusReport.http.fell_back` stays `true` even when the redirect works - the doctor needs an independent signal that 80/443 are *actually reachable*. `is_active` is therefore an **active, unprivileged** check, and it goes further than "something answers": it speaks HTTP to loopback and requires the proxy's `Server` marker (`yerd_core::PROXY_SERVER_ID`) on the reply, so a foreign listener can't read as a live Yerd redirect. `MacosPortRedirector` learns the forward targets from the forwarder plists (`launchd_ports::parse_forwarder_target`), falling back to the legacy pf anchor files on machines that haven't re-elevated since upgrading. `legacy_pf_redirect` reports whether any legacy pf boot job or anchor file is still on disk (an unprivileged existence check), which the doctor turns into a `LegacyPortRedirect` nudge; Linux and unsupported platforms return `None`.
 
 ```rust
 // Bare reachability: does *anything* answer?
@@ -271,16 +272,21 @@ Every function in `pure` is sync, runtime-free, and free of I/O, clock reads, an
 
 `find_by_fingerprint(blobs: &[(PathBuf, Vec<u8>)], fp: &[u8;32]) -> Result<Option<PemMatch>, PathBuf>` searches pre-read PEM blobs (the caller does the I/O) for the first `CERTIFICATE` block whose DER body hashes to `fp`, returning the matching path and 0-based block index. `Err(path)` signals a blob that failed PEM parsing, which the OS layer translates to `TrustStoreErrorReason::AnchorPemInvalid`. A blob with no certificate blocks (e.g. a README in an anchor dir) is `Ok(None)`, not an error. Also exports `sha256`, `der_to_pem`, and `fingerprint_of_first_cert_in_pem`.
 
+### launchd_ports
+
+Composes and parses the macOS port-forwarder LaunchDaemons. Labels: `PORTS_HTTP_LABEL = "dev.yerd.ports.http"`, `PORTS_HTTPS_LABEL = "dev.yerd.ports.https"`, `LAN_PORTS_HTTP_LABEL = "dev.yerd.lan.ports.http"`, `LAN_PORTS_HTTPS_LABEL = "dev.yerd.lan.ports.https"`, each with a matching `/Library/LaunchDaemons/<label>.plist` path constant. `FORWARDER_BIN = "yerd-forward"` is the sibling of `yerd-helper` the plist runs.
+
+`compose_forwarder_plist(scope, label, forwarder, user, from, to)` emits a plist whose `Sockets` make launchd bind `scope.node():from` (`127.0.0.1` for `Scope::Loopback`, `0.0.0.0` for `Scope::Lan`) and, on the first connection, spawn `yerd-forward --scope <scope> --to <to>` as `UserName` with `inetdCompatibility` `Wait = true`, which passes the listening socket on stdin. There is deliberately no `RunAtLoad` or `KeepAlive`: launchd holds the socket from load (and every boot) and spawns the forwarder on demand. `ProcessType` `Interactive` stops launchd throttling it. Every interpolated value is XML-escaped.
+
+`parse_forwarder_target` reads the `--to` port back for `MacosPortRedirector`. `is_persistent_forwarder_path` rejects relative paths, anything under `AppTranslocation` (a randomised read-only mount that is gone after reboot), and anything under `/Volumes` (an app run from its disk image). `Scope::jobs()` lists the two `Job`s (label, plist path, role) for a scope.
+
+The plist lives in root-owned `/Library/LaunchDaemons` (root:wheel `0644`), so only root can change `UserName` or `ProgramArguments`. See [yerd-forward](../binaries/yerd-forward) for the threat model.
+
 ### pf_anchor
 
-Composes the macOS pf redirect. Key constants: `ANCHOR_NAME = "dev.yerd"`, `ANCHOR_PATH = "/etc/pf.anchors/dev.yerd"`, `PLIST_PATH = "/Library/LaunchDaemons/dev.yerd.pf.plist"`, `PF_CONF_PATH = "/etc/pf.conf"`.
+Legacy only. Older Yerd served 80/443 on macOS through pf `rdr` rules in its own anchors (`dev.yerd`, `dev.yerd.lan`), hooked into `/etc/pf.conf` by `# yerd-managed` / `# yerd-lan-managed` lines and re-applied at boot by `dev.yerd.pf.plist` / `dev.yerd.lan.pf.plist`. The module now exists only to detect and remove that state: `is_installed` / `is_lan_installed`, `remove_anchor_refs` / `remove_lan_anchor_refs` / `remove_all_refs`, and `parse_anchor_targets` (stale detection on un-migrated machines still reads the anchor files).
 
-```text
-rdr pass on lo0 inet proto tcp from any to any port 80  -> 127.0.0.1 port <http_to>
-rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port <https_to>
-```
-
-`on lo0` is load-bearing: pf `rdr` only fires for `127.0.0.1→127.0.0.1` traffic when the rule is anchored to `lo0`. Functions: `compose_anchor_rules`, `is_installed`, `insert_anchor_refs`, `remove_anchor_refs`, `compose_launchdaemon_plist`. Inserted lines carry a `# yerd-managed` marker so insertion is idempotent and removal is unambiguous; the `rdr-anchor` reference is placed after the last existing translation anchor (pf requires the translation section before filter rules). The design **edits** `/etc/pf.conf` rather than loading a self-contained ruleset, because `pfctl -f <full-ruleset>` would flush Apple's default `com.apple/*` anchors. The boot-persistence plist is one-shot (`RunAtLoad`, no `KeepAlive`).
+Removal must not switch pf off for other software (VPN kill switches and firewalls enable pf through `pfctl` too, and their references look identical to Yerd's). `parse_pf_references` parses `pfctl -s References`, `yerd_owned_tokens` picks every token taken by a process named `pfctl` (references don't record which tool took them, so this can include another tool's) (returning `None` if any isn't a plain decimal, so nothing unvalidated reaches `pfctl -X`), and `only_apple_and_yerd_pf_state` is the **fail-closed** gate: it returns true only when every loaded anchor is in an exact Apple allowlist (`com.apple` and its `200.AirDrop` and `250.ApplicationFirewall` sub-anchors) or is a Yerd anchor, and every main-ruleset line is a `com.apple/*` or Yerd anchor hook. Anything unrecognised returns false, and the only cost is that pf stays enabled until the next reboot. The `com.apple.internet-sharing` anchors (added once Internet Sharing or a VM network such as OrbStack's has run) are deliberately not allowlisted: Internet Sharing needs pf enabled, and its reference can't be told apart from Yerd's.
 
 ### port_plan
 

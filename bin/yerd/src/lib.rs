@@ -296,7 +296,7 @@ async fn run_lan_toggle(enabled: bool, json: bool) -> ExitCode {
         );
         if cfg!(target_os = "macos") {
             println!();
-            println!("The macOS pf LAN redirect is separate privileged state — remove it with:");
+            println!("The macOS LAN port forwarder is separate privileged state — remove it with:");
             println!("    sudo yerd unelevate lan");
             println!("Until you do, `yerd lan status` will flag it as residual.");
         }
@@ -306,7 +306,7 @@ async fn run_lan_toggle(enabled: bool, json: bool) -> ExitCode {
 
 /// `yerd lan status`: a LAN-focused view of the daemon's `Status`, showing
 /// configured-vs-effective state so "enabled but not exposed" (and, on macOS,
-/// "disabled but pf still redirecting") are both visible.
+/// "disabled but the LAN forwarder still installed") are both visible.
 async fn run_lan_status(json: bool) -> ExitCode {
     use yerd_ipc::{Request, Response};
     let report = match transport::exchange(&Request::Status).await {
@@ -340,7 +340,7 @@ async fn run_lan_status(json: bool) -> ExitCode {
         println!("Enable it with:  yerd lan enable");
         #[cfg(target_os = "macos")]
         println!(
-            "Note: if you previously ran `sudo yerd elevate lan`, remove the residual pf rule \
+            "Note: if you previously ran `sudo yerd elevate lan`, remove the residual LAN forwarder \
              with `sudo yerd unelevate lan`."
         );
         return ExitCode::SUCCESS;

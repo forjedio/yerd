@@ -10,7 +10,7 @@
 //!    the data dir would strand a trusted root CA with no way to identify it.
 //! 3. Confirm (unless `--yes`).
 //! 4. Root only: revert the system changes from `yerd elevate` (CA trust, DNS
-//!    resolver, macOS pf redirect) by driving `yerd-helper` directly. Without
+//!    resolver, macOS port forwarder) by driving `yerd-helper` directly. Without
 //!    root we print the exact manual steps and continue.
 //! 5. Stop + disable the daemon service and reap the daemon (a graceful SIGTERM
 //!    lets it reap its php-fpm / DB / mail children).
@@ -209,17 +209,15 @@ mod unix_impl {
         run_helper(
             &helper,
             &HelperInvocation::UninstallPortRedirect,
-            "remove the pf port redirect",
+            "remove the port forwarder",
             residue,
         );
 
-        // The LAN pf redirect is a separate anchor (`dev.yerd.lan`); tear it down
-        // too so a full uninstall leaves no dangling `/etc/pf.conf` reference.
         #[cfg(target_os = "macos")]
         run_helper(
             &helper,
             &HelperInvocation::UninstallLanPortRedirect,
-            "remove the pf LAN redirect",
+            "remove the LAN port forwarder",
             residue,
         );
     }
@@ -360,7 +358,7 @@ mod unix_impl {
         let dirs = dedup(dirs);
 
         let mut packaged = false;
-        for name in ["yerdd", "yerd-helper", "yerd"] {
+        for name in ["yerdd", "yerd-helper", "yerd-forward", "yerd"] {
             for dir in &dirs {
                 let path = dir.join(name);
                 let Ok(md) = std::fs::symlink_metadata(&path) else {
@@ -479,7 +477,9 @@ mod unix_impl {
         );
         println!("  • cache:   {}", dirs.cache.display());
         println!("  • the yerd PATH entry from your shell startup files");
-        println!("  • the yerd daemon service and the yerd / yerdd / yerd-helper binaries");
+        println!(
+            "  • the yerd daemon service and the yerd / yerdd / yerd-helper / yerd-forward binaries"
+        );
         if root {
             println!("  • system changes from `yerd elevate` (CA trust, DNS resolver, ports)");
         }
@@ -519,9 +519,22 @@ mod unix_impl {
         #[cfg(target_os = "macos")]
         {
             eprintln!("    • resolver: sudo rm /etc/resolver/{tld}");
+            for label in [
+                yerd_platform::pure::launchd_ports::PORTS_HTTP_LABEL,
+                yerd_platform::pure::launchd_ports::PORTS_HTTPS_LABEL,
+                yerd_platform::pure::launchd_ports::LAN_PORTS_HTTP_LABEL,
+                yerd_platform::pure::launchd_ports::LAN_PORTS_HTTPS_LABEL,
+            ] {
+                eprintln!(
+                    "    • ports:    sudo launchctl bootout system/{label} 2>/dev/null; \
+                     sudo rm -f /Library/LaunchDaemons/{label}.plist"
+                );
+            }
             eprintln!(
-                "    • ports:    sudo launchctl bootout system/dev.yerd.pf 2>/dev/null; \
-                 sudo rm -f /Library/LaunchDaemons/dev.yerd.pf.plist"
+                "    • legacy:   sudo launchctl bootout system/dev.yerd.pf 2>/dev/null; \
+                 sudo launchctl bootout system/dev.yerd.lan.pf 2>/dev/null; \
+                 sudo rm -f /Library/LaunchDaemons/dev.yerd.pf.plist \
+                 /Library/LaunchDaemons/dev.yerd.lan.pf.plist"
             );
         }
         #[cfg(not(target_os = "macos"))]

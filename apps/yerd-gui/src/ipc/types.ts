@@ -238,7 +238,7 @@ export interface StatusReport {
   ca: CaStatus;
   /** Tri-state - null means "unknown", never coerce to false. */
   resolver_installed: boolean | null;
-  /** macOS: is the pf redirect carrying 80/443 to the rootless ports? true =
+  /** macOS: is the port forwarder carrying 80/443 to the rootless ports? true =
    *  privileged ports served via the redirect, false = not, null/undefined =
    *  unknown / not applicable (Linux binds directly after setcap). Omitted on the
    *  wire when not set (the Rust field is `#[serde(default, skip_serializing_if)]`,
@@ -295,14 +295,18 @@ export interface StatusReport {
   /** Whether `yerd mcp` serves Yerd's tools to local AI agents. Defaults to
    *  `false` (opt-in) when omitted by a daemon predating the field. */
   mcp_enabled?: boolean;
-  /** macOS: destination ports the installed loopback (`dev.yerd`) pf anchor
-   *  carries 80/443 to. Compare with `http.bound`/`https.bound` to detect a
+  /** macOS: destination ports the installed loopback port forwarder (or a
+   *  legacy pf anchor) carries 80/443 to. Compare with `http.bound`/`https.bound` to detect a
    *  stale redirect that black-holes on-host access. Omitted when not installed,
    *  unreadable, or not macOS. */
   port_redirect_targets?: { http: number; https: number } | null;
   /** macOS: same as `port_redirect_targets` for the LAN (`dev.yerd.lan`) anchor.
    *  A stale target here black-holes other devices while LAN mode is on. */
   lan_redirect_targets?: { http: number; https: number } | null;
+  /** macOS: whether a pf redirect from an older Yerd is still installed, so
+   *  80/443 still go through pf instead of the launchd port forwarder. Omitted
+   *  when not macOS or undeterminable. */
+  legacy_pf_redirect?: boolean | null;
 }
 
 /** One apex-shadow relationship: `site`'s apex is claimed by `shadowed_by`. */
@@ -336,6 +340,7 @@ export type DiagnosisCode =
   | "domain_shadowed"
   | "port_redirect_stale"
   | "lan_redirect_stale"
+  | "legacy_port_redirect"
   | "all_good";
 
 export interface Diagnosis {

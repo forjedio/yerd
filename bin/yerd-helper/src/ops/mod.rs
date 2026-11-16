@@ -3,7 +3,11 @@
 //! in a single file.
 
 pub mod ca;
+#[cfg(target_os = "macos")]
+pub mod forwarder_job;
 pub mod lan_port_redirect;
+#[cfg(target_os = "macos")]
+pub mod legacy_pf;
 pub mod port_redirect;
 pub mod resolver;
 pub mod setcap;
@@ -50,6 +54,26 @@ where
         .code()
         .map_or(CommandReason::Signal, CommandReason::NonZero);
     Err(HelperError::Command { tool, reason })
+}
+
+/// Discard the result of a best-effort step, such as a `launchctl bootout` of
+/// a job that isn't loaded.
+#[cfg(target_os = "macos")]
+pub fn ignore_command_failure(result: Result<std::process::Output, HelperError>) {
+    let _ = result;
+}
+
+/// Delete `path`; already absent is success.
+#[cfg(target_os = "macos")]
+pub fn remove_if_present(path: &str) -> Result<(), HelperError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(HelperError::Io {
+            path: path.into(),
+            source,
+        }),
+    }
 }
 
 /// Write `data` to `path` atomically with the given mode.

@@ -18,7 +18,7 @@ export function privilegedFallback(r: StatusReport): boolean {
   );
 }
 
-/** Privileged ports are served: either no privileged fallback, or macOS pf redirect. */
+/** Privileged ports are served: either no privileged fallback, or the macOS port forwarder. */
 export function portsElevated(r: StatusReport): boolean {
   return !privilegedFallback(r) || r.port_redirect === true;
 }

@@ -795,19 +795,25 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     .ok()
     .flatten();
 
-    let (port_redirect, foreign_web_listener, port_redirect_targets, lan_redirect_targets) =
-        tokio::task::spawn_blocking(|| {
-            use yerd_platform::PortRedirector;
-            let r = yerd_platform::ActivePortRedirector::new();
-            (
-                r.is_active(),
-                r.foreign_web_listener(),
-                r.redirect_targets().map(redirect_targets_to_wire),
-                r.lan_redirect_targets().map(redirect_targets_to_wire),
-            )
-        })
-        .await
-        .unwrap_or((None, None, None, None));
+    let (
+        port_redirect,
+        foreign_web_listener,
+        port_redirect_targets,
+        lan_redirect_targets,
+        legacy_pf_redirect,
+    ) = tokio::task::spawn_blocking(|| {
+        use yerd_platform::PortRedirector;
+        let r = yerd_platform::ActivePortRedirector::new();
+        (
+            r.is_active(),
+            r.foreign_web_listener(),
+            r.redirect_targets().map(redirect_targets_to_wire),
+            r.lan_redirect_targets().map(redirect_targets_to_wire),
+            r.legacy_pf_redirect(),
+        )
+    })
+    .await
+    .unwrap_or((None, None, None, None, None));
 
     let backup_tld = tld.clone();
     let resolver_backup = tokio::task::spawn_blocking(move || latest_resolver_backup(&backup_tld))
@@ -842,6 +848,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         foreign_web_listener,
         port_redirect_targets,
         lan_redirect_targets,
+        legacy_pf_redirect,
         resolver_backup,
         default_php,
         php,
