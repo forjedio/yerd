@@ -398,7 +398,8 @@ fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
     let host_stale = redirect_stale_finding(report);
     let redirect_installed =
         report.port_redirect_targets.is_some() || report.lan_redirect_targets.is_some();
-    let installed_not_delivering = redirect_installed && report.port_redirect != Some(true);
+    let installed_not_delivering =
+        redirect_installed && report.port_redirect != Some(true) && privileged_fallback(report);
     let foreign_listener = report.foreign_web_listener == Some(true)
         && host_stale.is_none()
         && !installed_not_delivering;
@@ -1196,6 +1197,21 @@ mod tests {
         let cs = codes(&diagnose(&r, None, &[]));
         assert!(cs.contains(&DiagnosisCode::ForeignWebListener));
         assert!(!cs.contains(&DiagnosisCode::PortFallback));
+    }
+
+    #[test]
+    fn installed_redirect_without_fallback_keeps_foreign_listener() {
+        let mut r = healthy();
+        r.lan_enabled = true;
+        r.port_redirect = Some(false);
+        r.foreign_web_listener = Some(true);
+        r.lan_redirect_targets = Some(PortRedirectTargets {
+            http: r.http.bound,
+            https: r.https.bound,
+        });
+        let cs = codes(&diagnose(&r, None, &[]));
+        assert!(cs.contains(&DiagnosisCode::ForeignWebListener));
+        assert!(!cs.contains(&DiagnosisCode::AllGood));
     }
 
     #[test]

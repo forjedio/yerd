@@ -69,7 +69,7 @@ pub fn install(
 /// redirect.
 pub fn uninstall(scope: Scope) -> Result<(), HelperError> {
     for job in &scope.jobs() {
-        bootout(job.plist);
+        bootout(job.label);
         remove_if_present(job.plist)?;
     }
     legacy_pf::remove_all_legacy()
@@ -169,7 +169,7 @@ fn install_job(
     let plist = launchd_ports::compose_forwarder_plist(scope, job.label, forwarder, user, from, to);
     atomic_write(Path::new(job.plist), plist.as_bytes(), true)?;
     run_command("chown", "/usr/sbin/chown", ["root:wheel", job.plist])?;
-    bootout(job.plist);
+    bootout(job.label);
     bootstrap(job.plist)
 }
 
@@ -190,16 +190,18 @@ fn bootstrap(plist: &str) -> Result<(), HelperError> {
     }
 }
 
-fn bootout(plist: &str) {
+/// Unload by service target rather than plist path, so a job whose plist is
+/// already gone can still be unloaded.
+fn bootout(label: &str) {
     ignore_command_failure(run_command(
         "launchctl",
         LAUNCHCTL,
-        ["bootout", "system", plist],
+        ["bootout", &format!("system/{label}")],
     ));
 }
 
 fn remove_job(job: &Job) {
-    bootout(job.plist);
+    bootout(job.label);
     let _ = remove_if_present(job.plist);
 }
 

@@ -139,7 +139,7 @@ Switching back is the reverse: hand the three hooks back to the other tool.
    ```sh
    sudo yerd unelevate        # revert all three
    ```
-   - On **macOS**, `unelevate resolver` **restores the resolver backup** taken in Step 3 (returning DNS to its pre-Yerd state), and `unelevate ports` removes the port forwarder.
+   - On **macOS**, `unelevate resolver` **restores the resolver backup** taken in Step 3 (returning DNS to its pre-Yerd state), and `unelevate ports` removes the port forwarder. If you used [LAN access](../reference/cli/lan), also run `sudo yerd unelevate lan`, or the LAN forwarder keeps holding 80/443 and the other tool can't bind them.
    - On **Linux**, it removes all Yerd-owned systemd-resolved and NetworkManager resolver snippets. `setcap` has no clean reverse, so `unelevate ports` just prints the manual command (`sudo setcap -r <path-to-yerdd>`) - harmless to leave, but run it if you want it gone.
 
 2. **Stop Yerd's daemon** so it isn't holding ports when the other tool starts:

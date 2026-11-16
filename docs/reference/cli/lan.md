@@ -59,7 +59,8 @@ per-machine privileged step - the same mechanism as ordinary Yerd use:
   private/LAN ranges (`10/8`, `172.16/12`, `192.168/16`, `169.254/16`). It
   forwards to Yerd on your LAN IP, so after `yerd lan disable` LAN connections
   are refused. If you used LAN access with an older, `pf`-based Yerd, re-run
-  `sudo yerd elevate lan` after upgrading.
+  `sudo yerd elevate ports` and then `sudo yerd elevate lan` after upgrading
+  (either one removes both old pf redirects).
 - **Linux:** run `sudo yerd elevate ports` once (it grants
   `cap_net_bind_service`, which covers the `0.0.0.0` bind). No separate LAN step.
 

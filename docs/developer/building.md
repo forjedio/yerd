@@ -114,7 +114,8 @@ binaries. This is the from-source path from the [README](https://github.com/forj
 
 ```sh
 cargo build --release -p yerd -p yerdd -p yerd-helper
-install -Dm755 target/release/{yerd,yerdd,yerd-helper} -t ~/.local/bin
+mkdir -p ~/.local/bin
+install -m 755 target/release/yerd target/release/yerdd target/release/yerd-helper ~/.local/bin/
 yerdd serve &                # rootless; runs on 8080/8443 out of the box
 ```
 

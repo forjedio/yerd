@@ -222,7 +222,7 @@ mod unix_impl {
                     }
                     #[cfg(target_os = "macos")]
                     if target == ElevateTarget::Ports {
-                        if port_80_reaches_yerd() {
+                        if forwarder_reaches_yerd() {
                             println!(
                                 "    the port forwarder is live now; no daemon restart needed."
                             );
@@ -232,7 +232,7 @@ mod unix_impl {
                             );
                         } else {
                             println!(
-                                "    installed, but port 80 isn't reaching Yerd yet; if another web \
+                                "    installed, but ports 80/443 aren't reaching Yerd yet; if another web \
                                  server (Apache, nginx, Valet) holds 80/443, stop it and re-run \
                                  `sudo yerd elevate ports`; see `yerd doctor`"
                             );
@@ -452,15 +452,20 @@ mod unix_impl {
     }
 
     /// launchd can load a job whose bind failed (another server on `*:80`), so
-    /// confirm port 80 actually reaches Yerd before calling it live. Polls for
-    /// up to two seconds to cover the forwarder's on-demand spawn.
+    /// confirm port 80 reaches Yerd and port 443 accepts before calling the
+    /// forwarder live (443 only needs reachability; confirming it would need a
+    /// TLS handshake). Polls for up to two seconds to cover the forwarder's
+    /// on-demand spawn.
     #[cfg(target_os = "macos")]
-    fn port_80_reaches_yerd() -> bool {
+    fn forwarder_reaches_yerd() -> bool {
+        use yerd_platform::port_redirect::{
+            loopback_port_reachable, loopback_redirect_reaches_proxy,
+        };
         (0..10).any(|attempt| {
             if attempt > 0 {
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
-            yerd_platform::port_redirect::loopback_redirect_reaches_proxy(80)
+            loopback_redirect_reaches_proxy(80) && loopback_port_reachable(443)
         })
     }
 

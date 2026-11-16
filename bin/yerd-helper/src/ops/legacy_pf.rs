@@ -40,11 +40,11 @@ pub fn remove_all_legacy() -> Result<(), HelperError> {
         return Ok(());
     }
 
-    for plist in [pf_anchor::PLIST_PATH, pf_anchor::LAN_PLIST_PATH] {
+    for label in [pf_anchor::PLIST_LABEL, pf_anchor::LAN_PLIST_LABEL] {
         ignore_command_failure(run_command(
             "launchctl",
             "/bin/launchctl",
-            ["bootout", "system", plist],
+            ["bootout", &format!("system/{label}")],
         ));
     }
 

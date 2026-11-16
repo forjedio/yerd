@@ -3,7 +3,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -69,8 +69,7 @@ fn closed_upstream_closes_client_promptly() {
     let mut client = TcpStream::connect_timeout(&addr, WAIT).unwrap();
     client.set_read_timeout(Some(WAIT)).unwrap();
     let mut buf = [0_u8; 16];
-    let read = client.read(&mut buf);
-    assert!(matches!(read, Ok(0) | Err(_)), "got {read:?}");
+    assert_closed(&client.read(&mut buf));
 }
 
 #[test]
@@ -105,7 +104,19 @@ fn lan_scope_drops_loopback_destined_connections() {
     client.set_read_timeout(Some(WAIT)).unwrap();
     let _ = client.write_all(b"ping");
     let mut buf = [0_u8; 16];
-    let read = client.read(&mut buf);
-    assert!(matches!(read, Ok(0) | Err(_)), "got {read:?}");
+    assert_closed(&client.read(&mut buf));
     assert_eq!(accepted.load(Ordering::SeqCst), 0);
+}
+
+/// The forwarder closed the connection: EOF or a reset, never a read timeout
+/// (which would mean it left the client hanging).
+fn assert_closed(read: &std::io::Result<usize>) {
+    let closed = match read {
+        Ok(n) => *n == 0,
+        Err(e) => matches!(
+            e.kind(),
+            ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted | ErrorKind::BrokenPipe
+        ),
+    };
+    assert!(closed, "expected a closed connection, got {read:?}");
 }

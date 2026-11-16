@@ -46,17 +46,16 @@ const LAN_MARKER: &str = "# yerd-lan-managed";
 
 /// Apple's own anchors and sub-anchors as listed by `pfctl -s Anchors -v` on a
 /// clean macOS install, plus the static sub-anchors declared in
-/// `/etc/pf.anchors/com.apple`, plus the Internet Sharing anchors macOS adds
-/// once Internet Sharing (or a VM network that relies on it) has run. Exact
-/// names only: anything else, including an unknown `com.apple/<n>.<name>`
-/// sub-anchor where a third-party tool could hide its rules, makes
-/// [`only_apple_and_yerd_pf_state`] fail closed.
+/// `/etc/pf.anchors/com.apple`. Exact names only: anything else, including an
+/// unknown `com.apple/<n>.<name>` sub-anchor where a third-party tool could
+/// hide its rules, makes [`only_apple_and_yerd_pf_state`] fail closed. The
+/// `com.apple.internet-sharing` anchors are deliberately left out: Internet
+/// Sharing relies on pf being enabled, and its reference can't be told apart
+/// from Yerd's, so releasing while it's loaded could switch off its NAT.
 const APPLE_ANCHORS: &[&str] = &[
     "com.apple",
     "com.apple/200.AirDrop",
     "com.apple/250.ApplicationFirewall",
-    "com.apple.internet-sharing",
-    "com.apple.internet-sharing/network_isolation",
 ];
 
 /// Parse the destination ports of a legacy `dev.yerd` or `dev.yerd.lan`
@@ -413,7 +412,7 @@ PID      Process Name                TOKEN                     TIMESTAMP
         let cases = [
             (CLEAN_ANCHORS, CLEAN_NAT, CLEAN_RULES, true),
             ("  com.apple\n", "", "", true),
-            (INTERNET_SHARING_ANCHORS, LEGACY_NAT, CLEAN_RULES, true),
+            (INTERNET_SHARING_ANCHORS, LEGACY_NAT, CLEAN_RULES, false),
             (
                 "  com.apple\n  com.apple.internet-sharing/999.test\n",
                 CLEAN_NAT,

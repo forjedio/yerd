@@ -145,7 +145,7 @@ The platforms diverge most here.
   ::: info Upgrading from a pf-based Yerd
   Older Yerd versions used a `pf` redirect (anchors `dev.yerd` and `dev.yerd.lan`, plus `dev.yerd.pf.plist` / `dev.yerd.lan.pf.plist` boot jobs). That could break when OrbStack, Docker, or Internet Sharing reloaded pf, and enabling pf broke iCloud Private Relay. Yerd no longer uses pf. After upgrading, re-run `sudo yerd elevate ports` once (and `sudo yerd elevate lan` if you used [LAN access](../reference/cli/lan)). Until you do, `yerd doctor` (and the app's diagnostics) shows a `LegacyPortRedirect` warning.
 
-  Every macOS `elevate` / `unelevate` (ports or lan) and `sudo yerd uninstall` first removes all the old pf state in one go: the old boot jobs, Yerd's lines in `/etc/pf.conf`, the loaded anchors (this restores Private Relay without a reboot), and the anchor files. Yerd never turns pf off with `pfctl -d`; it only releases its own enable references, and only when the remaining pf state is just Apple's defaults. Otherwise it prints `pf may stay enabled until the next reboot`. `sudo pfctl -s info` may still show pf as enabled afterwards because macOS enables it for its own use (a reference held by `pfd`); that's normal and doesn't affect Yerd.
+  Every macOS `elevate` / `unelevate` (ports or lan) and `sudo yerd uninstall` first removes all the old pf state in one go: the old boot jobs, Yerd's lines in `/etc/pf.conf`, the loaded anchors (this restores Private Relay without a reboot), and the anchor files. Yerd never turns pf off with `pfctl -d`; it only releases the enable references taken through `pfctl`, and only when the remaining pf state is just Apple's defaults (so nothing else, such as a VPN kill switch or Internet Sharing, is relying on pf). Otherwise it prints `pf may stay enabled until the next reboot`. `sudo pfctl -s info` may still show pf as enabled afterwards because macOS enables it for its own use (a reference held by `pfd`); that's normal and doesn't affect Yerd.
 
   Because that cleanup removes both old redirects, running only one of the two commands prints a reminder to run the other: `elevate ports` reminds you to run `sudo yerd elevate lan`, and `elevate lan` reminds you to run `sudo yerd elevate ports`. The desktop app's **Fix** button shows no such message, so if you used LAN access, run `sudo yerd elevate lan` from a terminal after fixing ports in the app.
   :::
@@ -157,7 +157,8 @@ The platforms diverge most here.
   sudo launchctl bootout system/dev.yerd.ports.https
   sudo launchctl bootout system/dev.yerd.lan.ports.http
   sudo launchctl bootout system/dev.yerd.lan.ports.https
-  sudo rm /Library/LaunchDaemons/dev.yerd.ports.*.plist /Library/LaunchDaemons/dev.yerd.lan.ports.*.plist
+  sudo rm -f /Library/LaunchDaemons/dev.yerd.ports.http.plist /Library/LaunchDaemons/dev.yerd.ports.https.plist \
+    /Library/LaunchDaemons/dev.yerd.lan.ports.http.plist /Library/LaunchDaemons/dev.yerd.lan.ports.https.plist
   ```
 
 ## The rootless fallback

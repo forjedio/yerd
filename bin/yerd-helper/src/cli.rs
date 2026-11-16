@@ -98,7 +98,7 @@ pub enum Op {
         #[arg(long, value_name = "PORT")]
         https_to: u16,
         /// The non-root user the forwarder runs as.
-        #[arg(long, value_name = "UID")]
+        #[arg(long, value_name = "UID", value_parser = clap::value_parser!(u32).range(1..))]
         uid: u32,
     },
     /// Remove the loopback port forwarder and any legacy pf redirect (macOS
@@ -120,7 +120,7 @@ pub enum Op {
         #[arg(long, value_name = "PORT")]
         https_to: u16,
         /// The non-root user the forwarder runs as.
-        #[arg(long, value_name = "UID")]
+        #[arg(long, value_name = "UID", value_parser = clap::value_parser!(u32).range(1..))]
         uid: u32,
     },
     /// Remove the LAN port forwarder and any legacy pf redirect (macOS only).
@@ -352,6 +352,26 @@ mod tests {
     fn install_resolver_bad_addr_rejected_as_usage() {
         let err = parse_err(&["install-resolver", "--tld", "test", "--addr", "not-an-addr"]);
         assert!(matches!(err, HelperError::ArgvUsage(_)));
+    }
+
+    #[test]
+    fn port_redirect_uid_zero_rejected_as_usage() {
+        for op in ["install-port-redirect", "install-lan-port-redirect"] {
+            let err = parse_err(&[
+                op,
+                "--http-from",
+                "80",
+                "--http-to",
+                "8080",
+                "--https-from",
+                "443",
+                "--https-to",
+                "8443",
+                "--uid",
+                "0",
+            ]);
+            assert!(matches!(err, HelperError::ArgvUsage(_)), "{op}: {err:?}");
+        }
     }
 
     #[test]
