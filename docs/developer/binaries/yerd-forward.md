@@ -84,7 +84,7 @@ The forwarder sits on every request once ports are elevated, so the design keeps
 - **No injection.** Every value interpolated into the plist is XML-escaped.
 - **Minimal surface.** Plain std threads, no `unsafe` (`#![forbid(unsafe_code)]`), no FFI, no async runtime, no TLS: it copies bytes and never parses them.
 
-Operational risks worth knowing: if the user turns off "Yerd" under System Settings ▸ General ▸ Login Items ▸ Allow in the Background, the jobs may not load; if the app is moved or deleted, the plists point at a missing binary until `sudo yerd elevate ports` is re-run.
+Operational risks worth knowing: if the user turns off "Yerd" under System Settings ▸ General ▸ Login Items ▸ Allow in the Background, the jobs may not load; if the app is moved or deleted, the plists point at a missing binary until `sudo yerd elevate ports` is re-run. In that state launchd still accepts connections on 80/443 but can't spawn the forwarder, so clients hang rather than being refused; the doctor reports it as `PortFallback` with the "installed but not reaching Yerd" sentence rather than `ForeignWebListener`.
 
 ## Building
 

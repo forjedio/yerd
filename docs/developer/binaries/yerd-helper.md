@@ -1,6 +1,6 @@
 # yerd-helper (privileged)
 
-`yerd-helper` is the **only** privileged component in Yerd and therefore the project's single security boundary. The daemon ([`yerdd`](./yerdd)) and the CLI ([`yerd`](./yerd)) run entirely as your user; the small set of operations that genuinely require root - trusting the local CA, redirecting `.test` DNS, granting the daemon permission to bind low ports - are handed to this binary, which validates everything, performs exactly one operation, and exits.
+`yerd-helper` is the **only** privileged component in Yerd and therefore the project's single security boundary. The daemon ([`yerdd`](./yerdd)) and the CLI ([`yerd`](./yerd)) run entirely as your user; the small set of operations that genuinely require root - trusting the local CA, redirecting `.test` DNS, granting the daemon permission to bind low ports (Linux) or installing the launchd port forwarder (macOS) - are handed to this binary, which validates everything, performs exactly one operation, and exits.
 
 For the user-facing model of when and how elevation happens, see [Elevation & Privileges](../../guide/elevation). This page is the contributor-level reference: the module map, the hard rules, the argv wire contract, the per-operation implementations, and the invariants enforced by tests.
 

@@ -69,6 +69,7 @@ fn no_forbidden_crates_in_runtime_graph_and_unique_versions() {
 | [`yerd-proxy`](./yerd-proxy) | `anyhow`, `openssl`, `openssl-sys`, `native-tls`, `hyper-tls`, `tokio-native-tls`, `webpki-roots` | `hyper`, `rustls`, `tokio`, `time` (at most one) |
 | [`yerdd`](../binaries/yerdd) | `anyhow`, `openssl`, `openssl-sys`, `native-tls`, `hyper-tls`, `tokio-native-tls`, `fs2` | `hyper`, `rustls`, `tokio`, `time` (at most one) |
 | [`yerd-helper`](../binaries/yerd-helper) | `tokio`, `reqwest`, `openssl`, `openssl-sys`, `native-tls` | - |
+| [`yerd-forward`](../binaries/yerd-forward) | `tokio`, `reqwest`, `openssl`, `openssl-sys`, `native-tls`, `rustls` | - |
 
 Each consumer's forbidden list reflects *its own* dependency policy (e.g.
 `yerdd` explicitly allows `webpki-roots`, since it fetches prebuilt PHP over

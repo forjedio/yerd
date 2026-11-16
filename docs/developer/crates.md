@@ -8,7 +8,8 @@ three layers:
   no clock, no env, no async - and the few that touch the world push their side
   effects behind traits.
 - **Binaries** (`bin/*`) wire those libraries together: the unprivileged daemon
-  (`yerdd`), the CLI client (`yerd`), and the privileged one-shot (`yerd-helper`).
+  (`yerdd`), the CLI client (`yerd`), the privileged one-shot (`yerd-helper`),
+  and the macOS port forwarder (`yerd-forward`).
 - **The desktop app** (`apps/yerd-gui`) and **build automation** (`xtask`) sit at
   the top.
 
@@ -53,7 +54,7 @@ set (it wraps macro-heavy generated Tauri code) but still bans
 |---|---|---|
 | `yerdd` | The unprivileged per-user daemon. Wires every library together; owns all runtime state and serves the proxy, DNS, PHP pools, and database/cache services. | [yerdd (daemon)](./binaries/yerdd) |
 | `yerd` | The CLI - a thin `yerd-ipc` client that talks to `yerdd` over a per-user socket. | [yerd (CLI)](./binaries/yerd) |
-| `yerd-helper` | The privileged one-shot. Validates a typed `HelperInvocation`, performs exactly one root operation (CA install, resolver install, `setcap`), and exits. | [yerd-helper (privileged)](./binaries/yerd-helper) |
+| `yerd-helper` | The privileged one-shot. Validates a typed `HelperInvocation`, performs exactly one root operation (CA install, resolver install, `setcap` on Linux, port-forwarder install on macOS), and exits. | [yerd-helper (privileged)](./binaries/yerd-helper) |
 | `yerd-forward` | macOS only. The unprivileged TCP relay launchd spawns as the user for the port-forwarder jobs `yerd elevate ports` / `elevate lan` install; carries 80/443 to the daemon's rootless ports. | [yerd-forward (macOS ports)](./binaries/yerd-forward) |
 
 ### App and tooling
