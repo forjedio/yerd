@@ -203,6 +203,72 @@ describe("CreateLaravelWizard", () => {
     expect(w.text()).toContain("Node will be installed automatically during creation.");
   });
 
+  it("omits the auto-install note when the kit installs no frontend dependencies", async () => {
+    listTools.mockResolvedValue([tool("composer"), tool("laravel")]);
+    const w = await openWizard();
+    await w.find("#cs-name").setValue("blog");
+    await next(w);
+    await byText(w, "Livewire")!.trigger("click");
+    await next(w);
+    await next(w);
+    expect(w.text()).not.toContain("will be installed automatically");
+  });
+
+  it("sends pnpm as the JS runtime", async () => {
+    const w = await openWizard();
+    await w.find("#cs-name").setValue("blog");
+    await next(w);
+    await byText(w, "Vue")!.trigger("click");
+    await w.find("#cs-js").setValue("pnpm");
+    await next(w);
+    await next(w);
+    await byText(w, "Create site")!.trigger("click");
+    await flushPromises();
+    expect(submittedOptions()).toMatchObject({ starter_kit: "vue", js: "pnpm" });
+  });
+
+  it.each([
+    {
+      label: "pnpm missing",
+      tools: [tool("composer"), tool("laravel"), tool("node")],
+      note: "pnpm will be installed automatically",
+    },
+    {
+      label: "Node and pnpm missing",
+      tools: [tool("composer"), tool("laravel")],
+      note: "Node and pnpm will be installed automatically",
+    },
+    {
+      label: "external Node, pnpm present",
+      tools: [
+        tool("composer"),
+        tool("laravel"),
+        tool("node", { installed: false, external: true }),
+        tool("pnpm"),
+      ],
+      note: null,
+    },
+  ])("notes the pnpm prerequisites to install ($label)", async ({ tools, note }) => {
+    listTools.mockResolvedValue(tools);
+    const w = await openWizard();
+    await w.find("#cs-name").setValue("blog");
+    await next(w);
+    await byText(w, "Vue")!.trigger("click");
+    await w.find("#cs-js").setValue("pnpm");
+    if (note) {
+      expect(w.text()).toContain(`${note}.`);
+    } else {
+      expect(w.text()).not.toContain("will be installed automatically");
+    }
+    await next(w);
+    await next(w);
+    if (note) {
+      expect(w.text()).toContain(`${note} during creation.`);
+    } else {
+      expect(w.text()).not.toContain("will be installed automatically");
+    }
+  });
+
   it("blocks the installer row until Yerd's own Composer is present", async () => {
     listTools.mockResolvedValue([tool("composer", { installed: false, external: true })]);
     const w = await openWizard();

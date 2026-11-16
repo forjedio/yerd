@@ -518,7 +518,7 @@ export async function listServices(): Promise<ServiceStatus[]> {
   return r.type === "services" ? r.services : [];
 }
 
-// ── dev tools (composer / node / bun) ────────────────────────────────────────
+// ── dev tools (composer / node / bun / pnpm) ─────────────────────────────────
 
 export async function listTools(): Promise<ToolStatus[]> {
   const r = ensureOk(await call<Response>("list_tools"));

@@ -570,12 +570,12 @@ pub enum Request {
         /// The desired enabled state.
         enabled: bool,
     },
-    /// List the installable dev tools (Composer, Node, Bun) with install status.
+    /// List the installable dev tools (Composer, Node, Bun, pnpm) with install status.
     ListTools,
     /// Download + install a dev tool's latest release into yerd's data dir and
     /// expose its commands on `PATH`. Idempotent (reinstalls/updates to latest).
     InstallTool {
-        /// Tool id (`"composer"`, `"node"`, `"bun"`).
+        /// Tool id (`"composer"`, `"node"`, `"bun"`, `"pnpm"`).
         tool: String,
     },
     /// Remove a dev tool's files and its `PATH` shims.
@@ -588,7 +588,7 @@ pub enum Request {
     /// stdout/stderr) is polled via [`Self::JobStatus`]. The streaming sibling of
     /// [`Self::InstallTool`].
     InstallToolStreamed {
-        /// Tool id (`"composer"`, `"node"`, `"bun"`, `"laravel"`).
+        /// Tool id (`"composer"`, `"node"`, `"bun"`, `"pnpm"`, `"laravel"`).
         tool: String,
     },
     /// Scaffold and register a brand-new site (e.g. `laravel new`). Long-running:
