@@ -603,6 +603,12 @@ export type Response =
        *  by version string. A version that is absent runs the built-in
        *  default of 16. Absent when none are set / older daemon. */
       pool?: Record<PhpVersion, Record<string, string>>;
+      /** Installed versions whose PHP build includes the FFI extension. Absent
+       *  when none do / older daemon. */
+      ffi_versions?: PhpVersion[];
+      /** Whether libvips (needed by php-vips) was found on the host. Absent
+       *  when the daemon doesn't check on this OS / older daemon. */
+      libvips_found?: boolean | null;
     }
   | {
       type: "available_php";

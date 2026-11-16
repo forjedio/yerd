@@ -139,3 +139,9 @@ fn process_table_reports_nothing() {
     assert!(!table.is_alive(std::process::id()));
     table.signal_group(std::process::id(), false);
 }
+
+#[test]
+fn libvips_probe_is_unchecked() {
+    use yerd_platform::{ActiveLibvipsProbe, LibvipsProbe};
+    assert_eq!(ActiveLibvipsProbe.libvips_found(), None);
+}

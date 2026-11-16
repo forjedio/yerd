@@ -1030,6 +1030,7 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             version_settings,
             directives,
             pool,
+            ..
         } => Rendered::ok(format_php_versions(
             installed,
             *default,
@@ -3006,6 +3007,8 @@ mod tests {
                 settings: std::collections::BTreeMap::new(),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
                 directives: Box::new(std::collections::BTreeMap::new()),
+                ffi_versions: Box::new(vec![]),
+                libvips_found: None,
                 pool: Box::new(std::collections::BTreeMap::new()),
             },
             false,
@@ -3025,6 +3028,8 @@ mod tests {
                 settings: std::collections::BTreeMap::new(),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
                 directives: Box::new(std::collections::BTreeMap::new()),
+                ffi_versions: Box::new(vec![]),
+                libvips_found: None,
                 pool: Box::new(std::collections::BTreeMap::new()),
             },
             false,
@@ -3058,6 +3063,8 @@ mod tests {
                         "debug".to_string(),
                     )]),
                 )])),
+                ffi_versions: Box::new(vec![]),
+                libvips_found: None,
                 pool: Box::new(std::collections::BTreeMap::from([(
                     v83,
                     std::collections::BTreeMap::from([(
@@ -3224,6 +3231,8 @@ mod tests {
                 ]),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
                 directives: Box::new(std::collections::BTreeMap::new()),
+                ffi_versions: Box::new(vec![]),
+                libvips_found: None,
                 pool: Box::new(std::collections::BTreeMap::new()),
             },
             false,
@@ -4572,6 +4581,37 @@ mod tests {
         match to_request(&Command::Unset {
             target: crate::cli::UnsetTarget::Php {
                 setting: "not_a_setting".into(),
+                only: None,
+            },
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_php_ffi_enable_maps_and_rejects_preload() {
+        assert_eq!(
+            to_request(&Command::Set {
+                target: crate::cli::SetTarget::Php {
+                    setting: "ffi.enable".into(),
+                    value: "on".into(),
+                    only: Some("8.4".into())
+                }
+            })
+            .unwrap(),
+            Request::SetPhpVersionSettings {
+                version: PhpVersion::new(8, 4),
+                settings: std::collections::BTreeMap::from([(
+                    "ffi.enable".to_string(),
+                    "on".to_string()
+                )])
+            }
+        );
+        match to_request(&Command::Set {
+            target: crate::cli::SetTarget::Php {
+                setting: "ffi.enable".into(),
+                value: "preload".into(),
                 only: None,
             },
         }) {

@@ -44,6 +44,10 @@ import {
   directiveNameProblem,
   directiveValueProblem,
   effectiveValue,
+  FFI_HINT,
+  FFI_KEY,
+  FFI_LABEL,
+  LIBVIPS_HINT,
   overrideCount,
   poolMaxChildrenProblem,
   SETTING_KEYS,
@@ -70,6 +74,10 @@ const props = defineProps<{
   installedVersion: boolean;
   /** True while the extensions resource is still loading for the first time. */
   extensionsLoading: boolean;
+  /** Whether this version's PHP build includes the FFI extension. */
+  ffiAvailable: boolean;
+  /** Whether libvips was found on the host; `null` when not checked. */
+  libvipsFound: boolean | null;
 }>();
 
 const emit = defineEmits<{
@@ -142,6 +150,21 @@ const displayErrorsOptions = computed(() => {
   ];
 });
 
+const ffiOptions = computed(() => {
+  const inherited = effectiveValue(props.globalSettings, {}, FFI_KEY) ?? "Off";
+  return [
+    { value: "", label: `- inherit (${inherited}) -` },
+    { value: "On", label: "On" },
+    { value: "Off", label: "Off" },
+  ];
+});
+
+const showLibvipsHint = computed(
+  () =>
+    props.libvipsFound === false &&
+    effectiveValue(props.globalSettings, form.value, FFI_KEY) === "On",
+);
+
 const savedOverrides = computed(() => overrideCount(props.overrides));
 
 /**
@@ -152,7 +175,9 @@ async function saveSettings(): Promise<void> {
   if (isBusy.value) return;
   busy.value = "settings";
   try {
-    const r = await setPhpVersionSettings(props.version, { ...form.value });
+    const payload: Record<string, string> = { ...form.value };
+    if (!props.ffiAvailable) delete payload[FFI_KEY];
+    const r = await setPhpVersionSettings(props.version, payload);
     seed(r.version_settings?.[props.version] ?? {});
     toast.success(
       `PHP ${props.version} settings updated`,
@@ -405,6 +430,37 @@ function discard(): void {
                 @update:model-value="(v: string) => (form.display_errors = v)"
               />
             </div>
+          </div>
+          <div v-if="ffiAvailable" data-testid="ffi-setting">
+            <div class="flex items-center gap-1">
+              <span class="text-xs font-medium">{{ FFI_LABEL }}</span>
+              <Tooltip>
+                <TooltipTrigger as-child>
+                  <span class="inline-flex cursor-help text-muted-foreground">
+                    <Info class="size-3.5" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top">{{ FFI_HINT }}</TooltipContent>
+              </Tooltip>
+            </div>
+            <div class="mt-1">
+              <Select
+                class="w-full"
+                :model-value="form[FFI_KEY] ?? ''"
+                :options="ffiOptions"
+                :disabled="isBusy"
+                :aria-label="`ffi.enable for PHP ${version}`"
+                @update:model-value="(v: string) => (form[FFI_KEY] = v)"
+              />
+            </div>
+            <p
+              v-if="showLibvipsHint"
+              class="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground"
+              data-testid="libvips-hint"
+            >
+              <TriangleAlert class="size-3.5 shrink-0 text-warning" />
+              {{ LIBVIPS_HINT }}
+            </p>
           </div>
         </div>
       </TooltipProvider>

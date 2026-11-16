@@ -38,9 +38,10 @@ describe("overrideCount", () => {
     expect(overrideCount({ not_a_setting: "x" })).toBe(0);
   });
 
-  it("SETTING_KEYS covers the 8 allowlisted settings", () => {
-    expect(SETTING_KEYS).toHaveLength(8);
+  it("SETTING_KEYS covers the 9 allowlisted settings", () => {
+    expect(SETTING_KEYS).toHaveLength(9);
     expect(SETTING_KEYS).toContain("display_errors");
+    expect(SETTING_KEYS).toContain("ffi.enable");
   });
 });
 
@@ -55,6 +56,10 @@ describe("directiveNameProblem", () => {
     expect(directiveNameProblem("memory_limit")).toMatch(/settings form/);
     expect(directiveNameProblem("extension")).toMatch(/extensions/);
     expect(directiveNameProblem("openssl.cafile")).toMatch(/CA bundle/);
+  });
+
+  it("points ffi.enable at the FFI toggle", () => {
+    expect(directiveNameProblem("ffi.enable")).toMatch(/Allow FFI in web requests/);
   });
 
   it("treats Object.prototype member names as ordinary directives, not inherited hints", () => {

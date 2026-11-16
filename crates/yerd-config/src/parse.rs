@@ -1446,7 +1446,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 25,
+                current: 26,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -1693,6 +1693,20 @@ mod tests {
             "the replace must actually downgrade the version line"
         );
         let migrated = Config::from_toml(&v22).unwrap();
+        assert_eq!(migrated, c);
+        assert_eq!(migrated.to_toml().unwrap(), current);
+    }
+
+    #[test]
+    fn v25_config_with_ffi_enable_migrates_to_v26_keeping_it() {
+        let mut c = Config::default();
+        c.php
+            .settings
+            .insert("ffi.enable".to_owned(), "On".to_owned());
+        let current = c.to_toml().unwrap();
+        let v25 = current.replacen("version = 26\n", "version = 25\n", 1);
+        assert_ne!(v25, current);
+        let migrated = Config::from_toml(&v25).unwrap();
         assert_eq!(migrated, c);
         assert_eq!(migrated.to_toml().unwrap(), current);
     }
@@ -2860,6 +2874,17 @@ target = \"../../etc/passwd\"\n";
                 reason: ValidateErrorReason::InvalidPhpSetting,
             })
         ));
+
+        let mut c = Config::default();
+        c.php
+            .settings
+            .insert("ffi.enable".to_string(), "preload".to_string());
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::InvalidPhpSetting,
+            })
+        ));
     }
 
     #[test]
@@ -2949,12 +2974,14 @@ target = \"../../etc/passwd\"\n";
                  memory_limit = \"1G\"\n\
                  allow_url_fopen = \"1\"\n\
                  max_execution_time = \"bogus\"\n\
+                 \"ffi.enable\" = \"preload\"\n\
                  [php.directives.\"8.3\"]\n\
                  \"xdebug.mode\" = \"debug\"\n\
                  \"1bad\" = \"x\"\n\
                  \"opcache.bad\" = \"a;b\"\n\
                  extension = \"/evil.so\"\n\
-                 memory_limit = \"2G\"\n";
+                 memory_limit = \"2G\"\n\
+                 \"ffi.enable\" = \"true\"\n";
         let c = Config::from_toml(s).unwrap();
         let v83 = yerd_core::PhpVersion::new(8, 3);
         let vs = c.php.version_settings.get(&v83).unwrap();

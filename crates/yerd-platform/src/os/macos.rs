@@ -24,6 +24,7 @@ use directories::ProjectDirs;
 
 use crate::error::ops;
 use crate::ide::{DetectedIde, IdeLauncher, LaunchTarget};
+use crate::libvips::LibvipsProbe;
 use crate::metrics::SystemMetrics;
 use crate::opener::SystemOpener;
 use crate::os::unix::{
@@ -40,6 +41,7 @@ use crate::pure::ide_spec::{
     ide_cli_candidates_macos, mac_app_name_matches, mac_application_locations, spec_for, IdeSpec,
     IDE_SPECS,
 };
+use crate::pure::libvips;
 use crate::pure::{
     launchd_ports, pem_match, pf_anchor, port_plan, process_signal, ps_metrics, resolver_file,
 };
@@ -909,6 +911,27 @@ fn forwarder_targets_at(http: &Path, https: &Path) -> Option<(u16, u16)> {
 fn anchor_targets_at(path: &Path) -> Option<(u16, u16)> {
     let text = fs::read_to_string(path).ok()?;
     pf_anchor::parse_anchor_targets(&text)
+}
+
+/// macOS libvips probe: stats the macOS candidate paths.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MacosLibvipsProbe;
+
+impl MacosLibvipsProbe {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl LibvipsProbe for MacosLibvipsProbe {
+    fn libvips_found(&self) -> Option<bool> {
+        Some(libvips::any_present(
+            &libvips::candidates_macos(),
+            Path::is_file,
+        ))
+    }
 }
 
 #[cfg(test)]

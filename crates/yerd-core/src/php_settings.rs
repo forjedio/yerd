@@ -2,9 +2,11 @@
 //!
 //! Yerd lets users set a small, fixed set of PHP runtime directives
 //! (`memory_limit`, `upload_max_filesize`, …) that are written into **every**
-//! installed version's FPM pool config as `php_value[...]` / `php_flag[...]`
-//! lines. The values flow, unescaped, straight into the FPM master config
-//! file, so [`validate_value`] is the **security boundary**: it is run when a
+//! installed version's FPM pool config as `php_value[...]` / `php_flag[...]` /
+//! `php_admin_value[...]` lines. Most settings ship with a seeded default; an
+//! unseeded one (`ffi.enable`) stays absent until the user sets it. The values
+//! flow, unescaped, straight into the FPM master config file, so
+//! [`validate_value`] is the **security boundary**: it is run when a
 //! value is set (CLI + daemon), when the config is loaded from disk
 //! (`yerd-config`), and again defensively at render time (`yerd-php`).
 //!
@@ -29,6 +31,12 @@ enum Kind {
     Int,
     /// A boolean, rendered as a `php_flag` (`On`/`Off`).
     Flag,
+    /// An on/off switch rendered as `php_admin_value[name] = true` when on and
+    /// omitted when off, so PHP's own default applies. Never rendered into a
+    /// legacy (< 8.2) pool: Yerd's legacy builds lack the extension these
+    /// directives belong to, and FPM logs `Unable to set php_admin_value` on
+    /// every worker spawn for an unknown directive.
+    AdminSwitch,
     /// An `error_reporting` bitmask: an integer or a constant expression such
     /// as `E_ALL & ~E_DEPRECATED`.
     ErrorReporting,
@@ -39,8 +47,9 @@ struct Spec {
     name: &'static str,
     kind: Kind,
     /// Yerd's shipped default value (canonical form). Seeded into a fresh
-    /// config's `[php.settings]` and written into every FPM pool.
-    default: &'static str,
+    /// config's `[php.settings]` and written into every FPM pool. `None` means
+    /// not seeded: the setting is absent until the user sets it.
+    default: Option<&'static str>,
     /// Whether this directive is meaningful for the CLI (`php` shim) and so
     /// belongs in the generated CLI `php.ini`. Request-only directives
     /// (upload/post sizes, input time, file uploads) are FPM-only.
@@ -54,25 +63,25 @@ const SETTINGS: &[Spec] = &[
         kind: Kind::Bytes {
             allow_unlimited: true,
         },
-        default: "512M",
+        default: Some("512M"),
         cli: true,
     },
     Spec {
         name: "max_execution_time",
         kind: Kind::Int,
-        default: "60",
+        default: Some("60"),
         cli: true,
     },
     Spec {
         name: "max_input_time",
         kind: Kind::Int,
-        default: "60",
+        default: Some("60"),
         cli: false,
     },
     Spec {
         name: "max_file_uploads",
         kind: Kind::Int,
-        default: "20",
+        default: Some("20"),
         cli: false,
     },
     Spec {
@@ -80,7 +89,7 @@ const SETTINGS: &[Spec] = &[
         kind: Kind::Bytes {
             allow_unlimited: false,
         },
-        default: "100M",
+        default: Some("100M"),
         cli: false,
     },
     Spec {
@@ -88,20 +97,26 @@ const SETTINGS: &[Spec] = &[
         kind: Kind::Bytes {
             allow_unlimited: false,
         },
-        default: "100M",
+        default: Some("100M"),
         cli: false,
     },
     Spec {
         name: "display_errors",
         kind: Kind::Flag,
-        default: "On",
+        default: Some("On"),
         cli: true,
     },
     Spec {
         name: "error_reporting",
         kind: Kind::ErrorReporting,
-        default: "E_ALL",
+        default: Some("E_ALL"),
         cli: true,
+    },
+    Spec {
+        name: "ffi.enable",
+        kind: Kind::AdminSwitch,
+        default: None,
+        cli: false,
     },
 ];
 
@@ -126,7 +141,10 @@ pub fn supported_names() -> Vec<&'static str> {
 /// source of truth for "the values Yerd applies out of the box".
 #[must_use]
 pub fn default_settings() -> Vec<(&'static str, &'static str)> {
-    SETTINGS.iter().map(|s| (s.name, s.default)).collect()
+    SETTINGS
+        .iter()
+        .filter_map(|s| s.default.map(|d| (s.name, d)))
+        .collect()
 }
 
 /// Whether a supported directive is meaningful for the CLI runtime and so
@@ -238,14 +256,62 @@ pub fn merge_effective(
         .collect()
 }
 
-/// The FPM directive a setting renders as: `"php_flag"` for booleans, else
-/// `"php_value"`. `None` if the setting is not supported.
+/// The FPM directive a setting renders as: `"php_flag"` for booleans,
+/// `"php_admin_value"` for admin switches, else `"php_value"`. `None` if the
+/// setting is not supported.
 #[must_use]
 pub fn directive(name: &str) -> Option<&'static str> {
     spec(name).map(|s| match s.kind {
         Kind::Flag => "php_flag",
+        Kind::AdminSwitch => "php_admin_value",
         _ => "php_value",
     })
+}
+
+/// The value a (validated) setting renders as in an FPM pool config, or `None`
+/// to emit no line at all. An admin switch renders `true` when on and nothing
+/// when off, so PHP's own default stays in effect; every other kind renders its
+/// value unchanged. `None` for unknown names.
+#[must_use]
+pub fn fpm_value(name: &str, value: &str) -> Option<String> {
+    match spec(name)?.kind {
+        Kind::AdminSwitch => match parse_flag(value.trim()) {
+            Some(true) => Some("true".to_owned()),
+            _ => None,
+        },
+        _ => Some(value.to_owned()),
+    }
+}
+
+/// Whether a supported setting is rendered into `version`'s FPM pool. Admin
+/// switches are skipped for legacy versions (see `Kind::AdminSwitch`); every
+/// other setting applies to all versions. `false` for unknown names.
+#[must_use]
+pub fn applies_to_version(name: &str, version: crate::PhpVersion) -> bool {
+    spec(name).is_some_and(|s| s.kind != Kind::AdminSwitch || !version.is_legacy())
+}
+
+/// Validate a per-version override: [`validate_value`], plus a refusal for a
+/// setting that [`applies_to_version`] says is never rendered for `version`.
+/// Clearing an override (`""`) is the caller's concern and never reaches here.
+///
+/// # Errors
+/// Whatever [`validate_value`] returns, or
+/// [`PhpSettingError::UnavailableForVersion`].
+pub fn validate_version_value(
+    name: &str,
+    value: &str,
+    version: crate::PhpVersion,
+) -> Result<(), PhpSettingError> {
+    validate_value(name, value)?;
+    if applies_to_version(name, version) {
+        Ok(())
+    } else {
+        Err(PhpSettingError::UnavailableForVersion {
+            name: name.to_owned(),
+            version,
+        })
+    }
 }
 
 /// Validate `value` for the supported setting `name`.
@@ -283,7 +349,7 @@ pub fn validate_value(name: &str, value: &str) -> Result<(), PhpSettingError> {
     let ok = match spec.kind {
         Kind::Bytes { allow_unlimited } => is_byte_size(t, allow_unlimited),
         Kind::Int => is_uint(t),
-        Kind::Flag => parse_flag(t).is_some(),
+        Kind::Flag | Kind::AdminSwitch => parse_flag(t).is_some(),
         Kind::ErrorReporting => is_error_reporting(t),
     };
     if ok {
@@ -292,7 +358,7 @@ pub fn validate_value(name: &str, value: &str) -> Result<(), PhpSettingError> {
         Err(err(match spec.kind {
             Kind::Bytes { .. } => ValueErrorReason::NotAByteSize,
             Kind::Int => ValueErrorReason::NotAnInteger,
-            Kind::Flag => ValueErrorReason::NotABoolean,
+            Kind::Flag | Kind::AdminSwitch => ValueErrorReason::NotABoolean,
             Kind::ErrorReporting => ValueErrorReason::NotErrorReporting,
         }))
     }
@@ -304,7 +370,7 @@ pub fn validate_value(name: &str, value: &str) -> Result<(), PhpSettingError> {
 #[must_use]
 pub fn canonical_value(name: &str, value: &str) -> String {
     match spec(name).map(|s| s.kind) {
-        Some(Kind::Flag) => match parse_flag(value.trim()) {
+        Some(Kind::Flag | Kind::AdminSwitch) => match parse_flag(value.trim()) {
             Some(true) => "On".to_owned(),
             Some(false) => "Off".to_owned(),
             None => value.trim().to_owned(),
@@ -368,6 +434,17 @@ pub enum PhpSettingError {
         /// Why the value was rejected.
         reason: ValueErrorReason,
     },
+    /// The setting is never rendered for this version (an admin switch on a
+    /// legacy build, which lacks the extension it controls).
+    #[error(
+        "{name} is not available for PHP {version}: legacy builds do not include its extension"
+    )]
+    UnavailableForVersion {
+        /// The rejected setting name.
+        name: String,
+        /// The version the override was aimed at.
+        version: crate::PhpVersion,
+    },
 }
 
 /// Specific failure modes for a PHP setting value.
@@ -418,8 +495,9 @@ mod tests {
         assert!(!is_supported("allow_url_fopen"));
         assert_eq!(directive("memory_limit"), Some("php_value"));
         assert_eq!(directive("display_errors"), Some("php_flag"));
+        assert_eq!(directive("ffi.enable"), Some("php_admin_value"));
         assert_eq!(directive("nope"), None);
-        assert_eq!(supported_names().len(), 8);
+        assert_eq!(supported_names().len(), 9);
     }
 
     #[test]
@@ -431,6 +509,77 @@ mod tests {
         }
         assert!(defaults.contains(&("memory_limit", "512M")));
         assert!(defaults.contains(&("error_reporting", "E_ALL")));
+        assert!(!defaults.iter().any(|(n, _)| *n == "ffi.enable"));
+    }
+
+    #[test]
+    fn admin_switch_validates_canonicalises_and_renders() {
+        for v in ["on", "On", "1", "true", "TRUE"] {
+            assert!(validate_value("ffi.enable", v).is_ok(), "{v}");
+            assert_eq!(canonical_value("ffi.enable", v), "On", "{v}");
+        }
+        for v in ["off", "0", "false"] {
+            assert!(validate_value("ffi.enable", v).is_ok(), "{v}");
+            assert_eq!(canonical_value("ffi.enable", v), "Off", "{v}");
+        }
+        let rejected: &[(&str, ValueErrorReason)] = &[
+            ("preload", ValueErrorReason::NotABoolean),
+            ("yes", ValueErrorReason::NotABoolean),
+            ("2", ValueErrorReason::NotABoolean),
+            ("", ValueErrorReason::Empty),
+        ];
+        for (v, want) in rejected {
+            assert_eq!(
+                validate_value("ffi.enable", v),
+                Err(PhpSettingError::InvalidValue {
+                    name: "ffi.enable".to_owned(),
+                    reason: *want,
+                }),
+                "{v}"
+            );
+        }
+        assert_eq!(fpm_value("ffi.enable", "On").as_deref(), Some("true"));
+        assert_eq!(fpm_value("ffi.enable", "Off"), None);
+        assert_eq!(fpm_value("memory_limit", "1G").as_deref(), Some("1G"));
+        assert_eq!(fpm_value("nope", "1"), None);
+    }
+
+    #[test]
+    fn validate_version_value_refuses_admin_switches_on_legacy() {
+        use crate::PhpVersion;
+        let v81 = PhpVersion::new(8, 1);
+        let err = validate_version_value("ffi.enable", "On", v81).unwrap_err();
+        assert_eq!(
+            err,
+            PhpSettingError::UnavailableForVersion {
+                name: "ffi.enable".to_owned(),
+                version: v81,
+            }
+        );
+        assert!(
+            err.to_string().contains("not available for PHP 8.1"),
+            "{err}"
+        );
+        assert!(validate_version_value("ffi.enable", "On", PhpVersion::new(8, 4)).is_ok());
+        assert!(validate_version_value("memory_limit", "1G", v81).is_ok());
+        assert!(matches!(
+            validate_version_value("ffi.enable", "preload", PhpVersion::new(8, 4)),
+            Err(PhpSettingError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn ffi_enable_is_fpm_only_and_skips_legacy() {
+        use crate::PhpVersion;
+        assert!(!applies_to_cli("ffi.enable"));
+        let settings =
+            std::collections::BTreeMap::from([("ffi.enable".to_owned(), "On".to_owned())]);
+        assert!(!render_cli_ini(&settings).contains("ffi"));
+        assert!(!applies_to_version("ffi.enable", PhpVersion::new(8, 1)));
+        assert!(!applies_to_version("ffi.enable", PhpVersion::new(7, 4)));
+        assert!(applies_to_version("ffi.enable", PhpVersion::new(8, 2)));
+        assert!(applies_to_version("memory_limit", PhpVersion::new(7, 4)));
+        assert!(!applies_to_version("nope", PhpVersion::new(8, 4)));
     }
 
     #[test]

@@ -32,8 +32,10 @@ pub struct PoolConfig {
     /// FPM `pm.max_children`.
     pub max_children: u32,
     /// Global PHP ini directives to apply, as `(name, value)` pairs sorted by
-    /// name. Rendered as `php_value[name] = value` / `php_flag[name] = value`
-    /// (per [`yerd_core::php_settings::directive`]). Empty by default.
+    /// name. Rendered as `php_value[name] = value` / `php_flag[name] = value` /
+    /// `php_admin_value[name] = true` (per [`yerd_core::php_settings::directive`]
+    /// and [`yerd_core::php_settings::fpm_value`]); an admin switch that is off,
+    /// or that does not apply to this version, emits no line. Empty by default.
     pub ini: Vec<(String, String)>,
     /// Free-form per-version ini directives (e.g. `xdebug.mode`), as
     /// `(name, value)` pairs sorted by name. Rendered uniformly as

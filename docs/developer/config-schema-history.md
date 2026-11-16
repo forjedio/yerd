@@ -28,7 +28,20 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v25 (current)
+### v26 (current)
+
+**Added:** the optional `ffi.enable` key in `[php.settings]` and `[php.version_settings."<version>"]` - the "Allow FFI in web requests" switch. It accepts an on/off value (stored as `On`/`Off`) and is never seeded, so a file that has not turned it on omits it. When on, PHP 8.2+ pools get `php_admin_value[ffi.enable] = true`; when absent or `Off`, PHP's own `preload` default applies. It is refused for legacy (7.4 to 8.1) per-version overrides.
+
+```toml
+[php.settings]
+"ffi.enable" = "On"
+```
+
+**Migration from v25:** bare version bump - the key is absent unless set, so a v25 file needs no other change.
+
+**To downgrade to v25:** change `version = 26` to `version = 25` and delete any `"ffi.enable"` keys (a v25 daemon rejects the unknown name in `[php.settings]`). Web requests fall back to `ffi.enable=preload`.
+
+### v25
 
 **Added:** the optional `[response_headers]` table - per-site **custom response headers**, keyed by site class exactly like `[route_rules]`: `[response_headers.linked.<name>]` by site name, `[response_headers.parked."<docroot>"]` by document-root string. Each entry pairs a header `name` with a `value`. It defaults to empty when absent, so an uncustomised file omits it entirely.
 

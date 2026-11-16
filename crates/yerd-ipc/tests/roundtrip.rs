@@ -150,6 +150,8 @@ fn encode_then_decode_response_roundtrip() {
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
+        ffi_versions: Box::new(vec![]),
+        libvips_found: None,
         pool: Box::new(BTreeMap::new()),
     });
     assert_response_roundtrips(Response::PhpVersions {
@@ -169,6 +171,8 @@ fn encode_then_decode_response_roundtrip() {
             PhpVersion::new(8, 5),
             BTreeMap::from([("xdebug.mode".to_string(), "debug".to_string())]),
         )])),
+        ffi_versions: Box::new(vec![]),
+        libvips_found: None,
         pool: Box::new(BTreeMap::from([(
             PhpVersion::new(8, 5),
             BTreeMap::from([("max_children".to_string(), "32".to_string())]),

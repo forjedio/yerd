@@ -231,6 +231,20 @@ pub async fn bring_up_with_dirs(
         }
     };
 
+    let ffi_cache = Arc::new(crate::ffi_cache::FfiCache::new(Arc::new(
+        yerd_php::TokioCommandRunner,
+    )));
+    let ffi_bins: Vec<(PhpVersion, PathBuf)> = binaries
+        .keys()
+        .map(|v| (*v, crate::php_install::cli_binary_path(&dirs, *v)))
+        .collect();
+    let ini_overrides = ffi_cache
+        .gate_ini_overrides(
+            &config.php.settings,
+            &config.php.version_settings,
+            &ffi_bins,
+        )
+        .await;
     let mut php_manager = PhpManager::new(
         TokioProcessSpawner,
         SystemClock,
@@ -241,7 +255,7 @@ pub async fn bring_up_with_dirs(
         binaries,
     );
     php_manager.set_ini_settings(config.php.settings.clone());
-    php_manager.set_ini_overrides(config.php.version_settings.clone());
+    php_manager.set_ini_overrides(ini_overrides);
     php_manager.set_directives(config.php.directives.clone());
     php_manager.set_pool_overrides(config.php.pool.clone());
     php_manager.set_dump_ext(Some(yerd_php::DumpExtSettings {
@@ -407,6 +421,8 @@ pub async fn bring_up_with_dirs(
         shutdown_tx: tokio::sync::watch::channel(false).0,
         restart_requested: std::sync::atomic::AtomicBool::new(false),
         detect_cache,
+        ffi_cache,
+        libvips_probe: Arc::new(yerd_platform::ActiveLibvipsProbe::new()),
         watch_dirty: tokio::sync::Notify::new(),
         dumps: Arc::new(crate::dump_server::DumpStore::new()),
         shim_reconcile: tokio::sync::Mutex::new(()),

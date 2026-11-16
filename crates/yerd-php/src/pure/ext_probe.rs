@@ -74,6 +74,13 @@ pub fn interpret_probe(exit_ok: bool, diagnostics: &str) -> Result<(), ExtLoadEr
     Ok(())
 }
 
+/// Whether `php -m` output lists the FFI extension: true when some line,
+/// trimmed (so `\r\n` endings work), is exactly `FFI`.
+#[must_use]
+pub fn ffi_listed(modules_output: &str) -> bool {
+    modules_output.lines().any(|line| line.trim() == "FFI")
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -152,5 +159,25 @@ mod tests {
             interpret_probe(false, "segfault"),
             Err(ExtLoadError::Unknown)
         );
+    }
+
+    #[test]
+    fn ffi_listed_matches_only_an_exact_ffi_line() {
+        let cases: &[(&str, bool)] = &[
+            (
+                "[PHP Modules]\nCore\nctype\nFFI\nzlib\n\n[Zend Modules]\nZend OPcache\n",
+                true,
+            ),
+            (
+                "[PHP Modules]\nCore\nctype\nzlib\n\n[Zend Modules]\nZend OPcache\n",
+                false,
+            ),
+            ("[PHP Modules]\r\nCore\r\nFFI\r\nzlib\r\n", true),
+            ("[PHP Modules]\nFFI_extra\nffi\n", false),
+            ("", false),
+        ];
+        for (output, want) in cases {
+            assert_eq!(ffi_listed(output), *want, "{output:?}");
+        }
     }
 }

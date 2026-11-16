@@ -16,6 +16,7 @@ use directories::ProjectDirs;
 
 use crate::error::ops;
 use crate::ide::{DetectedIde, IdeLauncher, LaunchTarget};
+use crate::libvips::LibvipsProbe;
 use crate::metrics::SystemMetrics;
 use crate::opener::SystemOpener;
 use crate::os::unix::{
@@ -29,6 +30,7 @@ use crate::process_table::ProcessTable;
 use crate::pure::ide_spec::{
     desktop_entry_matches, ide_cli_candidates_linux, spec_for, IdeSpec, IDE_SPECS,
 };
+use crate::pure::libvips;
 use crate::pure::opener_spec::linux_default_openers;
 use crate::pure::terminal_spec::{working_dir_flags, TERMINAL_SPECS};
 use crate::pure::{
@@ -888,6 +890,27 @@ impl LinuxPortRedirector {
 impl PortRedirector for LinuxPortRedirector {
     fn is_active(&self) -> Option<bool> {
         None
+    }
+}
+
+/// Linux libvips probe: stats the Linux candidate paths.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LinuxLibvipsProbe;
+
+impl LinuxLibvipsProbe {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl LibvipsProbe for LinuxLibvipsProbe {
+    fn libvips_found(&self) -> Option<bool> {
+        Some(libvips::any_present(
+            &libvips::candidates_linux(),
+            Path::is_file,
+        ))
     }
 }
 
