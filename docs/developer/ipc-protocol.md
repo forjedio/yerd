@@ -255,7 +255,7 @@ pub enum Response {
     Error { code: ErrorCode, message: String },
     Parked { paths: Vec<String> },
     Info { dns_addr, tld, ca_path, ca_fingerprint, http_port, https_port },
-    PhpVersions { installed, default, updates, settings, version_settings, directives, pool },
+    PhpVersions { installed, default, updates, settings, version_settings, directives, pool, ffi_versions, libvips_found },
     AvailablePhp { available, installed, legacy },
     PhpExtensions { by_version },                  // version → [PhpExtInfo{name,path,zend,present}]
     Status { report: Box<StatusReport> },         // boxed: large payload
@@ -433,7 +433,7 @@ The JSON shapes are the **published contract**, pinned three ways so a rename or
    }).unwrap(), r#"{"type":"set_php","name":"foo","version":"8.3"}"#);
    ```
 
-   It also pins additive back-compat: `Response::Info` decodes legacy daemons that omit `http_port`/`https_port` (they default to 0), and `Response::PhpVersions` skips an empty `updates`/`settings`/`version_settings`/`directives`/`pool` on the wire so the bytes match the pre-field shape.
+   It also pins additive back-compat: `Response::Info` decodes legacy daemons that omit `http_port`/`https_port` (they default to 0), and `Response::PhpVersions` skips an empty `updates`/`settings`/`version_settings`/`directives`/`pool`/`ffi_versions` and an absent `libvips_found` on the wire so the bytes match the pre-field shape.
 
 2. **Inline `variant_name_pinning` modules** in `request.rs` and `response.rs` contain exhaustive `match` arms over the (in-crate, so matchable despite `#[non_exhaustive]`) enums. A renamed Rust variant fails to compile there - integration tests can't catch this across the crate boundary.
 

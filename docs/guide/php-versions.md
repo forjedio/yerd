@@ -107,6 +107,7 @@ on 8.4, as noted.
 | `dom` | *(core)* Tree-based DOM API for reading and manipulating XML and HTML documents. |
 | `event` | libevent bindings for event-driven, non-blocking I/O loops. |
 | `exif` | Reads EXIF metadata (camera, orientation, GPS) embedded in image files. |
+| `ffi` | Foreign Function Interface: call native C libraries from PHP, as php-vips does with libvips. See [FFI and php-vips](#ffi-and-php-vips). |
 | `fileinfo` | *(core)* Detects a file's MIME type from its contents rather than its name. |
 | `filter` | *(core)* Validates and sanitizes data with `filter_var()` (emails, URLs, ints, …). |
 | `ftp` | Client-side FTP protocol support. |
@@ -118,6 +119,7 @@ on 8.4, as noted.
 | `imap` | Access to IMAP, POP3, and NNTP mailboxes. |
 | `intl` | Unicode/ICU internationalization: number and date formatting, collation, transliteration - required by Laravel's `Number` helper. |
 | `json` | *(core)* JSON encoding and decoding. |
+| `ldap` | LDAP directory client (OpenLDAP), including paged-results controls for Active Directory and similar servers. |
 | `lexbor` | **New in PHP 8.5.** The Lexbor HTML5 engine powering the new `\Dom\HTMLDocument` parser. |
 | `libxml` | *(core)* The shared libxml2 foundation the other XML extensions build on. |
 | `mbstring` | Multibyte-safe string functions for UTF-8 and other encodings. |
@@ -158,7 +160,7 @@ on 8.4, as noted.
 | `xmlreader` | *(core)* Pull-based streaming reader for large XML documents. |
 | `xmlwriter` | *(core)* Streaming writer for generating XML. |
 | `xsl` | XSLT 1.0 stylesheet transformations over the DOM. |
-| `Zend OPcache` | Caches compiled PHP bytecode in shared memory so scripts aren't re-parsed each request (a Zend extension). |
+| `Zend OPcache` | Caches compiled PHP bytecode in shared memory so scripts aren't re-parsed each request (a Zend extension). The JIT works alongside `swoole`. |
 | `zip` | Reading and writing ZIP archives. |
 | `zlib` | gzip / deflate stream compression. |
 
@@ -168,8 +170,8 @@ Need something not in this set? Register your own with
 [`yerd php ext`](#custom-extensions).
 
 [Legacy versions](#legacy-php-versions) (7.4 / 8.0 / 8.1) ship a smaller, uniform
-extension set built once across all three EOL minors, dropping a few extensions
-that need PHP 8.0+ or a newer `swoole` than 7.4 can run.
+extension set built once across all three EOL minors, dropping `ffi` and a few
+extensions that need PHP 8.0+ or a newer `swoole` than 7.4 can run.
 
 <details>
 <summary><b>Legacy build extension list</b> (7.4 / 8.0 / 8.1 - identical across all three)</summary>
@@ -195,6 +197,7 @@ that need PHP 8.0+ or a newer `swoole` than 7.4 can run.
 | `imagick` | ImageMagick bindings for advanced image processing and a wide range of formats. |
 | `imap` | Access to IMAP, POP3, and NNTP mailboxes. |
 | `intl` | Unicode/ICU internationalization: number and date formatting, collation, transliteration. |
+| `ldap` | LDAP directory client (OpenLDAP), including paged-results controls for Active Directory and similar servers. |
 | `mbregex` | Multibyte-aware regular expressions (the `mb_ereg*` functions). |
 | `mbstring` | Multibyte-safe string functions for UTF-8 and other encodings. |
 | `mysqli` | The improved, feature-complete MySQL/MariaDB driver. |
@@ -237,6 +240,9 @@ Dropped versus the stable builds:
   fragment across the three EOL minors, so it's dropped to keep one uniform
   legacy set.
 - **`swoole-hook-mysql`** - depends on `swoole`.
+- **`ffi`** - only the stable builds ship it, which is why the
+  [Allow FFI in web requests](#ffi-and-php-vips) setting doesn't apply to legacy
+  versions.
 - **`pcov` and `yerd-dump`** - the external `.so` partners from
   [`forjedio/yerd-php-ext`](https://github.com/forjedio/yerd-php-ext) aren't
   built for EOL PHP, which is why [coverage](./code-coverage) and
@@ -250,6 +256,8 @@ When you need an extension Yerd's builds don't ship (a PECL module like `scrypt`
 or your own compiled `.so`), register it with `yerd php ext`. Yerd loads it into
 **both** the web (FPM) runtime and the CLI for that version, so `extension_loaded()`
 returns `true` on a `.test` route and `php -m` lists it - the two used to diverge.
+Composer and the Laravel installer run with the same per-version CLI ini, so
+Composer's platform check sees the extension too.
 
 ```sh
 yerd php ext add 8.5 /opt/homebrew/lib/php/pecl/20250925/scrypt.so
@@ -272,6 +280,9 @@ yerd php ext remove 8.5 scrypt
   (e.g. Homebrew bumps its PECL directory on upgrade), Yerd skips it with a warning
   rather than failing to start the pool, and `yerd php ext list` marks it
   `(missing!)`.
+- **Now bundled?** If you registered your own build of an extension Yerd now
+  ships (such as `ldap` or `ffi`), remove it with `yerd php ext remove`. Loading
+  it twice makes PHP warn `Module "ldap" is already loaded`.
 
 Adding or removing an extension restarts that version's running FPM pool to apply
 it. In the desktop app, the same registry lives in the **Extensions** section of
@@ -471,6 +482,32 @@ back by `yerd list php` under a `settings:` block. See the [PHP CLI
 reference](../reference/cli/php#global-php-ini-settings) for the full list and the
 [Configuration Reference](../reference/configuration#php) for how they're stored
 and rendered into FPM config.
+
+#### FFI and php-vips
+
+The stable builds (8.2+) include the `ffi` extension, so FFI libraries such as
+[php-vips](https://github.com/libvips/php-vips) work. PHP's default
+`ffi.enable=preload` already allows FFI from the CLI (artisan, queue workers,
+tests), but php-vips doesn't support preloading, so web requests fail until you
+turn on **Allow FFI in web requests**:
+
+```sh
+yerd set php ffi.enable on               # every version whose build has FFI
+yerd set php ffi.enable on --only 8.5    # just one version
+yerd unset php ffi.enable                # back to PHP's preload default
+```
+
+It's off by default. When on, Yerd writes `php_admin_value[ffi.enable] = true`
+into the FPM pools of 8.2+ versions that include FFI, and never into
+[legacy](#legacy-php-versions) pools. Turning it on lets site code call native C
+libraries, so leave it off unless you need it. The same switch is on the
+**PHP** page of the desktop app, and agents can set it globally through the
+MCP `set_php_setting` tool.
+
+Native libraries aren't bundled. Install libvips yourself: `brew install vips`
+on macOS, `libvips42` (or `libvips42t64`) on Debian/Ubuntu, `vips` on Fedora,
+or `libvips` on Arch. The desktop app shows a hint when FFI is on but libvips
+isn't found.
 
 ### Per-version configuration
 

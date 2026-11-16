@@ -207,8 +207,11 @@ Composer is a phar, so its `composer` command can't be a direct symlink - it
 needs a PHP interpreter. Like the [cover shims](./binaries/yerd#cover-shims-yerd-as-a-multi-call-binary-cover_shim-rs),
 `{data}/bin/composer` symlinks to the `yerd` binary, which detects `argv[0] ==
 "composer"` *before clap* (in `main.rs`, ahead of `cover_shim::dispatch`) and
-`exec`s the default managed PHP against `{data}/tools/composer/composer.phar`. If
-no PHP is installed it prints a clear "install a PHP version" message; if the
+`exec`s the default managed PHP against `{data}/tools/composer/composer.phar`,
+pointing `PHPRC` at that version's CLI ini (`php-cli-<minor>.ini`, else the base
+`php-cli.ini`) so per-version extensions and settings apply. Without it Composer
+would inherit the base `php-cli.ini` exported by the shell profile, which has no
+extension lines. If no PHP is installed it prints a clear "install a PHP version" message; if the
 phar is absent it points the user at the Tooling page.
 
 ## IPC contract
