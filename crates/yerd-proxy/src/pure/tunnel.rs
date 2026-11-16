@@ -19,10 +19,12 @@ const SHARED_CACHE_OVERRIDES: &[&str] = &[
 /// authenticated request when it carries `public`, `s-maxage` or
 /// `must-revalidate`. A bare `private` forbids that whatever else is present,
 /// so it is the load-bearing part: it is added unless `no-store` or a bare
-/// `private` is already there. `public` and `s-maxage` are dropped as well so
-/// the header does not contradict itself. Directives are split on commas
-/// outside quoted strings, so a token inside a quoted field list never counts.
-/// A value that is not valid UTF-8 cannot be parsed, so the whole header
+/// `private` is already there. `public`, `s-maxage` and a field-scoped
+/// `private="..."` are dropped as well, so the header does not contradict
+/// itself and a cache that reads only the first `private` cannot miss the bare
+/// one. Directives are split on commas outside quoted strings, so a token
+/// inside a quoted field list never counts. A value that is not valid UTF-8 or
+/// leaves a quoted string open cannot be parsed safely, so the whole header
 /// becomes the strictest `private, no-store`. The CDN-specific override
 /// headers are removed. Browser caching is otherwise left as the site set it.
 pub fn keep_out_of_shared_caches(headers: &mut HeaderMap) {
@@ -31,12 +33,12 @@ pub fn keep_out_of_shared_caches(headers: &mut HeaderMap) {
     }
     let mut directives: Vec<String> = Vec::new();
     for value in &headers.get_all(CACHE_CONTROL) {
-        let Ok(text) = value.to_str() else {
+        let Some(split) = value.to_str().ok().and_then(split_directives) else {
             headers.insert(CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
             return;
         };
         directives.extend(
-            split_directives(text)
+            split
                 .into_iter()
                 .filter(|d| !is_shared_cache_grant(d))
                 .map(str::to_owned),
@@ -53,8 +55,8 @@ pub fn keep_out_of_shared_caches(headers: &mut HeaderMap) {
 
 /// Split a `Cache-Control` value into trimmed, non-empty directives at commas
 /// that sit outside a quoted string (RFC 9110 `quoted-string`, with `\`
-/// escapes).
-fn split_directives(value: &str) -> Vec<&str> {
+/// escapes). Returns `None` when a quoted string is never closed.
+fn split_directives(value: &str) -> Option<Vec<&str>> {
     let mut out = Vec::new();
     let mut start = 0;
     let mut in_quotes = false;
@@ -71,16 +73,26 @@ fn split_directives(value: &str) -> Vec<&str> {
             _ => {}
         }
     }
+    if in_quotes {
+        return None;
+    }
     out.push(value.get(start..).unwrap_or_default());
-    out.into_iter()
-        .map(str::trim)
-        .filter(|d| !d.is_empty())
-        .collect()
+    Some(
+        out.into_iter()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .collect(),
+    )
 }
 
 fn is_shared_cache_grant(directive: &str) -> bool {
-    let name = directive.split('=').next().unwrap_or_default().trim();
-    name.eq_ignore_ascii_case("public") || name.eq_ignore_ascii_case("s-maxage")
+    let (name, scoped) = match directive.split_once('=') {
+        Some((name, _)) => (name.trim(), true),
+        None => (directive.trim(), false),
+    };
+    name.eq_ignore_ascii_case("public")
+        || name.eq_ignore_ascii_case("s-maxage")
+        || (scoped && name.eq_ignore_ascii_case("private"))
 }
 
 /// Normalize a `Host` header value into a tunnel route key: strip a `:port`
@@ -163,9 +175,24 @@ mod tests {
                 "private, max-age=60",
             ),
             (
-                "a field-scoped private still gains a bare private",
-                &[("cache-control", "private=\"set-cookie\"")],
-                "private=\"set-cookie\", private",
+                "a field-scoped private becomes a bare private",
+                &[("cache-control", "private=\"set-cookie\", max-age=60")],
+                "max-age=60, private",
+            ),
+            (
+                "a field-scoped private beside a bare one is dropped",
+                &[("cache-control", "private=\"set-cookie\", private")],
+                "private",
+            ),
+            (
+                "an unclosed quoted string falls back to no-store",
+                &[("cache-control", "no-cache=\"a, public, max-age=600")],
+                "private, no-store",
+            ),
+            (
+                "a dangling escape inside quotes falls back to no-store",
+                &[("cache-control", "max-age=5, no-cache=\"a\\")],
+                "private, no-store",
             ),
             (
                 "a private inside a quoted list does not count",

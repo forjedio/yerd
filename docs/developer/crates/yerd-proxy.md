@@ -128,7 +128,7 @@ Pure helpers for [`serve_tunnel`](#the-tunnel-listener-proxyserver-serve-tunnel)
 - `normalize_host(raw)` - strip a port and a trailing dot and lowercase; `None` for empty input or whitespace. Route-map keys and incoming `Host` headers both go through it.
 - `basic_auth_password(header)` - case-insensitive `Basic` scheme, base64 decode (`pure::base64::decode`), split at the first `:`. **The username is ignored.**
 - `password_matches(given, expected)` - constant-time comparison through `subtle::ConstantTimeEq`.
-- `keep_out_of_shared_caches(headers)` - applied to every response behind a share password: drops `public` and `s-maxage` from `Cache-Control`, adds a bare `private` unless `no-store` or a bare `private` is there, and removes `CDN-Cache-Control`, `Cloudflare-CDN-Cache-Control` and `Surrogate-Control`. The edge's cache key ignores `Authorization`, so a shared-cacheable authenticated response would otherwise bypass the gate.
+- `keep_out_of_shared_caches(headers)` - applied to every response behind a share password: drops `public`, `s-maxage` and a field-scoped `private="..."` from `Cache-Control`, adds a bare `private` unless `no-store` or a bare `private` is there (an unparseable value becomes `private, no-store`), and removes `CDN-Cache-Control`, `Cloudflare-CDN-Cache-Control` and `Surrogate-Control`. The edge's cache key ignores `Authorization`, so a shared-cacheable authenticated response would otherwise bypass the gate.
 
 ### `redirect` - HTTP → HTTPS upgrade URI {#redirect}
 
