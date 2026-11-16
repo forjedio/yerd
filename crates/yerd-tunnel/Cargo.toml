@@ -9,11 +9,11 @@ description            = "Cloudflare Tunnel argument/config generation and super
 
 [dependencies]
 yerd-supervise = { path = "../yerd-supervise" }
+async-trait    = { workspace = true }
 thiserror      = { workspace = true }
-tokio          = { workspace = true, features = ["time", "macros"] }
+tokio          = { workspace = true, features = ["time", "macros", "net", "io-util"] }
 
 [dev-dependencies]
-async-trait    = { workspace = true }
 tokio          = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tempfile       = { workspace = true }
 

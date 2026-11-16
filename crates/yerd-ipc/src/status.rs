@@ -746,10 +746,16 @@ pub enum TunnelKind {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum TunnelRunState {
-    /// The `cloudflared` process is alive and serving.
+    /// The `cloudflared` process is alive and connected to the Cloudflare edge.
     Running,
-    /// The process has exited unexpectedly.
+    /// The process has exited unexpectedly. A supervised tunnel stays in this
+    /// state while a restart is pending.
     Failed,
+    /// The process is starting and has never reached the edge in this run.
+    Connecting,
+    /// The tunnel was online before and is now restarting or has lost its edge
+    /// connection.
+    Reconnecting,
 }
 
 /// One live tunnel, as reported in [`crate::Response::Tunnels`].
@@ -759,14 +765,26 @@ pub struct TunnelInfo {
     pub site: String,
     /// Quick vs Named.
     pub kind: TunnelKind,
-    /// Whether the process is alive or has died.
+    /// Edge health: connecting (never online yet), running (online),
+    /// reconnecting (was online, now restarting or edge lost), or failed (the
+    /// process exited and a restart is pending).
     pub state: TunnelRunState,
     /// The public URL (Quick tunnels) once captured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// The configured public hostname (Named tunnels).
+    /// A public hostname for this entry. The daemon currently leaves it unset:
+    /// named-tunnel hostnames are listed per site by `ListNamedTunnels`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
+    /// The most recent error reported for this tunnel, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// Whether the shared site is protected by a share password.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub protected: bool,
+    /// Non-blocking preflight warnings computed when the share started.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// One named tunnel recorded on the account, for
@@ -786,6 +804,9 @@ pub struct SiteHostname {
     pub site: String,
     /// The public hostname it is exposed at.
     pub hostname: String,
+    /// Whether the site is protected by a share password.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub protected: bool,
 }
 
 /// Where the `cloudflared` binary Yerd is using came from.

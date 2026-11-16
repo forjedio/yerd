@@ -1,9 +1,10 @@
 //! Process and executable helpers shared by the Linux and macOS adapters.
 //!
-//! Both adapters need the same two primitives: find an executable file in a
-//! list of directories, and start a long-lived GUI process while still
-//! reporting an immediate failure. Keeping one copy here stops the two edges
-//! drifting apart.
+//! Both adapters need the same primitives: find an executable file in a list of
+//! directories, start a long-lived GUI process while still reporting an
+//! immediate failure, and signal or probe a process by PID for the
+//! `ProcessTable` impls. Keeping one copy here stops the two edges drifting
+//! apart.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -70,6 +71,36 @@ pub(crate) fn spawn_and_check(
             None => std::thread::sleep(POLL_INTERVAL),
         }
     }
+}
+
+/// Send SIGTERM (or SIGKILL when `force`) to the process group led by `pid`,
+/// falling back to the process alone when it leads no group. Refuses the PIDs
+/// [`crate::pure::process_signal::signal_target`] rejects. Best-effort: errors
+/// are ignored.
+pub(crate) fn signal_process_group(pid: u32, force: bool) {
+    use nix::sys::signal::{kill, killpg, Signal};
+    use nix::unistd::Pid;
+    let Some(raw) = crate::pure::process_signal::signal_target(pid) else {
+        return;
+    };
+    let signal = if force {
+        Signal::SIGKILL
+    } else {
+        Signal::SIGTERM
+    };
+    if killpg(Pid::from_raw(raw), signal).is_err() {
+        let _ = kill(Pid::from_raw(raw), signal);
+    }
+}
+
+/// Whether `pid` exists, probed with signal 0. A permission error still means
+/// the process exists. Refused PIDs read as not alive.
+pub(crate) fn process_exists(pid: u32) -> bool {
+    use nix::errno::Errno;
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+    crate::pure::process_signal::signal_target(pid)
+        .is_some_and(|raw| matches!(kill(Pid::from_raw(raw), None), Ok(()) | Err(Errno::EPERM)))
 }
 
 #[cfg(test)]

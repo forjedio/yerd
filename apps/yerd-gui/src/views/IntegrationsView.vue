@@ -6,6 +6,7 @@ import {
   Copy,
   Download,
   Globe,
+  KeyRound,
   Lock,
   Share2,
   Square,
@@ -41,13 +42,19 @@ import {
   pollJobToEnd,
   routeTunnelDns,
   setSiteTunnel,
+  setTunnelPassword,
   startNamedTunnel,
   startQuickTunnel,
-  stopNamedTunnel,
   stopTunnel,
   tunnelStatus,
 } from "@/ipc/client";
-import type { CloudflaredStatus, NamedTunnelMeta, Site, TunnelInfo } from "@/ipc/types";
+import type {
+  CloudflaredStatus,
+  NamedTunnelMeta,
+  Site,
+  TunnelInfo,
+  TunnelRunState,
+} from "@/ipc/types";
 
 const toast = useToast();
 const { connected } = useDaemon();
@@ -72,12 +79,22 @@ const newTunnelName = ref("");
 const enabledHosts = ref<Record<string, string>>({});
 // site -> hostname being typed in the per-site input.
 const hostInputs = ref<Record<string, string>>({});
+// Named-tunnel sites protected by a share password.
+const protectedNamed = ref<Set<string>>(new Set());
 
-const namedRunning = computed(() =>
-  tunnels.value.some((t) => t.kind === "named" && t.state === "running"),
-);
-// Whether any site is currently exposed (drives auto start/stop of the tunnel).
+// The single named-tunnel instance the daemon supervises, in any state. The
+// daemon starts it when a hostname is set and stops it when the last one is
+// cleared, so the view only renders it.
+const namedEntry = computed(() => tunnels.value.find((t) => t.kind === "named") ?? null);
+// Whether any site is currently exposed on the named tunnel.
 const anyExposed = computed(() => Object.keys(enabledHosts.value).length > 0);
+// Start is offered when sites are exposed but no instance exists. A failed
+// instance retries on its own, but gets a Retry action too: the daemon only
+// replaces it when its command changed (say, after installing the bundled
+// cloudflared), and otherwise leaves it retrying, so it never starts a second one.
+const canStartNamed = computed(
+  () => anyExposed.value && (namedEntry.value === null || namedEntry.value.state === "failed"),
+);
 // v1 allows exactly one named tunnel.
 const hasNamedTunnel = computed(() => namedTunnels.value.length > 0);
 // The authorized Cloudflare zone (domain), once resolved from the account cert.
@@ -95,6 +112,35 @@ const visibleSites = computed(() => {
     return ax - bx || a.name.localeCompare(b.name);
   });
 });
+
+const STATE_LABELS: Record<TunnelRunState, string> = {
+  connecting: "Connecting",
+  running: "Online",
+  reconnecting: "Reconnecting",
+  failed: "Failed, retrying",
+};
+
+/** Badge label for a tunnel state. Every reported failure is retrying: the
+ *  daemon removes a quick share whose first start fails instead of reporting it. */
+function stateLabel(state: TunnelRunState): string {
+  return STATE_LABELS[state] ?? state;
+}
+
+function stateVariant(state: TunnelRunState): "success" | "warning" | "destructive" | "secondary" {
+  if (state === "running") return "success";
+  if (state === "failed") return "destructive";
+  if (state === "reconnecting") return "warning";
+  return "secondary";
+}
+
+/** The named entry's warnings for one site. The daemon prefixes each with
+ *  `"<site>: "`; the prefix is stripped because the row already names the site. */
+function namedWarningsFor(site: string): string[] {
+  const prefix = `${site}: `;
+  return (namedEntry.value?.warnings ?? [])
+    .filter((w) => w.startsWith(prefix))
+    .map((w) => w.slice(prefix.length));
+}
 
 /** Suggested public hostname for a site: `{site}.{domain}` once the domain is
  *  known, otherwise a generic placeholder. */
@@ -171,8 +217,9 @@ function applyTunnelStatus(r: { tunnels: TunnelInfo[]; cloudflared: CloudflaredS
 function setNamedSite(site: string, hostname: string | null): void {
   mutate((cur) => {
     if (!cur?.named) return cur;
+    const prev = cur.named.sites.find((s) => s.site === site);
     const sites = cur.named.sites.filter((s) => s.site !== site);
-    if (hostname) sites.push({ site, hostname });
+    if (hostname) sites.push({ site, hostname, protected: prev?.protected });
     return { ...cur, named: { ...cur.named, sites } };
   });
 }
@@ -190,6 +237,7 @@ function applyData(d: SharePageData): void {
   namedTunnels.value = d.named.tunnels;
   authorizedDomain.value = d.named.zone ?? null;
   enabledHosts.value = Object.fromEntries(d.named.sites.map((s) => [s.site, s.hostname]));
+  protectedNamed.value = new Set(d.named.sites.filter((s) => s.protected).map((s) => s.site));
   for (const s of d.sites) {
     if (hostInputs.value[s.name] === undefined || hostInputs.value[s.name] === "") {
       hostInputs.value[s.name] = enabledHosts.value[s.name] ?? suggestedHost(s.name);
@@ -295,7 +343,8 @@ async function confirmDeleteTunnel(close: () => void): Promise<void> {
   }
 }
 
-/** Enable a site: save its hostname and route DNS to the named tunnel. */
+/** Enable a site: save its hostname and route DNS to the named tunnel. The
+ *  daemon starts the named tunnel itself once a hostname is set. */
 async function doEnableSite(site: string): Promise<void> {
   const hostname = (hostInputs.value[site] ?? "").trim();
   const tunnel = namedTunnels.value[0];
@@ -313,7 +362,7 @@ async function doEnableSite(site: string): Promise<void> {
       throw routeErr;
     }
     setNamedSite(site, hostname);
-    await reconcileNamedTunnel(true);
+    await reload();
     toast.success(`Exposed ${site}`, `https://${hostname}`);
   } catch (e) {
     toast.error(`Couldn't expose ${site}`, (e as IpcError).message);
@@ -322,14 +371,14 @@ async function doEnableSite(site: string): Promise<void> {
   }
 }
 
-/** Disable a site: clear its hostname mapping. */
+/** Disable a site: clear its hostname mapping. The daemon stops the named
+ *  tunnel once the last hostname is cleared, without disturbing other sites. */
 async function doDisableSite(site: string): Promise<void> {
   busy.value = `enable:${site}`;
   try {
     await setSiteTunnel(site, null);
-    const stillExposed = Object.keys(enabledHosts.value).some((s) => s !== site);
     setNamedSite(site, null);
-    await reconcileNamedTunnel(stillExposed);
+    await reload();
     toast.success(`Removed ${site} from the tunnel`);
   } catch (e) {
     toast.error(`Couldn't remove ${site}`, (e as IpcError).message);
@@ -338,26 +387,65 @@ async function doDisableSite(site: string): Promise<void> {
   }
 }
 
-/** Keep the live tunnel in sync with the exposed set: (re)start it while a site
- *  is exposed, stop it once the last one is removed. `hasExposed` is supplied by
- *  the caller (the cache mutation is async via the watcher, so we don't read it
- *  back here). */
-async function reconcileNamedTunnel(hasExposed: boolean): Promise<void> {
-  const r = hasExposed ? await startNamedTunnel() : await stopNamedTunnel();
-  applyTunnelStatus(r);
-}
-
-/** Manual restart, for recovering a tunnel that died (state "failed"). */
-async function doRestartNamed(): Promise<void> {
+/** Start the named tunnel when sites are exposed but nothing is running (for
+ *  example after `yerd tunnel unpublish`), or retry a failed one. Idempotent on
+ *  the daemon side. */
+async function doStartNamed(): Promise<void> {
   busy.value = "named";
-  const hasExposed = anyExposed.value;
   try {
-    await reconcileNamedTunnel(hasExposed);
-    toast.success(hasExposed ? "Tunnel restarted" : "Tunnel stopped");
+    const r = await startNamedTunnel();
+    applyTunnelStatus(r);
+    const entry = r.tunnels.find((t) => t.kind === "named");
+    if (entry?.state === "running") {
+      toast.success("Tunnel online");
+    } else if (entry?.state === "failed") {
+      toast.info("Tunnel retrying", entry.last_error ?? "It keeps retrying in the background");
+    } else {
+      toast.info("Tunnel connecting", "It shows as online once Cloudflare's edge is reached");
+    }
   } catch (e) {
-    toast.error("Couldn't restart the tunnel", (e as IpcError).message);
+    toast.error("Couldn't start the tunnel", (e as IpcError).message);
   } finally {
     busy.value = null;
+  }
+}
+
+// ── share passwords ──
+const passwordOpen = ref(false);
+const passwordSite = ref<string | null>(null);
+const passwordInput = ref("");
+const passwordProtected = ref(false);
+
+function askPassword(site: string, isProtected: boolean): void {
+  passwordSite.value = site;
+  passwordInput.value = "";
+  passwordProtected.value = isProtected;
+  passwordOpen.value = true;
+}
+
+/** Forget the target site and any typed password whenever the modal closes. */
+function onPasswordOpenChange(open: boolean): void {
+  if (open) return;
+  passwordSite.value = null;
+  passwordInput.value = "";
+}
+
+/** Set (a non-empty value) or remove (`null`) the target site's share password. */
+async function savePassword(password: string | null, close: () => void): Promise<void> {
+  const site = passwordSite.value;
+  if (!site) return;
+  close();
+  busy.value = `password:${site}`;
+  try {
+    await setTunnelPassword(site, password);
+    await reload();
+    toast.success(password === null ? `Removed the password for ${site}` : `Protected ${site}`);
+  } catch (e) {
+    toast.error(`Couldn't update the password for ${site}`, (e as IpcError).message);
+  } finally {
+    busy.value = null;
+    passwordSite.value = null;
+    passwordInput.value = "";
   }
 }
 
@@ -389,8 +477,14 @@ async function doShare(): Promise<void> {
     const r = await startQuickTunnel(site);
     applyTunnelStatus(r);
     shareSite.value = "";
-    const url = r.tunnels.find((t) => t.site === site)?.url;
-    toast.success(`Sharing ${site}`, url ?? undefined);
+    const entry = r.tunnels.find((t) => t.site === site);
+    if (entry?.url) {
+      toast.success(`Sharing ${site}`, entry.url);
+    } else if (entry?.state === "failed") {
+      toast.info(`Sharing ${site}`, entry.last_error ?? "Retrying");
+    } else {
+      toast.success(`Sharing ${site}`, "Connecting - the URL appears below once it's online");
+    }
   } catch (e) {
     toast.error(`Couldn't share ${site}`, (e as IpcError).message);
   } finally {
@@ -426,8 +520,8 @@ function openExternal(url: string): void {
   void openInBrowser(url).catch(() => toast.error("Couldn't open link"));
 }
 
-// Silent background revalidation while a tunnel is live, so a cloudflared child
-// that dies (state -> "failed") becomes visible without a manual reload. Skipped
+// Silent background revalidation while a tunnel exists, so health changes
+// (connecting, online, reconnecting, failed) show without a manual reload. Skipped
 // while a long-running op is in flight to avoid clobbering optimistic UI; cleared
 // on unmount. useResource fetches on mount and serves the cached value instantly
 // on a revisit, so there's no explicit load() here.
@@ -571,13 +665,30 @@ onUnmounted(registerViewActions({ refresh: () => void reload() }));
             </thead>
             <tbody>
               <tr v-for="t in quickTunnels" :key="t.site" class="border-b last:border-0">
-                <td class="py-3 pr-4 font-medium text-foreground">
-                  {{ t.site }}
-                  <Badge v-if="t.state === 'failed'" variant="outline" class="ml-1">
-                    failed
-                  </Badge>
+                <td class="py-3 pr-4 align-top font-medium text-foreground">
+                  <div class="flex items-center gap-1.5">
+                    {{ t.site }}
+                    <KeyRound
+                      v-if="t.protected"
+                      class="size-3.5 text-muted-foreground"
+                      aria-label="Password protected"
+                    />
+                    <Badge :variant="stateVariant(t.state)" data-testid="tunnel-state">
+                      {{ stateLabel(t.state) }}
+                    </Badge>
+                  </div>
+                  <p v-if="t.last_error" class="mt-1 text-xs font-normal text-destructive">
+                    {{ t.last_error }}
+                  </p>
+                  <p
+                    v-for="w in t.warnings ?? []"
+                    :key="w"
+                    class="mt-1 text-xs font-normal text-amber-600 dark:text-amber-400"
+                  >
+                    {{ w }}
+                  </p>
                 </td>
-                <td class="py-3 pr-4">
+                <td class="py-3 pr-4 align-top">
                   <button
                     v-if="t.url ?? t.hostname"
                     type="button"
@@ -588,8 +699,19 @@ onUnmounted(registerViewActions({ refresh: () => void reload() }));
                   </button>
                   <span v-else class="text-xs text-muted-foreground">starting…</span>
                 </td>
-                <td class="py-3 pl-4">
+                <td class="py-3 pl-4 align-top">
                   <div class="flex items-center justify-end gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-label="Share password"
+                      title="Share password"
+                      :disabled="busy !== null || connected !== true"
+                      @click="askPassword(t.site, !!t.protected)"
+                    >
+                      <Spinner v-if="busy === `password:${t.site}`" class="size-3.5" />
+                      <KeyRound v-else class="size-3.5" />
+                    </Button>
                     <Button
                       v-if="t.url"
                       variant="ghost"
@@ -653,8 +775,12 @@ onUnmounted(registerViewActions({ refresh: () => void reload() }));
                 Account disconnected
               </Badge>
               <div class="flex items-center gap-2">
-                <Badge v-if="namedRunning" variant="secondary" class="gap-1">
-                  <span class="size-1.5 rounded-full bg-emerald-500" /> live
+                <Badge
+                  v-if="namedEntry"
+                  :variant="stateVariant(namedEntry.state)"
+                  data-testid="named-state"
+                >
+                  {{ stateLabel(namedEntry.state) }}
                 </Badge>
                 <Badge
                   v-else-if="anyExposed"
@@ -664,18 +790,25 @@ onUnmounted(registerViewActions({ refresh: () => void reload() }));
                   offline
                 </Badge>
                 <Button
-                  v-if="anyExposed"
+                  v-if="canStartNamed"
                   variant="outline"
                   size="sm"
                   :disabled="busy !== null || connected !== true || !loggedIn"
-                  @click="doRestartNamed"
+                  @click="doStartNamed"
                 >
                   <Spinner v-if="busy === 'named'" class="mr-1.5 size-3.5" />
                   <Globe v-else class="mr-1.5 size-3.5" />
-                  {{ namedRunning ? "Restart" : "Start" }}
+                  {{ namedEntry ? "Retry" : "Start" }}
                 </Button>
               </div>
             </div>
+            <p
+              v-if="namedEntry?.last_error"
+              class="-mt-3 text-right text-xs text-destructive"
+              data-testid="named-error"
+            >
+              {{ namedEntry.last_error }}
+            </p>
 
             <div>
               <div v-if="!hasNamedTunnel">
@@ -752,30 +885,58 @@ onUnmounted(registerViewActions({ refresh: () => void reload() }));
                   </thead>
                   <tbody>
                     <tr v-for="s in visibleSites" :key="s.name" class="border-b last:border-0">
-                      <td class="py-2 pr-2 font-medium text-foreground">
-                        {{ s.name }}
-                        <Badge v-if="enabledHosts[s.name]" variant="secondary" class="ml-1">
-                          exposed
-                        </Badge>
+                      <td class="py-2 pr-2 align-top font-medium text-foreground">
+                        <div class="flex items-center gap-1.5">
+                          {{ s.name }}
+                          <KeyRound
+                            v-if="enabledHosts[s.name] && protectedNamed.has(s.name)"
+                            class="size-3.5 text-muted-foreground"
+                            aria-label="Password protected"
+                          />
+                          <Badge v-if="enabledHosts[s.name]" variant="secondary">
+                            exposed
+                          </Badge>
+                        </div>
+                        <template v-if="enabledHosts[s.name]">
+                          <p
+                            v-for="w in namedWarningsFor(s.name)"
+                            :key="w"
+                            class="mt-1 text-xs font-normal text-amber-600 dark:text-amber-400"
+                          >
+                            {{ w }}
+                          </p>
+                        </template>
                       </td>
-                      <td class="py-2 pr-2">
+                      <td class="py-2 pr-2 align-top">
                         <Input
                           v-model="hostInputs[s.name]"
                           :placeholder="suggestedHost(s.name)"
                           :disabled="!!enabledHosts[s.name]"
                         />
                       </td>
-                      <td class="py-2 pl-2 text-right">
-                        <Button
-                          v-if="enabledHosts[s.name]"
-                          variant="ghost"
-                          size="sm"
-                          :disabled="busy !== null || connected !== true"
-                          @click="doDisableSite(s.name)"
-                        >
-                          <Spinner v-if="busy === `enable:${s.name}`" class="mr-1.5 size-3.5" />
-                          Remove
-                        </Button>
+                      <td class="py-2 pl-2 text-right align-top">
+                        <template v-if="enabledHosts[s.name]">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            aria-label="Share password"
+                            title="Share password"
+                            :disabled="busy !== null || connected !== true"
+                            @click="askPassword(s.name, protectedNamed.has(s.name))"
+                          >
+                            <Spinner v-if="busy === `password:${s.name}`" class="size-3.5" />
+                            <KeyRound v-else class="size-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            :disabled="busy !== null || connected !== true"
+                            @click="doDisableSite(s.name)"
+                          >
+                            <Spinner v-if="busy === `enable:${s.name}`" class="mr-1.5 size-3.5" />
+                            Remove
+                          </Button>
+                        </template>
                         <Button
                           v-else
                           variant="outline"
@@ -829,6 +990,39 @@ onUnmounted(registerViewActions({ refresh: () => void reload() }));
       <template #footer="{ close }">
         <Spinner v-if="busy === 'install'" class="size-4" />
         <Button :disabled="busy === 'install'" @click="close">Done</Button>
+      </template>
+    </Modal>
+
+    <Modal
+      v-model:open="passwordOpen"
+      title="Share password"
+      @update:open="onPasswordOpenChange"
+    >
+      <p class="mb-3 text-sm text-muted-foreground">
+        Visitors to <strong class="font-mono text-foreground">{{ passwordSite }}</strong>
+        over the tunnel must sign in with this password (any username). Local
+        <span class="font-mono">.test</span> access is unaffected.
+      </p>
+      <Input
+        id="share-password"
+        v-model="passwordInput"
+        type="password"
+        autocomplete="new-password"
+        placeholder="Share password"
+      />
+      <template #footer="{ close }">
+        <Button
+          v-if="passwordProtected"
+          variant="ghost"
+          class="mr-auto text-destructive hover:bg-destructive/10 hover:text-destructive"
+          @click="savePassword(null, close)"
+        >
+          Remove password
+        </Button>
+        <Button variant="ghost" @click="close">Cancel</Button>
+        <Button :disabled="passwordInput.length === 0" @click="savePassword(passwordInput, close)">
+          Save
+        </Button>
       </template>
     </Modal>
 

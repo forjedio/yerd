@@ -262,10 +262,10 @@ pub(crate) fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
 
-/// Well past when all of `--no-autoupdate`/`--origincert`/`--http-host-header`/
-/// `--origin-server-name`/`--no-tls-verify`/`--credentials-file`/
-/// `--overwrite-dns` were stable in `cloudflared`, so any release at or above
-/// this floor is assumed to support every flag Yerd depends on.
+/// Well past when all of `--no-autoupdate`/`--origincert`/`--config`/`--url`/
+/// `--credentials-file`/`--overwrite-dns`, the `TUNNEL_METRICS` env var, and the
+/// `/ready` metrics endpoint were stable in `cloudflared`, so any release at or
+/// above this floor is assumed to support everything Yerd depends on.
 const MIN_SYSTEM_VERSION: (u32, u32, u32) = (2023, 3, 0);
 
 /// Parse the `YYYY.MM.N` version token out of `cloudflared --version` output

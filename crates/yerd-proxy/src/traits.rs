@@ -58,6 +58,15 @@ pub trait BackendResolver: Send + Sync + 'static {
         let _ = site;
         false
     }
+
+    /// Whether `site` is a `WordPress` site. The tunnel listener uses this to
+    /// add the public-URL `auto_prepend_file` override so `WordPress` builds
+    /// links against the public host rather than the local one. Defaults to
+    /// `false`.
+    async fn is_wordpress(&self, site: &yerd_core::Site) -> bool {
+        let _ = site;
+        false
+    }
 }
 
 /// Check and invalidate a one-click `WordPress` login token (the "WP Admin"

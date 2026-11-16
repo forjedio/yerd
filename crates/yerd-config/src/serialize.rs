@@ -175,6 +175,8 @@ struct TunnelSectionSer<'a> {
     named: &'a BTreeMap<String, String>,
     #[serde(skip_serializing_if = "map_is_empty")]
     sites: &'a BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "map_is_empty")]
+    passwords: &'a BTreeMap<String, String>,
 }
 
 #[derive(Serialize)]
@@ -419,6 +421,7 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
             Some(TunnelSectionSer {
                 named: &c.tunnel.named,
                 sites: &c.tunnel.sites,
+                passwords: &c.tunnel.passwords,
             })
         },
         groups: if c.groups.is_empty() {
@@ -586,8 +589,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 24\n"),
-            "expected `version = 24` first line; got: {s}"
+            s.starts_with("version = 25\n"),
+            "expected `version = 25` first line; got: {s}"
         );
     }
 
@@ -637,10 +640,15 @@ mod tests {
         c.tunnel = crate::TunnelSection {
             named: BTreeMap::from([("mysite".to_owned(), "uuid-123".to_owned())]),
             sites: BTreeMap::from([("app".to_owned(), "app.example.com".to_owned())]),
+            passwords: BTreeMap::from([("app".to_owned(), "secret".to_owned())]),
         };
         let s = to_toml(&c).unwrap();
         assert!(s.contains("[tunnel.named]"), "must emit named table: {s}");
         assert!(s.contains("[tunnel.sites]"), "must emit sites table: {s}");
+        assert!(
+            s.contains("[tunnel.passwords]"),
+            "must emit passwords table: {s}"
+        );
         let back = Config::from_toml(&s).unwrap();
         assert_eq!(back, c);
     }

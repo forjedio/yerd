@@ -48,7 +48,7 @@ everything the app does.
 - 🗄️ **Native MySQL · MariaDB · PostgreSQL · Redis** - no Docker.
 - 📬 **Mail capture** and a live **Laravel dump / query inspector**, built in.
 - 🌍 **Share any site publicly** in one click via Cloudflare Tunnel - no ngrok account, no open ports.
-- 🧰 **Composer, Node, and Bun** installed on demand as standalone binaries - no system package manager.
+- 🧰 **Composer, Node, Bun, and pnpm** installed on demand as standalone binaries - no system package manager.
 - 🪶 **One ~8 MB daemon** - no containers, no VM, no Electron.
 - 🛡️ **Rootless** - setup elevates once; daily use never does.
 - 🔌 **Works without admin** - can't route `.test`? Reach any site at `http://localhost:8080/~<name>.test`.

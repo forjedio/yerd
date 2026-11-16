@@ -19,6 +19,10 @@ pem         = { workspace = true }
 x509-parser = { workspace = true }
 serde_json  = { workspace = true }
 
+# `killpg`/`kill` for `ProcessTable` (orphan reaping).
+[target.'cfg(unix)'.dependencies]
+nix         = { workspace = true }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = { workspace = true }
 

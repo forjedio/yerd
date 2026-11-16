@@ -191,6 +191,7 @@ fn main() {
             commands::list_named_tunnels,
             commands::route_tunnel_dns,
             commands::set_site_tunnel,
+            commands::set_tunnel_password,
             commands::open_terminal,
             commands::open_in_default,
             commands::open_in_ide,

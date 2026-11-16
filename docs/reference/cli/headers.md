@@ -27,7 +27,8 @@ Values containing spaces need quoting in the shell:
 
 A configured header **replaces** any header of the same name already on the
 response, so it appears exactly once with your value. It is applied to every
-response Yerd produces for the site, on every domain the site answers:
+response Yerd produces for the site, on every domain the site answers and
+through a public share tunnel:
 
 - PHP responses, whatever their status (including the app's own `404`s and its
   answers to `OPTIONS` requests);
@@ -62,7 +63,7 @@ the response: `Set-Cookie` (it would drop every cookie the app sets),
 
 ## Where headers are stored
 
-In `yerd.toml`'s `[response_headers]` table (schema v24+), keyed by site name
+In `yerd.toml`'s `[response_headers]` table (schema v25+), keyed by site name
 for linked sites and by document root for parked ones, the same split
 [`yerd route`](./routes) uses. Headers survive a site being linked or unlinked,
 and are dropped when its parked root is un-parked. Changes apply immediately; no

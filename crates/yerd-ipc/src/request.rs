@@ -570,12 +570,12 @@ pub enum Request {
         /// The desired enabled state.
         enabled: bool,
     },
-    /// List the installable dev tools (Composer, Node, Bun) with install status.
+    /// List the installable dev tools (Composer, Node, Bun, pnpm) with install status.
     ListTools,
     /// Download + install a dev tool's latest release into yerd's data dir and
     /// expose its commands on `PATH`. Idempotent (reinstalls/updates to latest).
     InstallTool {
-        /// Tool id (`"composer"`, `"node"`, `"bun"`).
+        /// Tool id (`"composer"`, `"node"`, `"bun"`, `"pnpm"`).
         tool: String,
     },
     /// Remove a dev tool's files and its `PATH` shims.
@@ -588,7 +588,7 @@ pub enum Request {
     /// stdout/stderr) is polled via [`Self::JobStatus`]. The streaming sibling of
     /// [`Self::InstallTool`].
     InstallToolStreamed {
-        /// Tool id (`"composer"`, `"node"`, `"bun"`, `"laravel"`).
+        /// Tool id (`"composer"`, `"node"`, `"bun"`, `"pnpm"`, `"laravel"`).
         tool: String,
     },
     /// Scaffold and register a brand-new site (e.g. `laravel new`). Long-running:
@@ -696,11 +696,13 @@ pub enum Request {
         /// The public hostname, or `None` to remove the mapping.
         hostname: Option<String>,
     },
-    /// (Re)start the single consolidated Named Tunnel serving every enabled site
-    /// (one process, one config with one ingress rule per site). Returns
-    /// [`super::Response::Tunnels`].
+    /// Ensure the single consolidated Named Tunnel serving every enabled site is
+    /// running. Idempotent: it starts the connector when none exists and never
+    /// restarts a live one. Returns [`super::Response::Tunnels`].
     StartNamedTunnel,
-    /// Stop the consolidated Named Tunnel. Returns [`super::Response::Tunnels`].
+    /// Stop the consolidated Named Tunnel until the next hostname change or
+    /// daemon start (the configured hostnames are kept, so it is not a
+    /// persistent "off" switch). Returns [`super::Response::Tunnels`].
     StopNamedTunnel,
     /// Delete a named tunnel from the Cloudflare account and forget it locally
     /// (stops the process, removes its credentials, and clears the persisted
@@ -708,6 +710,15 @@ pub enum Request {
     DeleteNamedTunnel {
         /// The tunnel name to delete.
         name: String,
+    },
+    /// Set or clear a site's share password. Tunnelled requests to a protected
+    /// site must carry HTTP basic auth with this password (any username).
+    /// `None` clears it. Replies [`super::Response::Ok`].
+    SetTunnelPassword {
+        /// The site name.
+        site: String,
+        /// The share password, or `None` to remove it.
+        password: Option<String>,
     },
     /// List the user-defined site groups (ordered) and per-site membership.
     /// Returns [`super::Response::Groups`]. Groups are a GUI organisational
@@ -964,6 +975,7 @@ mod variant_name_pinning {
             Request::StartNamedTunnel => {}
             Request::StopNamedTunnel => {}
             Request::DeleteNamedTunnel { .. } => {}
+            Request::SetTunnelPassword { .. } => {}
             Request::ListGroups => {}
             Request::CreateGroup { .. } => {}
             Request::DeleteGroup { .. } => {}
@@ -1226,6 +1238,10 @@ mod variant_name_pinning {
         pin(Request::StopNamedTunnel);
         pin(Request::DeleteNamedTunnel {
             name: "mysite".into(),
+        });
+        pin(Request::SetTunnelPassword {
+            site: "app".into(),
+            password: Some("secret".into()),
         });
         pin(Request::ListGroups);
         pin(Request::CreateGroup {

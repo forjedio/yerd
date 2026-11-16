@@ -624,6 +624,14 @@ fn tunnel_request(action: &TunnelAction) -> Request {
             site: site.clone(),
             hostname: if *clear { None } else { hostname.clone() },
         },
+        TunnelAction::Password {
+            site,
+            password,
+            clear,
+        } => Request::SetTunnelPassword {
+            site: site.clone(),
+            password: if *clear { None } else { password.clone() },
+        },
         TunnelAction::Publish => Request::StartNamedTunnel,
         TunnelAction::Unpublish => Request::StopNamedTunnel,
     }
@@ -1521,15 +1529,37 @@ fn format_tunnels(tunnels: &[TunnelInfo], cloudflared: &CloudflaredStatus) -> St
     }
     let mut out = format!("{cf}\n\nSITE\tSTATE\tURL");
     for t in tunnels {
-        let state = match t.state {
-            TunnelRunState::Running => "running",
-            TunnelRunState::Failed => "failed",
-            _ => "unknown",
-        };
         let target = t.url.as_deref().or(t.hostname.as_deref()).unwrap_or("-");
-        let _ = write!(out, "\n{}\t{}\t{}", t.site, state, target);
+        let protected = if t.protected { "\t(password)" } else { "" };
+        let _ = write!(
+            out,
+            "\n{}\t{}\t{}{}",
+            t.site,
+            tunnel_state_label(t),
+            target,
+            protected
+        );
+        if let Some(err) = &t.last_error {
+            let _ = write!(out, "\n  error: {err}");
+        }
+        for warning in &t.warnings {
+            let _ = write!(out, "\n  warning: {warning}");
+        }
     }
     out
+}
+
+/// The human state label. Every reported failure is being retried: the daemon
+/// removes a quick share whose first start fails rather than reporting it, so a
+/// failed tunnel of either kind reads as retrying.
+fn tunnel_state_label(t: &TunnelInfo) -> &'static str {
+    match t.state {
+        TunnelRunState::Running => "online",
+        TunnelRunState::Failed => "failed, retrying",
+        TunnelRunState::Connecting => "connecting",
+        TunnelRunState::Reconnecting => "reconnecting",
+        _ => "unknown",
+    }
 }
 
 fn format_named_tunnels(
@@ -1552,7 +1582,8 @@ fn format_named_tunnels(
     if !sites.is_empty() {
         out.push_str("\n\nEXPOSED SITE\tHOSTNAME");
         for s in sites {
-            let _ = write!(out, "\n{}\t{}", s.site, s.hostname);
+            let protected = if s.protected { "\t(password)" } else { "" };
+            let _ = write!(out, "\n{}\t{}{}", s.site, s.hostname, protected);
         }
     }
     out
@@ -1982,6 +2013,172 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use yerd_ipc::ErrorCode;
+
+    #[test]
+    fn format_tunnels_renders_each_run_state() {
+        let cf = CloudflaredStatus {
+            installed: true,
+            version: None,
+            source: None,
+            logged_in: false,
+        };
+        for (state, label) in [
+            (TunnelRunState::Running, "online"),
+            (TunnelRunState::Failed, "failed, retrying"),
+            (TunnelRunState::Connecting, "connecting"),
+            (TunnelRunState::Reconnecting, "reconnecting"),
+        ] {
+            let tunnel = TunnelInfo {
+                site: "app".into(),
+                kind: yerd_ipc::TunnelKind::Quick,
+                state,
+                url: Some("https://x.trycloudflare.com".into()),
+                hostname: None,
+                last_error: None,
+                protected: false,
+                warnings: Vec::new(),
+            };
+            let out = format_tunnels(&[tunnel], &cf);
+            assert!(
+                out.contains(&format!("\napp\t{label}\thttps://x.trycloudflare.com")),
+                "{out}"
+            );
+        }
+    }
+
+    fn tunnel_info(kind: yerd_ipc::TunnelKind, state: TunnelRunState) -> TunnelInfo {
+        TunnelInfo {
+            site: "app".into(),
+            kind,
+            state,
+            url: None,
+            hostname: Some("app.example.com".into()),
+            last_error: None,
+            protected: false,
+            warnings: Vec::new(),
+        }
+    }
+
+    fn installed_cloudflared() -> CloudflaredStatus {
+        CloudflaredStatus {
+            installed: true,
+            version: None,
+            source: None,
+            logged_in: true,
+        }
+    }
+
+    #[test]
+    fn failed_tunnels_of_either_kind_render_as_retrying() {
+        let cf = installed_cloudflared();
+        for (kind, label) in [
+            (yerd_ipc::TunnelKind::Named, "failed, retrying"),
+            (yerd_ipc::TunnelKind::Quick, "failed, retrying"),
+        ] {
+            let out = format_tunnels(&[tunnel_info(kind, TunnelRunState::Failed)], &cf);
+            assert!(
+                out.contains(&format!("\napp\t{label}\tapp.example.com")),
+                "{out}"
+            );
+        }
+    }
+
+    #[test]
+    fn format_tunnels_renders_last_error_warnings_and_protected() {
+        let mut tunnel = tunnel_info(yerd_ipc::TunnelKind::Quick, TunnelRunState::Reconnecting);
+        tunnel.last_error = Some("connection refused".into());
+        tunnel.protected = true;
+        tunnel.warnings = vec!["Vite dev server is running".into(), "SESSION_DOMAIN".into()];
+        let out = format_tunnels(&[tunnel], &installed_cloudflared());
+        assert!(
+            out.contains("\napp\treconnecting\tapp.example.com\t(password)"),
+            "{out}"
+        );
+        assert!(out.contains("\n  error: connection refused"), "{out}");
+        assert!(
+            out.contains("\n  warning: Vite dev server is running\n  warning: SESSION_DOMAIN"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn format_tunnels_omits_extras_when_absent() {
+        let tunnel = tunnel_info(yerd_ipc::TunnelKind::Named, TunnelRunState::Running);
+        let out = format_tunnels(&[tunnel], &installed_cloudflared());
+        assert!(out.ends_with("\napp\tonline\tapp.example.com"), "{out}");
+        assert!(!out.contains("error:"), "{out}");
+        assert!(!out.contains("warning:"), "{out}");
+        assert!(!out.contains("(password)"), "{out}");
+    }
+
+    #[test]
+    fn format_named_tunnels_marks_protected_sites() {
+        let sites = [
+            yerd_ipc::SiteHostname {
+                site: "a".into(),
+                hostname: "a.example.com".into(),
+                protected: true,
+            },
+            yerd_ipc::SiteHostname {
+                site: "b".into(),
+                hostname: "b.example.com".into(),
+                protected: false,
+            },
+        ];
+        let out = format_named_tunnels(&[], &sites, None);
+        assert!(out.contains("\na\ta.example.com\t(password)"), "{out}");
+        assert!(out.ends_with("\nb\tb.example.com"), "{out}");
+    }
+
+    #[test]
+    fn maps_tunnel_password_set_and_clear() {
+        assert_eq!(
+            to_request(&Command::Tunnel {
+                action: TunnelAction::Password {
+                    site: "app".into(),
+                    password: Some("hunter2".into()),
+                    clear: false,
+                }
+            })
+            .unwrap(),
+            Request::SetTunnelPassword {
+                site: "app".into(),
+                password: Some("hunter2".into()),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Tunnel {
+                action: TunnelAction::Password {
+                    site: "app".into(),
+                    password: None,
+                    clear: true,
+                }
+            })
+            .unwrap(),
+            Request::SetTunnelPassword {
+                site: "app".into(),
+                password: None,
+            }
+        );
+    }
+
+    #[test]
+    fn maps_publish_and_unpublish_to_named_start_and_stop() {
+        assert_eq!(
+            to_request(&Command::Tunnel {
+                action: TunnelAction::Publish
+            })
+            .unwrap(),
+            Request::StartNamedTunnel
+        );
+        assert_eq!(
+            to_request(&Command::Tunnel {
+                action: TunnelAction::Unpublish
+            })
+            .unwrap(),
+            Request::StopNamedTunnel
+        );
+    }
 
     #[test]
     fn maps_lan_and_remote_setup_commands() {

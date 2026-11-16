@@ -424,7 +424,7 @@ export type StarterKit = StarterKitTag | { community: string };
 export type AuthProvider = "laravel" | "work_os";
 export type Testing = "pest" | "php_unit";
 export type Database = "sqlite" | "mysql" | "mariadb" | "pgsql" | "sqlsrv";
-export type JsRuntime = "npm" | "bun" | "skip";
+export type JsRuntime = "npm" | "bun" | "pnpm" | "skip";
 
 /** crates/yerd-ipc/src/create.rs - LaravelOptions. */
 export interface LaravelOptions {
@@ -746,7 +746,7 @@ export interface DatabaseSummary {
 export type TunnelKind = "quick" | "named";
 
 /** crates/yerd-ipc/src/status.rs - TunnelRunState. */
-export type TunnelRunState = "running" | "failed";
+export type TunnelRunState = "running" | "failed" | "connecting" | "reconnecting";
 
 /** crates/yerd-ipc/src/status.rs - TunnelInfo. */
 export interface TunnelInfo {
@@ -757,6 +757,12 @@ export interface TunnelInfo {
   url?: string;
   /** Configured public hostname of a Named tunnel; absent otherwise. */
   hostname?: string;
+  /** Most recent error reported for the tunnel; absent when none. */
+  last_error?: string;
+  /** Whether the shared site has a share password; absent means false. */
+  protected?: boolean;
+  /** Preflight warnings computed when the share started; absent when none. */
+  warnings?: string[];
 }
 
 /** crates/yerd-ipc/src/status.rs - CloudflaredSource. */
@@ -783,6 +789,8 @@ export interface NamedTunnelMeta {
 export interface SiteHostname {
   site: string;
   hostname: string;
+  /** Whether the site has a share password; absent means false. */
+  protected?: boolean;
 }
 
 // Narrowed aliases for the variants the views actually read.

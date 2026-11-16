@@ -1,5 +1,6 @@
 //! Pure (synchronous, runtime-free, I/O-free) helpers.
 
+pub mod base64;
 pub mod cgi_head;
 pub mod cgi_params;
 pub mod fcgi_codec;
@@ -8,4 +9,5 @@ pub mod redirect;
 pub mod response_headers;
 pub mod route_rules;
 pub mod try_files;
+pub mod tunnel;
 pub mod unbound;

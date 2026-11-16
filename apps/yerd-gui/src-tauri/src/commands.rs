@@ -1009,7 +1009,17 @@ pub async fn set_site_tunnel(site: String, hostname: Option<String>) -> Result<R
     finish(exchange(&Request::SetSiteTunnel { site, hostname }).await?)
 }
 
-/// (Re)start the consolidated named tunnel serving every enabled site.
+/// Set (or clear, with `None`) a site's share password.
+#[tauri::command]
+pub async fn set_tunnel_password(
+    site: String,
+    password: Option<String>,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetTunnelPassword { site, password }).await?)
+}
+
+/// Start the consolidated named tunnel if it is not running. Idempotent: a live
+/// connector is never restarted.
 #[tauri::command]
 pub async fn start_named_tunnel() -> Result<Response, GuiError> {
     finish(exchange(&Request::StartNamedTunnel).await?)

@@ -2,16 +2,34 @@
 //! for the tunnel requests, the `cloudflared` install job, and the
 //! snapshot→wire mapping.
 //!
+//! Every `cloudflared` points at the daemon's loopback tunnel listener
+//! (`state.tunnel_origin_port`), which routes by the public `Host` through
+//! [`rebuild_routes`]'s map. Each running instance is supervised by a background
+//! driver task (see [`supervise`]); start requests only launch and then wait for
+//! the instance to settle.
+//!
 //! Lock discipline mirrors the services path: the site facts are read under the
-//! router lock, which is released before the (slow) `tunnel_manager` `ensure`;
-//! the config/router lock and the tunnel-manager lock are never held
-//! simultaneously across an `.await`. The `cloudflared` install runs under
-//! `tunnel_mutate` only.
+//! router lock, which is released before the `tunnel_manager` is taken; the
+//! config/router lock and the tunnel-manager lock are never held simultaneously
+//! across an `.await`. The `cloudflared` install runs under `tunnel_mutate` only.
+//!
+//! The tunnel origin listener's route map is rebuilt by [`rebuild_routes`] with
+//! a fixed lock order: `tunnel_routes_rebuild`, then `tunnel_manager`
+//! (released), then the config lock (released), then the router read guard
+//! (released), then the `tunnel_routes` write guard. The
+//! routes lock is a leaf and is never held across another lock. tokio's `Mutex`
+//! is not reentrant, so every caller drops its own config and manager guards
+//! before calling [`rebuild_routes`].
 
 pub mod credentials;
 pub mod install;
 pub mod named;
+pub mod orphans;
+pub mod supervise;
 
+use std::collections::{BTreeMap, HashMap};
+use std::ffi::OsString;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -21,8 +39,9 @@ use yerd_ipc::{
 use yerd_platform::PlatformDirs;
 use yerd_supervise::{SystemClock, TokioProcessSpawner};
 use yerd_tunnel::manager::{TunnelSnapshot, TunnelState};
-use yerd_tunnel::{OriginTarget, Step, TunnelKind, TunnelManager};
+use yerd_tunnel::{LaunchSpec, TunnelKind, TunnelManager};
 
+use self::supervise::Settled;
 use crate::state::DaemonState;
 
 /// A sink for streamed install output (one line per send), drained into the job
@@ -42,6 +61,66 @@ pub fn new_manager() -> DaemonTunnelManager {
 /// captured for readiness parsing and `yerd tunnel logs`.
 pub(super) fn logfile(dirs: &PlatformDirs, site: &str) -> PathBuf {
     dirs.state.join("tunnel").join(format!("{site}.log"))
+}
+
+/// `{state}/tunnel/<key>.pid`, the live `cloudflared` PID for `key`, read by the
+/// orphan reaper after a daemon crash.
+pub(super) fn pidfile(dirs: &PlatformDirs, key: &str) -> PathBuf {
+    dirs.state.join("tunnel").join(format!("{key}.pid"))
+}
+
+/// The production metrics address source: bind `127.0.0.1:0`, read the port the
+/// OS picked, and release it for `cloudflared` to bind. A port grabbed in
+/// between costs one failed spawn, which the supervisor retries with a fresh
+/// address.
+///
+/// # Errors
+///
+/// Binding or reading the loopback socket failed.
+pub fn pick_metrics_addr() -> std::io::Result<SocketAddr> {
+    let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    listener.local_addr()
+}
+
+/// The [`LaunchSpec`] for `key`: its logfile and pidfile under
+/// `{state}/tunnel` (created 0700 here), and the daemon's metrics address
+/// source.
+pub(super) fn launch_spec(
+    state: &DaemonState,
+    key: &str,
+    binary: PathBuf,
+    args: Vec<OsString>,
+    env: Vec<(OsString, OsString)>,
+) -> Result<LaunchSpec, Response> {
+    let logfile = logfile(&state.dirs, key);
+    if let Some(parent) = logfile.parent() {
+        if let Err(e) = crate::secure_fs::create_private_dir(parent) {
+            return Err(Response::Error {
+                code: ErrorCode::Internal,
+                message: format!("could not prepare tunnel log dir: {e}"),
+            });
+        }
+    }
+    Ok(LaunchSpec {
+        binary,
+        args,
+        env,
+        logfile,
+        metrics_addr: Arc::clone(&state.tunnel_metrics_addr),
+        pidfile: pidfile(&state.dirs, key),
+    })
+}
+
+/// Write `{data}/tunnel/quick.yml` (0600, atomically), the explicit ingress-free
+/// config every quick tunnel runs with, and return its path.
+fn write_quick_config(dirs: &PlatformDirs) -> Result<PathBuf, String> {
+    let dir = install::tunnel_dir(dirs);
+    crate::secure_fs::create_private_dir(&dir)
+        .map_err(|e| format!("could not prepare tunnel dir: {e}"))?;
+    let path = dir.join("quick.yml");
+    yerd_php::io::atomic_write::write(&path, yerd_tunnel::config::render_quick_config().as_bytes())
+        .map_err(|e| format!("write quick tunnel config: {e}"))?;
+    Ok(path)
 }
 
 /// `cloudflared` install + account status for the wire.
@@ -130,11 +209,14 @@ fn is_downgrade(existing: Option<&install::Resolved>, fresh: Option<&install::Re
 
 /// `StartQuickTunnel`: publish a site at a random `*.trycloudflare.com` URL.
 ///
-/// Registers + spawns the child under a brief manager lock, then drives
-/// readiness with the lock released between ticks (see [`yerd_tunnel`]'s tick
-/// model) so `StopTunnel`/`TunnelStatus`/shutdown stay responsive and a stuck
-/// connect can be cancelled.
-pub async fn start_quick_tunnel(site: &str, state: &DaemonState) -> Response {
+/// Launches a supervised instance pointed at the tunnel listener, then waits for
+/// it to settle. A fresh start that never comes up is stopped (its own
+/// generation only) and reported as an error, so a share reported as failed
+/// never goes live later. An existing instance (say, one retrying after a crash)
+/// is left alone and reported as-is. Once a quick tunnel has been online it
+/// keeps restarting until stopped. The site's share preflight warnings are
+/// recomputed and cached on every call; they never block the start.
+pub async fn start_quick_tunnel(site: &str, state: &Arc<DaemonState>) -> Response {
     let Some(resolved) = resolved_cloudflared(state).await else {
         return Response::Error {
             code: ErrorCode::NotFound,
@@ -142,26 +224,78 @@ pub async fn start_quick_tunnel(site: &str, state: &DaemonState) -> Response {
         };
     };
 
-    let Some((name, secure, _tld, host)) = resolve_site(state, site).await else {
+    let Some((name, _host)) = resolve_site(state, site).await else {
         return Response::Error {
             code: ErrorCode::NotFound,
             message: format!("no site named {site:?}"),
         };
     };
 
-    let (plain_port, tls_port) = origin_ports(state).await;
-    let origin = OriginTarget::for_site(&host, secure, plain_port, tls_port);
-    let args = yerd_tunnel::args::quick_tunnel_args(&origin);
-    run_to_ready(
-        state,
-        &name,
-        resolved.binary,
-        args,
-        pinned_home_env(state),
-        TunnelKind::Quick,
-        None,
-    )
-    .await
+    let Some(port) = state.tunnel_origin_port else {
+        return origin_not_running();
+    };
+    refresh_share_warnings(state, &name).await;
+    let config_path = match write_quick_config(&state.dirs) {
+        Ok(path) => path,
+        Err(message) => {
+            return Response::Error {
+                code: ErrorCode::Internal,
+                message,
+            }
+        }
+    };
+    let args = yerd_tunnel::args::quick_tunnel_args(&yerd_tunnel::origin_url(port), &config_path);
+    let spec = match launch_spec(state, &name, resolved.binary, args, pinned_home_env(state)) {
+        Ok(spec) => spec,
+        Err(resp) => return resp,
+    };
+
+    let launched = match supervise::launch(state, &name, spec, TunnelKind::Quick).await {
+        Ok(launched) => launched,
+        Err(e) => {
+            return Response::Error {
+                code: ErrorCode::Internal,
+                message: format!("could not start tunnel for {name}: {e}"),
+            }
+        }
+    };
+    let generation = match &launched {
+        Some(l) => l.generation,
+        None => match supervise::current_generation(state, &name).await {
+            Some(generation) => generation,
+            None => return tunnels_response(state).await,
+        },
+    };
+
+    match supervise::wait_settled(state, &name, generation, supervise::SETTLE_TIMEOUT).await {
+        Settled::Running | Settled::Gone => tunnels_response(state).await,
+        Settled::NotRunning { .. } if launched.is_none() => tunnels_response(state).await,
+        Settled::NotRunning { last_error } => {
+            let stopped = state
+                .tunnel_manager
+                .lock()
+                .await
+                .stop_if_generation(&name, generation)
+                .await;
+            rebuild_routes(state).await;
+            if let Err(e) = stopped {
+                tracing::warn!(site = %name, error = %e, "could not stop a failed quick tunnel");
+            }
+            let reason = last_error.unwrap_or_else(|| "it did not come online in time".to_owned());
+            Response::Error {
+                code: ErrorCode::Internal,
+                message: format!("could not start tunnel for {name}: {reason}"),
+            }
+        }
+    }
+}
+
+/// The reply when the tunnel origin listener failed to bind at startup.
+pub(super) fn origin_not_running() -> Response {
+    Response::Error {
+        code: ErrorCode::Internal,
+        message: "tunnel origin listener is not running".into(),
+    }
 }
 
 /// Daemon variables forwarded into a `cloudflared` child after the manager
@@ -192,148 +326,41 @@ pub(super) fn pinned_home_env(
     env
 }
 
-/// Resolve a site by name or `.test` host to its `(name, secure, tld, host)`,
-/// where `host` is the site's primary domain FQDN (the tunnel origin's rewritten
-/// `Host`). Reads the router under a brief lock released before the caller takes
-/// any other lock. Returns `None` when the site's primary host does not resolve
-/// back to it - a shadowed apex whose exact label is claimed by another site (so
-/// its effective set is wildcard-only) would otherwise point the tunnel at that
-/// other site's backend. Such a site has no concrete host that routes to it and
-/// cannot be tunneled; `yerd doctor` flags the shadow.
-pub(super) async fn resolve_site(
-    state: &DaemonState,
-    site: &str,
-) -> Option<(String, bool, String, String)> {
+/// Resolve a site by name or `.test` host to its `(name, host)`, where `host` is
+/// the site's primary domain FQDN. Reads the router under a brief lock released
+/// before the caller takes any other lock. Returns `None` when the site's
+/// primary host does not resolve back to it - a shadowed apex whose exact label
+/// is claimed by another site (so its effective set is wildcard-only) has no
+/// concrete host that routes to it and cannot be tunneled; `yerd doctor` flags
+/// the shadow.
+pub(super) async fn resolve_site(state: &DaemonState, site: &str) -> Option<(String, String)> {
     let router = state.router.read().await;
     let s = router.resolve(site).or_else(|| router.get(site))?;
     let host = router.primary_fqdn(s.name());
     if router.resolve(&host).map(yerd_core::Site::name) != Some(s.name()) {
         return None;
     }
-    let tld = router.config().tld().to_owned();
-    Some((s.name().to_owned(), s.secure(), tld, host))
+    Some((s.name().to_owned(), host))
 }
 
-/// The loopback ports a tunnel origin should dial: the well-known pair when
-/// the proxy bound it directly or a live privileged-port redirect (the macOS
-/// launchd port forwarder, via `yerd elevate ports`) carries it, the rootless
-/// fallbacks otherwise.
-///
-/// The well-known port is what browsers use once the redirect is live, so the
-/// origin dials the same port. Machines still on a legacy pf redirect from an
-/// older Yerd also need this: there a direct loopback connect to the fallback
-/// port was dropped by pf's state table and `cloudflared` answered `502`. Probes the
-/// redirect right now (rather than trusting `state.redirect_https_port`, which
-/// the background prober refreshes only every minute) so a tunnel started
-/// straight after `yerd elevate ports` or a daemon restart picks the right port.
-pub(super) async fn origin_ports(state: &DaemonState) -> (u16, u16) {
-    let redirect_active = if state.http.fell_back || state.https.fell_back {
-        tokio::task::spawn_blocking(|| {
-            use yerd_platform::PortRedirector;
-            yerd_platform::ActivePortRedirector::new().is_active()
-        })
-        .await
-        .unwrap_or(None)
-    } else {
-        None
-    };
-    state.redirect_https_port.store(
-        crate::effective_redirect_port(state.https, redirect_active),
-        std::sync::atomic::Ordering::Relaxed,
-    );
-    origin_ports_for(state.http, state.https, redirect_active)
-}
-
-/// Pure port selection behind [`origin_ports`]: each listener dials its
-/// requested (well-known) port when bound directly or when the redirect is
-/// live, and its bound fallback port otherwise.
-fn origin_ports_for(
-    http: yerd_ipc::PortStatus,
-    https: yerd_ipc::PortStatus,
-    redirect_active: Option<bool>,
-) -> (u16, u16) {
-    (
-        crate::effective_redirect_port(http, redirect_active),
-        crate::effective_redirect_port(https, redirect_active),
-    )
-}
-
-/// Register + spawn a tunnel for `name` under a brief manager lock, then drive
-/// readiness with the lock released between ticks (see [`yerd_tunnel`]'s tick
-/// model). Shared by the Quick and Named start paths. `binary` is the
-/// already-resolved `cloudflared` to spawn (see `resolved_cloudflared`).
-/// Returns the live `Response::Tunnels` on readiness, or a `Response::Error`
-/// on failure.
-pub(super) async fn run_to_ready(
-    state: &DaemonState,
-    name: &str,
-    binary: PathBuf,
-    args: Vec<std::ffi::OsString>,
-    env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
-    kind: TunnelKind,
-    hostname: Option<String>,
-) -> Response {
-    let logfile = logfile(&state.dirs, name);
-    if let Some(parent) = logfile.parent() {
-        if let Err(e) = crate::secure_fs::create_private_dir(parent) {
-            return Response::Error {
-                code: ErrorCode::Internal,
-                message: format!("could not prepare tunnel log dir: {e}"),
-            };
-        }
-    }
-
-    let spec = yerd_tunnel::LaunchSpec {
-        binary,
-        args,
-        env,
-        logfile,
-    };
-    let started = {
-        let mut mgr = state.tunnel_manager.lock().await;
-        mgr.begin(name, spec, kind, hostname).await
-    };
-    match started {
-        Ok(false) => return tunnels_response(state).await,
-        Ok(true) => {}
-        Err(e) => {
-            return Response::Error {
-                code: ErrorCode::Internal,
-                message: format!("could not start tunnel for {name}: {e}"),
-            }
-        }
-    }
-
-    loop {
-        let step = {
-            let mut mgr = state.tunnel_manager.lock().await;
-            mgr.advance(name).await
-        };
-        match step {
-            Ok(Step::Continue) => {}
-            Ok(Step::Sleep(d)) => tokio::time::sleep(d).await,
-            Ok(Step::Ready | Step::Gone) => return tunnels_response(state).await,
-            Err(e) => {
-                let _ = state.tunnel_manager.lock().await.stop(name).await;
-                return Response::Error {
-                    code: ErrorCode::Internal,
-                    message: format!("could not start tunnel for {name}: {e}"),
-                };
-            }
-        }
-    }
-}
-
-/// `StopTunnel`: tear down a site's tunnel (no-op if none).
+/// `StopTunnel`: tear down a site's tunnel (no-op if none) and drop its host
+/// from the route map. The instance's driver sees it gone and exits. `site` may
+/// be a site name or `.test` host; one that no longer resolves (a removed site)
+/// is used as given.
 pub async fn stop_tunnel(site: &str, state: &DaemonState) -> Response {
-    {
+    let key = canonical_site_name(state, site)
+        .await
+        .unwrap_or_else(|| site.to_owned());
+    let stopped = {
         let mut mgr = state.tunnel_manager.lock().await;
-        if let Err(e) = mgr.stop(site).await {
-            return Response::Error {
-                code: ErrorCode::Internal,
-                message: format!("could not stop tunnel for {site}: {e}"),
-            };
-        }
+        mgr.stop(&key).await
+    };
+    rebuild_routes(state).await;
+    if let Err(e) = stopped {
+        return Response::Error {
+            code: ErrorCode::Internal,
+            message: format!("could not stop tunnel for {site}: {e}"),
+        };
     }
     tunnels_response(state).await
 }
@@ -344,36 +371,56 @@ pub async fn tunnel_status(state: &DaemonState) -> Response {
 }
 
 /// Number of distinct sites currently shared to the public internet: sites with
-/// a live quick tunnel, plus the sites the named tunnel exposes when it is
-/// running. A site shared via both is counted once. Surfaced in `StatusReport`
-/// so the GUI can badge the count.
+/// a live quick tunnel, plus the sites the named tunnel exposes when it is live.
+/// Live means connecting, online, or reconnecting. A site shared via both is
+/// counted once. Surfaced in `StatusReport` so the GUI can badge the count.
 pub async fn shared_site_count(state: &DaemonState) -> u32 {
     let (mut shared, named_running) = {
         let mut mgr = state.tunnel_manager.lock().await;
         let snaps = mgr.snapshots();
         let shared: std::collections::BTreeSet<String> = snaps
             .iter()
-            .filter(|s| matches!(s.kind, TunnelKind::Quick) && s.state == TunnelState::Running)
+            .filter(|s| matches!(s.kind, TunnelKind::Quick) && is_live(s.state))
             .map(|s| s.site.clone())
             .collect();
         let named_running = snaps
             .iter()
-            .any(|s| matches!(s.kind, TunnelKind::Named) && s.state == TunnelState::Running);
+            .any(|s| matches!(s.kind, TunnelKind::Named) && is_live(s.state));
         (shared, named_running)
     };
     if named_running {
-        for site in state.config.lock().await.tunnel.sites.keys() {
-            shared.insert(site.clone());
-        }
+        shared.extend(canonical_tunnel_config(state).await.0.into_keys());
     }
     u32::try_from(shared.len()).unwrap_or(u32::MAX)
 }
 
-/// Shared `Response::Tunnels` builder.
+/// Whether a reported state counts as an active share.
+fn is_live(state: TunnelState) -> bool {
+    matches!(
+        state,
+        TunnelState::Connecting | TunnelState::Running | TunnelState::Reconnecting
+    )
+}
+
+/// Shared `Response::Tunnels` builder. Reads the cached share warnings only
+/// (never the filesystem): a quick entry gets its own site's, the named entry
+/// gets every currently mapped site's, prefixed `"<site>: "`.
 pub(super) async fn tunnels_response(state: &DaemonState) -> Response {
-    let tunnels = {
+    let snapshots = {
         let mut mgr = state.tunnel_manager.lock().await;
-        mgr.snapshots().into_iter().map(to_wire).collect()
+        mgr.snapshots()
+    };
+    let (sites, passwords) = canonical_tunnel_config(state).await;
+    let mapped: Vec<String> = sites.into_keys().collect();
+    let tunnels = {
+        let cache = state.share_warnings.lock().await;
+        snapshots
+            .into_iter()
+            .map(|s| {
+                let (protected, warnings) = share_extras(&s, &mapped, &passwords, &cache);
+                to_wire(s, protected, warnings)
+            })
+            .collect()
     };
     Response::Tunnels {
         tunnels,
@@ -381,8 +428,243 @@ pub(super) async fn tunnels_response(state: &DaemonState) -> Response {
     }
 }
 
-/// Map a manager snapshot to its wire form.
-fn to_wire(s: TunnelSnapshot) -> TunnelInfo {
+/// The `protected` flag and cached warnings reported for one snapshot. A quick
+/// tunnel is protected when its site has a share password; the named tunnel's
+/// protection is reported per site (see `named::list`), so it is never flagged
+/// here.
+fn share_extras(
+    snapshot: &TunnelSnapshot,
+    mapped: &[String],
+    passwords: &BTreeMap<String, String>,
+    cache: &HashMap<String, Vec<String>>,
+) -> (bool, Vec<String>) {
+    match snapshot.kind {
+        TunnelKind::Quick => (
+            passwords.contains_key(&snapshot.site),
+            cache.get(&snapshot.site).cloned().unwrap_or_default(),
+        ),
+        TunnelKind::Named => (
+            false,
+            mapped
+                .iter()
+                .flat_map(|site| {
+                    cache
+                        .get(site)
+                        .into_iter()
+                        .flatten()
+                        .map(move |w| format!("{site}: {w}"))
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// Compute `site`'s share preflight warnings: the router facts are read under a
+/// brief read guard, then the `hot` file check and the `.env` read run on the
+/// blocking pool. An unknown site, or a failed read task, yields no warnings.
+pub(super) async fn compute_share_warnings(state: &DaemonState, site: &str) -> Vec<String> {
+    let facts = {
+        let router = state.router.read().await;
+        router.get(site).map(|s| {
+            (
+                s.document_root().to_path_buf(),
+                s.served_root(),
+                router.config().tld().to_owned(),
+            )
+        })
+    };
+    let Some((document_root, served_root, tld)) = facts else {
+        return Vec::new();
+    };
+    let read = tokio::task::spawn_blocking(move || {
+        let vite_hot = served_root.join("hot").is_file();
+        let dotenv = std::fs::read_to_string(document_root.join(".env")).ok();
+        (vite_hot, dotenv)
+    })
+    .await;
+    let Ok((vite_hot, dotenv)) = read else {
+        return Vec::new();
+    };
+    yerd_tunnel::preflight(&yerd_tunnel::ShareFacts {
+        vite_hot,
+        dotenv: dotenv.as_deref(),
+        tld: &tld,
+    })
+}
+
+/// Recompute and cache `site`'s share warnings. Called only when a share
+/// starts; a new start overwrites the entry.
+pub(super) async fn refresh_share_warnings(state: &DaemonState, site: &str) {
+    let warnings = compute_share_warnings(state, site).await;
+    state
+        .share_warnings
+        .lock()
+        .await
+        .insert(site.to_owned(), warnings);
+}
+
+/// Refresh the cached share warnings of every site mapped on the named tunnel.
+pub(super) async fn refresh_named_share_warnings(state: &DaemonState) {
+    let mapped = canonical_tunnel_config(state).await.0;
+    for site in mapped.into_keys() {
+        refresh_share_warnings(state, &site).await;
+    }
+}
+
+/// Rebuild the tunnel origin listener's `public host -> site` route map from
+/// config (named-tunnel hostnames and share passwords, keyed by canonical site
+/// name, see [`canonical_tunnel_config`]) plus the URLs of the live quick
+/// tunnels, then swap it in. See the module doc for the lock order.
+///
+/// A quick tunnel whose site is missing from the router snapshot the passwords
+/// were resolved against gets no route: its password would have been dropped
+/// with the site, so routing it could serve the site unprotected once the
+/// router has it back. The next rebuild restores it with its password.
+pub async fn rebuild_routes(state: &DaemonState) {
+    let _rebuild = state.tunnel_routes_rebuild.lock().await;
+    let quick: Vec<(String, String)> = {
+        let mut mgr = state.tunnel_manager.lock().await;
+        mgr.snapshots()
+            .into_iter()
+            .filter(|s| matches!(s.kind, TunnelKind::Quick))
+            .filter_map(|s| s.url.map(|url| (s.site, url)))
+            .collect()
+    };
+    let (raw_sites, raw_passwords) = {
+        let cfg = state.config.lock().await;
+        (cfg.tunnel.sites.clone(), cfg.tunnel.passwords.clone())
+    };
+    let (sites, passwords, quick) = {
+        let router = state.router.read().await;
+        let resolve = |key: &str| canonical_in(&router, key);
+        let quick: Vec<(String, String)> = quick
+            .into_iter()
+            .filter(|(site, _)| router.get(site).is_some())
+            .collect();
+        (
+            canonicalize_keys(&raw_sites, resolve),
+            canonicalize_keys(&raw_passwords, resolve),
+            quick,
+        )
+    };
+    let routes = build_routes(&sites, &passwords, &quick);
+    *state.tunnel_routes.write().await = routes;
+}
+
+/// The canonical site name for a tunnel config key: an exact site name, or a
+/// `.test` host that routes to a site. `None` when it names no site.
+pub(super) fn canonical_in(router: &yerd_core::SiteRouter, key: &str) -> Option<String> {
+    router
+        .get(key)
+        .or_else(|| router.resolve(key))
+        .map(|s| s.name().to_owned())
+}
+
+/// [`canonical_in`] against the live router, under a brief read guard.
+pub(super) async fn canonical_site_name(state: &DaemonState, key: &str) -> Option<String> {
+    canonical_in(&*state.router.read().await, key)
+}
+
+/// Every `[tunnel.sites]` or `[tunnel.passwords]` key that resolves to the site
+/// `name`: the canonical key itself plus any legacy `.test` host aliases. The
+/// config lock is released before the router read guard is taken.
+pub(super) async fn tunnel_keys_for(state: &DaemonState, name: &str) -> Vec<String> {
+    let keys: std::collections::BTreeSet<String> = {
+        let cfg = state.config.lock().await;
+        cfg.tunnel
+            .sites
+            .keys()
+            .chain(cfg.tunnel.passwords.keys())
+            .cloned()
+            .collect()
+    };
+    let router = state.router.read().await;
+    keys.into_iter()
+        .filter(|key| key == name || canonical_in(&router, key).as_deref() == Some(name))
+        .collect()
+}
+
+/// `[tunnel.sites]` and `[tunnel.passwords]` rekeyed by canonical site name.
+///
+/// Older builds accepted a site's `.test` host as the key, and such entries may
+/// still be on disk; resolving them here keeps those shares routing. Keys that
+/// resolve to no site are dropped. The config lock is taken and released first,
+/// then the router read guard.
+pub(super) async fn canonical_tunnel_config(
+    state: &DaemonState,
+) -> (BTreeMap<String, String>, BTreeMap<String, String>) {
+    let (sites, passwords) = {
+        let cfg = state.config.lock().await;
+        (cfg.tunnel.sites.clone(), cfg.tunnel.passwords.clone())
+    };
+    let router = state.router.read().await;
+    let resolve = |key: &str| canonical_in(&router, key);
+    (
+        canonicalize_keys(&sites, resolve),
+        canonicalize_keys(&passwords, resolve),
+    )
+}
+
+/// Rekey `map` through `resolve`, dropping keys it cannot resolve. When a
+/// legacy key and the canonical key both map to the same site, the entry stored
+/// under the canonical key wins.
+fn canonicalize_keys(
+    map: &BTreeMap<String, String>,
+    resolve: impl Fn(&str) -> Option<String>,
+) -> BTreeMap<String, String> {
+    let resolved: Vec<(String, &String, bool)> = map
+        .iter()
+        .filter_map(|(key, value)| resolve(key).map(|name| (name.clone(), value, name == *key)))
+        .collect();
+    let mut out = BTreeMap::new();
+    for (name, value, _) in resolved.iter().filter(|(_, _, exact)| *exact) {
+        out.insert(name.clone(), (*value).clone());
+    }
+    for (name, value, _) in resolved.iter().filter(|(_, _, exact)| !*exact) {
+        out.entry(name.clone()).or_insert_with(|| (*value).clone());
+    }
+    out
+}
+
+/// Pure route-map builder behind [`rebuild_routes`]. `sites` is the named
+/// tunnel's `site -> hostname` map, `passwords` the `site -> password` map, and
+/// `quick` the live quick tunnels as `(site, public URL)`. Keys are normalized
+/// hosts. Named entries go in first and a quick entry never overrides a named
+/// key. A site's password protects it on every tunnel kind.
+fn build_routes(
+    sites: &BTreeMap<String, String>,
+    passwords: &BTreeMap<String, String>,
+    quick: &[(String, String)],
+) -> HashMap<String, yerd_proxy::TunnelRoute> {
+    let route_for = |site: &str| yerd_proxy::TunnelRoute {
+        site: site.to_owned(),
+        password: passwords.get(site).cloned(),
+    };
+    let mut routes = HashMap::new();
+    for (site, hostname) in sites {
+        if let Some(host) = yerd_proxy::pure::tunnel::normalize_host(hostname) {
+            routes.insert(host, route_for(site));
+        }
+    }
+    for (site, url) in quick {
+        if let Some(host) = url_host(url) {
+            routes.entry(host).or_insert_with(|| route_for(site));
+        }
+    }
+    routes
+}
+
+/// The normalized host of an `http(s)://host[:port][/path]` URL.
+fn url_host(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    yerd_proxy::pure::tunnel::normalize_host(authority)
+}
+
+/// Map a manager snapshot, plus its share extras, to its wire form.
+fn to_wire(s: TunnelSnapshot, protected: bool, warnings: Vec<String>) -> TunnelInfo {
     TunnelInfo {
         site: s.site,
         kind: match s.kind {
@@ -390,11 +672,16 @@ fn to_wire(s: TunnelSnapshot) -> TunnelInfo {
             TunnelKind::Named => WireKind::Named,
         },
         state: match s.state {
+            TunnelState::Connecting => TunnelRunState::Connecting,
             TunnelState::Running => TunnelRunState::Running,
+            TunnelState::Reconnecting => TunnelRunState::Reconnecting,
             TunnelState::Failed => TunnelRunState::Failed,
         },
         url: s.url,
-        hostname: s.hostname,
+        hostname: None,
+        last_error: s.last_error,
+        protected,
+        warnings,
     }
 }
 
@@ -480,47 +767,272 @@ pub async fn install_cloudflared_streamed(state: Arc<DaemonState>) -> Response {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
+#[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use crate::test_support::state_in;
 
-    fn status(requested: u16, bound: u16) -> yerd_ipc::PortStatus {
-        yerd_ipc::PortStatus {
-            requested,
-            bound,
-            fell_back: requested != bound,
+    fn route(site: &str, password: Option<&str>) -> yerd_proxy::TunnelRoute {
+        yerd_proxy::TunnelRoute {
+            site: site.to_owned(),
+            password: password.map(str::to_owned),
+        }
+    }
+
+    fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn build_routes_maps_named_hostnames() {
+        let routes = build_routes(&map(&[("blog", "Blog.Example.com.")]), &map(&[]), &[]);
+        assert_eq!(
+            routes,
+            HashMap::from([("blog.example.com".to_owned(), route("blog", None))])
+        );
+    }
+
+    #[test]
+    fn build_routes_maps_quick_url_hosts() {
+        let quick = vec![(
+            "app".to_owned(),
+            "https://calm-river-1234.trycloudflare.com".to_owned(),
+        )];
+        let routes = build_routes(&map(&[]), &map(&[]), &quick);
+        assert_eq!(
+            routes,
+            HashMap::from([(
+                "calm-river-1234.trycloudflare.com".to_owned(),
+                route("app", None)
+            )])
+        );
+    }
+
+    #[test]
+    fn build_routes_attaches_passwords_to_every_tunnel_kind() {
+        let quick = vec![("blog".to_owned(), "https://q.trycloudflare.com/".to_owned())];
+        let routes = build_routes(
+            &map(&[("blog", "blog.example.com"), ("shop", "shop.example.com")]),
+            &map(&[("blog", "secret")]),
+            &quick,
+        );
+        assert_eq!(
+            routes.get("blog.example.com"),
+            Some(&route("blog", Some("secret")))
+        );
+        assert_eq!(
+            routes.get("q.trycloudflare.com"),
+            Some(&route("blog", Some("secret")))
+        );
+        assert_eq!(routes.get("shop.example.com"), Some(&route("shop", None)));
+    }
+
+    #[test]
+    fn build_routes_never_lets_a_quick_entry_override_a_named_one() {
+        let quick = vec![("other".to_owned(), "https://blog.example.com".to_owned())];
+        let routes = build_routes(&map(&[("blog", "blog.example.com")]), &map(&[]), &quick);
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes.get("blog.example.com"), Some(&route("blog", None)));
+    }
+
+    #[test]
+    fn url_host_table() {
+        for (url, expected) in [
+            ("https://a.trycloudflare.com", Some("a.trycloudflare.com")),
+            (
+                "https://A.trycloudflare.com:443/path?q",
+                Some("a.trycloudflare.com"),
+            ),
+            ("http://a.example.com/", Some("a.example.com")),
+            ("a.example.com", None),
+            ("https://", None),
+        ] {
+            assert_eq!(url_host(url).as_deref(), expected, "{url}");
+        }
+    }
+
+    fn snapshot(site: &str, kind: TunnelKind) -> TunnelSnapshot {
+        TunnelSnapshot {
+            site: site.to_owned(),
+            kind,
+            state: TunnelState::Running,
+            pid: None,
+            url: None,
+            generation: 1,
+            last_error: None,
+            failures: 0,
         }
     }
 
     #[test]
-    fn origin_dials_well_known_ports_when_bound_directly() {
-        let (http, https) = (status(80, 80), status(443, 443));
-        assert_eq!(origin_ports_for(http, https, None), (80, 443));
-        assert_eq!(origin_ports_for(http, https, Some(false)), (80, 443));
+    fn share_extras_table() {
+        let mapped = vec!["blog".to_owned(), "shop".to_owned()];
+        let passwords = map(&[("app", "pw"), ("blog", "pw")]);
+        let cache = HashMap::from([
+            ("app".to_owned(), vec!["a1".to_owned()]),
+            ("blog".to_owned(), vec!["b1".to_owned(), "b2".to_owned()]),
+            ("shop".to_owned(), Vec::new()),
+            ("other".to_owned(), vec!["o1".to_owned()]),
+        ]);
+        let cases: &[(TunnelSnapshot, bool, Vec<&str>)] = &[
+            (snapshot("app", TunnelKind::Quick), true, vec!["a1"]),
+            (snapshot("shop", TunnelKind::Quick), false, vec![]),
+            (snapshot("new", TunnelKind::Quick), false, vec![]),
+            (
+                snapshot("@named", TunnelKind::Named),
+                false,
+                vec!["blog: b1", "blog: b2"],
+            ),
+        ];
+        for (snap, protected, warnings) in cases {
+            assert_eq!(
+                share_extras(snap, &mapped, &passwords, &cache),
+                (
+                    *protected,
+                    warnings.iter().map(|w| (*w).to_owned()).collect()
+                ),
+                "{}",
+                snap.site
+            );
+        }
     }
 
-    #[test]
-    fn origin_dials_well_known_ports_through_a_live_redirect() {
-        let (http, https) = (status(80, 8080), status(443, 8443));
-        assert_eq!(origin_ports_for(http, https, Some(true)), (80, 443));
+    async fn state_with_site_root(tmp: &std::path::Path) -> (DaemonState, PathBuf) {
+        let state = state_in(tmp);
+        let root = tmp.join("app");
+        std::fs::create_dir_all(root.join("public")).unwrap();
+        let mut site =
+            yerd_core::Site::linked("app", &root, yerd_core::PhpVersion::new(8, 3)).unwrap();
+        site.set_web_subpath("public");
+        state.router.write().await.insert(site).unwrap();
+        (state, root)
     }
 
+    #[tokio::test]
+    async fn compute_share_warnings_reads_the_hot_file_and_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, root) = state_with_site_root(tmp.path()).await;
+        assert!(compute_share_warnings(&state, "app").await.is_empty());
+
+        std::fs::write(root.join("public/hot"), "http://localhost:5173").unwrap();
+        std::fs::write(root.join(".env"), "APP_NAME=x\nSESSION_DOMAIN=.app.test\n").unwrap();
+        let warnings = compute_share_warnings(&state, "app").await;
+
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert_eq!(warnings[0], yerd_tunnel::preflight::VITE_HOT_WARNING);
+        assert!(warnings[1].contains("SESSION_DOMAIN"), "{warnings:?}");
+        assert!(compute_share_warnings(&state, "nope").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn refresh_share_warnings_overwrites_the_cached_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, root) = state_with_site_root(tmp.path()).await;
+        std::fs::write(root.join("public/hot"), "").unwrap();
+        refresh_share_warnings(&state, "app").await;
+        assert_eq!(state.share_warnings.lock().await["app"].len(), 1);
+
+        std::fs::remove_file(root.join("public/hot")).unwrap();
+        refresh_share_warnings(&state, "app").await;
+
+        assert!(state.share_warnings.lock().await["app"].is_empty());
+    }
+
+    type Pairs<'a> = &'a [(&'a str, &'a str)];
+
     #[test]
-    fn origin_dials_fallback_ports_without_a_redirect() {
-        let (http, https) = (status(80, 8080), status(443, 8443));
-        assert_eq!(origin_ports_for(http, https, Some(false)), (8080, 8443));
-        assert_eq!(origin_ports_for(http, https, None), (8080, 8443));
+    fn canonicalize_keys_table() {
+        let resolve = |key: &str| match key {
+            "app" | "app.test" | "www.app.test" => Some("app".to_owned()),
+            "blog" => Some("blog".to_owned()),
+            _ => None,
+        };
+        let cases: &[(Pairs, Pairs)] = &[
+            (&[("app", "a")], &[("app", "a")]),
+            (&[("app.test", "a")], &[("app", "a")]),
+            (&[("app", "new"), ("app.test", "old")], &[("app", "new")]),
+            (
+                &[("www.app.test", "old"), ("app", "new")],
+                &[("app", "new")],
+            ),
+            (&[("gone.test", "x"), ("blog", "b")], &[("blog", "b")]),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                canonicalize_keys(&map(input), resolve),
+                map(expected),
+                "{input:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rebuild_routes_resolves_legacy_host_keys_and_skips_unknown_sites() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let site =
+            yerd_core::Site::linked("blog", "/srv/www/blog", yerd_core::PhpVersion::new(8, 3))
+                .unwrap();
+        state.router.write().await.insert(site).unwrap();
+        {
+            let mut cfg = state.config.lock().await;
+            cfg.tunnel
+                .sites
+                .insert("blog.test".to_owned(), "blog.example.com".to_owned());
+            cfg.tunnel
+                .sites
+                .insert("gone".to_owned(), "gone.example.com".to_owned());
+            cfg.tunnel
+                .passwords
+                .insert("blog.test".to_owned(), "secret".to_owned());
+        }
+
+        rebuild_routes(&state).await;
+
+        assert_eq!(
+            *state.tunnel_routes.read().await,
+            HashMap::from([("blog.example.com".to_owned(), route("blog", Some("secret")))])
+        );
+    }
+
+    #[tokio::test]
+    async fn rebuild_routes_reads_config_and_swaps_the_map() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let site =
+            yerd_core::Site::linked("blog", "/srv/www/blog", yerd_core::PhpVersion::new(8, 3))
+                .unwrap();
+        state.router.write().await.insert(site).unwrap();
+        {
+            let mut cfg = state.config.lock().await;
+            cfg.tunnel
+                .sites
+                .insert("blog".to_owned(), "blog.example.com".to_owned());
+            cfg.tunnel
+                .passwords
+                .insert("blog".to_owned(), "secret".to_owned());
+        }
+        state
+            .tunnel_routes
+            .write()
+            .await
+            .insert("stale.example.com".to_owned(), route("gone", None));
+
+        rebuild_routes(&state).await;
+
+        assert_eq!(
+            *state.tunnel_routes.read().await,
+            HashMap::from([("blog.example.com".to_owned(), route("blog", Some("secret")))])
+        );
     }
 
     #[tokio::test]
     async fn resolved_cloudflared_reflects_a_fresh_install_without_restart() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-
-        // Nothing installed, and no `cloudflared` on this test's real `PATH`
-        // (near-certain in CI): resolves to `None`.
-        assert!(resolved_cloudflared(&state).await.is_none());
 
         install::install_binary_for_test(&state.dirs, "2026.6.1", b"#!/bin/sh\n");
         refresh_cloudflared_cache_after_install(&state).await;
