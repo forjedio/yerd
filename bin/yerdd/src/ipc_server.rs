@@ -2851,7 +2851,10 @@ async fn list_response_headers(state: &DaemonState) -> Response {
     for (docroot, site_headers) in &cfg.response_headers.parked {
         let site_name = router
             .iter()
-            .find(|s| s.document_root().to_string_lossy().as_ref() == docroot.as_str())
+            .find(|s| {
+                s.kind() == yerd_core::SiteKind::Parked
+                    && s.document_root().to_string_lossy().as_ref() == docroot.as_str()
+            })
             .map_or_else(|| docroot.clone(), |s| s.name().to_owned());
         for h in site_headers {
             headers.push(yerd_ipc::ResponseHeaderEntry {

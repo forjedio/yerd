@@ -199,22 +199,21 @@ fn apply_link(
 /// stored as the canonical String produced at park time, so an exact `remove` is
 /// an identity match. Deliberately *not* canonicalised by the I/O wrapper, so a
 /// root deleted from disk is still removable. Idempotent - an absent path is a
-/// successful no-op, mirroring `Park`'s insert. Also drops any parked-side domain
-/// deltas under this root, so a later re-park does not inherit stale domains.
+/// successful no-op, mirroring `Park`'s insert. Also drops the parked-side
+/// domain deltas, proxy rules, route rules and response headers under this
+/// root, so a later re-park does not inherit stale settings. An entry whose
+/// directory is still the child of another parked root (nested roots) stays
+/// discoverable as a parked site, so it is kept.
 fn apply_unpark(cfg: &mut Config, path: &str) -> Applied {
     let removed = cfg.parked.paths.remove(path);
-    cfg.domains
-        .parked
-        .retain(|docroot, _| !is_under_root(docroot, path));
-    cfg.proxy_rules
-        .parked
-        .retain(|docroot, _| !is_under_root(docroot, path));
-    cfg.route_rules
-        .parked
-        .retain(|docroot, _| !is_under_root(docroot, path));
+    let remaining = &cfg.parked.paths;
+    let keep = |docroot: &str| !is_under_root(docroot, path) || parent_in(remaining, docroot);
+    cfg.domains.parked.retain(|docroot, _| keep(docroot));
+    cfg.proxy_rules.parked.retain(|docroot, _| keep(docroot));
+    cfg.route_rules.parked.retain(|docroot, _| keep(docroot));
     cfg.response_headers
         .parked
-        .retain(|docroot, _| !is_under_root(docroot, path));
+        .retain(|docroot, _| keep(docroot));
     Applied {
         summary: if removed {
             format!("un-parked {path}")
@@ -286,10 +285,14 @@ fn apply_unlink(cfg: &mut Config, router: &SiteRouter, name: &str) -> Result<App
 /// keyed by this same `docroot`). Pure string logic over already-canonical
 /// paths, matching `scan_sites`' `<root>/<child>` document-root derivation.
 fn parent_is_parked_root(cfg: &Config, docroot: &str) -> bool {
+    parent_in(&cfg.parked.paths, docroot)
+}
+
+fn parent_in(roots: &std::collections::BTreeSet<String>, docroot: &str) -> bool {
     std::path::Path::new(docroot)
         .parent()
         .and_then(std::path::Path::to_str)
-        .is_some_and(|parent| cfg.parked.paths.contains(parent))
+        .is_some_and(|parent| roots.contains(parent))
 }
 
 fn apply_set_php(
@@ -1726,6 +1729,49 @@ mod tests {
             cfg.response_headers.parked.get("/srv/app").unwrap().len(),
             1
         );
+    }
+
+    #[test]
+    fn unpark_keeps_entries_still_discoverable_under_a_nested_root() {
+        let mut cfg = Config::default();
+        cfg.parked.paths.insert("/srv".to_string());
+        cfg.parked.paths.insert("/srv/client".to_string());
+        for docroot in ["/srv/app", "/srv/client/site"] {
+            cfg.domains
+                .parked
+                .insert(docroot.to_string(), DomainDelta::default());
+            cfg.proxy_rules.parked.insert(
+                docroot.to_string(),
+                vec![yerd_core::ProxyRule::new(
+                    "/ws",
+                    yerd_core::UpstreamTarget::from_url_str("http://127.0.0.1:3000").unwrap(),
+                )
+                .unwrap()],
+            );
+            cfg.route_rules.parked.insert(
+                docroot.to_string(),
+                vec![yerd_core::RouteRule::new("/api", "api/index.php").unwrap()],
+            );
+            cfg.response_headers.parked.insert(
+                docroot.to_string(),
+                vec![ResponseHeader::new("X-A", "1").unwrap()],
+            );
+        }
+        apply(
+            &mut cfg,
+            &empty_router(),
+            &Request::Unpark {
+                path: "/srv".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        let kept = vec!["/srv/client/site"];
+        assert_eq!(cfg.domains.parked.keys().collect::<Vec<_>>(), kept);
+        assert_eq!(cfg.proxy_rules.parked.keys().collect::<Vec<_>>(), kept);
+        assert_eq!(cfg.route_rules.parked.keys().collect::<Vec<_>>(), kept);
+        assert_eq!(cfg.response_headers.parked.keys().collect::<Vec<_>>(), kept);
     }
 
     #[test]

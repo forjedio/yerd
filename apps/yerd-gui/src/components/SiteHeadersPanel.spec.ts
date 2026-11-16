@@ -95,6 +95,29 @@ describe("SiteHeadersPanel", () => {
     expect((wrapper.find('[aria-label="Header value"]').element as HTMLInputElement).value).toBe("");
   });
 
+  it("keeps a draft typed while a save is still in flight", async () => {
+    let resolveSet: () => void = () => {};
+    setResponseHeader.mockReturnValue(
+      new Promise<void>((r) => {
+        resolveSet = r;
+      }),
+    );
+    const wrapper = await mountPanel();
+    const name = wrapper.find('[aria-label="Header name"]');
+    const value = wrapper.find('[aria-label="Header value"]');
+    await name.setValue("X-A");
+    await value.setValue("1");
+
+    await wrapper.find("button").trigger("click");
+    await name.setValue("X-B");
+    resolveSet();
+    await flushPromises();
+
+    expect(setResponseHeader).toHaveBeenCalledWith("api", "X-A", "1");
+    expect((name.element as HTMLInputElement).value).toBe("X-B");
+    expect((value.element as HTMLInputElement).value).toBe("");
+  });
+
   it("keeps Set disabled until both inputs are filled", async () => {
     const wrapper = await mountPanel();
     await wrapper.find('[aria-label="Header name"]').setValue("X-A");

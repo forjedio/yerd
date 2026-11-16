@@ -93,8 +93,8 @@ function set(): void {
     `set:${name}`,
     async () => {
       await setResponseHeader(props.site.name, name, value);
-      newName.value = "";
-      newValue.value = "";
+      if (newName.value.trim() === name) newName.value = "";
+      if (newValue.value.trim() === value) newValue.value = "";
     },
     `Set ${name}`,
   );

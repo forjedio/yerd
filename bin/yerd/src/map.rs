@@ -1231,7 +1231,9 @@ fn format_proxy_domains(proxy: &yerd_ipc::ProxyEntry) -> String {
 }
 
 /// Render `yerd header list [site]`. With `filter`, shows only that site's
-/// headers; the filter is applied client-side, as for [`render_routes`].
+/// headers; the filter is applied client-side, as for [`render_routes`]. The
+/// JSON form keeps the `response_headers` envelope, so filtered and unfiltered
+/// output share one shape.
 #[must_use]
 pub fn render_response_headers(
     headers: &[yerd_ipc::ResponseHeaderEntry],
@@ -1239,10 +1241,11 @@ pub fn render_response_headers(
     json: bool,
 ) -> Rendered {
     if json {
-        let selected = select_response_headers(headers, filter);
-        let body = serde_json::to_string_pretty(&selected)
-            .unwrap_or_else(|e| format!("{{\"error\":\"serialize failed: {e}\"}}"));
-        return Rendered::ok(body);
+        let selected = select_response_headers(headers, filter)
+            .into_iter()
+            .cloned()
+            .collect();
+        return render(&Response::ResponseHeaders { headers: selected }, true);
     }
     Rendered::ok(format_response_headers(headers, filter))
 }
@@ -3966,11 +3969,14 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json.stdout).unwrap();
         assert_eq!(
             parsed,
-            serde_json::json!([{
-                "site": "api",
-                "name": "Access-Control-Allow-Origin",
-                "value": "https://app.test"
-            }])
+            serde_json::json!({
+                "type": "response_headers",
+                "headers": [{
+                    "site": "api",
+                    "name": "Access-Control-Allow-Origin",
+                    "value": "https://app.test"
+                }]
+            })
         );
 
         let none = render_response_headers(&headers, Some("ghost"), false);
@@ -3978,6 +3984,24 @@ mod tests {
 
         let empty = render_response_headers(&[], None, false);
         assert_eq!(empty.stdout, "no response headers configured");
+    }
+
+    #[test]
+    fn filtered_header_json_matches_the_unfiltered_shape() {
+        let headers = vec![yerd_ipc::ResponseHeaderEntry {
+            site: "api".into(),
+            name: "X-Frame-Options".into(),
+            value: "DENY".into(),
+        }];
+        let unfiltered = render(
+            &Response::ResponseHeaders {
+                headers: headers.clone(),
+            },
+            true,
+        );
+        let filtered = render_response_headers(&headers, Some("api"), true);
+        assert_eq!(filtered.stdout, unfiltered.stdout);
+        assert_eq!(filtered.code, unfiltered.code);
     }
 
     #[test]
