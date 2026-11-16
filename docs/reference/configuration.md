@@ -29,7 +29,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 
 | Key         | TOML type            | Meaning                                                            | Default        |
 | ----------- | -------------------- | ----------------------------------------------------------------- | -------------- |
-| `version`   | integer              | On-disk schema version. **Mandatory**; written as `23` by this release. | `n/a (required)` |
+| `version`   | integer              | On-disk schema version. **Mandatory**; written as `25` by this release. | `n/a (required)` |
 | `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
 | `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
 | `update_channel` | string          | Self-update channel: `"stable"` or `"edge"`.                      | `"stable"`     |
@@ -51,16 +51,17 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 | `proxies`   | array of tables      | Whole-host reverse proxies (`reverb.test` → an upstream URL).      | empty          |
 | `proxy_rules` | table              | Per-site path-prefix reverse-proxy rules.                         | empty          |
 | `route_rules` | table              | Per-site path-prefix routing rules (prefix → a file inside the site). | empty       |
+| `response_headers` | table         | Per-site custom response headers (name + value) added to every response. | empty       |
 
 ::: warning Unknown keys are rejected
-The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, `[mail]`, `[dumps]`, `[dumps.features]`, `[domains]`, a `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` / `[domains.proxy.<name>]` entry, `[proxy_rules]`, `[route_rules]`, a `[[proxies]]` entry, a `[services.<id>]` table, a `[[linked]]` entry, an `[[overrides]]` entry, or a `[[php.extensions.<version>]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
+The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, `[mail]`, `[dumps]`, `[dumps.features]`, `[domains]`, a `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` / `[domains.proxy.<name>]` entry, `[proxy_rules]`, `[route_rules]`, `[response_headers]`, a `[[proxies]]` entry, a `[services.<id>]` table, a `[[linked]]` entry, an `[[overrides]]` entry, or a `[[php.extensions.<version>]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
 
 The free-form maps are the exception, because their keys *are* the data. `[services.<id>.overrides]` (like `[php.directives."<version>"]`) takes arbitrary directive names, so `deny_unknown_fields` does not apply *inside* it - the keys are shape-checked instead, and a bad one is dropped rather than failing the load. It still applies to the enclosing `[services.<id>]` table.
 :::
 
 ### `version`
 
-The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `24`, and Yerd always writes `version = 24`. Older `version = 1` through `version = 23` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `25`, and Yerd always writes `version = 25`. Older `version = 1` through `version = 24` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
 
 ### `tld`
 
@@ -602,9 +603,43 @@ Manage these with [`yerd route`](cli/routes), or the **Routing** tab of the
 desktop app's site details sidebar. A site whose web root holds an `index.html`
 and no `index.php` gets SPA routing automatically, with no rule stored here.
 
+### `[response_headers]`
+
+Per-site custom **response headers** (schema v25) - each one is added to every
+response the proxy produces for the site, replacing any same-named header.
+**Empty by default** (the whole table is omitted) until you set a header. Split
+by site class exactly like `[route_rules]`: linked headers key by site name,
+parked headers by byte-exact document-root.
+
+| Key                         | TOML type                         | Meaning                                         |
+| --------------------------- | --------------------------------- | ----------------------------------------------- |
+| `[response_headers.linked]` | table (`name → array of headers`) | Headers for **linked** sites, keyed by name.    |
+| `[response_headers.parked]` | table (`docroot → array`)         | Headers for **parked** sites, keyed by docroot. |
+
+Each header is a `{ name, value }` table, kept in the order it was set. Removing
+a site's last header drops its key entirely, so the file round-trips
+byte-identically.
+
+```toml
+# CORS for a frontend on app.test calling the api site
+[[response_headers.linked.api]]
+name = "Access-Control-Allow-Origin"
+value = "https://app.test"
+```
+
+Every entry is validated at load: the name must be a valid HTTP header name and
+not one Yerd manages (`Connection`, `Keep-Alive`, `Transfer-Encoding`,
+`Upgrade`, `TE`, `Trailer`, `Content-Length`, `Host`, or any `Proxy-*`), and the
+value must be non-empty with no control characters. A hand-edited entry that
+fails is a hard parse error, and two entries for one site sharing a name
+(ignoring case) fail validation.
+
+Manage these with [`yerd header`](cli/headers), or the **Headers** tab of the
+desktop app's site details sidebar.
+
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `23`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `24`.
 
 When the daemon loads a file, it routes on the version it finds:
 
@@ -639,6 +674,7 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v21 → v22`** is a bare version bump: v22 only **added** the optional `[services.<id>.overrides]` sub-table (free-form engine config directives), which defaults to empty when absent.
 - **`v22 → v23`** is a bare version bump: v23 only **added** the optional `[domains.proxy]` table (routable-domain deltas for whole-host proxies), which defaults to empty when absent.
 - **`v23 → v24`** is a bare version bump: v24 only **added** the optional `[tunnel.passwords]` table (per-site share passwords), which defaults to empty when absent.
+- **`v24 → v25`** is a bare version bump: v25 only **added** the optional `[response_headers]` table (per-site custom response headers), which defaults to empty when absent.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 
@@ -662,7 +698,7 @@ Yerd does not `fsync` the file or its parent directory after a save. For a devel
 
 ## A complete annotated example
 
-This is a valid `yerd.toml` covering the core fields (see the sections above for the newer optional tables - `update_channel`, `[tunnel]`, `[groups]`, `[php.extensions]`, `[php.pool]`, `[domains]`, `[[proxies]]`, `[proxy_rules]`, `[route_rules]`, `[services.<id>.overrides]`, `wp_auto_login` - omitted here for brevity):
+This is a valid `yerd.toml` covering the core fields (see the sections above for the newer optional tables - `update_channel`, `[tunnel]`, `[groups]`, `[php.extensions]`, `[php.pool]`, `[domains]`, `[[proxies]]`, `[proxy_rules]`, `[route_rules]`, `[response_headers]`, `[services.<id>.overrides]`, `wp_auto_login` - omitted here for brevity):
 
 ```toml
 # Schema version - mandatory, always written as 24 by this release.

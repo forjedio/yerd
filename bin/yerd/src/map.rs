@@ -188,6 +188,7 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         Command::Domain { action } => domain_request(action)?,
         Command::Proxy { action } => proxy_request(action)?,
         Command::Route { action } => route_request(action)?,
+        Command::Header { action } => header_request(action)?,
         Command::Tunnel { action } => tunnel_request(action),
         Command::Db { action } => db_request(action),
         Command::Mail { action } => match action {
@@ -520,6 +521,32 @@ fn route_request(action: &crate::cli::RouteAction) -> Result<Request, ClientErro
             Request::RemoveRouteRule {
                 site: site.clone(),
                 prefix: prefix.clone(),
+            }
+        }
+    })
+}
+
+/// Map a `yerd header <action>` to its wire request. Only the site name is
+/// checked client-side; the header name and value are validated by the daemon
+/// (authoritative, via `yerd_core::ResponseHeader`). `List` carries no filter
+/// on the wire, exactly like `yerd route list`.
+fn header_request(action: &crate::cli::HeaderAction) -> Result<Request, ClientError> {
+    use crate::cli::HeaderAction;
+    Ok(match action {
+        HeaderAction::List { .. } => Request::ListResponseHeaders,
+        HeaderAction::Set { site, name, value } => {
+            validate_name(site)?;
+            Request::SetResponseHeader {
+                site: site.clone(),
+                name: name.clone(),
+                value: value.clone(),
+            }
+        }
+        HeaderAction::Remove { site, name } => {
+            validate_name(site)?;
+            Request::RemoveResponseHeader {
+                site: site.clone(),
+                name: name.clone(),
             }
         }
     })
@@ -1117,6 +1144,9 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
         )),
         Response::Proxies { proxies, rules } => Rendered::ok(format_proxies(proxies, rules)),
         Response::Routes { rules } => Rendered::ok(format_routes(rules, None)),
+        Response::ResponseHeaders { headers } => {
+            Rendered::ok(format_response_headers(headers, None))
+        }
         _ => Rendered::err("unexpected response from daemon".to_owned()),
     }
 }
@@ -1199,6 +1229,59 @@ fn format_proxy_domains(proxy: &yerd_ipc::ProxyEntry) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Render `yerd header list [site]`. With `filter`, shows only that site's
+/// headers; the filter is applied client-side, as for [`render_routes`]. The
+/// JSON form keeps the `response_headers` envelope, so filtered and unfiltered
+/// output share one shape.
+#[must_use]
+pub fn render_response_headers(
+    headers: &[yerd_ipc::ResponseHeaderEntry],
+    filter: Option<&str>,
+    json: bool,
+) -> Rendered {
+    if json {
+        let selected = select_response_headers(headers, filter)
+            .into_iter()
+            .cloned()
+            .collect();
+        return render(&Response::ResponseHeaders { headers: selected }, true);
+    }
+    Rendered::ok(format_response_headers(headers, filter))
+}
+
+fn select_response_headers<'a>(
+    headers: &'a [yerd_ipc::ResponseHeaderEntry],
+    filter: Option<&str>,
+) -> Vec<&'a yerd_ipc::ResponseHeaderEntry> {
+    match filter {
+        Some(f) => {
+            let f = f.to_ascii_lowercase();
+            headers.iter().filter(|h| h.site == f).collect()
+        }
+        None => headers.iter().collect(),
+    }
+}
+
+/// Render `yerd header list`: one row per header, `site Name: value`.
+fn format_response_headers(
+    headers: &[yerd_ipc::ResponseHeaderEntry],
+    filter: Option<&str>,
+) -> String {
+    use std::fmt::Write as _;
+    let selected = select_response_headers(headers, filter);
+    if selected.is_empty() {
+        return match filter {
+            Some(site) => format!("no response headers configured for {site}"),
+            None => "no response headers configured".to_owned(),
+        };
+    }
+    let mut out = String::from("Response headers:\n");
+    for h in selected {
+        let _ = writeln!(out, "  {} {}: {}", h.site, h.name, h.value);
+    }
+    out.trim_end().to_owned()
 }
 
 /// Render `yerd route list`: one row per rule, `site prefix -> target`.
@@ -3810,6 +3893,124 @@ mod tests {
 
         let empty = render_routes(&[], None, false);
         assert_eq!(empty.stdout, "no routing rules configured");
+    }
+
+    #[test]
+    fn maps_header_command() {
+        use crate::cli::HeaderAction;
+        assert_eq!(
+            to_request(&Command::Header {
+                action: HeaderAction::Set {
+                    site: "api".into(),
+                    name: "Access-Control-Allow-Origin".into(),
+                    value: "https://app.test".into(),
+                },
+            })
+            .unwrap(),
+            Request::SetResponseHeader {
+                site: "api".into(),
+                name: "Access-Control-Allow-Origin".into(),
+                value: "https://app.test".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Header {
+                action: HeaderAction::Remove {
+                    site: "api".into(),
+                    name: "access-control-allow-origin".into(),
+                },
+            })
+            .unwrap(),
+            Request::RemoveResponseHeader {
+                site: "api".into(),
+                name: "access-control-allow-origin".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Header {
+                action: HeaderAction::List { site: None },
+            })
+            .unwrap(),
+            Request::ListResponseHeaders
+        );
+        assert_eq!(
+            to_request(&Command::Header {
+                action: HeaderAction::List {
+                    site: Some("api".into())
+                },
+            })
+            .unwrap(),
+            Request::ListResponseHeaders,
+            "the site filter is applied client-side, not on the wire"
+        );
+    }
+
+    #[test]
+    fn renders_header_list_with_and_without_a_filter() {
+        let headers = vec![
+            yerd_ipc::ResponseHeaderEntry {
+                site: "api".into(),
+                name: "Access-Control-Allow-Origin".into(),
+                value: "https://app.test".into(),
+            },
+            yerd_ipc::ResponseHeaderEntry {
+                site: "app".into(),
+                name: "X-Frame-Options".into(),
+                value: "DENY".into(),
+            },
+        ];
+
+        let all = render_response_headers(&headers, None, false);
+        assert_eq!(all.code, 0);
+        assert!(all
+            .stdout
+            .contains("api Access-Control-Allow-Origin: https://app.test"));
+        assert!(all.stdout.contains("app X-Frame-Options: DENY"));
+
+        let one = render_response_headers(&headers, Some("API"), false);
+        assert!(one.stdout.contains("api Access-Control-Allow-Origin"));
+        assert!(
+            !one.stdout.contains("X-Frame-Options"),
+            "the filter must be case-insensitive and exclusive"
+        );
+
+        let json = render_response_headers(&headers, Some("api"), true);
+        let parsed: serde_json::Value = serde_json::from_str(&json.stdout).unwrap();
+        assert_eq!(
+            parsed,
+            serde_json::json!({
+                "type": "response_headers",
+                "headers": [{
+                    "site": "api",
+                    "name": "Access-Control-Allow-Origin",
+                    "value": "https://app.test"
+                }]
+            })
+        );
+
+        let none = render_response_headers(&headers, Some("ghost"), false);
+        assert_eq!(none.stdout, "no response headers configured for ghost");
+
+        let empty = render_response_headers(&[], None, false);
+        assert_eq!(empty.stdout, "no response headers configured");
+    }
+
+    #[test]
+    fn filtered_header_json_matches_the_unfiltered_shape() {
+        let headers = vec![yerd_ipc::ResponseHeaderEntry {
+            site: "api".into(),
+            name: "X-Frame-Options".into(),
+            value: "DENY".into(),
+        }];
+        let unfiltered = render(
+            &Response::ResponseHeaders {
+                headers: headers.clone(),
+            },
+            true,
+        );
+        let filtered = render_response_headers(&headers, Some("api"), true);
+        assert_eq!(filtered.stdout, unfiltered.stdout);
+        assert_eq!(filtered.code, unfiltered.code);
     }
 
     #[test]

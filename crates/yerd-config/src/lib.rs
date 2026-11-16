@@ -24,8 +24,9 @@ mod serialize;
 pub use error::{ConfigError, MigrationErrorReason, ValidateErrorReason};
 pub use schema::{
     Config, DomainDelta, DomainsSection, DumpsSection, ExtEntry, GroupsSection, MailSection,
-    ParkedSection, PhpSection, Ports, ServiceInstance, ServicesSection, SiteOverride,
-    TunnelSection, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
+    ParkedSection, PhpSection, Ports, ResponseHeadersSection, ServiceInstance, ServicesSection,
+    SiteOverride, TunnelSection, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT,
+    RESERVED_GROUP_NAME,
 };
 
 /// The on-disk schema version this crate writes. Bumped together with a new

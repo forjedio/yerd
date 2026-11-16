@@ -20,7 +20,8 @@ use std::path::PathBuf;
 
 use yerd_config::{Config, DomainDelta};
 use yerd_core::{
-    Domain, PhpVersion, ProxyRule, ProxySite, RouteRule, Site, SiteKind, SiteRouter, UpstreamTarget,
+    Domain, PhpVersion, ProxyRule, ProxySite, ResponseHeader, RouteRule, Site, SiteKind,
+    SiteRouter, UpstreamTarget,
 };
 use yerd_ipc::{ErrorCode, Request};
 
@@ -129,6 +130,12 @@ pub fn apply(
         Request::RemoveRouteRule { site, prefix } => {
             apply_remove_route_rule(cfg, router, site, prefix)
         }
+        Request::SetResponseHeader { site, name, value } => {
+            apply_set_response_header(cfg, router, site, name, value)
+        }
+        Request::RemoveResponseHeader { site, name } => {
+            apply_remove_response_header(cfg, router, site, name)
+        }
         Request::CreateGroup { name } => apply_create_group(cfg, name),
         Request::DeleteGroup { name } => Ok(apply_delete_group(cfg, name)),
         Request::SetGroupOrder { order } => apply_set_group_order(cfg, order),
@@ -179,6 +186,9 @@ fn apply_link(
     if let Some(rules) = cfg.route_rules.parked.remove(&docroot_key) {
         cfg.route_rules.linked.insert(name_lc.clone(), rules);
     }
+    if let Some(headers) = cfg.response_headers.parked.remove(&docroot_key) {
+        cfg.response_headers.linked.insert(name_lc.clone(), headers);
+    }
     cfg.linked.push(site);
     Ok(Applied {
         summary: format!("linked {name_lc}"),
@@ -189,19 +199,21 @@ fn apply_link(
 /// stored as the canonical String produced at park time, so an exact `remove` is
 /// an identity match. Deliberately *not* canonicalised by the I/O wrapper, so a
 /// root deleted from disk is still removable. Idempotent - an absent path is a
-/// successful no-op, mirroring `Park`'s insert. Also drops any parked-side domain
-/// deltas under this root, so a later re-park does not inherit stale domains.
+/// successful no-op, mirroring `Park`'s insert. Also drops the parked-side
+/// domain deltas, proxy rules, route rules and response headers under this
+/// root, so a later re-park does not inherit stale settings. An entry whose
+/// directory is still the child of another parked root (nested roots) stays
+/// discoverable as a parked site, so it is kept.
 fn apply_unpark(cfg: &mut Config, path: &str) -> Applied {
     let removed = cfg.parked.paths.remove(path);
-    cfg.domains
+    let remaining = &cfg.parked.paths;
+    let keep = |docroot: &str| !is_under_root(docroot, path) || parent_in(remaining, docroot);
+    cfg.domains.parked.retain(|docroot, _| keep(docroot));
+    cfg.proxy_rules.parked.retain(|docroot, _| keep(docroot));
+    cfg.route_rules.parked.retain(|docroot, _| keep(docroot));
+    cfg.response_headers
         .parked
-        .retain(|docroot, _| !is_under_root(docroot, path));
-    cfg.proxy_rules
-        .parked
-        .retain(|docroot, _| !is_under_root(docroot, path));
-    cfg.route_rules
-        .parked
-        .retain(|docroot, _| !is_under_root(docroot, path));
+        .retain(|docroot, _| keep(docroot));
     Applied {
         summary: if removed {
             format!("un-parked {path}")
@@ -255,7 +267,12 @@ fn apply_unlink(cfg: &mut Config, router: &SiteRouter, name: &str) -> Result<App
     }
     if let Some(rules) = cfg.route_rules.linked.remove(&name_lc) {
         if reparks {
-            cfg.route_rules.parked.insert(docroot_key, rules);
+            cfg.route_rules.parked.insert(docroot_key.clone(), rules);
+        }
+    }
+    if let Some(headers) = cfg.response_headers.linked.remove(&name_lc) {
+        if reparks {
+            cfg.response_headers.parked.insert(docroot_key, headers);
         }
     }
     Ok(Applied {
@@ -268,10 +285,14 @@ fn apply_unlink(cfg: &mut Config, router: &SiteRouter, name: &str) -> Result<App
 /// keyed by this same `docroot`). Pure string logic over already-canonical
 /// paths, matching `scan_sites`' `<root>/<child>` document-root derivation.
 fn parent_is_parked_root(cfg: &Config, docroot: &str) -> bool {
+    parent_in(&cfg.parked.paths, docroot)
+}
+
+fn parent_in(roots: &std::collections::BTreeSet<String>, docroot: &str) -> bool {
     std::path::Path::new(docroot)
         .parent()
         .and_then(std::path::Path::to_str)
-        .is_some_and(|parent| cfg.parked.paths.contains(parent))
+        .is_some_and(|parent| roots.contains(parent))
 }
 
 fn apply_set_php(
@@ -400,7 +421,8 @@ fn apply_remove_proxy(cfg: &mut Config, name: &str) -> Result<Applied, MutateErr
     })
 }
 
-/// The per-site rule storage key, shared by `proxy_rules` and `route_rules`:
+/// The per-site storage key, shared by `proxy_rules`, `route_rules` and
+/// `response_headers`:
 /// linked sites key by name, parked sites by document-root (matching
 /// `[[overrides]]`). Returns `None` if the site is unknown to the pre-mutation
 /// router.
@@ -550,6 +572,72 @@ fn apply_remove_route_rule(
     }
     Ok(Applied {
         summary: format!("removed route {name_lc}{wanted}"),
+    })
+}
+
+/// Set a custom response header on an existing site. A header whose name the
+/// site already has (ignoring case) is replaced in place, keeping its position
+/// and adopting the new casing.
+fn apply_set_response_header(
+    cfg: &mut Config,
+    router: &SiteRouter,
+    site: &str,
+    name: &str,
+    value: &str,
+) -> Result<Applied, MutateError> {
+    let name_lc = site.to_ascii_lowercase();
+    let header = ResponseHeader::new(name, value)
+        .map_err(|e| MutateError::Invalid(format!("invalid response header: {e}")))?;
+    let (linked, key) =
+        site_rule_key(router, &name_lc).ok_or_else(|| not_found_site(cfg, &name_lc))?;
+    let map = if linked {
+        &mut cfg.response_headers.linked
+    } else {
+        &mut cfg.response_headers.parked
+    };
+    let headers = map.entry(key).or_default();
+    let header_name = header.name().to_owned();
+    let summary = if let Some(existing) = headers.iter_mut().find(|h| h.has_name(&header_name)) {
+        *existing = header;
+        format!("replaced header {header_name} on {name_lc}")
+    } else {
+        headers.push(header);
+        format!("set header {header_name} on {name_lc}")
+    };
+    Ok(Applied { summary })
+}
+
+/// Remove a custom response header (matched ignoring case) from a site,
+/// pruning the site's entry when its last header goes so the config
+/// round-trips to a byte-identical state.
+fn apply_remove_response_header(
+    cfg: &mut Config,
+    router: &SiteRouter,
+    site: &str,
+    name: &str,
+) -> Result<Applied, MutateError> {
+    let name_lc = site.to_ascii_lowercase();
+    let (linked, key) =
+        site_rule_key(router, &name_lc).ok_or_else(|| not_found_site(cfg, &name_lc))?;
+    let map = if linked {
+        &mut cfg.response_headers.linked
+    } else {
+        &mut cfg.response_headers.parked
+    };
+    let not_found = || MutateError::NotFound(format!("site {name_lc} has no header {name}"));
+    let Some(headers) = map.get_mut(&key) else {
+        return Err(not_found());
+    };
+    let before = headers.len();
+    headers.retain(|h| !h.has_name(name));
+    if headers.len() == before {
+        return Err(not_found());
+    }
+    if headers.is_empty() {
+        map.remove(&key);
+    }
+    Ok(Applied {
+        summary: format!("removed header {name} from {name_lc}"),
     })
 }
 
@@ -1445,6 +1533,266 @@ mod tests {
         )
         .unwrap();
         assert!(cfg.route_rules.parked.is_empty());
+    }
+
+    fn set_header(
+        cfg: &mut Config,
+        router: &SiteRouter,
+        site: &str,
+        name: &str,
+        value: &str,
+    ) -> Result<Applied, MutateError> {
+        apply(
+            cfg,
+            router,
+            &Request::SetResponseHeader {
+                site: site.into(),
+                name: name.into(),
+                value: value.into(),
+            },
+            None,
+            v(8, 3),
+        )
+    }
+
+    fn remove_header(
+        cfg: &mut Config,
+        router: &SiteRouter,
+        site: &str,
+        name: &str,
+    ) -> Result<Applied, MutateError> {
+        apply(
+            cfg,
+            router,
+            &Request::RemoveResponseHeader {
+                site: site.into(),
+                name: name.into(),
+            },
+            None,
+            v(8, 3),
+        )
+    }
+
+    fn linked_portal_router() -> SiteRouter {
+        let mut router = empty_router();
+        router
+            .insert(Site::linked("portal", "/srv/portal", v(8, 3)).unwrap())
+            .unwrap();
+        router
+    }
+
+    #[test]
+    fn response_header_set_and_remove_on_a_linked_site() {
+        let mut cfg = Config::default();
+        let router = linked_portal_router();
+        set_header(
+            &mut cfg,
+            &router,
+            "Portal",
+            "Access-Control-Allow-Origin",
+            "*",
+        )
+        .unwrap();
+        let headers = cfg.response_headers.linked.get("portal").unwrap();
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].name(), "Access-Control-Allow-Origin");
+        assert_eq!(headers[0].value(), "*");
+
+        remove_header(&mut cfg, &router, "portal", "access-control-allow-origin").unwrap();
+        assert!(
+            cfg.response_headers.linked.is_empty(),
+            "removing the last header must prune the site's entry"
+        );
+    }
+
+    #[test]
+    fn response_header_set_and_remove_on_a_parked_site() {
+        let mut cfg = Config::default();
+        let mut router = empty_router();
+        router
+            .insert(Site::parked("blog", "/srv/blog", v(8, 3)).unwrap())
+            .unwrap();
+        set_header(&mut cfg, &router, "blog", "X-Frame-Options", "DENY").unwrap();
+        assert_eq!(
+            cfg.response_headers.parked.get("/srv/blog").unwrap().len(),
+            1
+        );
+
+        remove_header(&mut cfg, &router, "blog", "X-FRAME-OPTIONS").unwrap();
+        assert!(cfg.response_headers.parked.is_empty());
+    }
+
+    #[test]
+    fn response_header_reset_replaces_in_place_ignoring_case() {
+        let mut cfg = Config::default();
+        let router = linked_portal_router();
+        set_header(
+            &mut cfg,
+            &router,
+            "portal",
+            "Access-Control-Allow-Origin",
+            "*",
+        )
+        .unwrap();
+        set_header(&mut cfg, &router, "portal", "X-Frame-Options", "DENY").unwrap();
+        let applied = set_header(
+            &mut cfg,
+            &router,
+            "portal",
+            "access-control-allow-origin",
+            "https://app.test",
+        )
+        .unwrap();
+        assert!(
+            applied.summary.starts_with("replaced"),
+            "{}",
+            applied.summary
+        );
+        let headers = cfg.response_headers.linked.get("portal").unwrap();
+        assert_eq!(headers.len(), 2);
+        assert_eq!(headers[0].name(), "access-control-allow-origin");
+        assert_eq!(headers[0].value(), "https://app.test");
+        assert_eq!(headers[1].name(), "X-Frame-Options");
+    }
+
+    #[test]
+    fn response_header_rejects_unknown_site_absent_header_and_bad_input() {
+        let mut cfg = Config::default();
+        let router = linked_portal_router();
+        assert!(matches!(
+            set_header(&mut cfg, &router, "ghost", "X-A", "1"),
+            Err(MutateError::NotFound(_))
+        ));
+        assert!(matches!(
+            remove_header(&mut cfg, &router, "portal", "X-A"),
+            Err(MutateError::NotFound(_))
+        ));
+        set_header(&mut cfg, &router, "portal", "X-B", "1").unwrap();
+        assert!(matches!(
+            remove_header(&mut cfg, &router, "portal", "X-A"),
+            Err(MutateError::NotFound(_))
+        ));
+        for (name, value) in [
+            ("X Bad", "1"),
+            ("Transfer-Encoding", "chunked"),
+            ("Proxy-Foo", "1"),
+            ("Host", "evil.test"),
+            ("X-A", "a\r\nSet-Cookie: x=1"),
+        ] {
+            assert!(
+                matches!(
+                    set_header(&mut cfg, &router, "portal", name, value),
+                    Err(MutateError::Invalid(_))
+                ),
+                "{name}: {value:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn link_and_unlink_migrate_response_headers() {
+        let mut cfg = Config::default();
+        cfg.parked.paths.insert("/srv".to_string());
+        let header = ResponseHeader::new("X-A", "1").unwrap();
+        cfg.response_headers
+            .parked
+            .insert("/srv/app".to_string(), vec![header]);
+
+        apply(
+            &mut cfg,
+            &empty_router(),
+            &Request::Link {
+                name: "app".into(),
+                path: PathBuf::from("/ignored"),
+            },
+            Some(PathBuf::from("/srv/app")),
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.response_headers.parked.is_empty());
+        assert_eq!(cfg.response_headers.linked.get("app").unwrap().len(), 1);
+
+        let mut router = empty_router();
+        router
+            .insert(Site::linked("app", "/srv/app", v(8, 3)).unwrap())
+            .unwrap();
+        apply(
+            &mut cfg,
+            &router,
+            &Request::Unlink { name: "app".into() },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.response_headers.linked.is_empty());
+        assert_eq!(
+            cfg.response_headers.parked.get("/srv/app").unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn unpark_keeps_entries_still_discoverable_under_a_nested_root() {
+        let mut cfg = Config::default();
+        cfg.parked.paths.insert("/srv".to_string());
+        cfg.parked.paths.insert("/srv/client".to_string());
+        for docroot in ["/srv/app", "/srv/client/site"] {
+            cfg.domains
+                .parked
+                .insert(docroot.to_string(), DomainDelta::default());
+            cfg.proxy_rules.parked.insert(
+                docroot.to_string(),
+                vec![yerd_core::ProxyRule::new(
+                    "/ws",
+                    yerd_core::UpstreamTarget::from_url_str("http://127.0.0.1:3000").unwrap(),
+                )
+                .unwrap()],
+            );
+            cfg.route_rules.parked.insert(
+                docroot.to_string(),
+                vec![yerd_core::RouteRule::new("/api", "api/index.php").unwrap()],
+            );
+            cfg.response_headers.parked.insert(
+                docroot.to_string(),
+                vec![ResponseHeader::new("X-A", "1").unwrap()],
+            );
+        }
+        apply(
+            &mut cfg,
+            &empty_router(),
+            &Request::Unpark {
+                path: "/srv".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        let kept = vec!["/srv/client/site"];
+        assert_eq!(cfg.domains.parked.keys().collect::<Vec<_>>(), kept);
+        assert_eq!(cfg.proxy_rules.parked.keys().collect::<Vec<_>>(), kept);
+        assert_eq!(cfg.route_rules.parked.keys().collect::<Vec<_>>(), kept);
+        assert_eq!(cfg.response_headers.parked.keys().collect::<Vec<_>>(), kept);
+    }
+
+    #[test]
+    fn unpark_drops_response_headers_under_root() {
+        let mut cfg = Config::default();
+        let header = ResponseHeader::new("X-A", "1").unwrap();
+        cfg.parked.paths.insert("/srv".to_string());
+        cfg.response_headers
+            .parked
+            .insert("/srv/app".to_string(), vec![header]);
+        apply(
+            &mut cfg,
+            &empty_router(),
+            &Request::Unpark {
+                path: "/srv".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.response_headers.parked.is_empty());
     }
 
     #[test]

@@ -26,7 +26,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{oneshot, Mutex};
 
-use yerd_core::{PhpVersion, RouterConfig, Site, SiteRouter, Tld};
+use yerd_core::{PhpVersion, ResponseHeader, RouterConfig, Site, SiteRouter, Tld};
 use yerd_proxy::{
     Backend, BackendResolver, ProxyClientTls, ProxyError, ProxyServer, SharedTunnelRoutes,
     TunnelBinding, TunnelRoute,
@@ -164,6 +164,7 @@ struct Setup {
     routes: HashMap<String, TunnelRoute>,
     wordpress: bool,
     prepend: Option<PathBuf>,
+    headers: Vec<ResponseHeader>,
 }
 
 impl Setup {
@@ -180,6 +181,7 @@ impl Setup {
             routes,
             wordpress: false,
             prepend: Some(PathBuf::from(PREPEND)),
+            headers: Vec::new(),
         }
     }
 
@@ -190,7 +192,9 @@ impl Setup {
         tokio::spawn(run_fake_fcgi(fcgi_listener, captured.clone()));
 
         let mut router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
+        let site_name = self.site.name().to_owned();
         router.insert(self.site).unwrap();
+        router.set_response_headers(&site_name, self.headers);
         let router = Arc::new(tokio::sync::RwLock::new(router));
         let route_map: SharedTunnelRoutes = Arc::new(tokio::sync::RwLock::new(self.routes));
         let resolver = Arc::new(TestResolver {
@@ -369,6 +373,118 @@ async fn password_gate_challenges_missing_and_wrong_credentials() {
             Some("no-store")
         );
     }
+    h.stop().await;
+}
+
+fn values(reply: &Reply, name: &str) -> Vec<String> {
+    reply
+        .headers
+        .get_all(name)
+        .iter()
+        .map(|v| v.to_str().unwrap().to_owned())
+        .collect()
+}
+
+fn share_headers() -> Vec<ResponseHeader> {
+    vec![
+        ResponseHeader::new("Access-Control-Allow-Origin", "https://app.test").unwrap(),
+        ResponseHeader::new("X-Debug-Env", "staging").unwrap(),
+        ResponseHeader::new("WWW-Authenticate", "Bearer").unwrap(),
+        ResponseHeader::new("Cache-Control", "public, max-age=60").unwrap(),
+        ResponseHeader::new("CDN-Cache-Control", "max-age=600").unwrap(),
+    ]
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn password_challenge_carries_only_the_sites_cors_headers() {
+    let mut setup = Setup::new(site("app", PathBuf::from("/srv/www/app")));
+    setup
+        .routes
+        .get_mut(PUBLIC_HOST)
+        .unwrap()
+        .password
+        .replace("secret".to_owned());
+    setup.headers = share_headers();
+    let h = setup.start().await;
+
+    let challenge = get(h.addr, PUBLIC_HOST, "/", None).await;
+
+    assert_eq!(challenge.status, 401);
+    assert_eq!(
+        values(&challenge, "access-control-allow-origin"),
+        vec!["https://app.test"]
+    );
+    assert!(values(&challenge, "x-debug-env").is_empty());
+    assert!(values(&challenge, "cdn-cache-control").is_empty());
+    assert_eq!(
+        values(&challenge, "www-authenticate"),
+        vec![r#"Basic realm="Yerd share", charset="UTF-8""#]
+    );
+    assert_eq!(values(&challenge, "cache-control"), vec!["no-store"]);
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn password_protected_page_is_kept_out_of_shared_caches() {
+    let mut setup = Setup::new(site("app", PathBuf::from("/srv/www/app")));
+    setup
+        .routes
+        .get_mut(PUBLIC_HOST)
+        .unwrap()
+        .password
+        .replace("secret".to_owned());
+    setup.headers = share_headers();
+    let h = setup.start().await;
+
+    let page = get(h.addr, PUBLIC_HOST, "/", Some(AUTH_USER_SECRET)).await;
+
+    assert_eq!(page.status, 200);
+    assert_eq!(
+        values(&page, "access-control-allow-origin"),
+        vec!["https://app.test"]
+    );
+    assert_eq!(values(&page, "x-debug-env"), vec!["staging"]);
+    assert_eq!(values(&page, "cache-control"), vec!["max-age=60, private"]);
+    assert!(values(&page, "cdn-cache-control").is_empty());
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn protected_share_of_a_vanished_site_404_stays_no_store() {
+    let mut setup = Setup::new(site("app", PathBuf::from("/srv/www/app")));
+    setup.routes.insert(
+        "gone.example.com".to_owned(),
+        TunnelRoute {
+            site: "gone".to_owned(),
+            password: Some("secret".to_owned()),
+        },
+    );
+    let h = setup.start().await;
+
+    let reply = get(
+        h.addr,
+        "gone.example.com",
+        "/app.js",
+        Some(AUTH_USER_SECRET),
+    )
+    .await;
+
+    assert_eq!(reply.status, 404);
+    assert_eq!(values(&reply, "cache-control"), vec!["no-store"]);
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn open_share_keeps_the_sites_cache_headers() {
+    let mut setup = Setup::new(site("app", PathBuf::from("/srv/www/app")));
+    setup.headers = share_headers();
+    let h = setup.start().await;
+
+    let page = get(h.addr, PUBLIC_HOST, "/", None).await;
+
+    assert_eq!(page.status, 200);
+    assert_eq!(values(&page, "cache-control"), vec!["public, max-age=60"]);
+    assert_eq!(values(&page, "cdn-cache-control"), vec!["max-age=600"]);
     h.stop().await;
 }
 

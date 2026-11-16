@@ -400,7 +400,11 @@ mod tests {
 
     #[test]
     fn v24_to_v25_is_a_bare_version_bump() {
-        let mut v: Value = toml::from_str("version = 24\n").unwrap();
+        let mut v: Value = toml::from_str(
+            "version = 24
+",
+        )
+        .unwrap();
         migrate_v24_to_v25(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 25);
     }

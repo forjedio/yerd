@@ -15,9 +15,11 @@ import {
   IpcError,
   listMails,
   listPhp,
+  listResponseHeaders,
   listRoutes,
   listSites,
   removeDomain,
+  removeResponseHeader,
   removeRouteRule,
   resetDomains,
   setFrontController,
@@ -27,6 +29,7 @@ import {
   setPhpPoolSettings,
   setPhpVersionSettings,
   setPrimaryDomain,
+  setResponseHeader,
   setSymlinkProtection,
   setMcpEnabled,
   status,
@@ -191,6 +194,47 @@ describe("client → command mapping", () => {
       message: "target must be a relative path",
     });
     await expect(addRouteRule("portal", "/api", "../escape.php")).rejects.toBeInstanceOf(IpcError);
+  });
+
+  it("setResponseHeader sends the site, name and value", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await setResponseHeader("api", "Access-Control-Allow-Origin", "https://app.test");
+    expect(invokeMock).toHaveBeenCalledWith("set_response_header", {
+      site: "api",
+      name: "Access-Control-Allow-Origin",
+      value: "https://app.test",
+    });
+  });
+
+  it("removeResponseHeader sends the site and name", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await removeResponseHeader("api", "Access-Control-Allow-Origin");
+    expect(invokeMock).toHaveBeenCalledWith("remove_response_header", {
+      site: "api",
+      name: "Access-Control-Allow-Origin",
+    });
+  });
+
+  it("listResponseHeaders returns the headers, and an empty list for an unexpected reply", async () => {
+    invokeMock.mockResolvedValue({
+      type: "response_headers",
+      headers: [{ site: "api", name: "X-Frame-Options", value: "DENY" }],
+    });
+    expect(await listResponseHeaders()).toEqual([
+      { site: "api", name: "X-Frame-Options", value: "DENY" },
+    ]);
+
+    invokeMock.mockResolvedValue({ type: "ok" });
+    expect(await listResponseHeaders()).toEqual([]);
+  });
+
+  it("setResponseHeader propagates a daemon rejection as an IpcError", async () => {
+    invokeMock.mockResolvedValue({
+      type: "error",
+      code: "invalid_path",
+      message: "invalid response header",
+    });
+    await expect(setResponseHeader("api", "Host", "x")).rejects.toBeInstanceOf(IpcError);
   });
 
   it("setFrontController rejects on a non-ok response", async () => {

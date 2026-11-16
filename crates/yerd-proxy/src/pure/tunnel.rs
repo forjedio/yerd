@@ -1,5 +1,99 @@
-//! Pure helpers for the tunnel origin listener: public `Host` normalization and
-//! the HTTP basic-auth share-password check.
+//! Pure helpers for the tunnel origin listener: public `Host` normalization,
+//! the HTTP basic-auth share-password check, and keeping a protected share's
+//! responses out of shared caches.
+
+use http::header::{HeaderMap, HeaderValue, CACHE_CONTROL};
+
+/// Cache-control headers that CDNs read ahead of `Cache-Control` (RFC 9213 and
+/// vendor variants), so they could otherwise re-enable edge caching.
+const SHARED_CACHE_OVERRIDES: &[&str] = &[
+    "cdn-cache-control",
+    "cloudflare-cdn-cache-control",
+    "surrogate-control",
+];
+
+/// Keep a password-protected share's response out of shared caches such as
+/// the tunnel's CDN edge, whose cache key ignores `Authorization`.
+///
+/// RFC 9111 section 3.5 lets a shared cache store a response to an
+/// authenticated request when it carries `public`, `s-maxage` or
+/// `must-revalidate`. A bare `private` forbids that whatever else is present,
+/// so it is the load-bearing part: it is added unless `no-store` or a bare
+/// `private` is already there. `public`, `s-maxage` and a field-scoped
+/// `private="..."` are dropped as well, so the header does not contradict
+/// itself and a cache that reads only the first `private` cannot miss the bare
+/// one. Directives are split on commas outside quoted strings, so a token
+/// inside a quoted field list never counts. A value that is not valid UTF-8 or
+/// leaves a quoted string open cannot be parsed safely, so the whole header
+/// becomes the strictest `private, no-store`. The CDN-specific override
+/// headers are removed. Browser caching is otherwise left as the site set it.
+pub fn keep_out_of_shared_caches(headers: &mut HeaderMap) {
+    for name in SHARED_CACHE_OVERRIDES {
+        headers.remove(*name);
+    }
+    let mut directives: Vec<String> = Vec::new();
+    for value in &headers.get_all(CACHE_CONTROL) {
+        let Some(split) = value.to_str().ok().and_then(split_directives) else {
+            headers.insert(CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+            return;
+        };
+        directives.extend(
+            split
+                .into_iter()
+                .filter(|d| !is_shared_cache_grant(d))
+                .map(str::to_owned),
+        );
+    }
+    let has_bare = |want: &str| directives.iter().any(|d| d.eq_ignore_ascii_case(want));
+    if !has_bare("no-store") && !has_bare("private") {
+        directives.push("private".to_owned());
+    }
+    let value = HeaderValue::from_str(&directives.join(", "))
+        .unwrap_or_else(|_| HeaderValue::from_static("private, no-store"));
+    headers.insert(CACHE_CONTROL, value);
+}
+
+/// Split a `Cache-Control` value into trimmed, non-empty directives at commas
+/// that sit outside a quoted string (RFC 9110 `quoted-string`, with `\`
+/// escapes). Returns `None` when a quoted string is never closed.
+fn split_directives(value: &str) -> Option<Vec<&str>> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut in_quotes = false;
+    let mut escaped = false;
+    for (i, c) in value.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if in_quotes => escaped = true,
+            '"' => in_quotes = !in_quotes,
+            ',' if !in_quotes => {
+                out.push(value.get(start..i).unwrap_or_default());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if in_quotes {
+        return None;
+    }
+    out.push(value.get(start..).unwrap_or_default());
+    Some(
+        out.into_iter()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .collect(),
+    )
+}
+
+fn is_shared_cache_grant(directive: &str) -> bool {
+    let (name, scoped) = match directive.split_once('=') {
+        Some((name, _)) => (name.trim(), true),
+        None => (directive.trim(), false),
+    };
+    name.eq_ignore_ascii_case("public")
+        || name.eq_ignore_ascii_case("s-maxage")
+        || (scoped && name.eq_ignore_ascii_case("private"))
+}
 
 /// Normalize a `Host` header value into a tunnel route key: strip a `:port`
 /// suffix and a trailing dot, and lowercase. Returns `None` for an empty value
@@ -51,8 +145,125 @@ pub fn password_matches(given: &str, expected: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keep_out_of_shared_caches_table() {
+        type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
+        let cases: &[Case<'_>] = &[
+            ("no cache-control becomes private", &[], "private"),
+            (
+                "public is swapped for private",
+                &[("cache-control", "public, max-age=60")],
+                "max-age=60, private",
+            ),
+            (
+                "s-maxage is dropped",
+                &[("cache-control", "max-age=60, S-MAXAGE=600")],
+                "max-age=60, private",
+            ),
+            (
+                "no-store is kept as is",
+                &[("cache-control", "no-store")],
+                "no-store",
+            ),
+            (
+                "a bare private is kept as is",
+                &[("cache-control", "private, max-age=60")],
+                "private, max-age=60",
+            ),
+            (
+                "a field-scoped private becomes a bare private",
+                &[("cache-control", "private=\"set-cookie\", max-age=60")],
+                "max-age=60, private",
+            ),
+            (
+                "a field-scoped private beside a bare one is dropped",
+                &[("cache-control", "private=\"set-cookie\", private")],
+                "private",
+            ),
+            (
+                "an unclosed quoted string falls back to no-store",
+                &[("cache-control", "no-cache=\"a, public, max-age=600")],
+                "private, no-store",
+            ),
+            (
+                "a dangling escape inside quotes falls back to no-store",
+                &[("cache-control", "max-age=5, no-cache=\"a\\")],
+                "private, no-store",
+            ),
+            (
+                "a private inside a quoted list does not count",
+                &[(
+                    "cache-control",
+                    "no-cache=\"a, private, b\", public, max-age=600",
+                )],
+                "no-cache=\"a, private, b\", max-age=600, private",
+            ),
+            (
+                "an escaped quote stays inside the quoted string",
+                &[("cache-control", "no-cache=\"a\\\", no-store\", max-age=5")],
+                "no-cache=\"a\\\", no-store\", max-age=5, private",
+            ),
+            (
+                "must-revalidate alone still gains private",
+                &[("cache-control", "must-revalidate, max-age=600")],
+                "must-revalidate, max-age=600, private",
+            ),
+            (
+                "repeated headers are merged",
+                &[("cache-control", "public"), ("cache-control", "max-age=5")],
+                "max-age=5, private",
+            ),
+        ];
+        for (label, given, want) in cases {
+            let mut headers = HeaderMap::new();
+            for (name, value) in *given {
+                headers.append(*name, HeaderValue::from_str(value).unwrap());
+            }
+            keep_out_of_shared_caches(&mut headers);
+            let got: Vec<&str> = headers
+                .get_all(CACHE_CONTROL)
+                .iter()
+                .map(|v| v.to_str().unwrap())
+                .collect();
+            assert_eq!(got, vec![*want], "{label}");
+        }
+    }
+
+    #[test]
+    fn keep_out_of_shared_caches_falls_back_to_no_store_for_non_utf8() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CACHE_CONTROL,
+            HeaderValue::from_bytes(b"no-store, x=\xff").unwrap(),
+        );
+        keep_out_of_shared_caches(&mut headers);
+        assert_eq!(headers.get(CACHE_CONTROL).unwrap(), "private, no-store");
+    }
+
+    #[test]
+    fn keep_out_of_shared_caches_removes_cdn_overrides() {
+        let mut headers = HeaderMap::new();
+        for name in [
+            "cdn-cache-control",
+            "Cloudflare-CDN-Cache-Control",
+            "surrogate-control",
+        ] {
+            headers.insert(
+                http::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_static("max-age=600"),
+            );
+        }
+        headers.insert("x-other", HeaderValue::from_static("kept"));
+        keep_out_of_shared_caches(&mut headers);
+        assert!(!headers.contains_key("cdn-cache-control"));
+        assert!(!headers.contains_key("cloudflare-cdn-cache-control"));
+        assert!(!headers.contains_key("surrogate-control"));
+        assert_eq!(headers.get("x-other").unwrap(), "kept");
+    }
 
     #[test]
     fn normalize_host_table() {
