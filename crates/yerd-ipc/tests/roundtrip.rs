@@ -268,6 +268,7 @@ fn encode_then_decode_response_roundtrip() {
             lan_setup_bound: Some(true),
             port_redirect_targets: None,
             lan_redirect_targets: None,
+            legacy_pf_redirect: None,
         }),
     });
     assert_response_roundtrips(Response::Diagnoses {

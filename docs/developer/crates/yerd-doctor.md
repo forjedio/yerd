@@ -65,6 +65,8 @@ Two cross-cutting invariants hold for the output:
 - **No false alarms from unknowns.** Probes typed as `Option<bool>` that come back `None` ("couldn't determine") emit **no** finding. Only an explicit `Some(false)` raises a warning. This is why the CA and resolver checks compare against `Some(false)` rather than `!= Some(true)`.
 - **Most-specific port finding wins.** `port_findings` raises `ForeignWebListener` when `report.foreign_web_listener == Some(true)` (a non-Yerd process on 80/443) and *suppresses* the generic `PortFallback` in that case - telling the user to free the port, not to elevate (which can't bind a port someone else owns). An active macOS redirect (`port_redirect == Some(true)`) likewise suppresses `PortFallback`. When a Yerd forwarder (or a legacy pf redirect) is installed but not delivering, `ForeignWebListener` is held back and `PortFallback` is raised instead, with a detail sentence saying the redirect is installed but port 80 isn't reaching Yerd.
 
+- **Un-migrated macOS machines are nudged.** `LegacyPortRedirect` fires whenever `report.legacy_pf_redirect == Some(true)` (a pf boot job or anchor file from an older Yerd is still on disk), independent of the port findings, because a working legacy redirect raises nothing else. Its remedy adds `sudo yerd elevate lan` when `lan_enabled`, since re-running `elevate ports` removes the legacy LAN redirect too.
+
 ### `plan_auto_fixes(&StatusReport) -> Vec<FixAction>`
 
 Returns the safe, unprivileged fixes the daemon may apply for this report.

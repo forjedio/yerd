@@ -144,6 +144,7 @@ fn sample_report() -> yerd_ipc::StatusReport {
             http: 8080,
             https: 8443,
         }),
+        legacy_pf_redirect: Some(true),
     }
 }
 
@@ -345,6 +346,7 @@ fn status_is_trimmed_to_what_an_agent_can_act_on() {
         "port_redirect",
         "port_redirect_targets",
         "lan_redirect_targets",
+        "legacy_pf_redirect",
         "shared_sites",
         "lan_enabled",
         "lan_ip",

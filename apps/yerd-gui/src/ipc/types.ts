@@ -303,6 +303,10 @@ export interface StatusReport {
   /** macOS: same as `port_redirect_targets` for the LAN (`dev.yerd.lan`) anchor.
    *  A stale target here black-holes other devices while LAN mode is on. */
   lan_redirect_targets?: { http: number; https: number } | null;
+  /** macOS: whether a pf redirect from an older Yerd is still installed, so
+   *  80/443 still go through pf instead of the launchd port forwarder. Omitted
+   *  when not macOS or undeterminable. */
+  legacy_pf_redirect?: boolean | null;
 }
 
 /** One apex-shadow relationship: `site`'s apex is claimed by `shadowed_by`. */
@@ -336,6 +340,7 @@ export type DiagnosisCode =
   | "domain_shadowed"
   | "port_redirect_stale"
   | "lan_redirect_stale"
+  | "legacy_port_redirect"
   | "all_good";
 
 export interface Diagnosis {

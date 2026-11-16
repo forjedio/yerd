@@ -66,6 +66,14 @@ pub trait PortRedirector {
     fn lan_redirect_targets(&self) -> Option<(u16, u16)> {
         None
     }
+
+    /// Whether a pf redirect installed by an older Yerd is still on disk (its
+    /// boot job or anchor file, for either the loopback or LAN scope), so 80/443
+    /// still go through pf rather than the launchd port forwarder. `None` = not
+    /// applicable on this OS (only macOS ever used pf).
+    fn legacy_pf_redirect(&self) -> Option<bool> {
+        None
+    }
 }
 
 /// Returns `true` iff a TCP connection to `127.0.0.1:port` succeeds within

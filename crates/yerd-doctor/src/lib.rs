@@ -60,6 +60,7 @@ pub fn diagnose(
     let mut out = Vec::new();
 
     out.extend(port_findings(report));
+    out.extend(legacy_redirect_finding(report));
     out.extend(trust_findings(report));
     out.extend(php_state_findings(report));
     out.extend(service_findings(report));
@@ -521,6 +522,32 @@ fn lan_redirect_stale_finding(report: &StatusReport) -> Option<Diagnosis> {
     ))
 }
 
+/// Warn when a pf redirect from an older Yerd is still installed on macOS. It
+/// may still work, so nothing else flags it, but other pf users (container
+/// tools, Internet Sharing) can break it and it keeps iCloud Private Relay from
+/// working. Re-running `elevate ports` removes it and installs the launchd
+/// forwarder; that also removes a legacy LAN redirect, so LAN users need
+/// `elevate lan` afterwards.
+fn legacy_redirect_finding(report: &StatusReport) -> Option<Diagnosis> {
+    if report.legacy_pf_redirect != Some(true) {
+        return None;
+    }
+    let remedy = if report.lan_enabled {
+        "sudo yerd elevate ports, then sudo yerd elevate lan"
+    } else {
+        "sudo yerd elevate ports"
+    };
+    Some(warn(
+        DiagnosisCode::LegacyPortRedirect,
+        "Old pf port redirect still installed",
+        "Ports 80/443 still go through the pf redirect an older Yerd installed. OrbStack, \
+         Docker or Internet Sharing can break it, and it stops iCloud Private Relay from \
+         working. Re-run elevate to switch to the launchd port forwarder."
+            .to_owned(),
+        remedy,
+    ))
+}
+
 /// Remediation for the privileged-ports-not-bound warning. The loopback probe
 /// this warning is gated on measures `elevate ports`, so that is always the fix.
 /// On macOS with LAN mode on, other devices additionally need the separate
@@ -657,6 +684,7 @@ mod tests {
             lan_setup_bound: None,
             port_redirect_targets: None,
             lan_redirect_targets: None,
+            legacy_pf_redirect: None,
         }
     }
 
@@ -959,6 +987,40 @@ mod tests {
     /// The exact M2 transition state: host loopback anchor already matches the
     /// bound rootless ports (so PortRedirectStale/PortFallback stay silent), but
     /// the LAN identity anchor still points 80/443 at themselves.
+    #[test]
+    fn legacy_pf_redirect_warns_with_scope_aware_remedy() {
+        let cases = [
+            (None, false, None),
+            (Some(false), true, None),
+            (Some(true), false, Some("sudo yerd elevate ports")),
+            (
+                Some(true),
+                true,
+                Some("sudo yerd elevate ports, then sudo yerd elevate lan"),
+            ),
+        ];
+        for (legacy, lan_enabled, want) in cases {
+            let mut r = healthy();
+            r.legacy_pf_redirect = legacy;
+            r.lan_enabled = lan_enabled;
+            let ds = diagnose(&r, None, &[]);
+            let got = ds
+                .iter()
+                .find(|d| d.code == DiagnosisCode::LegacyPortRedirect)
+                .map(|d| (d.severity, d.remedy.as_deref()));
+            assert_eq!(
+                got,
+                want.map(|remedy| (Severity::Warn, Some(remedy))),
+                "legacy={legacy:?} lan={lan_enabled}"
+            );
+            assert_eq!(
+                codes(&ds).contains(&DiagnosisCode::AllGood),
+                want.is_none(),
+                "legacy={legacy:?} lan={lan_enabled}"
+            );
+        }
+    }
+
     #[test]
     fn lan_identity_anchor_warns_only_lan_stale() {
         let mut r = rootless_fallback();

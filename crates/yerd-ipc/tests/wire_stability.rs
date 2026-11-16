@@ -1078,6 +1078,7 @@ fn response_status_byte_shape() {
             lan_setup_bound: None,
             port_redirect_targets: None,
             lan_redirect_targets: None,
+            legacy_pf_redirect: None,
         }),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -1130,6 +1131,18 @@ fn status_redirect_targets_appear_only_when_some() {
     report.lan_redirect_targets = None;
     let s = serde_json::to_string(&report).unwrap();
     assert!(!s.contains("redirect_targets"), "{s}");
+}
+
+#[test]
+fn status_legacy_pf_redirect_appears_only_when_some() {
+    let mut report = sample_status_report();
+    report.legacy_pf_redirect = Some(true);
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(s.contains(r#""legacy_pf_redirect":true"#), "{s}");
+
+    report.legacy_pf_redirect = None;
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(!s.contains("legacy_pf_redirect"), "{s}");
 }
 
 #[test]
@@ -1213,6 +1226,7 @@ fn sample_status_report() -> StatusReport {
         lan_setup_bound: None,
         port_redirect_targets: None,
         lan_redirect_targets: None,
+        legacy_pf_redirect: None,
     }
 }
 
@@ -1360,6 +1374,10 @@ fn diagnosis_code_each_variant_byte_shape() {
         (DiagnosisCode::DomainShadowed, r#""domain_shadowed""#),
         (DiagnosisCode::PortRedirectStale, r#""port_redirect_stale""#),
         (DiagnosisCode::LanRedirectStale, r#""lan_redirect_stale""#),
+        (
+            DiagnosisCode::LegacyPortRedirect,
+            r#""legacy_port_redirect""#,
+        ),
         (
             DiagnosisCode::ServiceOverrideInvalid,
             r#""service_override_invalid""#,

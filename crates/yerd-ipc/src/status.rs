@@ -178,6 +178,12 @@ pub struct StatusReport {
     /// mode is on. `None` = not installed, unreadable, or not macOS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lan_redirect_targets: Option<PortRedirectTargets>,
+    /// macOS: whether a pf redirect installed by an older Yerd is still on disk,
+    /// so 80/443 still go through pf instead of the launchd port forwarder.
+    /// `None` = not macOS or undeterminable. `#[serde(default,
+    /// skip_serializing_if)]` keeps the wire additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_pf_redirect: Option<bool>,
 }
 
 /// Destination ports `(http, https)` an installed macOS port forwarder (or
@@ -688,6 +694,12 @@ pub enum DiagnosisCode {
     /// mode is on. Remedy: `sudo yerd elevate lan` (restart the daemon first if it
     /// still holds a privileged port). See [`StatusReport::lan_redirect_targets`].
     LanRedirectStale,
+    /// macOS: ports 80/443 still go through the pf redirect an older Yerd
+    /// installed, which other pf users can break and which keeps iCloud Private
+    /// Relay from working. Remedy: `sudo yerd elevate ports` (and `sudo yerd
+    /// elevate lan` when LAN mode is on) to switch to the launchd port
+    /// forwarder. See [`StatusReport::legacy_pf_redirect`].
+    LegacyPortRedirect,
     /// A hand-edited service override file (`conf.d/50-local.<ext>`, which Yerd
     /// never rewrites) names a directive Yerd manages itself, or carries a line
     /// the engine's option-file grammar won't parse. Remedy: edit the file, then

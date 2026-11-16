@@ -821,6 +821,19 @@ impl PortRedirector for MacosPortRedirector {
             Path::new(pf_anchor::LAN_ANCHOR_PATH),
         )
     }
+
+    fn legacy_pf_redirect(&self) -> Option<bool> {
+        Some(any_path_exists(&[
+            Path::new(pf_anchor::PLIST_PATH),
+            Path::new(pf_anchor::LAN_PLIST_PATH),
+            Path::new(pf_anchor::ANCHOR_PATH),
+            Path::new(pf_anchor::LAN_ANCHOR_PATH),
+        ]))
+    }
+}
+
+fn any_path_exists(paths: &[&Path]) -> bool {
+    paths.iter().any(|path| path.exists())
 }
 
 /// Forwarder targets when either forwarder plist exists, otherwise the legacy
@@ -1268,6 +1281,17 @@ rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 8443\n
 
         std::fs::write(&https, "garbage").unwrap();
         assert_eq!(forwarder_targets_at(&http, &https), None);
+    }
+
+    #[test]
+    fn any_path_exists_detects_a_single_legacy_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let plist = dir.path().join("dev.yerd.pf.plist");
+        let anchor = dir.path().join("dev.yerd.lan");
+        assert!(!any_path_exists(&[&plist, &anchor]));
+        std::fs::write(&anchor, LEGACY_ANCHOR).unwrap();
+        assert!(any_path_exists(&[&plist, &anchor]));
+        assert!(!any_path_exists(&[]));
     }
 
     /// A missing or garbage anchor file collapses to `None`, never a false read.
