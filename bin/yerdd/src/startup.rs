@@ -382,6 +382,7 @@ pub async fn bring_up_with_dirs(
         tunnel_routes: Arc::new(RwLock::new(std::collections::HashMap::new())),
         tunnel_routes_rebuild: Mutex::new(()),
         share_warnings: Mutex::new(std::collections::HashMap::new()),
+        named_stop_epoch: std::sync::atomic::AtomicU64::new(0),
         tunnel_metrics_addr: Arc::new(crate::tunnel::pick_metrics_addr),
         mail_store,
         mail: crate::state::MailRuntime {

@@ -388,8 +388,16 @@ async function doDisableSite(site: string): Promise<void> {
 async function doStartNamed(): Promise<void> {
   busy.value = "named";
   try {
-    applyTunnelStatus(await startNamedTunnel());
-    toast.success("Tunnel started");
+    const r = await startNamedTunnel();
+    applyTunnelStatus(r);
+    const entry = r.tunnels.find((t) => t.kind === "named");
+    if (entry?.state === "running") {
+      toast.success("Tunnel online");
+    } else if (entry?.state === "failed") {
+      toast.info("Tunnel retrying", entry.last_error ?? "It keeps retrying in the background");
+    } else {
+      toast.info("Tunnel connecting", "It shows as online once Cloudflare's edge is reached");
+    }
   } catch (e) {
     toast.error("Couldn't start the tunnel", (e as IpcError).message);
   } finally {

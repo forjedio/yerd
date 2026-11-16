@@ -55,6 +55,9 @@ const READINESS_GAP: Duration = Duration::from_millis(150);
 /// Interval between liveness and `/ready` checks once a tunnel is running.
 pub const MONITOR_INTERVAL: Duration = Duration::from_secs(2);
 
+/// How much of a log's end is searched for the last error line on a crash.
+const ERROR_TAIL_BYTES: u64 = 64 * 1024;
+
 /// The env var `cloudflared` reads its metrics server address from.
 const METRICS_ENV: &str = "TUNNEL_METRICS";
 
@@ -548,7 +551,9 @@ where
     /// Stop the tunnel for `site`: SIGTERM, wait up to the stop grace, then
     /// SIGKILL, drop the instance, and remove its pidfile. No-op if there is
     /// none. A child that already exited, or vanished before the signal
-    /// landed (`ESRCH`), counts as stopped. Bounded by the stop grace.
+    /// landed (`ESRCH`), counts as stopped. Bounded by the stop grace. When
+    /// signalling fails the pidfile is kept, so the next daemon start can
+    /// still reap a child that may be running.
     ///
     /// # Errors
     ///
@@ -557,19 +562,16 @@ where
         let Some(mut inst) = self.instances.remove(site) else {
             return Ok(());
         };
+        if let Some(mut child) = inst.child.take() {
+            if !matches!(child.try_wait(), Ok(Some(_))) {
+                match child.kill(KillSignal::Term, StopProtocol::GroupTerm).await {
+                    Ok(()) => graceful_reap(&mut child, self.policy.stop_grace).await,
+                    Err(e) if yerd_supervise::is_no_such_process(&e) => {}
+                    Err(e) => return Err(TunnelError::Io(e)),
+                }
+            }
+        }
         let _ = std::fs::remove_file(&inst.pidfile);
-        let Some(mut child) = inst.child.take() else {
-            return Ok(());
-        };
-        if matches!(child.try_wait(), Ok(Some(_))) {
-            return Ok(());
-        }
-        match child.kill(KillSignal::Term, StopProtocol::GroupTerm).await {
-            Ok(()) => {}
-            Err(e) if yerd_supervise::is_no_such_process(&e) => return Ok(()),
-            Err(e) => return Err(TunnelError::Io(e)),
-        }
-        graceful_reap(&mut child, self.policy.stop_grace).await;
         Ok(())
     }
 
@@ -689,8 +691,10 @@ fn record_crash<Ch: ChildHandle>(inst: &mut Instance<Ch>, reason: ExitReason) {
 }
 
 /// `base`, followed by the last `ERR` line of `logfile` when there is one.
+/// Only the log's last [`ERROR_TAIL_BYTES`] are read, since a long-running
+/// tunnel's log can be large and this runs under the manager lock.
 fn with_log_error(base: String, logfile: &Path) -> String {
-    match last_error_line(&read_file_lossy(logfile)) {
+    match last_error_line(&read_tail_lossy(logfile, ERROR_TAIL_BYTES)) {
         Some(line) => format!("{base}: {line}"),
         None => base,
     }
@@ -764,6 +768,31 @@ fn build_cmd(
         cmd.process_group(0);
     }
     Ok(cmd)
+}
+
+/// The last `limit` bytes of a logfile as lossy UTF-8, with a leading partial
+/// line dropped when the read starts mid-file. Missing or unreadable reads as
+/// empty.
+fn read_tail_lossy(path: &Path, limit: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    let len = file.metadata().map_or(0, |m| m.len());
+    let start = len.saturating_sub(limit);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut bytes = Vec::new();
+    if file.take(limit).read_to_end(&mut bytes).is_err() {
+        return String::new();
+    }
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    if start == 0 {
+        return text;
+    }
+    text.split_once('\n')
+        .map_or_else(String::new, |(_, rest)| rest.to_owned())
 }
 
 /// Read a logfile as lossy UTF-8; a missing/unreadable file is treated as empty
@@ -1553,6 +1582,41 @@ mod tests {
             Some("could not pick a metrics address: no ports")
         );
         assert_eq!(spawner.spawn_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_failed_stop_keeps_the_pidfile_for_the_reaper() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spawner = ScriptedSpawner {
+            kill_error: Some(io::ErrorKind::PermissionDenied),
+            ..ScriptedSpawner::default()
+        };
+        let mut mgr = TunnelManager::new(spawner, FakeClock);
+        mgr.begin("app", spec(tmp.path(), "app"), TunnelKind::Named)
+            .await
+            .unwrap()
+            .unwrap();
+        let pidfile = tmp.path().join("app.pid");
+        assert!(pidfile.exists());
+
+        assert!(mgr.stop("app").await.is_err());
+
+        assert!(pidfile.exists());
+    }
+
+    #[test]
+    fn read_tail_lossy_table() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("t.log");
+        std::fs::write(&path, "first ERR a\nsecond ERR b\nthird\n").unwrap();
+        for (limit, expected) in [
+            (1024, "first ERR a\nsecond ERR b\nthird\n"),
+            (10, "third\n"),
+            (3, ""),
+        ] {
+            assert_eq!(read_tail_lossy(&path, limit), expected, "{limit}");
+        }
+        assert_eq!(read_tail_lossy(&tmp.path().join("missing"), 10), "");
     }
 
     #[test]

@@ -225,8 +225,8 @@ password](#password-protection)) while a site is shared.
 WordPress builds links from its stored `home` and `siteurl` options, so a site
 installed as `https://app.test` would normally redirect public visitors back to
 `.test`. For tunnelled requests to a WordPress site, Yerd injects a small
-`auto_prepend_file` script that overrides `home` and `siteurl` with the public
-URL for that request only. Local `.test` requests are unaffected, and nothing
+`auto_prepend_file` script that swaps the host in `home` and `siteurl` for the
+public one (keeping each URL's path) for that request only. Local `.test` requests are unaffected, and nothing
 in the site's files is changed.
 
 Limits of the override:
@@ -259,7 +259,9 @@ yerd tunnel password app --clear    # remove it
   effect on the next request, without restarting anything.
 - Local `.test` access is never prompted.
 - Yerd checks the password itself and strips the `Authorization` header before
-  the request reaches PHP, so it can't collide with your app's own auth.
+  the request reaches PHP. While a share is protected, your app never receives
+  an `Authorization` header from tunnelled requests, so its own Basic or bearer
+  token auth (an API, say) won't work over that share.
 - It is stored in plain text in the `0600` [config file](../reference/configuration#tunnel)
   and is never sent back to the CLI or desktop app. Treat it as a lightweight
   gate for a dev share, not as production authentication. There is no rate

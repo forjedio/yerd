@@ -54,8 +54,13 @@ fn pid_dir(dirs: &PlatformDirs) -> PathBuf {
 
 /// Reap orphans through `table`: read every `{state}/tunnel/*.pid`, SIGTERM the
 /// process group of each PID whose command line is an owned `cloudflared`, wait
-/// up to `grace` for them to exit, SIGKILL any survivor, and remove every
-/// pidfile. Blocking. Returns the PIDs that were signalled.
+/// up to `grace` for them to exit, SIGKILL any survivor whose command line is
+/// still an owned `cloudflared`, and remove every pidfile. Blocking. Returns
+/// the PIDs that were signalled.
+///
+/// The ownership recheck before SIGKILL guards against the PID being reused
+/// during the grace window; without a process handle (no pidfd on macOS) a
+/// reuse between that recheck and the signal cannot be ruled out entirely.
 pub fn reap_with(table: &dyn ProcessTable, dirs: &PlatformDirs, grace: Duration) -> Vec<u32> {
     let tunnel_dir = super::install::tunnel_dir(dirs);
     let Ok(entries) = std::fs::read_dir(pid_dir(dirs)) else {
@@ -94,7 +99,12 @@ pub fn reap_with(table: &dyn ProcessTable, dirs: &PlatformDirs, grace: Duration)
     while owned.iter().any(|pid| table.is_alive(*pid)) && Instant::now() < deadline {
         std::thread::sleep(REAP_POLL);
     }
-    for pid in owned.iter().filter(|pid| table.is_alive(**pid)) {
+    let still_owned = |pid: u32| {
+        table
+            .command_line(pid)
+            .is_some_and(|cmdline| is_owned_cloudflared(&cmdline, &tunnel_dir))
+    };
+    for pid in owned.iter().filter(|pid| still_owned(**pid)) {
         tracing::warn!(pid, "orphaned cloudflared ignored SIGTERM; killing it");
         table.signal_group(*pid, true);
     }
@@ -251,6 +261,64 @@ mod tests {
             ]
         );
         assert!(!table.is_alive(4001));
+    }
+
+    #[test]
+    fn reap_does_not_force_kill_a_reused_pid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = state_in(tmp.path()).dirs;
+        let table = FakeProcessTable::new().with_stubborn_process(4001, &owned_cmdline(&dirs));
+        write_pidfile(&dirs, "@named", "4001");
+        let reused = FakeProcessTable::new().with_stubborn_process(4001, "/usr/bin/sleep 60");
+        let swapped = SwapAfterTerm {
+            before: table,
+            after: reused,
+            termed: std::sync::atomic::AtomicBool::new(false),
+        };
+
+        reap_with(&swapped, &dirs, Duration::from_millis(150));
+
+        assert_eq!(
+            swapped.before.signals(),
+            vec![RecordedSignal {
+                pid: 4001,
+                force: false
+            }]
+        );
+        assert!(swapped.after.signals().is_empty());
+    }
+
+    /// Reads from `before` until the first SIGTERM, then from `after`, standing
+    /// in for an orphan that exits and has its PID reused during the grace.
+    struct SwapAfterTerm {
+        before: FakeProcessTable,
+        after: FakeProcessTable,
+        termed: std::sync::atomic::AtomicBool,
+    }
+
+    impl SwapAfterTerm {
+        fn current(&self) -> &FakeProcessTable {
+            if self.termed.load(std::sync::atomic::Ordering::SeqCst) {
+                &self.after
+            } else {
+                &self.before
+            }
+        }
+    }
+
+    impl ProcessTable for SwapAfterTerm {
+        fn command_line(&self, pid: u32) -> Option<String> {
+            self.current().command_line(pid)
+        }
+
+        fn signal_group(&self, pid: u32, force: bool) {
+            self.current().signal_group(pid, force);
+            self.termed.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn is_alive(&self, pid: u32) -> bool {
+            self.current().is_alive(pid)
+        }
     }
 
     #[test]

@@ -17,8 +17,11 @@ if (!isset($_SERVER['YERD_PUBLIC_URL'])) {
  * global `$wp_filter` array, which `WP_Hook::build_preinitialized_hooks`
  * turns into real hooks when WordPress boots:
  *
- *  - `option_home` / `option_siteurl` return the public URL, so links and
- *    canonical redirects use the public host instead of the local `.test` one;
+ *  - `option_home` / `option_siteurl` swap the origin (scheme, host, port) of
+ *    the stored URL for the public one and keep its path, so links and
+ *    canonical redirects use the public host instead of the local `.test` one,
+ *    and a core installed in a subdirectory (`siteurl` ending `/wp`) still
+ *    resolves;
  *  - `pre_update_option_home` / `pre_update_option_siteurl` return the old
  *    value, so saving Settings > General through the tunnel never writes the
  *    public URL into `wp_options`.
@@ -28,8 +31,9 @@ if (!isset($_SERVER['YERD_PUBLIC_URL'])) {
  */
 
 $yerd_public_url = rtrim((string) $_SERVER['YERD_PUBLIC_URL'], '/');
-$yerd_public_url_filter = static function () use ($yerd_public_url) {
-    return $yerd_public_url;
+$yerd_public_url_filter = static function ($value) use ($yerd_public_url) {
+    $path = parse_url((string) $value, PHP_URL_PATH);
+    return $yerd_public_url . (is_string($path) ? rtrim($path, '/') : '');
 };
 $yerd_keep_stored_option = static function ($value, $old_value) {
     return $old_value;

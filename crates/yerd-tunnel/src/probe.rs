@@ -121,7 +121,9 @@ mod tests {
 
     #[tokio::test]
     async fn probe_fails_when_nothing_listens() {
-        let dead: SocketAddr = (Ipv4Addr::LOCALHOST, 1).into();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let dead: SocketAddr = listener.local_addr().unwrap();
+        drop(listener);
         assert!(CloudflaredReadyProbe
             .probe(&Listen::TcpLoopback(dead))
             .await

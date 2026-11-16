@@ -17,6 +17,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -446,7 +447,8 @@ async fn site_key(
 ///
 /// Setting a hostname refreshes that site's share warnings and ensures the named
 /// tunnel is running in the background (never restarting a live one); a failure
-/// there, such as no login yet, is logged and does not fail the save. Clearing
+/// there, such as no login yet, is logged and does not fail the save, and a stop
+/// that lands before the background start runs wins over it. Clearing
 /// the last hostname stops the named tunnel, under `tunnel_mutate` so a
 /// concurrent [`ensure_running`] cannot slip in between the check and the stop.
 pub async fn set_site_hostname(
@@ -486,12 +488,14 @@ pub async fn set_site_hostname(
     super::rebuild_routes(state).await;
     if let (Some(_), Some(name)) = (hostname, &canonical) {
         super::refresh_share_warnings(state, name).await;
-        tokio::spawn(ensure_in_background(Arc::clone(state)));
+        let epoch = state.named_stop_epoch.load(Ordering::SeqCst);
+        tokio::spawn(ensure_in_background(Arc::clone(state), epoch));
         return Response::Ok;
     }
     let _guard = state.tunnel_mutate.lock().await;
     let none_left = state.config.lock().await.tunnel.sites.is_empty();
     if none_left {
+        state.named_stop_epoch.fetch_add(1, Ordering::SeqCst);
         if let Err(e) = state.tunnel_manager.lock().await.stop(NAMED_KEY).await {
             return internal(format!("could not stop the named tunnel: {e}"));
         }
@@ -545,6 +549,8 @@ pub async fn set_password(site: &str, password: Option<&str>, state: &DaemonStat
 enum EnsureFailure {
     /// The tunnel manager has shut down; expected during daemon exit.
     ShuttingDown,
+    /// The named tunnel was stopped after this start was queued.
+    Superseded,
     /// A precondition or setup step failed, with the reply for an IPC caller.
     Reply(Response),
 }
@@ -643,7 +649,8 @@ async fn named_config(state: &DaemonState) -> (Option<(String, String)>, usize) 
 /// An IPC error reply when a precondition fails, setup fails, or the daemon is
 /// shutting down.
 pub async fn ensure_running(state: &Arc<DaemonState>) -> Result<Option<u64>, Response> {
-    ensure(state).await.map_err(|failure| match failure {
+    ensure(state, None).await.map_err(|failure| match failure {
+        EnsureFailure::Superseded => internal("the named tunnel was stopped".into()),
         EnsureFailure::ShuttingDown => internal(format!(
             "could not start the named tunnel: {}",
             yerd_tunnel::TunnelError::ShuttingDown
@@ -654,9 +661,14 @@ pub async fn ensure_running(state: &Arc<DaemonState>) -> Result<Option<u64>, Res
 
 /// [`ensure_running`] for background callers: a failure is logged, never
 /// returned. Shutdown and unmet preconditions are expected and logged at debug.
-pub(super) async fn ensure_in_background(state: Arc<DaemonState>) {
-    match ensure(&state).await {
+/// `epoch` is the `named_stop_epoch` seen when the start was queued; a stop
+/// since then cancels it.
+pub(super) async fn ensure_in_background(state: Arc<DaemonState>, epoch: u64) {
+    match ensure(&state, Some(epoch)).await {
         Ok(_) => {}
+        Err(EnsureFailure::Superseded) => {
+            tracing::debug!("named tunnel not started: it was stopped after the start was queued");
+        }
         Err(EnsureFailure::ShuttingDown) => {
             tracing::debug!("named tunnel not started: daemon is shutting down");
         }
@@ -666,7 +678,10 @@ pub(super) async fn ensure_in_background(state: Arc<DaemonState>) {
     }
 }
 
-async fn ensure(state: &Arc<DaemonState>) -> Result<Option<u64>, EnsureFailure> {
+async fn ensure(
+    state: &Arc<DaemonState>,
+    epoch: Option<u64>,
+) -> Result<Option<u64>, EnsureFailure> {
     if let Some(resp) = named_blocker(cheap_facts(state).await.0) {
         return Err(EnsureFailure::Reply(resp));
     }
@@ -675,6 +690,9 @@ async fn ensure(state: &Arc<DaemonState>) -> Result<Option<u64>, EnsureFailure> 
     };
 
     let guard = state.tunnel_mutate.lock().await;
+    if epoch.is_some_and(|e| e != state.named_stop_epoch.load(Ordering::SeqCst)) {
+        return Err(EnsureFailure::Superseded);
+    }
     let (facts, tunnel) = cheap_facts(state).await;
     if let Some(resp) = named_blocker(facts) {
         return Err(EnsureFailure::Reply(resp));
@@ -726,9 +744,9 @@ pub(super) async fn resume(state: Arc<DaemonState>) {
         return;
     }
     super::refresh_named_share_warnings(&state).await;
-    match ensure(&state).await {
+    match ensure(&state, None).await {
         Ok(_) => tracing::info!("resumed named tunnel"),
-        Err(EnsureFailure::ShuttingDown) => {
+        Err(EnsureFailure::Superseded | EnsureFailure::ShuttingDown) => {
             tracing::debug!("named tunnel not resumed: daemon is shutting down");
         }
         Err(EnsureFailure::Reply(resp)) => {
@@ -765,11 +783,12 @@ pub async fn start(state: &Arc<DaemonState>) -> Response {
 ///
 /// Runtime-only: the hostnames stay configured, so the tunnel starts again on
 /// the next hostname change or daemon start. The stop runs under
-/// `tunnel_mutate`, so a background [`ensure_running`] queued before this call
-/// finishes first and cannot relaunch the tunnel after it returns.
+/// `tunnel_mutate` and bumps `named_stop_epoch`, so a background start queued
+/// before this call cannot relaunch the tunnel after it returns.
 pub async fn stop(state: &DaemonState) -> Response {
     {
         let _guard = state.tunnel_mutate.lock().await;
+        state.named_stop_epoch.fetch_add(1, Ordering::SeqCst);
         let mut mgr = state.tunnel_manager.lock().await;
         if let Err(e) = mgr.stop(NAMED_KEY).await {
             return internal(format!("could not stop named tunnel: {e}"));
@@ -819,6 +838,7 @@ pub async fn delete(name: &str, state: &DaemonState) -> Response {
         };
     }
 
+    state.named_stop_epoch.fetch_add(1, Ordering::SeqCst);
     if let Err(e) = state.tunnel_manager.lock().await.stop(NAMED_KEY).await {
         return internal(format!(
             "could not stop the named tunnel before deleting it: {e}"
@@ -1243,6 +1263,35 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(matches!(resp, Response::Tunnels { .. }), "{resp:?}");
+    }
+
+    #[tokio::test]
+    async fn a_background_start_queued_before_a_stop_is_superseded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut state = state_in(tmp.path());
+        state.tunnel_origin_port = Some(1);
+        let state = Arc::new(state);
+        install::install_binary_for_test(&state.dirs, "2026.6.1", b"#!/bin/sh\nexit 0\n");
+        super::super::refresh_cloudflared_cache_after_install(&state).await;
+        std::fs::create_dir_all(origincert(&state.dirs).parent().unwrap()).unwrap();
+        std::fs::write(origincert(&state.dirs), "cert").unwrap();
+        {
+            let mut cfg = state.config.lock().await;
+            cfg.tunnel.named.insert("t".into(), "uuid".into());
+            cfg.tunnel
+                .sites
+                .insert("blog".into(), "blog.example.com".into());
+        }
+        let epoch = state.named_stop_epoch.load(Ordering::SeqCst);
+
+        assert!(matches!(stop(&state).await, Response::Tunnels { .. }));
+        let result = ensure(&state, Some(epoch)).await;
+
+        assert!(
+            matches!(result, Err(EnsureFailure::Superseded)),
+            "{result:?}"
+        );
+        assert!(state.tunnel_manager.lock().await.snapshots().is_empty());
     }
 
     #[tokio::test]

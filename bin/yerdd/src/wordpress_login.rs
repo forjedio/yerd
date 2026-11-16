@@ -425,6 +425,7 @@ mod tests {
             "'pre_update_option_siteurl'",
             "PHP_INT_MAX",
             "'accepted_args' => 2",
+            "PHP_URL_PATH",
         ] {
             assert!(PUBLIC_URL_PREPEND_SCRIPT.contains(hook), "missing {hook}");
         }

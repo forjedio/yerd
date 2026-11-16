@@ -14,9 +14,9 @@
 //! across an `.await`. The `cloudflared` install runs under `tunnel_mutate` only.
 //!
 //! The tunnel origin listener's route map is rebuilt by [`rebuild_routes`] with
-//! a fixed lock order: `tunnel_routes_rebuild`, then the config lock (released),
-//! then the router read guard (released), then `tunnel_manager` (released),
-//! then the `tunnel_routes` write guard. The
+//! a fixed lock order: `tunnel_routes_rebuild`, then `tunnel_manager`
+//! (released), then the config lock (released), then the router read guard
+//! (released), then the `tunnel_routes` write guard. The
 //! routes lock is a leaf and is never held across another lock. tokio's `Mutex`
 //! is not reentrant, so every caller drops its own config and manager guards
 //! before calling [`rebuild_routes`].
@@ -344,11 +344,16 @@ pub(super) async fn resolve_site(state: &DaemonState, site: &str) -> Option<(Str
 }
 
 /// `StopTunnel`: tear down a site's tunnel (no-op if none) and drop its host
-/// from the route map. The instance's driver sees it gone and exits.
+/// from the route map. The instance's driver sees it gone and exits. `site` may
+/// be a site name or `.test` host; one that no longer resolves (a removed site)
+/// is used as given.
 pub async fn stop_tunnel(site: &str, state: &DaemonState) -> Response {
+    let key = canonical_site_name(state, site)
+        .await
+        .unwrap_or_else(|| site.to_owned());
     let stopped = {
         let mut mgr = state.tunnel_manager.lock().await;
-        mgr.stop(site).await
+        mgr.stop(&key).await
     };
     rebuild_routes(state).await;
     if let Err(e) = stopped {
@@ -510,9 +515,13 @@ pub(super) async fn refresh_named_share_warnings(state: &DaemonState) {
 /// config (named-tunnel hostnames and share passwords, keyed by canonical site
 /// name, see [`canonical_tunnel_config`]) plus the URLs of the live quick
 /// tunnels, then swap it in. See the module doc for the lock order.
+///
+/// A quick tunnel whose site is missing from the router snapshot the passwords
+/// were resolved against gets no route: its password would have been dropped
+/// with the site, so routing it could serve the site unprotected once the
+/// router has it back. The next rebuild restores it with its password.
 pub async fn rebuild_routes(state: &DaemonState) {
     let _rebuild = state.tunnel_routes_rebuild.lock().await;
-    let (sites, passwords) = canonical_tunnel_config(state).await;
     let quick: Vec<(String, String)> = {
         let mut mgr = state.tunnel_manager.lock().await;
         mgr.snapshots()
@@ -520,6 +529,23 @@ pub async fn rebuild_routes(state: &DaemonState) {
             .filter(|s| matches!(s.kind, TunnelKind::Quick))
             .filter_map(|s| s.url.map(|url| (s.site, url)))
             .collect()
+    };
+    let (raw_sites, raw_passwords) = {
+        let cfg = state.config.lock().await;
+        (cfg.tunnel.sites.clone(), cfg.tunnel.passwords.clone())
+    };
+    let (sites, passwords, quick) = {
+        let router = state.router.read().await;
+        let resolve = |key: &str| canonical_in(&router, key);
+        let quick: Vec<(String, String)> = quick
+            .into_iter()
+            .filter(|(site, _)| router.get(site).is_some())
+            .collect();
+        (
+            canonicalize_keys(&raw_sites, resolve),
+            canonicalize_keys(&raw_passwords, resolve),
+            quick,
+        )
     };
     let routes = build_routes(&sites, &passwords, &quick);
     *state.tunnel_routes.write().await = routes;

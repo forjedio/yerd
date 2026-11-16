@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU16};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -119,6 +119,10 @@ pub struct DaemonState {
     /// Share preflight warnings by site name, computed when a share starts and
     /// read (never recomputed) when tunnel state is reported.
     pub share_warnings: Mutex<HashMap<String, Vec<String>>>,
+    /// Bumped under `tunnel_mutate` whenever the named tunnel is stopped, so a
+    /// background start queued before the stop sees it is stale and does not
+    /// relaunch the connector.
+    pub named_stop_epoch: AtomicU64,
     /// Captured-mail store (the built-in SMTP sink writes here; IPC reads/clears
     /// it). Always present even when capture is disabled, so stored mail remains
     /// listable/clearable after the server is turned off.
