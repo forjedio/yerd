@@ -44,20 +44,32 @@
 use std::net::SocketAddr;
 use std::path::Path;
 
-/// The one-click `WordPress` login flow's per-request FastCGI overrides -
-/// present only for the one request that already proved it holds a valid,
-/// now-consumed login token (see `dispatch` in `server.rs`); absent on every
-/// other request. Bundled into one struct (rather than two parameters that
-/// must always travel together) so "a target user with no prepend script" is
-/// unrepresentable.
+/// A per-request `auto_prepend_file` override plus the custom param its
+/// script gates on. One enum (rather than parallel optional parameters) so a
+/// request can never carry two prepends, and "a gate param with no prepend
+/// script" is unrepresentable.
 #[derive(Debug, Clone, Copy)]
-pub struct AutoLoginParams<'a> {
-    /// Path to the `auto_prepend_file` bootstrap script.
-    pub prepend_script: &'a Path,
-    /// The `WordPress` login/username to sign in as, or `""` for no
-    /// preference (the prepend script falls back to the earliest-created
-    /// administrator).
-    pub target_user: &'a str,
+pub enum PrependParams<'a> {
+    /// The one-click `WordPress` login flow - present only for the one request
+    /// that already proved it holds a valid, now-consumed login token (see
+    /// `dispatch` in `server.rs`). Emits `YERD_LOGIN_USER`.
+    AutoLogin {
+        /// Path to the `auto_prepend_file` bootstrap script.
+        prepend_script: &'a Path,
+        /// The `WordPress` login/username to sign in as, or `""` for no
+        /// preference (the prepend script falls back to the earliest-created
+        /// administrator).
+        target_user: &'a str,
+    },
+    /// The tunnel's `WordPress` public-URL override - present on tunnelled
+    /// requests to a `WordPress` site. Emits `YERD_PUBLIC_URL`.
+    PublicUrl {
+        /// Path to the `auto_prepend_file` script.
+        prepend_script: &'a Path,
+        /// The public origin (`https://<public host>`) to present as `home`
+        /// and `siteurl`.
+        url: &'a str,
+    },
 }
 
 /// Build the CGI parameter pairs. `script_rel`, if given, is a real,
@@ -65,10 +77,10 @@ pub struct AutoLoginParams<'a> {
 /// doc) - `None` falls back to the root `index.php` policy. `path_info`, if
 /// given, is the decoded remainder of a `PATH_INFO`-style split resolved by
 /// `forward::script_file` and overrides the default `PATH_INFO` value (the
-/// full request path). `auto_login`, if
-/// given, adds a `PHP_VALUE: auto_prepend_file=<path>` param plus a custom
-/// `YERD_LOGIN_USER` param carrying the target username - see
-/// [`AutoLoginParams`].
+/// full request path). `prepend`, if given, adds a
+/// `PHP_VALUE: auto_prepend_file=<path>` param plus the custom param its
+/// script gates on (`YERD_LOGIN_USER` or `YERD_PUBLIC_URL`) - see
+/// [`PrependParams`].
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn build_params(
@@ -81,7 +93,7 @@ pub fn build_params(
     https: bool,
     remote_addr: SocketAddr,
     server_addr: SocketAddr,
-    auto_login: Option<AutoLoginParams<'_>>,
+    prepend: Option<PrependParams<'_>>,
 ) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut out: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(16 + headers.len());
 
@@ -135,13 +147,8 @@ pub fn build_params(
     if https {
         push(&mut out, b"HTTPS", b"on");
     }
-    if let Some(login) = auto_login {
-        push(
-            &mut out,
-            b"PHP_VALUE",
-            format!("auto_prepend_file={}", login.prepend_script.display()).as_bytes(),
-        );
-        push(&mut out, b"YERD_LOGIN_USER", login.target_user.as_bytes());
+    if let Some(prepend) = prepend {
+        push_prepend(&mut out, prepend);
     }
 
     if let Some(host) = headers
@@ -187,6 +194,25 @@ pub fn build_params(
 
 fn push(out: &mut Vec<(Vec<u8>, Vec<u8>)>, name: &[u8], value: &[u8]) {
     out.push((name.to_vec(), value.to_vec()));
+}
+
+fn push_prepend(out: &mut Vec<(Vec<u8>, Vec<u8>)>, prepend: PrependParams<'_>) {
+    let (prepend_script, gate_name, gate_value): (&Path, &[u8], &str) = match prepend {
+        PrependParams::AutoLogin {
+            prepend_script,
+            target_user,
+        } => (prepend_script, b"YERD_LOGIN_USER", target_user),
+        PrependParams::PublicUrl {
+            prepend_script,
+            url,
+        } => (prepend_script, b"YERD_PUBLIC_URL", url),
+    };
+    push(
+        out,
+        b"PHP_VALUE",
+        format!("auto_prepend_file={}", prepend_script.display()).as_bytes(),
+    );
+    push(out, gate_name, gate_value.as_bytes());
 }
 
 fn split_path_query(path_and_query: &str) -> (&str, &str) {
@@ -437,7 +463,7 @@ mod tests {
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
-            Some(AutoLoginParams {
+            Some(PrependParams::AutoLogin {
                 prepend_script: Path::new("/data/wordpress-autologin-prepend.php"),
                 target_user: "admin",
             }),
@@ -464,7 +490,7 @@ mod tests {
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
-            Some(AutoLoginParams {
+            Some(PrependParams::AutoLogin {
                 prepend_script: Path::new("/data/wordpress-autologin-prepend.php"),
                 target_user: "",
             }),
@@ -487,6 +513,35 @@ mod tests {
             None,
         );
         assert!(lookup(&pairs, b"PHP_VALUE").is_none());
+        assert!(lookup(&pairs, b"YERD_LOGIN_USER").is_none());
+        assert!(lookup(&pairs, b"YERD_PUBLIC_URL").is_none());
+    }
+
+    #[test]
+    fn public_url_adds_prepend_and_public_url_params_only() {
+        let pairs = build_params(
+            "GET",
+            "/",
+            &make_headers("app.example.com"),
+            Path::new("/srv/www/blog"),
+            None,
+            None,
+            true,
+            "127.0.0.1:1".parse().unwrap(),
+            "127.0.0.1:443".parse().unwrap(),
+            Some(PrependParams::PublicUrl {
+                prepend_script: Path::new("/data/wordpress-public-url-prepend.php"),
+                url: "https://app.example.com",
+            }),
+        );
+        assert_eq!(
+            lookup(&pairs, b"PHP_VALUE"),
+            Some(b"auto_prepend_file=/data/wordpress-public-url-prepend.php".as_slice())
+        );
+        assert_eq!(
+            lookup(&pairs, b"YERD_PUBLIC_URL"),
+            Some(b"https://app.example.com".as_slice())
+        );
         assert!(lookup(&pairs, b"YERD_LOGIN_USER").is_none());
     }
 

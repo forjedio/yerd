@@ -84,8 +84,10 @@ pub async fn run(state: Arc<DaemonState>, mut shutdown_rx: watch::Receiver<bool>
 }
 
 /// Rebuild the router from the current config and return the desired watch set
-/// (every parked root + every unresolved project root). Returns `None` if the
-/// rebuild failed (the previous router is left in place).
+/// (every parked root + every unresolved project root). The tunnel route map is
+/// then rebuilt (after the config lock is released), so a shared site that just
+/// appeared becomes routable. Returns `None` if the rebuild failed (the
+/// previous router is left in place).
 async fn recompute(state: &DaemonState) -> Option<HashSet<PathBuf>> {
     let guard = state.config.lock().await;
     let (router, wordpress_sites, laravel_sites, watch_roots) = match startup::build_routing(
@@ -107,6 +109,8 @@ async fn recompute(state: &DaemonState) -> Option<HashSet<PathBuf>> {
     for p in &guard.parked.paths {
         desired.insert(PathBuf::from(p));
     }
+    drop(guard);
+    crate::tunnel::rebuild_routes(state).await;
     Some(desired)
 }
 
@@ -136,5 +140,44 @@ fn reconcile(
                 tracing::debug!(path = %path.display(), error = %e, "watch failed (will retry)");
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::test_support::state_in;
+
+    #[tokio::test]
+    async fn recompute_routes_a_shared_site_that_appears_in_a_parked_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parked = tmp.path().join("Sites");
+        std::fs::create_dir_all(&parked).unwrap();
+        let state = state_in(tmp.path());
+        {
+            let mut cfg = state.config.lock().await;
+            cfg.parked
+                .paths
+                .insert(parked.to_string_lossy().into_owned());
+            cfg.tunnel
+                .sites
+                .insert("blog".into(), "blog.example.com".into());
+        }
+        recompute(&state).await.unwrap();
+        assert!(state.tunnel_routes.read().await.is_empty());
+
+        std::fs::create_dir_all(parked.join("blog")).unwrap();
+        recompute(&state).await.unwrap();
+
+        assert_eq!(
+            state
+                .tunnel_routes
+                .read()
+                .await
+                .get("blog.example.com")
+                .map(|r| r.site.as_str()),
+            Some("blog")
+        );
     }
 }

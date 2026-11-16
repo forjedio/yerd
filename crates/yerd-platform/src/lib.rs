@@ -1,8 +1,8 @@
 //! OS abstraction layer for Yerd.
 //!
 //! The core traits live here - [`Paths`], [`TrustStore`], [`ResolverInstaller`],
-//! [`PortBinder`], [`PortRedirector`], [`TerminalLauncher`], [`IdeLauncher`], and
-//! [`SystemOpener`] - each with a single thin
+//! [`PortBinder`], [`PortRedirector`], [`TerminalLauncher`], [`IdeLauncher`],
+//! [`SystemOpener`], and [`ProcessTable`] - each with a single thin
 //! implementation per OS selected by `#[cfg(target_os = ...)]`. macOS and Linux
 //! ship in Phase 1;
 //! Windows compiles against the [`os::unsupported`] stub that returns
@@ -35,6 +35,7 @@ pub mod opener;
 pub mod paths;
 pub mod port_binder;
 pub mod port_redirect;
+pub mod process_table;
 pub mod pure;
 pub mod resolver;
 pub mod terminal;
@@ -55,6 +56,7 @@ pub use opener::{FakeSystemOpener, SystemOpener};
 pub use paths::{Paths, PlatformDirs};
 pub use port_binder::{BoundPort, PortBinder, PortPair};
 pub use port_redirect::PortRedirector;
+pub use process_table::{FakeProcessTable, ProcessTable, RecordedSignal};
 pub use resolver::ResolverInstaller;
 pub use terminal::TerminalLauncher;
 pub use trust_store::{
@@ -62,7 +64,7 @@ pub use trust_store::{
 };
 
 pub use os::active::{
-    ActiveIdeLauncher, ActivePaths, ActivePortBinder, ActivePortRedirector,
+    ActiveIdeLauncher, ActivePaths, ActivePortBinder, ActivePortRedirector, ActiveProcessTable,
     ActiveResolverInstaller, ActiveSystemMetrics, ActiveSystemOpener, ActiveTerminalLauncher,
     ActiveTrustStore,
 };

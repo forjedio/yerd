@@ -98,6 +98,47 @@ fn build_proxy_client_tls() -> Result<Arc<yerd_proxy::ProxyClientTls>, rustls::E
     )))
 }
 
+/// Spawn the loopback tunnel origin listener `cloudflared` dials, serving it
+/// with the shared router and the public host route map
+/// ([`state::DaemonState::tunnel_routes`]). `None` when the listener failed to
+/// bind at startup or the proxy client TLS bundle could not be built; sharing
+/// is then unavailable but the daemon keeps running.
+fn spawn_tunnel_listener(
+    listener: Option<tokio::net::TcpListener>,
+    public_url_prepend: Option<std::path::PathBuf>,
+    state: &Arc<state::DaemonState>,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Option<tokio::task::JoinHandle<Result<(), yerd_proxy::ProxyError>>> {
+    let listener = listener?;
+    let client_tls = match build_proxy_client_tls() {
+        Ok(tls) => tls,
+        Err(e) => {
+            tracing::warn!(error = %e, "tunnel origin listener disabled: client TLS setup failed");
+            return None;
+        }
+    };
+    let resolver = Arc::new(DaemonBackendResolver {
+        php_manager: state.php_manager.clone(),
+        wordpress_sites: state.wordpress_sites.clone(),
+    });
+    let binding = yerd_proxy::TunnelBinding {
+        listener,
+        routes: state.tunnel_routes.clone(),
+        public_url_prepend,
+    };
+    let mut rx = shutdown_rx;
+    Some(tokio::spawn(yerd_proxy::ProxyServer::serve_tunnel(
+        binding,
+        state.router.clone(),
+        resolver,
+        state.symlink_protection.clone(),
+        client_tls,
+        async move {
+            let _ = rx.changed().await;
+        },
+    )))
+}
+
 /// Run the daemon to completion (until a shutdown signal or restart request).
 ///
 /// `main` calls this inside a tokio runtime; integration tests call
@@ -200,6 +241,15 @@ async fn run_until_shutdown(
         None
     };
 
+    let tunnel_handle = spawn_tunnel_listener(
+        daemon.tunnel_listener,
+        daemon.tunnel_wp_prepend,
+        &daemon.state,
+        shutdown_rx.clone(),
+    );
+    crate::tunnel::orphans::reap(&daemon.state.dirs).await;
+    crate::tunnel::rebuild_routes(&daemon.state).await;
+
     let redirect_probe_handle =
         spawn_redirect_probe(proxy_handle.is_some(), &daemon.state, shutdown_rx.clone());
 
@@ -267,6 +317,13 @@ async fn run_until_shutdown(
     });
 
     let _autostart = tokio::spawn(crate::services::auto_start_installed(daemon.state.clone()));
+    let _tunnel_resume = tokio::spawn(crate::tunnel::supervise::resume(
+        daemon.state.clone(),
+        daemon
+            .state
+            .named_stop_epoch
+            .load(std::sync::atomic::Ordering::SeqCst),
+    ));
 
     let _ext_install = {
         let state = daemon.state.clone();
@@ -302,6 +359,9 @@ async fn run_until_shutdown(
     }
     if let Some(proxy_handle) = proxy_handle {
         let _ = tokio::time::timeout(Duration::from_secs(10), proxy_handle).await;
+    }
+    if let Some(tunnel_handle) = tunnel_handle {
+        let _ = tokio::time::timeout(Duration::from_secs(10), tunnel_handle).await;
     }
     if let Some(redirect_probe_handle) = redirect_probe_handle {
         let _ = tokio::time::timeout(Duration::from_secs(5), redirect_probe_handle).await;

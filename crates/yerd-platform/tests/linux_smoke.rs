@@ -208,3 +208,17 @@ fn port_binder_bind_pair_falls_back_when_desired_is_occupied() {
 
     drop(sacrifice);
 }
+
+#[test]
+fn process_table_reads_this_process_command_line() {
+    use yerd_platform::{ActiveProcessTable, ProcessTable};
+    let table = ActiveProcessTable::new();
+    let pid = std::process::id();
+
+    let cmdline = table.command_line(pid).unwrap();
+
+    assert!(cmdline.contains("linux_smoke"), "{cmdline}");
+    assert!(table.is_alive(pid));
+    assert!(!table.is_alive(0));
+    assert!(!table.is_alive(1));
+}

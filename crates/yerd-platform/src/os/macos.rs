@@ -26,17 +26,23 @@ use crate::error::ops;
 use crate::ide::{DetectedIde, IdeLauncher, LaunchTarget};
 use crate::metrics::SystemMetrics;
 use crate::opener::SystemOpener;
-use crate::os::unix::{executable_in_directories, spawn_and_check, DEFAULT_STARTUP_WINDOW};
+use crate::os::unix::{
+    executable_in_directories, process_exists, signal_process_group, spawn_and_check,
+    DEFAULT_STARTUP_WINDOW,
+};
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::{
     loopback_port_reachable, loopback_redirect_reaches_proxy, PortRedirector,
 };
+use crate::process_table::ProcessTable;
 use crate::pure::ide_spec::{
     ide_cli_candidates_macos, mac_app_name_matches, mac_application_locations, spec_for, IdeSpec,
     IDE_SPECS,
 };
-use crate::pure::{launchd_ports, pem_match, pf_anchor, port_plan, ps_metrics, resolver_file};
+use crate::pure::{
+    launchd_ports, pem_match, pf_anchor, port_plan, process_signal, ps_metrics, resolver_file,
+};
 use crate::resolver::ResolverInstaller;
 use crate::terminal::TerminalLauncher;
 use crate::trust_store::{BrowserCaTrust, CaFingerprint, NssOutcome, TrustStore};
@@ -737,6 +743,45 @@ fn bind_pair_impl(
                 }),
             }
         }
+    }
+}
+
+/// macOS `ProcessTable` implementation.
+///
+/// Reads the command line with `/bin/ps -ww -o command= -p <pid>` (an absolute
+/// path, like [`MacosSystemMetrics`], and `-ww` so long arguments are never
+/// truncated), decoded by [`crate::pure::process_signal::decode_ps_command`],
+/// and signals through `killpg`. Best-effort: every failure reads as an absent
+/// process.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MacosProcessTable;
+
+impl MacosProcessTable {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl ProcessTable for MacosProcessTable {
+    fn command_line(&self, pid: u32) -> Option<String> {
+        let output = Command::new("/bin/ps")
+            .args(["-ww", "-o", "command=", "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        process_signal::decode_ps_command(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    fn signal_group(&self, pid: u32, force: bool) {
+        signal_process_group(pid, force);
+    }
+
+    fn is_alive(&self, pid: u32) -> bool {
+        process_exists(pid)
     }
 }
 

@@ -5,7 +5,10 @@ use yerd_supervise::ExitReason;
 /// Failures from supervising a `cloudflared` tunnel.
 ///
 /// Pure validation never fails today (origin/arg/config generation is total), so
-/// these are all runtime failures from the async manager (the I/O edge).
+/// these are all runtime failures from the async manager (the I/O edge). Spawn
+/// failures inside supervision are not returned as errors: the manager records
+/// them as the instance's `last_error` and retries with backoff, since a tunnel
+/// never gives up.
 #[derive(Debug, thiserror::Error)]
 pub enum TunnelError {
     /// The `cloudflared` binary has not been installed yet.
@@ -27,6 +30,11 @@ pub enum TunnelError {
         /// The site whose tunnel timed out.
         site: String,
     },
+
+    /// The manager has been shut down, so no new `cloudflared` may be spawned
+    /// (a late start would otherwise outlive supervision).
+    #[error("tunnel manager is shutting down")]
+    ShuttingDown,
 
     /// The tunnel exited repeatedly and exhausted its restart budget.
     #[error("tunnel for {site} failed permanently (last exit: {last_exit})")]

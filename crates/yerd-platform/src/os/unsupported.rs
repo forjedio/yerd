@@ -14,6 +14,7 @@ use crate::opener::SystemOpener;
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::PortRedirector;
+use crate::process_table::ProcessTable;
 use crate::resolver::ResolverInstaller;
 use crate::terminal::TerminalLauncher;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
@@ -216,6 +217,33 @@ impl SystemMetrics for UnsupportedSystemMetrics {
 
     fn load_average(&self) -> Option<[f64; 3]> {
         None
+    }
+}
+
+/// Stub `ProcessTable` for unsupported OSes. Deliberately infallible rather
+/// than returning `PlatformError::Unsupported`: the table is best-effort like
+/// `SystemMetrics`, and an OS Yerd cannot supervise processes on has no orphans
+/// to reap. Every process reads as absent and signals are no-ops.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UnsupportedProcessTable;
+
+impl UnsupportedProcessTable {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl ProcessTable for UnsupportedProcessTable {
+    fn command_line(&self, _: u32) -> Option<String> {
+        None
+    }
+
+    fn signal_group(&self, _: u32, _: bool) {}
+
+    fn is_alive(&self, _: u32) -> bool {
+        false
     }
 }
 

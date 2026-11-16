@@ -139,6 +139,9 @@ pub enum ValidateErrorReason {
     /// one ingress rule per `(site, hostname)` pair, so a duplicate hostname
     /// would shadow all but the first matching site.
     TunnelDuplicateHostname,
+    /// A `[tunnel.passwords]` value was empty, longer than 128 bytes, or
+    /// contained an ASCII control character.
+    TunnelPasswordInvalid,
     /// A `[groups]` order entry was an empty string.
     GroupNameEmpty,
     /// A `[groups]` order entry used the reserved name `Unallocated` (the GUI's
@@ -209,6 +212,9 @@ impl fmt::Display for ValidateErrorReason {
             Self::TunnelKeyInvalid => "tunnel keys and UUIDs contain unsafe characters",
             Self::TunnelMultipleNamed => "only one named tunnel is supported",
             Self::TunnelDuplicateHostname => "tunnel.sites hostnames must be unique",
+            Self::TunnelPasswordInvalid => {
+                "tunnel.passwords values must be 1 to 128 bytes with no control characters"
+            }
             Self::GroupNameEmpty => "groups.order contains an empty group name",
             Self::GroupNameReserved => "\"Unallocated\" is reserved and cannot be a group name",
             Self::GroupDuplicate => "groups.order contains a duplicate group name",
@@ -311,6 +317,7 @@ mod tests {
             ValidateErrorReason::TunnelKeyInvalid,
             ValidateErrorReason::TunnelMultipleNamed,
             ValidateErrorReason::TunnelDuplicateHostname,
+            ValidateErrorReason::TunnelPasswordInvalid,
             ValidateErrorReason::GroupNameEmpty,
             ValidateErrorReason::GroupNameReserved,
             ValidateErrorReason::GroupDuplicate,

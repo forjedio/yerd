@@ -6526,6 +6526,7 @@ version = "2.1.0-rc.1"
 dependencies = [
  "directories",
  "hex",
+ "nix",
  "pem",
  "security-framework 2.11.1",
  "serde_json",
@@ -6552,6 +6553,7 @@ dependencies = [
  "hyper-util",
  "rustls",
  "rustls-pki-types",
+ "subtle",
  "tempfile",
  "thiserror 1.0.69",
  "time",

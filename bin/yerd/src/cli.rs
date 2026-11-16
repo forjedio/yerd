@@ -657,10 +657,25 @@ pub enum TunnelAction {
         #[arg(long, conflicts_with = "hostname")]
         clear: bool,
     },
-    /// (Re)start the named tunnel, exposing every site that has a hostname set.
-    /// Requires login and a created tunnel.
+    /// Set (or clear, with `--clear`) a site's share password. Visitors to the
+    /// shared site must then sign in with HTTP basic auth (any username).
+    Password {
+        /// Site name.
+        site: String,
+        /// The share password. Required unless `--clear` is given, so forgetting
+        /// it can't silently remove protection.
+        #[arg(required_unless_present = "clear")]
+        password: Option<String>,
+        /// Remove the site's share password instead of setting one.
+        #[arg(long, conflicts_with = "password")]
+        clear: bool,
+    },
+    /// Start the named tunnel if it is not running, exposing every site that has
+    /// a hostname set. Never restarts a live tunnel. Requires login and a
+    /// created tunnel.
     Publish,
-    /// Stop the named tunnel (takes every named site offline).
+    /// Stop the named tunnel until the daemon next starts (takes every named
+    /// site offline). Clear every hostname to keep it offline across restarts.
     Unpublish,
 }
 
@@ -1036,5 +1051,46 @@ mod tests {
     #[test]
     fn exec_rejects_an_unknown_tool() {
         assert!(Cli::try_parse_from(["yerd", "exec", "artisan"]).is_err());
+    }
+
+    #[test]
+    fn tunnel_password_parses_a_value_or_clear() {
+        let cli = parse(&["yerd", "tunnel", "password", "app", "s3cret"]);
+        let Command::Tunnel {
+            action:
+                TunnelAction::Password {
+                    site,
+                    password,
+                    clear,
+                },
+        } = cli.command
+        else {
+            panic!("expected Tunnel Password");
+        };
+        assert_eq!(site, "app");
+        assert_eq!(password.as_deref(), Some("s3cret"));
+        assert!(!clear);
+
+        let cli = parse(&["yerd", "tunnel", "password", "app", "--clear"]);
+        let Command::Tunnel {
+            action: TunnelAction::Password {
+                password, clear, ..
+            },
+        } = cli.command
+        else {
+            panic!("expected Tunnel Password");
+        };
+        assert_eq!(password, None);
+        assert!(clear);
+    }
+
+    /// Omitting both the password and `--clear` must fail rather than silently
+    /// removing protection, and giving both is contradictory.
+    #[test]
+    fn tunnel_password_requires_exactly_one_of_value_or_clear() {
+        assert!(Cli::try_parse_from(["yerd", "tunnel", "password", "app"]).is_err());
+        assert!(
+            Cli::try_parse_from(["yerd", "tunnel", "password", "app", "x", "--clear"]).is_err()
+        );
     }
 }

@@ -1,11 +1,12 @@
 //! Pure scanners over `cloudflared` log output.
 //!
-//! `cloudflared` reports its assigned Quick Tunnel URL, named-tunnel edge
-//! registration, and browser-login URL as lines of human-readable log text.
-//! These hand-rolled scanners extract the bits the supervisor needs. They use no
-//! regex dependency, no slice indexing, and never panic: an absent match is
-//! simply `None`/`false`, so the supervisor stays in "starting" until the line
-//! appears (or the readiness window elapses).
+//! `cloudflared` reports its assigned Quick Tunnel URL, its errors, and the
+//! browser-login URL as lines of human-readable log text. These hand-rolled
+//! scanners extract the bits the supervisor needs. They use no regex
+//! dependency, no slice indexing, and never panic: an absent match is simply
+//! `None`, so the supervisor stays in "starting" until the line appears (or the
+//! readiness window elapses). Edge health comes from the `/ready` probe, not
+//! the log.
 
 /// Find the assigned `https://<label>.trycloudflare.com` URL in a log chunk.
 ///
@@ -24,13 +25,32 @@ pub fn find_auth_url(chunk: &str) -> Option<String> {
     })
 }
 
-/// Whether the log output so far indicates a named tunnel finished registering
-/// with the Cloudflare edge (i.e. it is now serving). Fed the whole log buffer,
-/// not a single line.
+/// The message of the last `ERR`-level line in a `cloudflared` log, with the
+/// leading timestamp and level stripped, e.g. `failed to request quick Tunnel`
+/// from `2026-01-01T00:00:00Z ERR failed to request quick Tunnel`. `None` when
+/// no line carries an `ERR` level token followed by a message.
 #[must_use]
-pub fn is_named_ready(chunk: &str) -> bool {
-    const MARKERS: [&str; 2] = ["Registered tunnel connection", "Connection registered"];
-    MARKERS.iter().any(|m| chunk.contains(m))
+pub fn last_error_line(log: &str) -> Option<String> {
+    log.lines().rev().find_map(error_message)
+}
+
+/// The text after a line's `ERR` level token, trimmed; `None` when the line has
+/// no such token or nothing follows it.
+fn error_message(line: &str) -> Option<String> {
+    let mut rest = line;
+    loop {
+        let trimmed = rest.trim_start();
+        let token_end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+        let (token, after) = trimmed.split_at(token_end);
+        if token.is_empty() {
+            return None;
+        }
+        if token == "ERR" {
+            let message = after.trim();
+            return (!message.is_empty()).then(|| message.to_owned());
+        }
+        rest = after;
+    }
 }
 
 /// Extract the first UUID (`8-4-4-4-12` lowercase hex) from text, e.g. the id
@@ -126,12 +146,28 @@ mod tests {
     }
 
     #[test]
-    fn named_ready_markers_match() {
-        assert!(is_named_ready(
-            "INF Registered tunnel connection connIndex=0 location=lhr"
-        ));
-        assert!(is_named_ready("Connection registered connIndex=1"));
-        assert!(!is_named_ready("INF Starting tunnel"));
+    fn last_error_line_table() {
+        let cases: [(&str, Option<&str>); 7] = [
+            (
+                "2026-01-01T00:00:00Z ERR failed to request quick Tunnel",
+                Some("failed to request quick Tunnel"),
+            ),
+            (
+                "ERR first\n2026-01-01T00:00:00Z INF ok\n2026-01-01T00:00:01Z ERR second error=x",
+                Some("second error=x"),
+            ),
+            (
+                "ERR only level at line start",
+                Some("only level at line start"),
+            ),
+            ("2026-01-01T00:00:00Z INF all good", None),
+            ("2026-01-01T00:00:00Z ERR   ", None),
+            ("INF ERRORS are not a level token", None),
+            ("", None),
+        ];
+        for (log, expected) in cases {
+            assert_eq!(last_error_line(log).as_deref(), expected, "{log:?}");
+        }
     }
 
     #[test]

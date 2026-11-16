@@ -737,7 +737,7 @@ export interface DatabaseSummary {
 export type TunnelKind = "quick" | "named";
 
 /** crates/yerd-ipc/src/status.rs - TunnelRunState. */
-export type TunnelRunState = "running" | "failed";
+export type TunnelRunState = "running" | "failed" | "connecting" | "reconnecting";
 
 /** crates/yerd-ipc/src/status.rs - TunnelInfo. */
 export interface TunnelInfo {
@@ -748,6 +748,12 @@ export interface TunnelInfo {
   url?: string;
   /** Configured public hostname of a Named tunnel; absent otherwise. */
   hostname?: string;
+  /** Most recent error reported for the tunnel; absent when none. */
+  last_error?: string;
+  /** Whether the shared site has a share password; absent means false. */
+  protected?: boolean;
+  /** Preflight warnings computed when the share started; absent when none. */
+  warnings?: string[];
 }
 
 /** crates/yerd-ipc/src/status.rs - CloudflaredSource. */
@@ -774,6 +780,8 @@ export interface NamedTunnelMeta {
 export interface SiteHostname {
   site: string;
   hostname: string;
+  /** Whether the site has a share password; absent means false. */
+  protected?: boolean;
 }
 
 // Narrowed aliases for the variants the views actually read.
