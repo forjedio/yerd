@@ -139,6 +139,9 @@ struct Wire {
     // v20: optional `[route_rules]` table; absent in v19 and earlier → empty.
     #[serde(default)]
     route_rules: RouteRulesSectionWire,
+    // v24: optional `[response_headers]` table; absent in v23 and earlier → empty.
+    #[serde(default)]
+    response_headers: ResponseHeadersSectionWire,
 }
 
 /// One `[[proxies]]` table: a whole-host proxy's name, upstream, and HTTPS flag.
@@ -191,6 +194,27 @@ struct RouteRulesSectionWire {
 struct RouteRuleWire {
     prefix: String,
     target: String,
+}
+
+/// The `[response_headers]` table. Both maps default to empty, so an absent
+/// table parses to [`crate::schema::ResponseHeadersSection::default`].
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResponseHeadersSectionWire {
+    #[serde(default)]
+    linked: BTreeMap<String, Vec<ResponseHeaderWire>>,
+    #[serde(default)]
+    parked: BTreeMap<String, Vec<ResponseHeaderWire>>,
+}
+
+/// One `[[response_headers.linked.<name>]]` /
+/// `[[response_headers.parked."<docroot>"]]` header (validated into
+/// `yerd_core::ResponseHeader` in `TryFrom`).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResponseHeaderWire {
+    name: String,
+    value: String,
 }
 
 /// The `[domains]` table. Every map defaults to empty, so an absent table parses
@@ -610,6 +634,10 @@ impl TryFrom<Wire> for Config {
             linked: convert_route_rules(w.route_rules.linked)?,
             parked: convert_route_rules(w.route_rules.parked)?,
         };
+        let response_headers = crate::schema::ResponseHeadersSection {
+            linked: convert_response_headers(w.response_headers.linked)?,
+            parked: convert_response_headers(w.response_headers.parked)?,
+        };
         Ok(Config {
             version: crate::CURRENT_VERSION,
             tld,
@@ -633,6 +661,7 @@ impl TryFrom<Wire> for Config {
             proxies,
             proxy_rules,
             route_rules,
+            response_headers,
         })
     }
 }
@@ -681,6 +710,23 @@ fn convert_route_rules(
                 .map(|r| Ok(yerd_core::RouteRule::new(&r.prefix, &r.target)?))
                 .collect::<Result<Vec<_>, ConfigError>>()?;
             Ok((key, rules))
+        })
+        .collect()
+}
+
+/// Convert a `[response_headers.*]` wire map into validated
+/// [`yerd_core::ResponseHeader`] lists. A bad name or value surfaces as
+/// [`ConfigError::Core`].
+fn convert_response_headers(
+    wire: BTreeMap<String, Vec<ResponseHeaderWire>>,
+) -> Result<BTreeMap<String, Vec<yerd_core::ResponseHeader>>, ConfigError> {
+    wire.into_iter()
+        .map(|(key, headers)| {
+            let headers = headers
+                .into_iter()
+                .map(|h| Ok(yerd_core::ResponseHeader::new(&h.name, &h.value)?))
+                .collect::<Result<Vec<_>, ConfigError>>()?;
+            Ok((key, headers))
         })
         .collect()
 }
@@ -885,6 +931,7 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     validate_domains(c)?;
     validate_proxies(c)?;
     validate_route_rules(c)?;
+    validate_response_headers(c)?;
     Ok(())
 }
 
@@ -961,6 +1008,33 @@ fn validate_route_rule_set(rules: &[yerd_core::RouteRule]) -> Result<(), ConfigE
     for r in rules {
         if !seen_prefix.insert(r.prefix()) {
             return Err(ve(ValidateErrorReason::RouteRuleDuplicatePrefix));
+        }
+    }
+    Ok(())
+}
+
+/// Linked `[response_headers]` keys must name a `[[linked]]` site, and each
+/// site's header names must be unique ignoring ASCII case. Parked headers key
+/// by document-root and can't be checked here, exactly as for `[route_rules]`.
+fn validate_response_headers(c: &Config) -> Result<(), ConfigError> {
+    let linked_names: BTreeSet<&str> = c.linked.iter().map(yerd_core::Site::name).collect();
+    for (site, headers) in &c.response_headers.linked {
+        if !linked_names.contains(site.as_str()) {
+            return Err(ve(ValidateErrorReason::ResponseHeaderUnknownSite));
+        }
+        validate_response_header_set(headers)?;
+    }
+    for headers in c.response_headers.parked.values() {
+        validate_response_header_set(headers)?;
+    }
+    Ok(())
+}
+
+fn validate_response_header_set(headers: &[yerd_core::ResponseHeader]) -> Result<(), ConfigError> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for h in headers {
+        if !seen.insert(h.name().to_ascii_lowercase()) {
+            return Err(ve(ValidateErrorReason::ResponseHeaderDuplicateName));
         }
     }
     Ok(())
@@ -1352,7 +1426,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 23,
+                current: 24,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -1569,7 +1643,7 @@ mod tests {
 
     #[test]
     #[allow(clippy::field_reassign_with_default)]
-    fn v22_config_migrates_to_v23_changing_only_the_version_line() {
+    fn v22_config_migrates_to_current_changing_only_the_version_line() {
         let mut c = Config::default();
         c.domains.linked.insert(
             "blog".to_owned(),
@@ -1579,15 +1653,19 @@ mod tests {
                 primary: None,
             },
         );
-        let v23 = c.to_toml().unwrap();
-        let v22 = v23.replacen("version = 23\n", "version = 22\n", 1);
+        let current = c.to_toml().unwrap();
+        let v22 = current.replacen(
+            &format!("version = {}\n", crate::CURRENT_VERSION),
+            "version = 22\n",
+            1,
+        );
         assert_ne!(
-            v22, v23,
+            v22, current,
             "the replace must actually downgrade the version line"
         );
         let migrated = Config::from_toml(&v22).unwrap();
         assert_eq!(migrated, c);
-        assert_eq!(migrated.to_toml().unwrap(), v23);
+        assert_eq!(migrated.to_toml().unwrap(), current);
     }
 
     #[test]
@@ -2126,6 +2204,98 @@ target = \"../../etc/passwd\"\n";
             matches!(Config::from_toml(s), Err(ConfigError::Core(_))),
             "a hand-edited escaping target must fail at load"
         );
+    }
+
+    #[test]
+    fn response_headers_round_trip() {
+        let mut c = Config::default();
+        c.linked.push(linked_site("app", "/srv/app"));
+        c.response_headers.linked.insert(
+            "app".to_owned(),
+            vec![
+                yerd_core::ResponseHeader::new("Access-Control-Allow-Origin", "*").unwrap(),
+                yerd_core::ResponseHeader::new("X-Frame-Options", "DENY").unwrap(),
+            ],
+        );
+        c.response_headers.parked.insert(
+            "/srv/blog".to_owned(),
+            vec![yerd_core::ResponseHeader::new("Cache-Control", "no-store").unwrap()],
+        );
+        let toml = c.to_toml().unwrap();
+        let back = Config::from_toml(&toml).unwrap();
+        assert_eq!(c, back);
+        assert_eq!(back.to_toml().unwrap(), toml);
+    }
+
+    #[test]
+    fn removing_last_response_header_returns_to_byte_identical_default() {
+        let mut c = Config::default();
+        c.response_headers
+            .linked
+            .insert("app".to_owned(), Vec::new());
+        assert_eq!(c.to_toml().unwrap(), Config::default().to_toml().unwrap());
+    }
+
+    #[test]
+    fn validate_rejects_unknown_response_header_site() {
+        let mut c = Config::default();
+        c.response_headers.linked.insert(
+            "ghost".to_owned(),
+            vec![yerd_core::ResponseHeader::new("X-A", "1").unwrap()],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::ResponseHeaderUnknownSite,
+            }) => {}
+            other => panic!("expected ResponseHeaderUnknownSite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_response_header_name_ignoring_case() {
+        let mut c = Config::default();
+        c.linked.push(linked_site("app", "/srv/app"));
+        c.response_headers.parked.insert(
+            "/srv/blog".to_owned(),
+            vec![
+                yerd_core::ResponseHeader::new("X-A", "1").unwrap(),
+                yerd_core::ResponseHeader::new("x-a", "2").unwrap(),
+            ],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::ResponseHeaderDuplicateName,
+            }) => {}
+            other => panic!("expected ResponseHeaderDuplicateName, got {other:?}"),
+        }
+        c.response_headers.parked.clear();
+        c.response_headers.linked.insert(
+            "app".to_owned(),
+            vec![
+                yerd_core::ResponseHeader::new("Access-Control-Allow-Origin", "*").unwrap(),
+                yerd_core::ResponseHeader::new("ACCESS-CONTROL-ALLOW-ORIGIN", "x").unwrap(),
+            ],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::ResponseHeaderDuplicateName,
+            }) => {}
+            other => panic!("expected ResponseHeaderDuplicateName, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_rejects_bad_response_headers() {
+        for entry in [
+            "name = \"Content-Length\"\nvalue = \"5\"\n",
+            "name = \"X-A\"\nvalue = \"a\\u0001b\"\n",
+        ] {
+            let s = format!("version = 24\n[[response_headers.linked.app]]\n{entry}");
+            assert!(
+                matches!(Config::from_toml(&s), Err(ConfigError::Core(_))),
+                "a hand-edited invalid header must fail at load: {entry}"
+            );
+        }
     }
 
     #[test]

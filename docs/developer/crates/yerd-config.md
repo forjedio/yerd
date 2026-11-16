@@ -120,6 +120,7 @@ pub struct Config {
     pub proxies: Vec<ProxySite>,
     pub proxy_rules: ProxyRulesSection,
     pub route_rules: RouteRulesSection,
+    pub response_headers: ResponseHeadersSection,
     // ... plus the optional tunnel / groups / update_channel / LAN state.
 }
 ```

@@ -180,6 +180,12 @@ pub enum ValidateErrorReason {
     /// A `[route_rules.linked.<name>]` key names a linked site that does not
     /// exist; the rule would silently never apply.
     RouteRuleUnknownSite,
+    /// Two `[response_headers]` entries for the same site share a header name
+    /// (compared case-insensitively), so one would silently replace the other.
+    ResponseHeaderDuplicateName,
+    /// A `[response_headers.linked.<name>]` key names a linked site that does
+    /// not exist; the headers would silently never apply.
+    ResponseHeaderUnknownSite,
 }
 
 impl fmt::Display for ValidateErrorReason {
@@ -239,6 +245,12 @@ impl fmt::Display for ValidateErrorReason {
             }
             Self::RouteRuleUnknownSite => {
                 "a routing rule references a linked site that does not exist"
+            }
+            Self::ResponseHeaderDuplicateName => {
+                "two response headers for the same site share a name"
+            }
+            Self::ResponseHeaderUnknownSite => {
+                "a response header references a linked site that does not exist"
             }
         };
         f.write_str(msg)

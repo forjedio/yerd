@@ -215,6 +215,7 @@ export default withMermaid({
             { text: 'Domains', link: '/reference/cli/domains' },
             { text: 'Proxies', link: '/reference/cli/proxies' },
             { text: 'Routing rules', link: '/reference/cli/routes' },
+            { text: 'Response headers', link: '/reference/cli/headers' },
             { text: 'HTTPS', link: '/reference/cli/https' },
             { text: 'PHP', link: '/reference/cli/php' },
             { text: 'Exec and Which', link: '/reference/cli/exec' },

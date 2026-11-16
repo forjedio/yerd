@@ -337,6 +337,103 @@ so reaching the route rule would fail the request"
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
 }
 
+/// Site response headers never touch a path-into-site proxy rule's upstream
+/// response, while the site's own responses outside the prefix carry them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proxy_rule_upstream_response_is_not_given_site_headers() {
+    yerd_proxy::tls::init_crypto_once();
+
+    let (up_tx, up_rx) = oneshot::channel::<()>();
+    let upstream = spawn_upstream(up_rx).await;
+    let upstream_url = format!("http://127.0.0.1:{}", upstream.port());
+
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.php"), b"<?php /* app */").unwrap();
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+
+    let cfg = RouterConfig::with_tld(Tld::new("test").unwrap());
+    let mut router = SiteRouter::new(cfg);
+    router
+        .insert(Site::linked("app", docroot.path(), PhpVersion::new(8, 3)).unwrap())
+        .unwrap();
+    router.set_proxy_rules(
+        "app",
+        vec![ProxyRule::new("/ws", UpstreamTarget::from_url_str(&upstream_url).unwrap()).unwrap()],
+    );
+    router.set_response_headers(
+        "app",
+        vec![yerd_core::ResponseHeader::new("X-Site-Header", "on").unwrap()],
+    );
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+
+    let resolver = Arc::new(StaticResolver {
+        backend: Backend::PhpFpmTcp {
+            addr: "127.0.0.1:1".parse().unwrap(),
+        },
+    });
+
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
+            proxy_listener,
+            None,
+            router,
+            resolver,
+            Arc::new(NoLoginTokens),
+            None,
+            Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
+            false,
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
+        .await;
+    });
+
+    let (status, headers) = client_get_headers(proxy_addr, "app.test", "/ws/x").await;
+    assert_eq!(status, 200);
+    assert!(
+        headers.get("x-site-header").is_none(),
+        "the proxy-rule upstream response must be left untouched"
+    );
+
+    let (status, headers) = client_get_headers(proxy_addr, "app.test", "/").await;
+    assert_eq!(status, 500);
+    assert_eq!(
+        headers.get("x-site-header").map(|v| v.to_str().unwrap()),
+        Some("on")
+    );
+
+    let _ = tx_shutdown.send(());
+    let _ = up_tx.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
+async fn client_get_headers(addr: SocketAddr, host: &str, path: &str) -> (u16, hyper::HeaderMap) {
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake::<_, Empty<Bytes>>(io)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let req = Request::builder()
+        .method("GET")
+        .uri(path)
+        .header("Host", host)
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+    let resp = sender.send_request(req).await.unwrap();
+    let status = resp.status().as_u16();
+    let headers = resp.headers().clone();
+    let _ = resp.into_body().collect().await;
+    (status, headers)
+}
+
 async fn client_post(addr: SocketAddr, host: &str, path: &str, body: &str) -> (u16, String) {
     use http_body_util::Full;
     let stream = TcpStream::connect(addr).await.unwrap();

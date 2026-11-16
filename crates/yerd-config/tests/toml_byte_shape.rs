@@ -12,7 +12,7 @@
 use std::collections::BTreeSet;
 
 use yerd_config::{Config, ServiceInstance, SiteOverride};
-use yerd_core::{PhpVersion, RouteRule, Site, Tld};
+use yerd_core::{PhpVersion, ResponseHeader, RouteRule, Site, Tld};
 
 fn populated() -> Config {
     let mut c = Config::default();
@@ -54,8 +54,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 23\n"),
-        "expected first line `version = 23`; got: {s}"
+        s.starts_with("version = 24\n"),
+        "expected first line `version = 24`; got: {s}"
     );
 }
 
@@ -612,6 +612,55 @@ fn populated_route_rules_section_emits_after_defaults_and_round_trips() {
     assert!(
         s.contains("target = \"api/index.php\""),
         "the target must emit as a plain relative path; got: {s}"
+    );
+
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
+    c.validate().unwrap();
+}
+
+#[test]
+fn default_config_emits_no_response_headers_table() {
+    let s = Config::default().to_toml().unwrap();
+    assert!(
+        !s.contains("[response_headers"),
+        "default config must omit the response_headers table; got: {s}"
+    );
+}
+
+#[test]
+fn populated_response_headers_section_emits_after_route_rules_and_round_trips() {
+    let mut c = Config::default();
+    c.linked
+        .push(Site::linked("api", "docroot", PhpVersion::new(8, 3)).unwrap());
+    c.route_rules.linked.insert(
+        "api".to_string(),
+        vec![RouteRule::new("/api", "api/index.php").unwrap()],
+    );
+    c.response_headers.linked.insert(
+        "api".to_string(),
+        vec![ResponseHeader::new("Access-Control-Allow-Origin", "https://app.test").unwrap()],
+    );
+    c.response_headers.parked.insert(
+        "docroot-a".to_string(),
+        vec![ResponseHeader::new("X-Frame-Options", "DENY").unwrap()],
+    );
+    let s = c.to_toml().unwrap();
+
+    let php_at = s.find("\n[php]\n").expect("[php] table present");
+    let routes_at = s
+        .find("[route_rules")
+        .expect("[route_rules] region present");
+    let headers_at = s
+        .find("[response_headers")
+        .expect("[response_headers] region present");
+    assert!(
+        php_at < headers_at && routes_at < headers_at,
+        "[response_headers] must trail [php] and [route_rules]; got: {s}"
+    );
+    assert!(
+        s.contains("name = \"Access-Control-Allow-Origin\"\nvalue = \"https://app.test\""),
+        "a header must emit as a name/value pair; got: {s}"
     );
 
     let back = Config::from_toml(&s).unwrap();

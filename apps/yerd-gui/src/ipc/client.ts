@@ -35,6 +35,7 @@ import type {
   ProxyEntry,
   ProxyRuleEntry,
   Response,
+  ResponseHeaderEntry,
   RouteRuleEntry,
   ServiceAvailability,
   ServiceStatus,
@@ -287,6 +288,24 @@ export async function addRouteRule(site: string, prefix: string, target: string)
 
 export async function removeRouteRule(site: string, prefix: string): Promise<void> {
   ensureOk(await call<Response>("remove_route_rule", { site, prefix }));
+}
+
+// ── response headers ─────────────────────────────────────────────────────────
+
+/** Every site's custom response headers, in each site's configured order. */
+export async function listResponseHeaders(): Promise<ResponseHeaderEntry[]> {
+  const r = ensureOk(await call<Response>("list_response_headers"));
+  return r.type === "response_headers" ? r.headers : [];
+}
+
+/** Set a custom response header on a site, replacing any entry with the same
+ *  name. The daemon validates the name and value. */
+export async function setResponseHeader(site: string, name: string, value: string): Promise<void> {
+  ensureOk(await call<Response>("set_response_header", { site, name, value }));
+}
+
+export async function removeResponseHeader(site: string, name: string): Promise<void> {
+  ensureOk(await call<Response>("remove_response_header", { site, name }));
 }
 
 // ── php versions ───────────────────────────────────────────────────────────

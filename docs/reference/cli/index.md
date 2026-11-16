@@ -38,6 +38,7 @@ The exceptions are the two passthrough commands. Anything after [`coverage`](./c
 | [Domains](./domains) | `domain list`, `domain add`, `domain remove`, `domain primary`, `domain reset` |
 | [Proxies](./proxies) | `proxy add`, `proxy remove`, `proxy list` |
 | [Routing rules](./routes) | `route add`, `route remove`, `route list` |
+| [Response headers](./headers) | `header set`, `header remove`, `header list` |
 | [HTTPS](./https) | `secure`, `unsecure` |
 | [PHP](./php) | `use`, `install php`, `uninstall php`, `update php`, `restart php`, `list php`, `list parked`, `set php`, `unset php`, `php ext add`/`remove`/`list`, `php ini set`/`unset`/`list`, `php pool set`/`unset`/`list`, [`coverage`](./coverage) |
 | [Exec and Which](./exec) | `exec php`, `exec composer`, `which php` |

@@ -170,7 +170,9 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         | Request::RemoveProxy { .. }
         | Request::RemoveProxyRule { .. }
         | Request::AddRouteRule { .. }
-        | Request::RemoveRouteRule { .. } => handle_mutation(req, state).await,
+        | Request::RemoveRouteRule { .. }
+        | Request::SetResponseHeader { .. }
+        | Request::RemoveResponseHeader { .. } => handle_mutation(req, state).await,
         Request::AddProxy { ref url, .. } | Request::AddProxyRule { ref url, .. } => {
             if is_self_forward(url, &[state.http.bound, state.https.bound]) {
                 Response::Error {
@@ -184,6 +186,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         }
         Request::ListProxies => list_proxies(state).await,
         Request::ListRoutes => list_routes(state).await,
+        Request::ListResponseHeaders => list_response_headers(state).await,
         Request::ListGroups => {
             let cfg = state.config.lock().await;
             Response::Groups {
@@ -2821,6 +2824,38 @@ async fn list_routes(state: &DaemonState) -> Response {
         }
     }
     Response::Routes { rules }
+}
+
+/// Reply to [`Request::ListResponseHeaders`]: every per-site custom response
+/// header. Parked docroots resolve to the current site name exactly as
+/// [`list_routes`] does, falling back to the raw key.
+async fn list_response_headers(state: &DaemonState) -> Response {
+    let cfg = state.config.lock().await;
+    let router = state.router.read().await;
+    let mut headers = Vec::new();
+    for (site, site_headers) in &cfg.response_headers.linked {
+        for h in site_headers {
+            headers.push(yerd_ipc::ResponseHeaderEntry {
+                site: site.clone(),
+                name: h.name().to_owned(),
+                value: h.value().to_owned(),
+            });
+        }
+    }
+    for (docroot, site_headers) in &cfg.response_headers.parked {
+        let site_name = router
+            .iter()
+            .find(|s| s.document_root().to_string_lossy().as_ref() == docroot.as_str())
+            .map_or_else(|| docroot.clone(), |s| s.name().to_owned());
+        for h in site_headers {
+            headers.push(yerd_ipc::ResponseHeaderEntry {
+                site: site_name.clone(),
+                name: h.name().to_owned(),
+                value: h.value().to_owned(),
+            });
+        }
+    }
+    Response::ResponseHeaders { headers }
 }
 
 /// Apply a group mutation (create/delete/reorder/assign). Groups are a

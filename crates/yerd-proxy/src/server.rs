@@ -16,7 +16,9 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio_rustls::TlsAcceptor;
-use yerd_core::{match_rule, Route, RouteRule, Site, SiteKind, SiteRouter, UpstreamTarget};
+use yerd_core::{
+    match_rule, ResponseHeader, Route, RouteRule, Site, SiteKind, SiteRouter, UpstreamTarget,
+};
 
 use crate::backend::Backend;
 use crate::client_tls::ProxyClientTls;
@@ -28,6 +30,7 @@ use crate::forward::{
 use crate::pure::cgi_params;
 use crate::pure::query;
 use crate::pure::redirect::{build_redirect_uri, directory_redirect_location};
+use crate::pure::response_headers;
 use crate::pure::route_rules::match_route;
 use crate::pure::try_files::is_php_source;
 use crate::pure::unbound::{self, PickerSite};
@@ -344,17 +347,27 @@ async fn handle_request<R: BackendResolver, L: LoginTokenConsumer>(
     .await
     {
         Ok(resp) => Ok(resp),
-        Err(e) => {
-            tracing::warn!(
-                target: "yerd_proxy::request",
-                error = %e,
-                "proxy request failed",
-            );
-            Ok(internal_error_response())
-        }
+        Err(e) => Ok(failed_request_response(&e)),
     }
 }
 
+/// The `500` answering a request whose handling failed, logged once here.
+fn failed_request_response(e: &ProxyError) -> Response<BoxBody> {
+    tracing::warn!(
+        target: "yerd_proxy::request",
+        error = %e,
+        "proxy request failed",
+    );
+    internal_error_response()
+}
+
+/// Route one request and produce its response.
+///
+/// For a PHP site this is the single chokepoint for the site's custom response
+/// headers: every response the site branch produces, including the HTTP→HTTPS
+/// redirect and the `500` for a failed backend, passes through
+/// [`response_headers::apply`]. The one exemption is a path-prefix proxy rule,
+/// whose upstream response is returned untouched.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
     req: Request<Incoming>,
@@ -381,44 +394,47 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
 
     let https = matches!(listener, Listener::Https);
 
-    let (site, unbound, matched, route) = match resolve_request(&router, &req, &host).await? {
-        Routed::Site {
-            site,
-            unbound,
-            matched,
-            route,
-        } => (site, unbound, matched, route),
-        Routed::Proxy {
-            forward,
-            secure,
-            unbound,
-        } => {
-            if matches!(listener, Listener::Http) && !unbound {
-                if let (true, Some(port)) = (secure, redirect_port) {
-                    return https_redirect(&host, &req, port);
+    let (site, unbound, matched, route, headers) =
+        match resolve_request(&router, &req, &host).await? {
+            Routed::Site {
+                site,
+                unbound,
+                matched,
+                route,
+                headers,
+            } => (site, unbound, matched, route, headers),
+            Routed::Proxy {
+                forward,
+                secure,
+                unbound,
+            } => {
+                if matches!(listener, Listener::Http) && !unbound {
+                    if let (true, Some(port)) = (secure, redirect_port) {
+                        return https_redirect(&host, &req, port);
+                    }
                 }
+                return proxy_fwd::forward(
+                    req,
+                    &forward.target,
+                    client_tls.as_ref(),
+                    &forward.tld,
+                    peer_addr.ip(),
+                    https,
+                    &host,
+                )
+                .await;
             }
-            return proxy_fwd::forward(
-                req,
-                &forward.target,
-                client_tls.as_ref(),
-                &forward.tld,
-                peer_addr.ip(),
-                https,
-                &host,
-            )
-            .await;
-        }
-        Routed::Respond(resp) => return Ok(resp),
+            Routed::Respond(resp) => return Ok(resp),
+        };
+
+    let redirect_to = if matches!(listener, Listener::Http) && !unbound && site.secure() {
+        redirect_port
+    } else {
+        None
     };
-
-    if matches!(listener, Listener::Http) && !unbound {
-        if let (true, Some(port)) = (site.secure(), redirect_port) {
-            return https_redirect(&host, &req, port);
-        }
-    }
-
-    if let Some(forward) = matched {
+    let result = if let Some(port) = redirect_to {
+        https_redirect(&host, &req, port)
+    } else if let Some(forward) = matched {
         return proxy_fwd::forward(
             req,
             &forward.target,
@@ -429,17 +445,53 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
             &host,
         )
         .await;
-    }
+    } else {
+        serve_site(
+            req,
+            &site,
+            route.as_ref(),
+            &host,
+            resolver.as_ref(),
+            login_tokens.as_ref(),
+            login_prepend_script.as_deref(),
+            server_addr,
+            peer_addr,
+            https,
+            symlink_protection.load(Ordering::Relaxed),
+        )
+        .await
+    };
+    let mut resp = result.unwrap_or_else(|e| failed_request_response(&e));
+    response_headers::apply(&mut resp, headers.as_deref().unwrap_or_default());
+    Ok(resp)
+}
 
+/// The PHP-site half of [`dispatch`] once redirects and proxy rules are ruled
+/// out: backend resolution, upgrades, `FrankenPHP` forwarding and
+/// [`serve_php_fpm`].
+#[allow(clippy::too_many_arguments)]
+async fn serve_site<R: BackendResolver, L: LoginTokenConsumer>(
+    req: Request<Incoming>,
+    site: &Site,
+    route: Option<&RouteRule>,
+    host: &str,
+    resolver: &R,
+    login_tokens: &L,
+    login_prepend_script: Option<&std::path::Path>,
+    server_addr: SocketAddr,
+    peer_addr: SocketAddr,
+    https: bool,
+    symlink_protection: bool,
+) -> Result<Response<BoxBody>, ProxyError> {
     let served_root = site.served_root();
     let allowed_root = site.document_root().to_path_buf();
 
-    let backend = resolver.backend_for(&site).await.map_err(|e| match e {
+    let backend = resolver.backend_for(site).await.map_err(|e| match e {
         ProxyError::BackendResolver { .. }
         | ProxyError::BackendConnect { .. }
         | ProxyError::BackendProtocol { .. } => e,
         other => ProxyError::BackendResolver {
-            host: host.clone(),
+            host: host.to_owned(),
             source: Box::new(other),
         },
     })?;
@@ -457,17 +509,17 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
             serve_php_fpm(
                 req,
                 bk,
-                resolver.as_ref(),
-                &site,
-                login_tokens.as_ref(),
-                login_prepend_script.as_deref(),
+                resolver,
+                site,
+                login_tokens,
+                login_prepend_script,
                 &served_root,
                 &allowed_root,
-                route.as_ref(),
+                route,
                 server_addr,
                 peer_addr,
                 https,
-                symlink_protection.load(Ordering::Relaxed),
+                symlink_protection,
             )
             .await
         }
@@ -838,6 +890,8 @@ enum Routed {
         unbound: bool,
         matched: Option<ProxyTarget>,
         route: Option<RouteRule>,
+        /// The site's configured response headers, applied in [`dispatch`].
+        headers: Option<Arc<[ResponseHeader]>>,
     },
     /// A whole-host reverse proxy to forward to.
     Proxy {
@@ -871,6 +925,7 @@ async fn resolve_request(
             });
             let route = match_route(guard.route_rules_for(site.name()), req.uri().path()).cloned();
             return Ok(Routed::Site {
+                headers: guard.shared_response_headers(site.name()),
                 site,
                 unbound: false,
                 matched,
@@ -915,6 +970,7 @@ async fn resolve_request(
             });
             let route = match_route(guard.route_rules_for(site.name()), req.uri().path()).cloned();
             Ok(Routed::Site {
+                headers: guard.shared_response_headers(site.name()),
                 site,
                 unbound: true,
                 matched,

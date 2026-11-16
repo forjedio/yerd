@@ -8,7 +8,7 @@
 )]
 
 use yerd_config::{Config, PhpSection, Ports, ServiceInstance, SiteOverride};
-use yerd_core::{PhpVersion, RouteRule, Site, Tld};
+use yerd_core::{PhpVersion, ResponseHeader, RouteRule, Site, Tld};
 
 const POPULATED: &str = r#"
 version = 1
@@ -48,6 +48,14 @@ target = "api/index.php"
 [[route_rules.parked."docroot-a"]]
 prefix = "/"
 target = "index.html"
+
+[[response_headers.linked.api]]
+name = "Access-Control-Allow-Origin"
+value = "https://app.test"
+
+[[response_headers.parked."docroot-a"]]
+name = "X-Frame-Options"
+value = "DENY"
 "#;
 
 fn populated_expected() -> Config {
@@ -97,6 +105,14 @@ fn populated_expected() -> Config {
     c.route_rules.parked.insert(
         "docroot-a".to_string(),
         vec![RouteRule::new("/", "index.html").unwrap()],
+    );
+    c.response_headers.linked.insert(
+        "api".to_string(),
+        vec![ResponseHeader::new("Access-Control-Allow-Origin", "https://app.test").unwrap()],
+    );
+    c.response_headers.parked.insert(
+        "docroot-a".to_string(),
+        vec![ResponseHeader::new("X-Frame-Options", "DENY").unwrap()],
     );
     c
 }

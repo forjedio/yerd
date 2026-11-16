@@ -28,6 +28,7 @@ crates/yerd-proxy/src/
 │   ├── cgi_head.rs     # incremental CGI response-head parsing (streaming)
 │   ├── fcgi_codec.rs   # FastCGI record framing (encode/decode)
 │   ├── query.rs        # login-token query-string helpers (one-click WP admin)
+│   ├── response_headers.rs # apply a site's custom response headers (replace semantics)
 │   ├── route_rules.rs  # longest-prefix match of a site's routing rules
 │   ├── try_files.rs    # static-file/directory-index candidate resolution + MIME map
 │   ├── unbound.rs      # resolver-off localhost access (header / switch URL / cookie / picker)
@@ -145,6 +146,16 @@ pub fn match_route<'a>(rules: &'a [RouteRule], path: &str) -> Option<&'a RouteRu
 Longest-prefix wins, and ties cannot occur because duplicate prefixes per site are rejected when the rule is added. Callers pass the raw, case-sensitive, percent-encoded `uri.path()` with **no** normalization, exactly as `match_rule` does: an under-match (an encoded path failing to match) is acceptable for a dev tool, and the matcher never over-matches.
 
 Matching is the whole of the pure half. Whether the matched target is a PHP script or a static document is derived at the dispatch site from `try_files::is_php_source`, so this module needs to know neither.
+
+### `response_headers` - applying a site's custom headers
+
+```rust
+pub fn apply<B>(resp: &mut http::Response<B>, configured: &[ResponseHeader])
+```
+
+Each configured [`ResponseHeader`](./yerd-core#response-header) is set with `HeaderMap::insert`, which drops every existing value of that name (case-insensitively, since `HeaderName` is lowercase-normalised) and inserts the configured one: **replace** semantics, so the header appears exactly once. Only the header map is touched, so bodies keep streaming.
+
+`dispatch` is the single chokepoint that calls it. `resolve_request` takes a shared (`Arc`) handle to the site's list into `Routed::Site` while it holds the router read guard, and every response the site branch produces passes through `apply`: PHP (FastCGI and FrankenPHP), static files, directory redirects, `403`/`405`/`501`, the HTTP→HTTPS `301`, WebSocket `101`s, and the `500` built from a failed backend (the site branch turns its own error into that `500` before applying the headers). The one exemption is a path-prefix proxy rule, whose upstream response is returned untouched; whole-host proxies have no site and so no headers.
 
 ### `cgi_head` - incremental response-head parsing {#cgi_head-incremental-response-head-parsing}
 

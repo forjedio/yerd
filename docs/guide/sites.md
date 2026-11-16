@@ -421,6 +421,17 @@ A rule only applies when the request matched no real file, so assets and real di
 
 See [Routing rules](../reference/cli/routes) for the full semantics, and note this is different from a [reverse proxy path rule](./proxies), which forwards to a separate running service rather than to a file inside the site.
 
+## Response headers
+
+A site can send extra HTTP headers on every response. The common case is CORS between two local sites, a frontend on `app.test` calling a backend on `api.test`:
+
+```sh
+yerd header set api Access-Control-Allow-Origin https://app.test
+# every api.test response now carries Access-Control-Allow-Origin: https://app.test
+```
+
+A configured header replaces any same-named header the app sends, and applies to PHP responses, static files, Yerd's own error pages and redirects alike. Set headers from the **Headers** tab of the site details sidebar in the desktop app, or see [Response headers](../reference/cli/headers) for the full semantics.
+
 ## Streaming responses (SSE / Livewire `wire:stream`)
 
 Streamed responses pass straight through as PHP flushes them - server-sent events, `response()->stream()`, Livewire's `wire:stream`, and token-by-token AI output all reach the browser incrementally. There is no setting to turn on and no header to send: `X-Accel-Buffering: no` is unnecessary (Yerd consumes it rather than forwarding it), and a response that sets no `Content-Length` is sent chunked.
@@ -440,6 +451,7 @@ flush();
 
 - [PHP Versions](./php-versions) - set the global default and pin a site to a version.
 - [Routing rules](../reference/cli/routes) - nested front controllers and SPA deep links.
+- [Response headers](../reference/cli/headers) - custom headers on every response, such as CORS.
 - [HTTPS &amp; Certificates](./https) - the local CA and the `secure` flag.
 - [DNS &amp; .test Domains](./dns) - how `*.test` requests reach the daemon.
 - [Configuration Reference](../reference/configuration) - where sites and the TLD are stored.

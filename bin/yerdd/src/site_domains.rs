@@ -104,6 +104,16 @@ pub(crate) fn build(cfg: &Config, sites: Vec<Site>) -> SiteRouter {
         if let Some(route_rules) = route_rules {
             router.set_route_rules(plan.site.name(), route_rules.clone());
         }
+        let response_headers = match plan.site.kind() {
+            yerd_core::SiteKind::Linked => cfg.response_headers.linked.get(plan.site.name()),
+            yerd_core::SiteKind::Parked => cfg
+                .response_headers
+                .parked
+                .get(&plan.site.document_root().to_string_lossy().into_owned()),
+        };
+        if let Some(response_headers) = response_headers {
+            router.set_response_headers(plan.site.name(), response_headers.clone());
+        }
     }
     router
 }
@@ -430,6 +440,34 @@ mod tests {
             "a parked site's rules key by document root but land under its name"
         );
         assert!(r.route_rules_for("absent").is_empty());
+    }
+
+    #[test]
+    fn response_headers_fold_into_router_for_both_site_kinds() {
+        let mut cfg = cfg_with_tld("test");
+        cfg.response_headers.linked.insert(
+            "foo".into(),
+            vec![yerd_core::ResponseHeader::new("Access-Control-Allow-Origin", "*").unwrap()],
+        );
+        cfg.response_headers.parked.insert(
+            "/srv/blog".into(),
+            vec![yerd_core::ResponseHeader::new("X-Frame-Options", "DENY").unwrap()],
+        );
+        let r = build(
+            &cfg,
+            vec![
+                linked("foo", "/srv/foo"),
+                Site::parked("blog", "/srv/blog", v()).unwrap(),
+            ],
+        );
+        assert_eq!(r.response_headers_for("foo").len(), 1);
+        assert_eq!(r.response_headers_for("foo")[0].value(), "*");
+        assert_eq!(
+            r.response_headers_for("blog").len(),
+            1,
+            "a parked site's headers key by document root but land under its name"
+        );
+        assert!(r.response_headers_for("absent").is_empty());
     }
 
     #[test]

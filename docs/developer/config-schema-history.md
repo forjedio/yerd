@@ -28,7 +28,23 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v23 (current)
+### v24 (current)
+
+**Added:** the optional `[response_headers]` table - per-site **custom response headers**, keyed by site class exactly like `[route_rules]`: `[response_headers.linked.<name>]` by site name, `[response_headers.parked."<docroot>"]` by document-root string. Each entry pairs a header `name` with a `value`. It defaults to empty when absent, so an uncustomised file omits it entirely.
+
+```toml
+[[response_headers.linked.api]]
+name = "Access-Control-Allow-Origin"
+value = "https://app.test"
+```
+
+The proxy sets every listed header on every response it produces for the site, replacing any same-named header the app or Yerd already set (issue #234). Each entry is validated at load: the name must be a valid HTTP header name and not one Yerd manages (`Connection`, `Keep-Alive`, `Transfer-Encoding`, `Upgrade`, `TE`, `Trailer`, `Content-Length`, `Host`, `Set-Cookie`, `Content-Encoding`, `Content-Range`, `Location`, or any `Proxy-*`), and the value must be non-empty with no control characters. A hand-edited entry that fails these checks is a hard parse error, exactly like a bad `[route_rules]` target. Two entries for one site with the same name (ignoring case) fail validation.
+
+**Migration from v23:** bare version bump - the table defaults to empty when absent, so a v23 file needs no other change.
+
+**To downgrade to v23:** change `version = 24` to `version = 23` and delete any `[response_headers.*]` tables (a v23 daemon rejects the unknown table under `deny_unknown_fields`). Sites stop sending the custom headers.
+
+### v23
 
 **Added:** the optional `[domains.proxy]` table - routable-domain deltas for **whole-host proxies**, keyed by proxy name. It sits alongside the existing `[domains.linked]` (by site name) and `[domains.parked]` (by document-root string) maps and carries the same three keys: `added`, `suppressed`, and `primary`. It defaults to empty when absent, so an uncustomised file omits it entirely.
 

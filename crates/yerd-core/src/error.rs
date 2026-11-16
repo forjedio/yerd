@@ -112,6 +112,16 @@ pub enum CoreError {
         /// Why it failed.
         reason: RouteRuleErrorReason,
     },
+
+    /// A name or value failed to validate as a
+    /// [`ResponseHeader`](crate::ResponseHeader).
+    #[error("invalid response header {input:?}: {reason}")]
+    InvalidResponseHeader {
+        /// The raw name or value that failed validation.
+        input: String,
+        /// Why it failed.
+        reason: ResponseHeaderErrorReason,
+    },
 }
 
 /// Specific failure modes for [`UpstreamTarget`](crate::UpstreamTarget) parsing.
@@ -233,6 +243,39 @@ impl fmt::Display for RouteRuleErrorReason {
             Self::PrefixContainsDotDot => "prefix must not contain a '..' component",
             Self::EmptyTarget => "target must not be empty",
             Self::InvalidTarget => "target must be a relative path with no '..' component",
+        };
+        f.write_str(msg)
+    }
+}
+
+/// Specific failure modes for [`ResponseHeader`](crate::ResponseHeader)
+/// validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ResponseHeaderErrorReason {
+    /// Name was empty.
+    EmptyName,
+    /// Name was not an RFC 9110 token.
+    InvalidName,
+    /// Name is a header Yerd manages (hop-by-hop, framing, `Host`) or one whose
+    /// replacement would break the response (`Set-Cookie`, `Location`, ...).
+    ReservedName,
+    /// Value was empty after trimming surrounding spaces and tabs.
+    EmptyValue,
+    /// Value contained a control character other than a tab.
+    InvalidValue,
+}
+
+impl fmt::Display for ResponseHeaderErrorReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let msg = match self {
+            Self::EmptyName => "name must not be empty",
+            Self::InvalidName => "name must be a valid HTTP header name",
+            Self::ReservedName => {
+                "Yerd manages this header or replacing it would break responses, so it cannot be set"
+            },
+            Self::EmptyValue => "value must not be empty",
+            Self::InvalidValue => "value must not contain control characters such as CR, LF or NUL",
         };
         f.write_str(msg)
     }

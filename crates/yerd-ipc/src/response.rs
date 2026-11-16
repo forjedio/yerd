@@ -418,6 +418,12 @@ pub enum Response {
         /// Per-site routing rules.
         rules: Vec<RouteRuleEntry>,
     },
+    /// Reply to [`crate::Request::ListResponseHeaders`] - every site's custom
+    /// response headers.
+    ResponseHeaders {
+        /// Per-site custom response headers, in each site's configured order.
+        headers: Vec<ResponseHeaderEntry>,
+    },
 }
 
 /// One registered custom PHP extension (see [`Response::PhpExtensions`]).
@@ -546,6 +552,19 @@ pub struct RouteRuleEntry {
     /// The target path, relative to the site's served root (e.g.
     /// `api/index.php`).
     pub target: String,
+}
+
+/// One per-site custom response header (reply element of
+/// [`Response::ResponseHeaders`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResponseHeaderEntry {
+    /// The site the header attaches to (a linked site name or a parked
+    /// document-root display label).
+    pub site: String,
+    /// The header name, in the casing it was set with.
+    pub name: String,
+    /// The header value.
+    pub value: String,
 }
 
 /// One `WordPress` administrator account, for the auto-login user picker -
@@ -687,6 +706,7 @@ mod variant_name_pinning {
             Response::BrowserTrust { .. } => {}
             Response::Proxies { .. } => {}
             Response::Routes { .. } => {}
+            Response::ResponseHeaders { .. } => {}
         }
     }
 
@@ -988,6 +1008,13 @@ mod variant_name_pinning {
                 site: "portal".into(),
                 prefix: "/api".into(),
                 target: "api/index.php".into(),
+            }],
+        });
+        pin_response(Response::ResponseHeaders {
+            headers: vec![ResponseHeaderEntry {
+                site: "api".into(),
+                name: "Access-Control-Allow-Origin".into(),
+                value: "https://app.test".into(),
             }],
         });
         for c in [
