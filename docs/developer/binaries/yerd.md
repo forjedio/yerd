@@ -180,12 +180,12 @@ loads the pcov build matching its own PHP version rather than reusing the
 parent's ABI-specific `pcov.so`. When that derivation fails (no `pcov.so` for
 the resolved version, including every legacy minor) `cli_shim` prints one
 `yerd:` notice on stderr and execs with the clean per-version ini, so an
-inherited `YERD_COVER` can never break an unrelated `php` invocation. The `wp`
-shim and `yerd exec` do not participate: they still point `PHPRC` at
-`cli_phprc`'s clean per-version ini. `composer_shim` and `laravel_shim` set no
-`PHPRC` at all, so they inherit the caller's - which means a `composer` nested
-inside a cover shim keeps the parent's cover ini while resolving the *default*
-PHP version, and loads a mismatched `pcov.so` when those versions differ.
+inherited `YERD_COVER` can never break an unrelated `php` invocation. The `wp`,
+`composer` and `laravel` shims and `yerd exec` do not participate: they point
+`PHPRC` at `cli_phprc`'s clean per-version ini (the default version's for
+`composer_shim` and `laravel_shim`), overriding any inherited cover ini, so a
+`composer` nested inside a cover shim runs without pcov rather than loading a
+mismatched `pcov.so`.
 
 The same logic also backs the `yerd coverage <args…>` **subcommand**, which
 reaches it from the other direction. Rather than being keyed on `argv[0]`,
@@ -206,7 +206,9 @@ both report the genuine interpreter, not the shim name.
 
 `composer` works the same way (`composer_shim.rs`): when `argv[0]` is `composer`,
 `yerd` resolves the default PHP (sharing the helpers in `shim.rs`) and `exec`s it
-against `{data}/tools/composer/composer.phar`. Its `dispatch()` runs in `main.rs`
+against `{data}/tools/composer/composer.phar`, with `PHPRC` set to that version's
+CLI ini (`cli_phprc`) so extensions registered with `yerd php ext` are visible to
+Composer's platform check and to the PHP processes it spawns. Its `dispatch()` runs in `main.rs`
 just before the cover dispatch. See [Dev-tool installers](../dev-tools) for how
 the daemon installs the phar and creates the `composer` symlink.
 

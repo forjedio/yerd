@@ -70,9 +70,10 @@ Tears down the site's tunnel. No-op if it isn't shared.
 
 ### `yerd tunnel status`
 
-Lists live tunnels (site, state, URL/hostname) and whether `cloudflared` is
-installed and logged in, plus its version and source: `managed` (Yerd's own
-download) or `system` (found on your `PATH`) in `--json` output.
+Lists live tunnels (site, state, URL/hostname) and the installed `cloudflared`
+version (or that it isn't installed). `--json` output also says whether you're
+logged in and where `cloudflared` came from: `managed` (Yerd's own download) or
+`system` (found on your `PATH`).
 
 `STATE` is one of:
 
