@@ -31,7 +31,7 @@ const POSTGRES_URI_SCHEMES: [&str; 2] = ["postgresql://", "postgres://"];
 pub enum ClientDefaults {
     /// `MySQL`/`MariaDB`: export `MYSQL_UNIX_PORT` as Yerd's socket when unset.
     MySqlSocket,
-    /// Postgres: export `PGHOST`/`PGPORT` when unset and no argument names a host.
+    /// Postgres: export `PGHOST`/`PGPORT` when unset and no argument or env var names a host.
     Postgres,
     /// Valkey: prepend `-p <port>` on a non-default port when no target flag is given.
     Valkey,
@@ -111,12 +111,11 @@ pub fn connection_plan(
             }
         }
         ClientDefaults::Postgres => {
-            if args.iter().any(names_postgres_host) {
+            let env_host = env_is_set("PGHOST") || env_is_set("PGHOSTADDR");
+            if env_host || args.iter().any(names_postgres_host) {
                 return plan;
             }
-            if !env_is_set("PGHOST") && !env_is_set("PGHOSTADDR") {
-                plan.env.push(("PGHOST", OsString::from("127.0.0.1")));
-            }
+            plan.env.push(("PGHOST", OsString::from("127.0.0.1")));
             if !env_is_set("PGPORT") {
                 plan.env.push(("PGPORT", OsString::from(port.to_string())));
             }
@@ -161,7 +160,7 @@ fn uri_names_host(value: &str) -> bool {
     let authority = rest.split(['/', '?']).next().unwrap_or_default();
     let host_port = authority.rsplit('@').next().unwrap_or_default();
     let has_host = !host_port.is_empty() && !host_port.starts_with(':');
-    has_host || rest.contains("host=")
+    has_host || rest.contains("host=") || rest.contains("hostaddr=")
 }
 
 /// Split every engine's client names into those to link and those to prune. A
@@ -262,13 +261,13 @@ mod tests {
     }
 
     #[test]
-    fn postgres_suppresses_each_variable_independently() {
+    fn postgres_env_host_suppresses_both_defaults() {
         let host = ("PGHOST", OsString::from("127.0.0.1"));
         let port = ("PGPORT", OsString::from("5433"));
         let cases: &[PostgresCase] = &[
             (&[], vec![host.clone(), port.clone()]),
-            (&["PGHOST"], vec![port.clone()]),
-            (&["PGHOSTADDR"], vec![port.clone()]),
+            (&["PGHOST"], vec![]),
+            (&["PGHOSTADDR"], vec![]),
             (&["PGPORT"], vec![host.clone()]),
             (&["PGHOST", "PGPORT"], vec![]),
         ];
@@ -394,6 +393,7 @@ mod tests {
             (&["postgresql://user@db.example.com/app"], true),
             (&["postgres://db.example.com:5432"], true),
             (&["postgresql:///app?host=db.example.com"], true),
+            (&["postgresql:///app?hostaddr=192.0.2.10"], true),
             (&["postgresql:///app"], false),
             (&["postgresql://user@:5433/app"], false),
             (&["-U", "postgres", "app"], false),

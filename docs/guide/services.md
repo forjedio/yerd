@@ -143,8 +143,9 @@ The clients connect to Yerd's instance by default:
 - **MySQL / MariaDB** connect over Yerd's Unix socket (the shim sets
   `MYSQL_UNIX_PORT`), so they work on any port.
 - **PostgreSQL** gets `PGHOST=127.0.0.1` and `PGPORT` set to the service's port,
-  unless you name a host yourself (`-h`, a `host=` connection string, or a URI
-  with a host), in which case neither is added.
+  unless you name a host yourself (`-h`, a `host=` connection string, a URI
+  with a host, or `PGHOST`/`PGHOSTADDR` in your environment), in which case
+  neither is added.
 - **Valkey** gets `-p <port>` when the service is not on the default 6379.
 
 Your own settings always win: an explicit `-h`, `-S`, or `--protocol` flag, a
