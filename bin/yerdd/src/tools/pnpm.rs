@@ -103,17 +103,36 @@ pub async fn install(dirs: &PlatformDirs, dl: &dyn Downloader) -> Result<(), Too
         .download(&url)
         .await
         .map_err(|e| ToolError::Download(format!("{asset}: {e}")))?;
-    verify_sha256(&bytes, &want_sha, &asset)?;
+    let owned_dirs = dirs.clone();
+    let version = tag.clone();
+    tokio::task::spawn_blocking(move || {
+        verify_and_place(&owned_dirs, plat, &version, &asset, &bytes, &want_sha)
+    })
+    .await
+    .map_err(|e| ToolError::Io(format!("pnpm install task: {e}")))??;
+    tracing::info!(version = %tag, "installed pnpm");
+    Ok(())
+}
 
-    stage_and_swap(dirs, Tool::Pnpm, &tag, |staging| {
+/// Verify the downloaded tarball and stage it into `{data}/tools/pnpm/`. Blocking
+/// (hashing, gzip decode, extraction, directory swap), so [`install`] runs it
+/// on the blocking pool rather than the async executor.
+fn verify_and_place(
+    dirs: &PlatformDirs,
+    plat: &str,
+    tag: &str,
+    asset: &str,
+    bytes: &[u8],
+    want_sha: &str,
+) -> Result<(), ToolError> {
+    verify_sha256(bytes, want_sha, asset)?;
+    stage_and_swap(dirs, Tool::Pnpm, tag, |staging| {
         let root = staging.join(format!("pnpm-{plat}"));
         std::fs::create_dir_all(&root)
             .map_err(|e| ToolError::Io(format!("{}: {e}", root.display())))?;
-        unpack_tar_gz(&bytes, &root, &asset)?;
-        link_pnpx(&root, &asset)
-    })?;
-    tracing::info!(version = %tag, "installed pnpm");
-    Ok(())
+        unpack_tar_gz(bytes, &root, asset)?;
+        link_pnpx(&root, asset)
+    })
 }
 
 /// `(name_in_bin, target)` links for an installed pnpm: `pnpm` and `pnpx` each
