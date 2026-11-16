@@ -160,7 +160,12 @@ fn uri_names_host(value: &str) -> bool {
     let authority = rest.split(['/', '?']).next().unwrap_or_default();
     let host_port = authority.rsplit('@').next().unwrap_or_default();
     let has_host = !host_port.is_empty() && !host_port.starts_with(':');
-    has_host || rest.contains("host=") || rest.contains("hostaddr=")
+    let query_host = rest.split_once('?').is_some_and(|(_, query)| {
+        query
+            .split('&')
+            .any(|kv| kv.starts_with("host=") || kv.starts_with("hostaddr="))
+    });
+    has_host || query_host
 }
 
 /// Split every engine's client names into those to link and those to prune. A
@@ -394,6 +399,12 @@ mod tests {
             (&["postgres://db.example.com:5432"], true),
             (&["postgresql:///app?host=db.example.com"], true),
             (&["postgresql:///app?hostaddr=192.0.2.10"], true),
+            (
+                &["postgresql:///app?sslmode=disable&host=db.example.com"],
+                true,
+            ),
+            (&["postgresql:///hostaddr=archive"], false),
+            (&["postgresql:///host=archive"], false),
             (&["postgresql:///app"], false),
             (&["postgresql://user@:5433/app"], false),
             (&["-U", "postgres", "app"], false),
