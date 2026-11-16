@@ -183,6 +183,7 @@ fn build_new_args(name: &str, o: &LaravelOptions) -> Vec<String> {
     match o.js {
         JsRuntime::Npm => a.push("--npm".to_owned()),
         JsRuntime::Bun => a.push("--bun".to_owned()),
+        JsRuntime::Pnpm => a.push("--pnpm".to_owned()),
         JsRuntime::Skip => {}
     }
     if o.git {
@@ -208,21 +209,31 @@ fn needs_git(o: &LaravelOptions) -> bool {
     o.git || !matches!(o.starter_kit, StarterKit::None)
 }
 
-/// Install Node/Bun if the chosen JS runtime needs it and it's neither managed
-/// nor available externally on the user's PATH. A thin wrapper over
-/// [`super::ensure_tool`] mapping [`JsRuntime`] to the [`Tool`] it needs.
+/// The tools a JS runtime needs, in install order. pnpm needs Node as well:
+/// `pnpm run build` runs Vite with `node`, and the standalone pnpm bundles none.
+fn js_runtime_tools(js: JsRuntime) -> &'static [Tool] {
+    match js {
+        JsRuntime::Npm => &[Tool::Node],
+        JsRuntime::Bun => &[Tool::Bun],
+        JsRuntime::Pnpm => &[Tool::Node, Tool::Pnpm],
+        JsRuntime::Skip => &[],
+    }
+}
+
+/// Install every tool the chosen JS runtime needs that is neither managed nor
+/// available externally on the user's PATH. A thin wrapper over
+/// [`super::ensure_tool`] for each of [`js_runtime_tools`], stopping at the
+/// first failure.
 async fn ensure_js_runtime(
     id: &str,
     js: JsRuntime,
     user_dirs: &[PathBuf],
     state: &Arc<DaemonState>,
 ) -> Result<(), String> {
-    let tool = match js {
-        JsRuntime::Npm => Tool::Node,
-        JsRuntime::Bun => Tool::Bun,
-        JsRuntime::Skip => return Ok(()),
-    };
-    super::ensure_tool(id, tool, user_dirs, state).await
+    for &tool in js_runtime_tools(js) {
+        super::ensure_tool(id, tool, user_dirs, state).await?;
+    }
+    Ok(())
 }
 
 /// `git --version` resolves on the composed PATH.
@@ -391,6 +402,30 @@ mod tests {
         o.js = JsRuntime::Npm;
         let a = build_new_args("app", &o);
         assert!(a.iter().any(|s| s == "--npm"));
+    }
+
+    #[test]
+    fn pnpm_runtime_emits_pnpm_flag() {
+        let mut o = opts();
+        o.js = JsRuntime::Pnpm;
+        let a = build_new_args("app", &o);
+        let pnpm = a.iter().position(|s| s == "--pnpm").unwrap();
+        assert_eq!(a[pnpm - 1], "sqlite");
+        assert_eq!(a[pnpm + 1], "--no-boost");
+        assert!(!a.iter().any(|s| s == "--npm" || s == "--bun"));
+    }
+
+    #[test]
+    fn js_runtime_maps_to_its_tools() {
+        let cases: [(JsRuntime, &[Tool]); 4] = [
+            (JsRuntime::Npm, &[Tool::Node]),
+            (JsRuntime::Bun, &[Tool::Bun]),
+            (JsRuntime::Pnpm, &[Tool::Node, Tool::Pnpm]),
+            (JsRuntime::Skip, &[]),
+        ];
+        for (js, want) in cases {
+            assert_eq!(js_runtime_tools(js), want, "{js:?}");
+        }
     }
 
     #[test]

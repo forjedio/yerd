@@ -707,3 +707,24 @@ fn create_site_options_are_mapped() {
     );
     assert!(options.git);
 }
+
+#[test]
+fn create_site_accepts_pnpm_runtime() {
+    let request = built(
+        "create_site",
+        json!({
+            "name": "app",
+            "parent_dir": "/srv",
+            "php": "8.4",
+            "starter_kit": "vue",
+            "js": "pnpm",
+        }),
+    );
+    let Request::CreateSite { spec } = request else {
+        panic!("expected CreateSite");
+    };
+    let yerd_ipc::Framework::Laravel { options } = spec.framework else {
+        panic!("expected Laravel");
+    };
+    assert_eq!(options.js, yerd_ipc::JsRuntime::Pnpm);
+}

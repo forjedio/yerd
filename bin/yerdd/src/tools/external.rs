@@ -295,6 +295,18 @@ mod tests {
     }
 
     #[test]
+    fn external_tool_resolves_pnpm() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("data");
+        let dir = tmp.path().join("opt");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let pnpm = touch_exec(&dir, "pnpm");
+        let found = external_tool(&[dir], Tool::Pnpm, &data.join("bin"), &data).unwrap();
+        assert_eq!(found, pnpm);
+    }
+
+    #[test]
     fn shell_invocation_picks_interactive_login_flags() {
         assert_eq!(shell_invocation("/bin/zsh")[0], "-ilc");
         assert_eq!(shell_invocation("/usr/bin/bash")[0], "-ilc");

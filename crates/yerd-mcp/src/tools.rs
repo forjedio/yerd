@@ -317,6 +317,7 @@ fn create_site_spec(args: &Value) -> Result<yerd_ipc::CreateSiteSpec, ArgError> 
     const JS_RUNTIMES: &[(&str, yerd_ipc::JsRuntime)] = &[
         ("npm", yerd_ipc::JsRuntime::Npm),
         ("bun", yerd_ipc::JsRuntime::Bun),
+        ("pnpm", yerd_ipc::JsRuntime::Pnpm),
         ("skip", yerd_ipc::JsRuntime::Skip),
     ];
 
@@ -358,7 +359,7 @@ fn schema_for(name: &str) -> Value {
                 ("starter_kit", enum_prop("Laravel starter kit (default none)", &["none", "react", "vue", "livewire", "svelte"])),
                 ("testing", enum_prop("Testing framework (default pest)", &["pest", "phpunit"])),
                 ("database", enum_prop("Database driver written into .env (default sqlite)", &["sqlite", "mysql", "mariadb", "pgsql"])),
-                ("js", enum_prop("Install and build frontend dependencies with this runtime; use skip when Node is unavailable (default npm)", &["npm", "bun", "skip"])),
+                ("js", enum_prop("Install and build frontend dependencies with this runtime; use skip when Node is unavailable (default npm)", &["npm", "bun", "pnpm", "skip"])),
                 ("git", bool_prop("Initialise a git repository (default false)")),
             ],
             &["name", "parent_dir", "php"],

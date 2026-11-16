@@ -16,7 +16,7 @@ Download the app, install it, and get through the first-run onboarding journey. 
 
 <YouTubeEmbed id="ho4IwTX_D9U" title="Yerd Services - Additional tooling & services" />
 
-Databases, caches, and the developer tools (Composer, Node, Bun) Yerd can install and supervise for you. See [Services & Databases](./services) and [Tooling](./tooling).
+Databases, caches, and the developer tools (Composer, Node, Bun, pnpm) Yerd can install and supervise for you. See [Services & Databases](./services) and [Tooling](./tooling).
 
 ## Creating a new Laravel site
 

@@ -91,7 +91,7 @@ pub struct LaravelOptions {
     pub testing: Testing,
     /// Database driver written into `.env` (`--database`).
     pub database: Database,
-    /// Frontend dependency install/build (`--npm`/`--bun`/none-to-skip).
+    /// Frontend dependency install/build (`--npm`/`--bun`/`--pnpm`/none-to-skip).
     pub js: JsRuntime,
     /// `--git` - initialise a git repository.
     pub git: bool,
@@ -161,6 +161,8 @@ pub enum JsRuntime {
     Npm,
     /// Install + build via Bun (`--bun`).
     Bun,
+    /// Install + build via pnpm (`--pnpm`).
+    Pnpm,
     /// Skip frontend dependency install/build (no package-manager flag passed,
     /// so the installer does not run install/build).
     Skip,
