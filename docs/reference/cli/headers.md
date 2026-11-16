@@ -38,10 +38,18 @@ through a public share tunnel:
 - Yerd's redirects, including the HTTP to HTTPS redirect for a secure site;
 - WebSocket handshakes.
 
+The `401` password prompt of a [password-protected share](../../guide/sharing#password-protection)
+gets only your `Access-Control-*` headers, so a cross-origin caller can read
+the `401`; every other header stays behind the password. A CORS preflight
+(`OPTIONS`) is sent without credentials, so on a protected share it still
+gets the `401` and the browser blocks the request.
+
 Two kinds of response are left untouched: those forwarded by a
 [proxy path rule](./proxies) to a separate service, and those of a whole-host
-proxy. Yerd also never answers a CORS preflight (`OPTIONS`) request itself;
-your app answers it, and the configured headers are added to that answer.
+proxy. On a password-protected share, every response, proxy path rules
+included, has its caching headers adjusted so the share's CDN never stores it.
+Yerd also never answers a CORS preflight (`OPTIONS`) request itself; your app
+answers it, and the configured headers are added to that answer.
 
 ::: warning Configure CORS in one place
 Because a configured header replaces the app's own value, an app that already

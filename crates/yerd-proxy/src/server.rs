@@ -37,7 +37,9 @@ use crate::pure::redirect::{build_redirect_uri, directory_redirect_location};
 use crate::pure::response_headers;
 use crate::pure::route_rules::match_route;
 use crate::pure::try_files::is_php_source;
-use crate::pure::tunnel::{basic_auth_password, normalize_host, password_matches};
+use crate::pure::tunnel::{
+    basic_auth_password, keep_out_of_shared_caches, normalize_host, password_matches,
+};
 use crate::pure::unbound::{self, PickerSite};
 use crate::tls::build_server_config;
 use crate::traits::{BackendResolver, CertStore, LoginTokenConsumer};
@@ -355,21 +357,29 @@ async fn handle_tunnel_request<R: BackendResolver>(
 ) -> Result<Response<BoxBody>, std::convert::Infallible> {
     match dispatch_tunnel(req, peer_addr, server_addr, &ctx).await {
         Ok(resp) => Ok(resp),
-        Err(e) => {
-            tracing::warn!(
-                target: "yerd_proxy::request",
-                error = %e,
-                "tunnel request failed",
-            );
-            Ok(internal_error_response())
-        }
+        Err(e) => Ok(failed_tunnel_response(&e)),
     }
+}
+
+/// The `500` answering a tunnelled request whose handling failed, logged here.
+fn failed_tunnel_response(e: &ProxyError) -> Response<BoxBody> {
+    tracing::warn!(
+        target: "yerd_proxy::request",
+        error = %e,
+        "tunnel request failed",
+    );
+    internal_error_response()
 }
 
 /// Route one tunnelled request: public host lookup, the share-password gate
 /// (stripping `Authorization` once it passes, so the password never reaches PHP
 /// or an upstream), site lookup by name in the live router, then
 /// [`serve_routed`] as HTTPS on port 443.
+///
+/// The gate's `401` carries only the site's CORS headers. Every response
+/// behind a password, including a `404` for a vanished site and the `500` for
+/// a failed request, is kept out of shared caches, since the edge's cache key
+/// ignores `Authorization` and a cached page would bypass the gate.
 async fn dispatch_tunnel<R: BackendResolver>(
     mut req: Request<Incoming>,
     peer_addr: SocketAddr,
@@ -396,14 +406,37 @@ async fn dispatch_tunnel<R: BackendResolver>(
             .and_then(basic_auth_password)
             .is_some_and(|given| password_matches(&given, expected));
         if !authorized {
-            return Ok(unauthorized_response());
+            let headers = ctx.router.read().await.shared_response_headers(&route.site);
+            let mut resp = unauthorized_response();
+            response_headers::apply_cors(&mut resp, headers.as_deref().unwrap_or_default());
+            return Ok(resp);
         }
         req.headers_mut().remove(AUTHORIZATION);
     }
 
+    let result = serve_shared_site(req, &host, &route.site, peer_addr, server_addr, ctx).await;
+    if route.password.is_none() {
+        return result;
+    }
+    let mut resp = result.unwrap_or_else(|e| failed_tunnel_response(&e));
+    keep_out_of_shared_caches(resp.headers_mut());
+    Ok(resp)
+}
+
+/// The part of [`dispatch_tunnel`] after the share-password gate: site lookup
+/// by name in the live router (a miss is `404`), then [`serve_routed`] as
+/// HTTPS on port 443.
+async fn serve_shared_site<R: BackendResolver>(
+    req: Request<Incoming>,
+    host: &str,
+    site_name: &str,
+    peer_addr: SocketAddr,
+    server_addr: SocketAddr,
+    ctx: &TunnelCtx<R>,
+) -> Result<Response<BoxBody>, ProxyError> {
     let (site, matched, rule, headers) = {
         let guard = ctx.router.read().await;
-        let Some(site) = guard.get(&route.site).cloned() else {
+        let Some(site) = guard.get(site_name).cloned() else {
             return Ok(tunnel_not_found_response());
         };
         let (matched, rule) = site_path_rules(&guard, &site, req.uri().path());
@@ -427,7 +460,7 @@ async fn dispatch_tunnel<R: BackendResolver>(
         RoutedCtx {
             resolver: ctx.resolver.as_ref(),
             client_tls: ctx.client_tls.as_ref(),
-            host: &host,
+            host,
             server_addr: SocketAddr::new(server_addr.ip(), 443),
             peer_addr,
             https: true,
