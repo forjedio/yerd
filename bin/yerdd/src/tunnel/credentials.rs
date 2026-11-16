@@ -38,7 +38,7 @@ pub struct OriginToken {
 #[must_use]
 pub fn parse_origin_token(pem: &str) -> Option<OriginToken> {
     let body = extract_pem_block(pem, "ARGO TUNNEL TOKEN")?;
-    let bytes = base64_decode(&body)?;
+    let bytes = yerd_proxy::pure::base64::decode(&body)?;
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -120,39 +120,6 @@ fn extract_pem_block(pem: &str, name: &str) -> Option<String> {
     None
 }
 
-/// Lenient RFC 4648 base64 decode (standard alphabet; padding and whitespace are
-/// skipped). Returns `None` on an invalid character; a non-multiple-of-4 length
-/// drops the trailing partial group rather than erroring (fine for the trusted
-/// cloudflared cert). Hand-rolled (~25 lines) so this one small need doesn't add
-/// a direct `base64` dependency.
-fn base64_decode(s: &str) -> Option<Vec<u8>> {
-    let sextet = |c: u8| -> Option<u32> {
-        match c {
-            b'A'..=b'Z' => Some(u32::from(c - b'A')),
-            b'a'..=b'z' => Some(u32::from(c - b'a') + 26),
-            b'0'..=b'9' => Some(u32::from(c - b'0') + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        }
-    };
-    let mut out = Vec::new();
-    let mut acc = 0u32;
-    let mut bits = 0u32;
-    for &c in s.as_bytes() {
-        if c == b'=' || c.is_ascii_whitespace() {
-            continue;
-        }
-        acc = (acc << 6) | sextet(c)?;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push(u8::try_from((acc >> bits) & 0xFF).ok()?);
-        }
-    }
-    Some(out)
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
@@ -180,28 +147,6 @@ mod tests {
             });
         }
         out
-    }
-
-    #[test]
-    fn base64_round_trips() {
-        for s in [
-            "",
-            "f",
-            "fo",
-            "foo",
-            "foob",
-            "fooba",
-            "foobar",
-            "hello cloudflared",
-        ] {
-            assert_eq!(base64_decode(&b64(s.as_bytes())).unwrap(), s.as_bytes());
-        }
-    }
-
-    #[test]
-    fn base64_tolerates_whitespace_and_rejects_junk() {
-        assert_eq!(base64_decode("aGVs\nbG8=").unwrap(), b"hello");
-        assert!(base64_decode("not*valid").is_none());
     }
 
     #[test]

@@ -46,7 +46,7 @@ The exceptions are the two passthrough commands. Anything after [`coverage`](./c
 | [Databases](./db) | `db list`, `db create`, `db drop`, `db backup`, `db restore` |
 | [Mail](./mail) | `mail list`, `mail show`, `mail clear` |
 | [LAN sharing](./lan) | `lan enable`, `lan disable`, `lan status`, `remote-setup` |
-| [Tunnel](./tunnel) | `tunnel install`, `tunnel share`, `tunnel stop`, `tunnel status`, `tunnel login`, `tunnel create`, `tunnel delete`, `tunnel list`, `tunnel route`, `tunnel set-host`, `tunnel publish`, `tunnel unpublish` |
+| [Tunnel](./tunnel) | `tunnel install`, `tunnel share`, `tunnel stop`, `tunnel status`, `tunnel login`, `tunnel create`, `tunnel delete`, `tunnel list`, `tunnel route`, `tunnel set-host`, `tunnel password`, `tunnel publish`, `tunnel unpublish` |
 | [Diagnostics](./diagnostics) | `ping`, `status`, `doctor`, `doctor fix` |
 | [Elevation](./elevation) | `elevate`, `unelevate` |
 | [Daemon control](./daemon) | `restart daemon` |

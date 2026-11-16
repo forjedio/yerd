@@ -21,6 +21,7 @@ http-body-util = { workspace = true }
 bytes          = { workspace = true }
 tokio-rustls   = { workspace = true, features = ["ring"] }
 rustls         = { workspace = true, features = ["ring"] }
+subtle         = { workspace = true }
 
 [dev-dependencies]
 yerd-tls       = { path = "../yerd-tls" }

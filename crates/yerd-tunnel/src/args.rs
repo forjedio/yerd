@@ -8,8 +8,6 @@
 use std::ffi::OsString;
 use std::path::Path;
 
-use crate::origin::OriginTarget;
-
 /// The shared prefix for every account-scoped `cloudflared` subcommand:
 /// `--origincert <cert> tunnel`. Callers append their command-specific args.
 fn origincert_tunnel_prefix(origincert: &Path) -> Vec<OsString> {
@@ -20,27 +18,31 @@ fn origincert_tunnel_prefix(origincert: &Path) -> Vec<OsString> {
     ]
 }
 
-/// Args for a Quick Tunnel: `cloudflared tunnel --url <origin> ...`.
+/// Args for a Quick Tunnel:
+/// `cloudflared tunnel --no-autoupdate --config <quick.yml> --url <origin> --loglevel info`.
 ///
-/// `cloudflared` logs (including the assigned `*.trycloudflare.com` URL banner)
-/// go to stderr, which the supervisor captures by redirecting the child's
-/// stderr to a file it tails, so no `--logfile` flag is passed (a second writer
-/// to the same path would interleave). For a secure origin the SNI name and
-/// `--no-tls-verify` are added (the loopback hop uses Yerd's private CA).
+/// `origin` is the tunnel listener URL (see [`crate::origin::origin_url`]); the
+/// listener routes by the public `Host`, so no `--http-host-header` or TLS flags
+/// are needed. The explicit `--config` points at Yerd's own ingress-free config
+/// (see [`crate::config::render_quick_config`]) so a user or stray
+/// `~/.cloudflared/config.yml` or `/etc/cloudflared/config.yml` is never picked
+/// up. The metrics address is not in argv: the manager sets `TUNNEL_METRICS` in
+/// the child env on every spawn. `cloudflared` logs (including the assigned
+/// `*.trycloudflare.com` URL banner) go to stderr, which the supervisor captures
+/// by redirecting the child's stderr to a file it tails, so no `--logfile` flag
+/// is passed (a second writer to the same path would interleave).
 #[must_use]
-pub fn quick_tunnel_args(origin: &OriginTarget) -> Vec<OsString> {
-    let mut args: Vec<OsString> = vec![
+pub fn quick_tunnel_args(origin: &str, config_path: &Path) -> Vec<OsString> {
+    vec![
         "tunnel".into(),
         "--no-autoupdate".into(),
+        "--config".into(),
+        config_path.as_os_str().to_os_string(),
         "--url".into(),
-        origin.url().into(),
-        "--http-host-header".into(),
-        origin.host_header.clone().into(),
-    ];
-    push_origin_tls(&mut args, origin);
-    args.push("--loglevel".into());
-    args.push("info".into());
-    args
+        origin.into(),
+        "--loglevel".into(),
+        "info".into(),
+    ]
 }
 
 /// Args to run a named tunnel from a local config:
@@ -138,23 +140,10 @@ pub fn list_args(origincert: &Path) -> Vec<OsString> {
     args
 }
 
-/// Append the secure-origin TLS flags (`--origin-server-name`, `--no-tls-verify`)
-/// when the origin is HTTPS; a no-op for a plain HTTP origin.
-fn push_origin_tls(args: &mut Vec<OsString>, origin: &OriginTarget) {
-    if let Some(sni) = origin.origin_server_name.as_ref() {
-        args.push("--origin-server-name".into());
-        args.push(sni.clone().into());
-    }
-    if origin.no_tls_verify {
-        args.push("--no-tls-verify".into());
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::indexing_slicing)]
 mod tests {
     use super::*;
-    use crate::origin::OriginTarget;
 
     fn strings(args: &[OsString]) -> Vec<String> {
         args.iter()
@@ -163,28 +152,40 @@ mod tests {
     }
 
     #[test]
-    fn quick_secure_includes_host_rewrite_and_tls_flags() {
-        let origin = OriginTarget::for_site("app.test", true, 8080, 8443);
-        let args = strings(&quick_tunnel_args(&origin));
-        assert_eq!(args[0], "tunnel");
-        assert!(args.iter().any(|a| a == "--no-autoupdate"));
-        assert!(args.iter().any(|a| a == "--url"));
-        assert!(args.contains(&"https://127.0.0.1:8443".to_string()));
-        assert!(args.iter().any(|a| a == "--http-host-header"));
-        assert!(args.contains(&"app.test".to_string()));
-        assert!(args.iter().any(|a| a == "--origin-server-name"));
-        assert!(args.iter().any(|a| a == "--no-tls-verify"));
+    fn quick_points_at_the_tunnel_listener_with_an_explicit_config() {
+        let args = strings(&quick_tunnel_args(
+            "http://127.0.0.1:49152",
+            Path::new("/d/tunnel/quick.yml"),
+        ));
+        assert_eq!(
+            args,
+            vec![
+                "tunnel",
+                "--no-autoupdate",
+                "--config",
+                "/d/tunnel/quick.yml",
+                "--url",
+                "http://127.0.0.1:49152",
+                "--loglevel",
+                "info",
+            ]
+        );
     }
 
     #[test]
-    fn quick_non_secure_omits_tls_flags() {
-        let origin = OriginTarget::for_site("blog.test", false, 8080, 8443);
-        let args = strings(&quick_tunnel_args(&origin));
-        assert!(args.contains(&"http://127.0.0.1:8080".to_string()));
-        assert!(args.iter().any(|a| a == "--no-autoupdate"));
-        assert!(!args.iter().any(|a| a == "--origin-server-name"));
-        assert!(!args.iter().any(|a| a == "--no-tls-verify"));
-        assert!(args.iter().any(|a| a == "--http-host-header"));
+    fn quick_has_no_host_rewrite_tls_or_metrics_flags() {
+        let args = strings(&quick_tunnel_args(
+            "http://127.0.0.1:1",
+            Path::new("/q.yml"),
+        ));
+        for flag in [
+            "--http-host-header",
+            "--origin-server-name",
+            "--no-tls-verify",
+            "--metrics",
+        ] {
+            assert!(!args.iter().any(|a| a == flag), "{flag}");
+        }
     }
 
     #[test]

@@ -54,8 +54,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 23\n"),
-        "expected first line `version = 23`; got: {s}"
+        s.starts_with("version = 24\n"),
+        "expected first line `version = 24`; got: {s}"
     );
 }
 
@@ -617,6 +617,41 @@ fn populated_route_rules_section_emits_after_defaults_and_round_trips() {
     let back = Config::from_toml(&s).unwrap();
     assert_eq!(back, c);
     c.validate().unwrap();
+}
+
+#[test]
+fn tunnel_passwords_emit_a_sub_table_only_when_set() {
+    let mut c = Config::default();
+    c.tunnel
+        .sites
+        .insert("app".to_string(), "app.example.com".to_string());
+    let without = c.to_toml().unwrap();
+    assert!(
+        without.contains("[tunnel.sites]\napp = \"app.example.com\"\n"),
+        "got: {without}"
+    );
+    assert!(!without.contains("[tunnel.passwords]"), "got: {without}");
+
+    c.tunnel
+        .passwords
+        .insert("app".to_string(), "s3cret".to_string());
+    let with = c.to_toml().unwrap();
+    assert!(
+        with.contains("[tunnel.passwords]\napp = \"s3cret\"\n"),
+        "got: {with}"
+    );
+    let sites_at = with.find("[tunnel.sites]").expect("sites table present");
+    let passwords_at = with
+        .find("[tunnel.passwords]")
+        .expect("passwords table present");
+    assert!(sites_at < passwords_at, "got: {with}");
+    assert_eq!(
+        with.replace("\n[tunnel.passwords]\napp = \"s3cret\"\n", ""),
+        without
+    );
+
+    let back = Config::from_toml(&with).unwrap();
+    assert_eq!(back, c);
 }
 
 #[test]

@@ -301,6 +301,9 @@ pub struct TunnelSection {
     pub named: BTreeMap<String, String>,
     /// Per-site public hostname mapping, by site name → hostname.
     pub sites: BTreeMap<String, String>,
+    /// Per-site share passwords (HTTP basic auth on tunnelled requests), by site
+    /// name → password. One password protects every tunnel kind for that site.
+    pub passwords: BTreeMap<String, String>,
 }
 
 /// Default loopback port for the dump server (see [`DumpsSection::port`]).

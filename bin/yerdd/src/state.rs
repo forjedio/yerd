@@ -101,6 +101,24 @@ pub struct DaemonState {
     /// of a system binary runs once rather than on every tunnel action or
     /// status poll. See `tunnel::resolved_cloudflared`.
     pub cloudflared_resolution: RwLock<Option<crate::tunnel::install::Resolved>>,
+    /// The loopback port of the tunnel origin listener `cloudflared` dials, or
+    /// `None` when binding it failed at startup (sharing is then unavailable).
+    pub tunnel_origin_port: Option<u16>,
+    /// The tunnel listener's `public host -> site` route map, rebuilt by
+    /// `tunnel::rebuild_routes` and read per request by the listener. Its lock
+    /// is a leaf: never held across another lock.
+    pub tunnel_routes: yerd_proxy::SharedTunnelRoutes,
+    /// Serializes `tunnel::rebuild_routes`, so two concurrent rebuilds can't
+    /// swap the route map in an order that loses the newer one.
+    pub tunnel_routes_rebuild: Mutex<()>,
+    /// Source of a fresh loopback address for a `cloudflared` metrics server,
+    /// called on every tunnel spawn (passed as `TUNNEL_METRICS` and probed for
+    /// `/ready`). Production uses `tunnel::pick_metrics_addr`; tests replace it
+    /// with a listener that answers the probe.
+    pub tunnel_metrics_addr: yerd_tunnel::MetricsAddrSource,
+    /// Share preflight warnings by site name, computed when a share starts and
+    /// read (never recomputed) when tunnel state is reported.
+    pub share_warnings: Mutex<HashMap<String, Vec<String>>>,
     /// Captured-mail store (the built-in SMTP sink writes here; IPC reads/clears
     /// it). Always present even when capture is disabled, so stored mail remains
     /// listable/clearable after the server is turned off.

@@ -946,6 +946,9 @@ mod variant_name_pinning {
                 state: crate::status::TunnelRunState::Running,
                 url: Some("https://calm-river-1234.trycloudflare.com".into()),
                 hostname: None,
+                last_error: None,
+                protected: false,
+                warnings: Vec::new(),
             }],
             cloudflared: crate::status::CloudflaredStatus {
                 installed: true,
@@ -962,6 +965,7 @@ mod variant_name_pinning {
             sites: vec![crate::status::SiteHostname {
                 site: "app".into(),
                 hostname: "app.example.com".into(),
+                protected: false,
             }],
             zone: None,
         });

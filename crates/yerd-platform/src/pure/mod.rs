@@ -16,6 +16,7 @@ pub mod pem_match;
 pub mod pf_anchor;
 pub mod port_plan;
 pub mod proc_metrics;
+pub mod process_signal;
 pub mod ps_metrics;
 pub mod resolv_conf;
 pub mod resolved_drop_in;

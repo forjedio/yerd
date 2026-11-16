@@ -29,12 +29,13 @@ src/
   paths.rs          Paths trait + PlatformDirs struct
   port_binder.rs    PortBinder trait + BoundPort / PortPair
   port_redirect.rs  PortRedirector trait + loopback_port_reachable / loopback_redirect_reaches_proxy
+  process_table.rs  ProcessTable trait (best-effort) + FakeProcessTable
   resolver.rs       ResolverInstaller trait
   terminal.rs       TerminalLauncher trait
   trust_store.rs    TrustStore trait + CaFingerprint + NssOutcome / NssFailure
   os/
     mod.rs          cfg-selects exactly one impl; exposes `active` aliases
-    unix.rs         executable_in_directories + spawn_and_check (Linux + macOS)
+    unix.rs         executable_in_directories + spawn_and_check + process-group signalling (Linux + macOS)
     linux.rs        Linux* impls
     macos.rs        Macos* impls (+ security-framework)
     unsupported.rs  Unsupported* stubs (Windows, Phase 1)
@@ -49,6 +50,7 @@ src/
     port_plan.rs        classify_desired / classify_fallback
     proc_metrics.rs     parse_vmrss_bytes / parse_loadavg (Linux /proc)
     ps_metrics.rs       parse_ps_rss_bytes (macOS `ps`)
+    process_signal.rs   signal_target (pid guard) + decode_proc_cmdline / decode_ps_command
     resolv_conf.rs      select supported Linux resolver backend
     networkmanager_dnsmasq.rs compose/match NetworkManager snippets
     dns_probe.rs        compose/validate the loopback DNS probe
@@ -57,7 +59,7 @@ src/
     terminal_spec.rs    TERMINAL_SPECS probe table
 ```
 
-Runtime dependencies are deliberately tiny: `thiserror`, `directories`, `sha2`, `hex`, `pem`, `serde_json` (only to read `composer.json` during signal gathering), plus `yerd-tls` and `yerd-core` (for the `ProjectSignals` / `Detection` types the detector feeds), with `security-framework` gated to macOS only. A test (`tests/no_runtime_deps.rs`) walks the resolved dependency graph (scoped with `--filter-platform` so cfg gates apply) and asserts that `tokio`, `anyhow`, `reqwest`, `openssl`, `openssl-sys`, and `native-tls` never appear in the normal-kind runtime graph - none of which `serde_json` or `yerd-core` pull in.
+Runtime dependencies are deliberately tiny: `thiserror`, `directories`, `sha2`, `hex`, `pem`, `serde_json` (only to read `composer.json` during signal gathering), plus `yerd-tls` and `yerd-core` (for the `ProjectSignals` / `Detection` types the detector feeds), with `security-framework` gated to macOS only and `nix` (signals) gated to unix. A test (`tests/no_runtime_deps.rs`) walks the resolved dependency graph (scoped with `--filter-platform` so cfg gates apply) and asserts that `tokio`, `anyhow`, `reqwest`, `openssl`, `openssl-sys`, and `native-tls` never appear in the normal-kind runtime graph - none of which `serde_json` or `yerd-core` pull in.
 
 ## The core traits
 
@@ -195,6 +197,30 @@ pub trait SystemMetrics {
 
 Unlike every other trait here, metrics return `Option`, not `Result`. `None` collapses two cases - "OS unsupported" and "transient read failed" - because the only caller (`yerd status`) treats both identically: show nothing. The OS impls do only the file read / subprocess; the actual decoding lives in the table-tested `proc_metrics` / `ps_metrics` parsers.
 
+### `ProcessTable`
+
+```rust
+pub trait ProcessTable {
+    fn command_line(&self, pid: u32) -> Option<String>;
+    fn signal_group(&self, pid: u32, force: bool);
+    fn is_alive(&self, pid: u32) -> bool;
+}
+```
+
+Best-effort process inspection and signalling, used by the daemon to reap a `cloudflared` orphaned by a previous daemon crash (see [`yerd-tunnel`](./yerd-tunnel)). Like `SystemMetrics` it is sync and infallible at the type level: a process that is gone or unreadable simply reads as absent, and signal failures are ignored. The trait only reads and signals; the caller decides *which* PIDs are safe to touch (the daemon requires both `cloudflared` and its own tunnel data path in the command line, which guards against PID reuse).
+
+- `command_line` returns the arguments joined by single spaces.
+- `signal_group` sends SIGTERM (or SIGKILL when `force`) to the process group led by `pid`, falling back to the single process. It refuses pid 0, pid 1, and any pid that overflows `i32` before signalling anything; that guard is the table-tested `pure::process_signal::signal_target`.
+- `is_alive` is a signal-0 probe (`EPERM` counts as alive).
+
+Per OS (`ActiveProcessTable`):
+
+- **Linux** reads `/proc/<pid>/cmdline` (NUL-separated, decoded by `decode_proc_cmdline`) and signals through `nix::sys::signal::killpg`.
+- **macOS** runs `/bin/ps -ww -o command= -p <pid>` (absolute path, untruncated) decoded by `decode_ps_command`, and signals through `killpg`.
+- **Unsupported** returns `None` from `command_line`, `false` from `is_alive`, and does nothing on `signal_group`. Unlike the `Result`-returning traits it does **not** return `PlatformError::Unsupported`: the table is best-effort, and an unsupported OS simply has no orphans to reap.
+
+`FakeProcessTable` is a fixed table of command lines that records every signal (`RecordedSignal { pid, force }`). A process dies on its first signal unless it was added with `with_stubborn_process`, in which case it survives SIGTERM and only dies on a forced signal, so a caller's escalation path can be tested.
+
 ### `IdeLauncher`
 
 ```rust
@@ -258,7 +284,7 @@ pub(crate) mod active {
 
 `lib.rs` re-exports these, so callers write `ActiveTrustStore`, `ActivePaths`, etc. and the right concrete type is selected at compile time - no `cfg` leaks into consumer crates.
 
-The **`unsupported` stub** (Windows in Phase 1) implements every trait so `cargo check --workspace` stays green on any host. Every fallible method returns `Err(PlatformError::Unsupported { operation })`; `SystemMetrics` returns `None`; `PortRedirector` returns `None`. `tests/unsupported.rs` (gated to non-Linux/non-macOS targets) asserts each method returns `Unsupported`.
+The **`unsupported` stub** (Windows in Phase 1) implements every trait so `cargo check --workspace` stays green on any host. Every fallible method returns `Err(PlatformError::Unsupported { operation })`; `SystemMetrics` returns `None`; `PortRedirector` returns `None`; `ProcessTable` reads every process as absent. `tests/unsupported.rs` (gated to non-Linux/non-macOS targets) asserts each method returns `Unsupported`.
 
 ## The `pure` module
 
@@ -312,6 +338,11 @@ The precedence is pinned by tests: a hard (non-retry) kind always beats a retry 
 
 - `proc_metrics::parse_vmrss_bytes(status)` reads the `VmRSS:` line of `/proc/<pid>/status` (kibibytes → bytes); `parse_loadavg(text)` reads the first three figures of `/proc/loadavg`. Using `VmRSS` avoids needing `_SC_PAGESIZE`, keeping the parser `unsafe`-free.
 - `ps_metrics::parse_ps_rss_bytes(stdout)` parses the headerless first token of `ps -o rss= -p <pid>` (kibibytes → bytes) on macOS, which has no cheap `unsafe`-free per-process RSS source in `std`. All three return `None` on malformed input - metrics are best-effort.
+
+### process_signal
+
+- `signal_target(pid)` maps a PID to the `i32` passed to `killpg`/`kill`, or `None` for pid 0, pid 1, and anything that overflows `i32`, so a bad pidfile can never signal the daemon's own process group, `init`/`launchd`, or (through a wrapped negative value) an arbitrary group.
+- `decode_proc_cmdline(raw)` turns Linux's NUL-separated `/proc/<pid>/cmdline` into a space-joined string; `decode_ps_command(stdout)` trims macOS `ps` output. Both return `None` for empty input.
 
 ## Web-root signal gathering (`detect`)
 

@@ -37,7 +37,7 @@ use crate::backend::Backend;
 use crate::error::ProxyError;
 use crate::forward::{empty_body, BoxBody};
 use crate::pure::cgi_head::{Head, HeadAccumulator, HeadFeed};
-use crate::pure::cgi_params::{build_params, AutoLoginParams};
+use crate::pure::cgi_params::{build_params, PrependParams};
 use crate::pure::fcgi_codec::{
     encode_begin_request_body, encode_name_value, FcgiError, Header, RecordType, FCGI_MAX_PAYLOAD,
     FCGI_RESPONDER, FCGI_VERSION,
@@ -74,8 +74,8 @@ const MAX_DISCARDED_BYTES: u64 = 8 * 1024 * 1024;
 /// front-controller policy this drives. `path_info`, if given, is the
 /// decoded remainder of a `PATH_INFO`-style split
 /// ([`crate::forward::script_file::ScriptResolution::ScriptWithPathInfo`])
-/// and overrides the default full-path `PATH_INFO`. `auto_login`, if given, is passed
-/// straight through to [`build_params`] - see [`AutoLoginParams`] for
+/// and overrides the default full-path `PATH_INFO`. `prepend`, if given, is passed
+/// straight through to [`build_params`] - see [`PrependParams`] for
 /// when/why.
 #[allow(clippy::too_many_arguments)]
 pub async fn forward(
@@ -87,7 +87,7 @@ pub async fn forward(
     server_addr: SocketAddr,
     peer_addr: SocketAddr,
     https: bool,
-    auto_login: Option<AutoLoginParams<'_>>,
+    prepend: Option<PrependParams<'_>>,
 ) -> Result<Response<BoxBody>, ProxyError> {
     let backend_label = backend.to_string();
     let (parts, body) = req.into_parts();
@@ -117,7 +117,7 @@ pub async fn forward(
         https,
         peer_addr,
         server_addr,
-        auto_login,
+        prepend,
     );
     let mut param_buf: Vec<u8> = Vec::new();
     for (name, value) in &params {

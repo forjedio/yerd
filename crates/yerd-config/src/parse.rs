@@ -231,7 +231,7 @@ struct GroupsSectionWire {
     members: BTreeMap<String, String>,
 }
 
-/// The `[tunnel]` table. Both maps default to empty, so an absent table parses
+/// The `[tunnel]` table. All maps default to empty, so an absent table parses
 /// to [`crate::schema::TunnelSection::default`].
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -240,6 +240,8 @@ struct TunnelSectionWire {
     named: BTreeMap<String, String>,
     #[serde(default)]
     sites: BTreeMap<String, String>,
+    #[serde(default)]
+    passwords: BTreeMap<String, String>,
 }
 
 /// The `[dumps]` table. All fields default, so an absent table parses to
@@ -591,6 +593,7 @@ impl TryFrom<Wire> for Config {
         let tunnel = crate::schema::TunnelSection {
             named: w.tunnel.named,
             sites: w.tunnel.sites,
+            passwords: w.tunnel.passwords,
         };
         let groups = crate::schema::GroupsSection {
             order: w.groups.order,
@@ -1084,9 +1087,12 @@ fn validate_groups(c: &Config) -> Result<(), ConfigError> {
 /// Two cardinality invariants the daemon relies on are also enforced, so a
 /// hand-edited config can't load into a state the runtime silently mishandles:
 /// at most one `[tunnel.named]` entry (the daemon runs a single consolidated
-/// tunnel and starts only the first), and unique `[tunnel.sites]` hostnames (one
-/// ingress rule is emitted per pair, so a duplicate hostname would shadow all
-/// but the first site).
+/// tunnel and starts only the first), and unique `[tunnel.sites]` hostnames,
+/// compared case-insensitively (the tunnel listener routes by the lowercased
+/// host, so a duplicate would shadow all but the first site).
+///
+/// `[tunnel.passwords]` keys follow the same safe-key rule as site names, and
+/// each password is 1..=128 bytes with no ASCII control characters.
 fn validate_tunnel(c: &Config) -> Result<(), ConfigError> {
     if c.tunnel.named.len() > 1 {
         return Err(ve(ValidateErrorReason::TunnelMultipleNamed));
@@ -1110,11 +1116,25 @@ fn validate_tunnel(c: &Config) -> Result<(), ConfigError> {
         if !is_plausible_hostname(hostname) {
             return Err(ve(ValidateErrorReason::TunnelHostnameInvalid));
         }
-        if !seen_hostnames.insert(hostname.as_str()) {
+        if !seen_hostnames.insert(hostname.to_ascii_lowercase()) {
             return Err(ve(ValidateErrorReason::TunnelDuplicateHostname));
         }
     }
+    for (site, password) in &c.tunnel.passwords {
+        if !is_safe_key(site) {
+            return Err(ve(ValidateErrorReason::TunnelKeyInvalid));
+        }
+        if !is_valid_tunnel_password(password) {
+            return Err(ve(ValidateErrorReason::TunnelPasswordInvalid));
+        }
+    }
     Ok(())
+}
+
+/// A share password is 1..=128 bytes with no ASCII control characters, so it
+/// stays a single printable TOML line and a sane basic-auth credential.
+fn is_valid_tunnel_password(password: &str) -> bool {
+    (1..=128).contains(&password.len()) && !password.chars().any(|c| c.is_ascii_control())
 }
 
 /// A `[tunnel]` map key or UUID is safe when it is a short token of DNS-label-ish
@@ -1352,7 +1372,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 23,
+                current: 24,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -1437,6 +1457,15 @@ mod tests {
         let unique = "version = 8\n[tunnel.sites]\n\
                       app = \"app.example.com\"\nblog = \"blog.example.com\"\n";
         assert!(Config::from_toml(unique).is_ok());
+
+        let differs_by_case = "version = 8\n[tunnel.sites]\n\
+                               app = \"Shared.Example.com\"\nblog = \"shared.example.COM\"\n";
+        assert!(matches!(
+            Config::from_toml(differs_by_case),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::TunnelDuplicateHostname,
+            })
+        ));
     }
 
     #[test]
@@ -1569,7 +1598,7 @@ mod tests {
 
     #[test]
     #[allow(clippy::field_reassign_with_default)]
-    fn v22_config_migrates_to_v23_changing_only_the_version_line() {
+    fn v22_config_migrates_to_current_changing_only_the_version_line() {
         let mut c = Config::default();
         c.domains.linked.insert(
             "blog".to_owned(),
@@ -1579,15 +1608,80 @@ mod tests {
                 primary: None,
             },
         );
-        let v23 = c.to_toml().unwrap();
-        let v22 = v23.replacen("version = 23\n", "version = 22\n", 1);
+        let current = c.to_toml().unwrap();
+        let v22 = current.replacen("version = 24\n", "version = 22\n", 1);
         assert_ne!(
-            v22, v23,
+            v22, current,
             "the replace must actually downgrade the version line"
         );
         let migrated = Config::from_toml(&v22).unwrap();
         assert_eq!(migrated, c);
-        assert_eq!(migrated.to_toml().unwrap(), v23);
+        assert_eq!(migrated.to_toml().unwrap(), current);
+    }
+
+    #[test]
+    fn v23_tunnel_config_migrates_to_v24_keeping_both_maps() {
+        let s = "version = 23\n[tunnel.named]\nmysite = \"uuid-1\"\n\
+                 [tunnel.sites]\napp = \"app.example.com\"\n";
+        let c = Config::from_toml(s).unwrap();
+        assert_eq!(c.version, 24);
+        assert_eq!(
+            c.tunnel.named.get("mysite").map(String::as_str),
+            Some("uuid-1")
+        );
+        assert_eq!(
+            c.tunnel.sites.get("app").map(String::as_str),
+            Some("app.example.com")
+        );
+        assert!(c.tunnel.passwords.is_empty());
+        let emitted = c.to_toml().unwrap();
+        assert!(!emitted.contains("[tunnel.passwords]"), "got: {emitted}");
+    }
+
+    #[test]
+    fn tunnel_passwords_accept_valid_values() {
+        for password in ["s", "secret with spaces", "p\u{e9}ss", &"x".repeat(128)] {
+            let mut c = Config::default();
+            c.tunnel
+                .passwords
+                .insert("app".to_owned(), password.to_owned());
+            c.validate().unwrap();
+            let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+            assert_eq!(back.tunnel.passwords, c.tunnel.passwords);
+        }
+    }
+
+    #[test]
+    fn tunnel_passwords_reject_invalid_values() {
+        for password in ["", "tab\there", "nl\nhere", "del\u{7f}", &"x".repeat(129)] {
+            let mut c = Config::default();
+            c.tunnel
+                .passwords
+                .insert("app".to_owned(), password.to_owned());
+            assert!(
+                matches!(
+                    c.validate(),
+                    Err(ConfigError::Validate {
+                        reason: ValidateErrorReason::TunnelPasswordInvalid,
+                    })
+                ),
+                "password {password:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn tunnel_passwords_reject_unsafe_site_keys() {
+        let mut c = Config::default();
+        c.tunnel
+            .passwords
+            .insert("../escape".to_owned(), "secret".to_owned());
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::TunnelKeyInvalid,
+            })
+        ));
     }
 
     #[test]

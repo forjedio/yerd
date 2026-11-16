@@ -68,6 +68,13 @@ async fn handle_client(stream: IpcStream, state: Arc<DaemonState>) {
                 crate::tunnel::install_cloudflared_streamed(state.clone()).await
             }
             Request::CloudflaredLogin => crate::tunnel::named::login_streamed(state.clone()).await,
+            Request::StartQuickTunnel { site } => {
+                crate::tunnel::start_quick_tunnel(&site, &state).await
+            }
+            Request::StartNamedTunnel => crate::tunnel::named::start(&state).await,
+            Request::SetSiteTunnel { site, hostname } => {
+                crate::tunnel::named::set_site_hostname(&site, hostname.as_deref(), &state).await
+            }
             Request::InstallPhpStreamed {
                 version,
                 confirm_legacy,
@@ -430,7 +437,6 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             crate::self_update::stage_update(channel, state, &dl, yerd_update::UPDATE_PUBLIC_KEY)
                 .await
         }
-        Request::StartQuickTunnel { site } => crate::tunnel::start_quick_tunnel(&site, state).await,
         Request::StopTunnel { site } => crate::tunnel::stop_tunnel(&site, state).await,
         Request::TunnelStatus => crate::tunnel::tunnel_status(state).await,
         Request::CreateNamedTunnel { name } => crate::tunnel::named::create(&name, state).await,
@@ -438,12 +444,11 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::RouteTunnelDns { tunnel, hostname } => {
             crate::tunnel::named::route_dns(&tunnel, &hostname, state).await
         }
-        Request::SetSiteTunnel { site, hostname } => {
-            crate::tunnel::named::set_site_hostname(&site, hostname.as_deref(), state).await
-        }
-        Request::StartNamedTunnel => crate::tunnel::named::start(state).await,
         Request::StopNamedTunnel => crate::tunnel::named::stop(state).await,
         Request::DeleteNamedTunnel { name } => crate::tunnel::named::delete(&name, state).await,
+        Request::SetTunnelPassword { site, password } => {
+            crate::tunnel::named::set_password(&site, password.as_deref(), state).await
+        }
         _ => Response::Error {
             code: ErrorCode::Internal,
             message: "unsupported request".into(),
@@ -2672,6 +2677,7 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
     *state.wordpress_sites.write().await = candidate_wordpress;
     *state.laravel_sites.write().await = candidate_laravel;
     drop(cfg_guard);
+    crate::tunnel::rebuild_routes(state).await;
 
     state.watch_dirty.notify_one();
 
@@ -3384,6 +3390,43 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
         assert!(state.config_path.exists());
         assert!(!state.config.lock().await.parked.paths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn linking_a_site_routes_its_preconfigured_tunnel_hostname() {
+        let tmp = tempfile::tempdir().unwrap();
+        let docroot = tmp.path().join("blog");
+        std::fs::create_dir_all(&docroot).unwrap();
+        let state = state_in(tmp.path());
+        state
+            .config
+            .lock()
+            .await
+            .tunnel
+            .sites
+            .insert("blog".into(), "blog.example.com".into());
+        crate::tunnel::rebuild_routes(&state).await;
+        assert!(state.tunnel_routes.read().await.is_empty());
+
+        let ok = dispatch(
+            Request::Link {
+                name: "blog".into(),
+                path: docroot,
+            },
+            &state,
+        )
+        .await;
+
+        assert!(matches!(ok, Response::Ok), "got {ok:?}");
+        assert_eq!(
+            state
+                .tunnel_routes
+                .read()
+                .await
+                .get("blog.example.com")
+                .map(|r| r.site.as_str()),
+            Some("blog")
+        );
     }
 
     #[tokio::test]

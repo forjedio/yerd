@@ -97,6 +97,13 @@ pub struct Daemon {
     /// free. `None` = disabled, or the bind failed (non-fatal). Consumed when the
     /// mail task is spawned.
     pub mail_listener: Option<tokio::net::TcpListener>,
+    /// Bound loopback tunnel origin listener (`127.0.0.1:0`) that `cloudflared`
+    /// dials. `None` when the bind failed (non-fatal: sharing is unavailable).
+    /// Consumed when the tunnel listener task is spawned.
+    pub tunnel_listener: Option<tokio::net::TcpListener>,
+    /// The `WordPress` public-URL prepend script for tunnelled requests, or
+    /// `None` when writing it failed at startup.
+    pub tunnel_wp_prepend: Option<PathBuf>,
 }
 
 /// Top-level startup: resolve platform dirs, then run the shared
@@ -142,7 +149,16 @@ pub async fn bring_up_with_dirs(
             None
         });
     let php_ca_bundle = build_php_ca_bundle(&dirs, ca.cert_pem(), host_roots.as_deref());
-    let wordpress_login_prepend_script = crate::wordpress_login::write_prepend_script(&dirs.data);
+    let wordpress_login_prepend_script = crate::wordpress_login::write_prepend_script(
+        &dirs.data,
+        crate::wordpress_login::PREPEND_SCRIPT_FILE,
+        crate::wordpress_login::PREPEND_SCRIPT,
+    );
+    let tunnel_wp_prepend = crate::wordpress_login::write_prepend_script(
+        &dirs.data,
+        crate::wordpress_login::PUBLIC_URL_PREPEND_SCRIPT_FILE,
+        crate::wordpress_login::PUBLIC_URL_PREPEND_SCRIPT,
+    );
 
     let cert_store = Arc::new(DaemonCertStore::new(ca, dirs.data.join("leaves")));
 
@@ -334,6 +350,18 @@ pub async fn bring_up_with_dirs(
     let mail_listening = mail_listener.is_some();
     let symlink_protection_on = config.symlink_protection;
 
+    let tunnel_listener = match tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await {
+        Ok(listener) => Some(listener),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not bind the tunnel origin listener; public sharing is unavailable");
+            None
+        }
+    };
+    let tunnel_origin_port = tunnel_listener
+        .as_ref()
+        .and_then(|l| l.local_addr().ok())
+        .map(|a| a.port());
+
     let state = Arc::new(DaemonState {
         config: Mutex::new(config),
         router,
@@ -350,6 +378,11 @@ pub async fn bring_up_with_dirs(
         service_manager,
         tunnel_manager,
         cloudflared_resolution: tokio::sync::RwLock::new(None),
+        tunnel_origin_port,
+        tunnel_routes: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        tunnel_routes_rebuild: Mutex::new(()),
+        share_warnings: Mutex::new(std::collections::HashMap::new()),
+        tunnel_metrics_addr: Arc::new(crate::tunnel::pick_metrics_addr),
         mail_store,
         mail: crate::state::MailRuntime {
             listening: mail_listening,
@@ -417,6 +450,8 @@ pub async fn bring_up_with_dirs(
         dns_answer,
         lan_ip,
         mail_listener,
+        tunnel_listener,
+        tunnel_wp_prepend,
     })
 }
 

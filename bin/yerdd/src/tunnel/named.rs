@@ -4,14 +4,15 @@
 //! Account-mutating `cloudflared` subcommands (login/create/route) run as
 //! one-shot children with `HOME` and the origin cert pinned under
 //! `{data}/tunnel`, so `cloudflared` never touches `~/.cloudflared` and every
-//! secret stays in the daemon-owned 0700 dir. The long-running `tunnel run` goes
-//! through the shared [`super::run_to_ready`] (it needs only `--config` +
-//! `--origincert`, no env).
+//! secret stays in the daemon-owned 0700 dir. The long-running `tunnel run` is
+//! launched through [`super::supervise::launch`] and supervised in the
+//! background like a quick tunnel.
 //!
 //! Model (v1): one Cloudflare login and a single named tunnel (creating a second
 //! is rejected), plus a per-site `site → hostname` mapping. `StartNamedTunnel`
-//! renders one consolidated `config.yml` with an ingress rule per enabled site
-//! and runs the single tunnel that serves them all.
+//! renders one `named.yml` whose single catch-all ingress rule points at the
+//! daemon's tunnel listener, which routes each public hostname to its site, so
+//! the one tunnel serves every enabled site.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -24,7 +25,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use yerd_ipc::{ErrorCode, NamedTunnelMeta, Response, SiteHostname};
 use yerd_platform::PlatformDirs;
 use yerd_tunnel::parse::{find_auth_url, find_tunnel_id};
-use yerd_tunnel::{OriginTarget, TunnelKind};
+use yerd_tunnel::TunnelKind;
 
 use super::install;
 use crate::state::DaemonState;
@@ -39,7 +40,7 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Reserved supervisor key for the single consolidated named-tunnel process.
 /// The `@` can't appear in a DNS label, so it never collides with a real site.
-const NAMED_KEY: &str = "@named";
+pub(super) const NAMED_KEY: &str = "@named";
 
 /// How the interactive `cloudflared tunnel login` child ended.
 enum LoginEnd {
@@ -351,9 +352,9 @@ pub async fn create(name: &str, state: &DaemonState) -> Response {
 /// zone. The zone is resolved via a bounded, cached Cloudflare API call (see
 /// [`super::credentials::resolve_zone`]); everything else is read from config.
 pub async fn list(state: &DaemonState) -> Response {
-    let (tunnels, sites) = {
+    let (tunnels, raw_sites, raw_passwords) = {
         let cfg = state.config.lock().await;
-        let tunnels = cfg
+        let tunnels: Vec<NamedTunnelMeta> = cfg
             .tunnel
             .named
             .iter()
@@ -362,16 +363,17 @@ pub async fn list(state: &DaemonState) -> Response {
                 uuid: uuid.clone(),
             })
             .collect();
-        let sites = cfg
-            .tunnel
-            .sites
-            .iter()
-            .map(|(site, hostname)| SiteHostname {
-                site: site.clone(),
-                hostname: hostname.clone(),
-            })
-            .collect();
-        (tunnels, sites)
+        (
+            tunnels,
+            cfg.tunnel.sites.clone(),
+            cfg.tunnel.passwords.clone(),
+        )
+    };
+    let sites = {
+        let router = state.router.read().await;
+        list_site_hostnames(&raw_sites, &raw_passwords, |key| {
+            super::canonical_in(&router, key)
+        })
     };
     let zone = if is_logged_in(&state.dirs) {
         super::credentials::resolve_zone(&state.dirs).await
@@ -407,144 +409,367 @@ pub async fn route_dns(tunnel: &str, hostname: &str, state: &DaemonState) -> Res
     }
 }
 
+/// Resolve the `site` argument of a per-site tunnel setting (a site name or its
+/// `.test` host) to the canonical site name the config is keyed by. When
+/// `setting`, the site must be shareable ([`super::resolve_site`]) or the reply
+/// is `NotFound`; when clearing, an unresolvable key is `Ok(None)` so a stale
+/// entry can still be removed under its raw key.
+async fn site_key(
+    state: &DaemonState,
+    site: &str,
+    setting: bool,
+) -> Result<Option<String>, Response> {
+    if !setting {
+        return Ok(super::canonical_site_name(state, site).await);
+    }
+    match super::resolve_site(state, site).await {
+        Some((name, _host)) => Ok(Some(name)),
+        None => Err(Response::Error {
+            code: ErrorCode::NotFound,
+            message: format!("no site named {site:?}"),
+        }),
+    }
+}
+
 /// `SetSiteTunnel` - persist (or clear, with `None`) a site's public hostname.
 ///
+/// The entry is stored under the canonical site name, replacing any entry under
+/// the raw argument or another key that resolves to the same site (a legacy
+/// `.test` host key).
+///
 /// Setting a hostname is rejected for a site that does not exist, so the
-/// persisted map can never accumulate entries that `list` would show but
-/// `start` silently drops. Clearing (`None`) is always allowed so a stale entry
-/// for a since-removed site can still be cleaned up.
+/// persisted map can never accumulate entries that `list` would show but the
+/// tunnel listener silently drops. Clearing (`None`) is always allowed so a
+/// stale entry for a since-removed site can still be cleaned up. The tunnel
+/// route map is rebuilt once the config lock is released, so the change takes
+/// effect on the next request without touching `cloudflared`.
+///
+/// Setting a hostname refreshes that site's share warnings and ensures the named
+/// tunnel is running in the background (never restarting a live one); a failure
+/// there, such as no login yet, is logged and does not fail the save. Clearing
+/// the last hostname stops the named tunnel, under `tunnel_mutate` so a
+/// concurrent [`ensure_running`] cannot slip in between the check and the stop.
 pub async fn set_site_hostname(
     site: &str,
     hostname: Option<&str>,
-    state: &DaemonState,
+    state: &Arc<DaemonState>,
 ) -> Response {
-    if hostname.is_some() && super::resolve_site(state, site).await.is_none() {
-        return Response::Error {
-            code: ErrorCode::NotFound,
-            message: format!("no site named {site:?}"),
-        };
-    }
-    let mut cfg_guard = state.config.lock().await;
-    let mut new = cfg_guard.clone();
-    match hostname {
-        Some(h) => {
-            new.tunnel.sites.insert(site.to_owned(), h.to_owned());
+    let canonical = match site_key(state, site, hostname.is_some()).await {
+        Ok(canonical) => canonical,
+        Err(resp) => return resp,
+    };
+    let aliases = match &canonical {
+        Some(name) => super::tunnel_keys_for(state, name).await,
+        None => Vec::new(),
+    };
+    {
+        let mut cfg_guard = state.config.lock().await;
+        let mut new = cfg_guard.clone();
+        new.tunnel.sites.remove(site);
+        for key in &aliases {
+            new.tunnel.sites.remove(key);
         }
-        None => {
-            new.tunnel.sites.remove(site);
+        if let (Some(h), Some(name)) = (hostname, &canonical) {
+            new.tunnel.sites.insert(name.clone(), h.to_owned());
+        }
+        if let Err(e) = new.validate() {
+            return Response::Error {
+                code: ErrorCode::InvalidPath,
+                message: format!("invalid hostname: {e}"),
+            };
+        }
+        if let Err(e) = new.save(&state.config_path) {
+            return internal(format!("config save failed: {e}"));
+        }
+        *cfg_guard = new;
+    }
+    super::rebuild_routes(state).await;
+    if let (Some(_), Some(name)) = (hostname, &canonical) {
+        super::refresh_share_warnings(state, name).await;
+        tokio::spawn(ensure_in_background(Arc::clone(state)));
+        return Response::Ok;
+    }
+    let _guard = state.tunnel_mutate.lock().await;
+    let none_left = state.config.lock().await.tunnel.sites.is_empty();
+    if none_left {
+        if let Err(e) = state.tunnel_manager.lock().await.stop(NAMED_KEY).await {
+            return internal(format!("could not stop the named tunnel: {e}"));
         }
     }
-    if let Err(e) = new.validate() {
-        return Response::Error {
-            code: ErrorCode::InvalidPath,
-            message: format!("invalid hostname: {e}"),
-        };
-    }
-    if let Err(e) = new.save(&state.config_path) {
-        return internal(format!("config save failed: {e}"));
-    }
-    *cfg_guard = new;
     Response::Ok
 }
 
-/// `StartNamedTunnel` - (re)start the single consolidated named tunnel serving
-/// every enabled site. Builds one `config.yml` with one ingress rule per enabled
-/// site (resolving each site's local origin), stops any running named process so
-/// the new config takes effect, then runs it through the shared tick driver.
-pub async fn start(state: &DaemonState) -> Response {
-    let Some(resolved) = super::resolved_cloudflared(state).await else {
-        return not_installed();
+/// `SetTunnelPassword` - persist (or clear, with `None`) a site's share
+/// password, keyed by canonical site name so a `.test` host argument protects
+/// the site it names. Mirrors [`set_site_hostname`]: setting a password is rejected for a
+/// site that does not exist, clearing is always allowed so a stale entry can be
+/// removed. The new value is validated (1..=128 bytes, no control characters)
+/// and saved under the config lock; the tunnel route map is rebuilt once that
+/// lock is released, so the password takes effect on the next request.
+pub async fn set_password(site: &str, password: Option<&str>, state: &DaemonState) -> Response {
+    let canonical = match site_key(state, site, password.is_some()).await {
+        Ok(canonical) => canonical,
+        Err(resp) => return resp,
     };
-    if !is_logged_in(&state.dirs) {
-        return need_login();
-    }
-
-    let _guard = state.tunnel_mutate.lock().await;
-
-    let (uuid, tunnel_name, enabled) = {
-        let cfg = state.config.lock().await;
-        let Some((tunnel_name, uuid)) = cfg
-            .tunnel
-            .named
-            .iter()
-            .next()
-            .map(|(n, u)| (n.clone(), u.clone()))
-        else {
+    let aliases = match &canonical {
+        Some(name) => super::tunnel_keys_for(state, name).await,
+        None => Vec::new(),
+    };
+    {
+        let mut cfg_guard = state.config.lock().await;
+        let mut new = cfg_guard.clone();
+        new.tunnel.passwords.remove(site);
+        for key in &aliases {
+            new.tunnel.passwords.remove(key);
+        }
+        if let (Some(p), Some(name)) = (password, &canonical) {
+            new.tunnel.passwords.insert(name.clone(), p.to_owned());
+        }
+        if let Err(e) = new.validate() {
             return Response::Error {
-                code: ErrorCode::NotFound,
-                message: "no named tunnel created yet - create one first".into(),
+                code: ErrorCode::InvalidPath,
+                message: format!("invalid share password: {e}"),
             };
-        };
-        let enabled: Vec<(String, String)> = cfg
-            .tunnel
-            .sites
-            .iter()
-            .map(|(s, h)| (s.clone(), h.clone()))
-            .collect();
-        (uuid, tunnel_name, enabled)
-    };
+        }
+        if let Err(e) = new.save(&state.config_path) {
+            return internal(format!("config save failed: {e}"));
+        }
+        *cfg_guard = new;
+    }
+    super::rebuild_routes(state).await;
+    Response::Ok
+}
 
-    if enabled.is_empty() {
-        return Response::Error {
+/// Why [`ensure_running`] did not leave a named tunnel running.
+#[derive(Debug)]
+enum EnsureFailure {
+    /// The tunnel manager has shut down; expected during daemon exit.
+    ShuttingDown,
+    /// A precondition or setup step failed, with the reply for an IPC caller.
+    Reply(Response),
+}
+
+/// The facts deciding whether the named tunnel can run.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct NamedFacts {
+    /// A Cloudflare login (origin cert) is present.
+    pub logged_in: bool,
+    /// A `cloudflared` binary resolved.
+    pub installed: bool,
+    /// A named tunnel is recorded in config.
+    pub has_tunnel: bool,
+    /// How many sites have a public hostname.
+    pub site_count: usize,
+    /// The tunnel origin listener is bound.
+    pub has_origin: bool,
+}
+
+/// The reason the named tunnel cannot run yet, as an IPC reply, or `None` when
+/// every precondition holds: `cloudflared` resolved, a Cloudflare login, a
+/// recorded tunnel, at least one exposed site, and a bound tunnel listener.
+fn named_blocker(facts: NamedFacts) -> Option<Response> {
+    if !facts.installed {
+        return Some(not_installed());
+    }
+    if !facts.logged_in {
+        return Some(need_login());
+    }
+    if !facts.has_tunnel {
+        return Some(Response::Error {
+            code: ErrorCode::NotFound,
+            message: "no named tunnel created yet - create one first".into(),
+        });
+    }
+    if facts.site_count == 0 {
+        return Some(Response::Error {
             code: ErrorCode::NotFound,
             message: "no sites enabled - set a hostname for a site first".into(),
-        };
+        });
     }
+    if !facts.has_origin {
+        return Some(super::origin_not_running());
+    }
+    None
+}
 
-    let (plain_port, tls_port) = super::origin_ports(state).await;
-    let mut rules = Vec::new();
-    for (site, hostname) in &enabled {
-        if let Some((_name, secure, _tld, host)) = super::resolve_site(state, site).await {
-            let origin = OriginTarget::for_site(&host, secure, plain_port, tls_port);
-            rules.push(yerd_tunnel::IngressRule {
-                hostname: hostname.clone(),
-                origin,
-            });
+/// Whether the named tunnel should be running given these facts. Pure; see
+/// [`named_blocker`] for the individual preconditions.
+pub(super) fn should_run_named(facts: NamedFacts) -> bool {
+    named_blocker(facts).is_none()
+}
+
+/// The facts readable without resolving `cloudflared` (which may probe a
+/// system binary), assuming it is installed. Takes and releases the config
+/// lock. Returns them with the recorded tunnel's `(name, uuid)`.
+async fn cheap_facts(state: &DaemonState) -> (NamedFacts, Option<(String, String)>) {
+    let (tunnel, site_count) = named_config(state).await;
+    let facts = NamedFacts {
+        logged_in: is_logged_in(&state.dirs),
+        installed: true,
+        has_tunnel: tunnel.is_some(),
+        site_count,
+        has_origin: state.tunnel_origin_port.is_some(),
+    };
+    (facts, tunnel)
+}
+
+/// The recorded tunnel's `(name, uuid)` and the number of exposed sites.
+async fn named_config(state: &DaemonState) -> (Option<(String, String)>, usize) {
+    let cfg = state.config.lock().await;
+    let tunnel = cfg
+        .tunnel
+        .named
+        .iter()
+        .next()
+        .map(|(n, u)| (n.clone(), u.clone()));
+    (tunnel, cfg.tunnel.sites.len())
+}
+
+/// Ensure the consolidated named tunnel is running, starting it when absent.
+///
+/// Idempotent: a live or retrying instance is left alone (the manager's `begin`
+/// refuses to replace it), so exposing or unexposing a site never restarts the
+/// connector. The preconditions are re-checked under `tunnel_mutate`, because a
+/// concurrent delete or hostname clear may have run while this call waited for
+/// it; `named.yml` (one catch-all rule pointing at the tunnel listener) is
+/// rendered and the instance launched under that same guard.
+///
+/// Returns the generation of the instance now running, or `None` if it was
+/// stopped again before it could be read.
+///
+/// # Errors
+///
+/// An IPC error reply when a precondition fails, setup fails, or the daemon is
+/// shutting down.
+pub async fn ensure_running(state: &Arc<DaemonState>) -> Result<Option<u64>, Response> {
+    ensure(state).await.map_err(|failure| match failure {
+        EnsureFailure::ShuttingDown => internal(format!(
+            "could not start the named tunnel: {}",
+            yerd_tunnel::TunnelError::ShuttingDown
+        )),
+        EnsureFailure::Reply(resp) => resp,
+    })
+}
+
+/// [`ensure_running`] for background callers: a failure is logged, never
+/// returned. Shutdown and unmet preconditions are expected and logged at debug.
+pub(super) async fn ensure_in_background(state: Arc<DaemonState>) {
+    match ensure(&state).await {
+        Ok(_) => {}
+        Err(EnsureFailure::ShuttingDown) => {
+            tracing::debug!("named tunnel not started: daemon is shutting down");
+        }
+        Err(EnsureFailure::Reply(resp)) => {
+            tracing::debug!(reply = ?resp, "named tunnel not started");
         }
     }
-    if rules.is_empty() {
-        return Response::Error {
-            code: ErrorCode::NotFound,
-            message: "no enabled sites currently exist".into(),
-        };
+}
+
+async fn ensure(state: &Arc<DaemonState>) -> Result<Option<u64>, EnsureFailure> {
+    if let Some(resp) = named_blocker(cheap_facts(state).await.0) {
+        return Err(EnsureFailure::Reply(resp));
     }
+    let Some(resolved) = super::resolved_cloudflared(state).await else {
+        return Err(EnsureFailure::Reply(not_installed()));
+    };
+
+    let guard = state.tunnel_mutate.lock().await;
+    let (facts, tunnel) = cheap_facts(state).await;
+    if let Some(resp) = named_blocker(facts) {
+        return Err(EnsureFailure::Reply(resp));
+    }
+    let (Some((tunnel_name, uuid)), Some(port)) = (tunnel, state.tunnel_origin_port) else {
+        return Err(EnsureFailure::Reply(super::origin_not_running()));
+    };
 
     let creds = creds_file(&state.dirs, &tunnel_name);
-    let config_yml = yerd_tunnel::config::render_ingress_config(&uuid, &creds, &rules);
+    let config_yml =
+        yerd_tunnel::config::render_ingress_config(&uuid, &creds, &yerd_tunnel::origin_url(port));
     let config_path = install::tunnel_dir(&state.dirs).join("named.yml");
-    if let Err(e) = ensure_secret_dirs(&state.dirs) {
-        return internal(e);
-    }
-    if let Err(e) = yerd_php::io::atomic_write::write(&config_path, config_yml.as_bytes()) {
-        return internal(format!("write tunnel config: {e}"));
-    }
+    ensure_secret_dirs(&state.dirs).map_err(|e| EnsureFailure::Reply(internal(e)))?;
+    yerd_php::io::atomic_write::write(&config_path, config_yml.as_bytes())
+        .map_err(|e| EnsureFailure::Reply(internal(format!("write tunnel config: {e}"))))?;
 
-    if let Err(e) = state.tunnel_manager.lock().await.stop(NAMED_KEY).await {
-        return internal(format!(
-            "could not stop the running named tunnel to apply the new config: {e}"
-        ));
-    }
     let args = yerd_tunnel::args::named_run_args(&config_path, &origincert(&state.dirs));
     let mut env = super::pinned_home_env(state);
     env.push((
         "TUNNEL_ORIGIN_CERT".into(),
         origincert(&state.dirs).into_os_string(),
     ));
-    super::run_to_ready(
-        state,
-        NAMED_KEY,
-        resolved.binary,
-        args,
-        env,
-        TunnelKind::Named,
-        None,
-    )
-    .await
+    let spec = super::launch_spec(state, NAMED_KEY, resolved.binary, args, env)
+        .map_err(EnsureFailure::Reply)?;
+    let launched = super::supervise::launch(state, NAMED_KEY, spec, TunnelKind::Named)
+        .await
+        .map_err(|e| match e {
+            yerd_tunnel::TunnelError::ShuttingDown => EnsureFailure::ShuttingDown,
+            other => EnsureFailure::Reply(internal(format!(
+                "could not start the named tunnel: {other}"
+            ))),
+        })?;
+    drop(guard);
+
+    Ok(match launched {
+        Some(l) => Some(l.generation),
+        None => super::supervise::current_generation(state, NAMED_KEY).await,
+    })
+}
+
+/// Start the named tunnel at daemon start when [`should_run_named`] holds,
+/// refreshing every mapped site's share warnings first. Errors are logged and
+/// swallowed; shutdown racing the start is expected and logged at debug.
+pub(super) async fn resume(state: Arc<DaemonState>) {
+    let wanted = should_run_named(cheap_facts(&state).await.0)
+        && super::resolved_cloudflared(&state).await.is_some();
+    if !wanted {
+        tracing::debug!("named tunnel not resumed: nothing to share or not set up");
+        return;
+    }
+    super::refresh_named_share_warnings(&state).await;
+    match ensure(&state).await {
+        Ok(_) => tracing::info!("resumed named tunnel"),
+        Err(EnsureFailure::ShuttingDown) => {
+            tracing::debug!("named tunnel not resumed: daemon is shutting down");
+        }
+        Err(EnsureFailure::Reply(resp)) => {
+            tracing::warn!(reply = ?resp, "could not resume named tunnel");
+        }
+    }
+}
+
+/// `StartNamedTunnel` - ensure the single consolidated named tunnel serving
+/// every enabled site is running (see [`ensure_running`]); it never restarts a
+/// live connector. Every mapped site's share warnings are refreshed first. The
+/// call then waits for the instance to settle; the named tunnel keeps retrying
+/// in the background, so one that does not come online in time is reported as
+/// the live (failed or connecting) tunnel with its `last_error`, not an error.
+pub async fn start(state: &Arc<DaemonState>) -> Response {
+    super::refresh_named_share_warnings(state).await;
+    let generation = match ensure_running(state).await {
+        Ok(generation) => generation,
+        Err(resp) => return resp,
+    };
+    if let Some(generation) = generation {
+        super::supervise::wait_settled(
+            state,
+            NAMED_KEY,
+            generation,
+            super::supervise::SETTLE_TIMEOUT,
+        )
+        .await;
+    }
+    super::tunnels_response(state).await
 }
 
 /// `StopNamedTunnel` - tear down the consolidated named tunnel.
+///
+/// Runtime-only: the hostnames stay configured, so the tunnel starts again on
+/// the next hostname change or daemon start. The stop runs under
+/// `tunnel_mutate`, so a background [`ensure_running`] queued before this call
+/// finishes first and cannot relaunch the tunnel after it returns.
 pub async fn stop(state: &DaemonState) -> Response {
     {
+        let _guard = state.tunnel_mutate.lock().await;
         let mut mgr = state.tunnel_manager.lock().await;
         if let Err(e) = mgr.stop(NAMED_KEY).await {
             return internal(format!("could not stop named tunnel: {e}"));
@@ -621,17 +846,468 @@ pub async fn delete(name: &str, state: &DaemonState) -> Response {
 
     let _ = std::fs::remove_file(creds_file(&state.dirs, name));
 
-    let mut cfg_guard = state.config.lock().await;
-    let mut new = cfg_guard.clone();
-    new.tunnel.named.remove(name);
-    new.tunnel.sites.clear();
-    if let Err(e) = new.validate() {
-        return internal(format!("config validation failed: {e}"));
+    {
+        let mut cfg_guard = state.config.lock().await;
+        let mut new = cfg_guard.clone();
+        new.tunnel.named.remove(name);
+        new.tunnel.sites.clear();
+        if let Err(e) = new.validate() {
+            return internal(format!("config validation failed: {e}"));
+        }
+        if let Err(e) = new.save(&state.config_path) {
+            return internal(format!("config save failed: {e}"));
+        }
+        *cfg_guard = new;
     }
-    if let Err(e) = new.save(&state.config_path) {
-        return internal(format!("config save failed: {e}"));
-    }
-    *cfg_guard = new;
+    super::rebuild_routes(state).await;
     tracing::info!(name, "deleted named tunnel");
     Response::Ok
+}
+
+/// The `ListNamedTunnels` site rows: each `[tunnel.sites]` key reported under
+/// its canonical site name when `resolve` knows it (so a legacy `.test` host
+/// key shows as its site), or verbatim when it names no site (so a stale entry
+/// stays visible and clearable). An exact-name key wins over a host alias of
+/// the same site. A row is protected when any password key resolves to it.
+fn list_site_hostnames(
+    sites: &std::collections::BTreeMap<String, String>,
+    passwords: &std::collections::BTreeMap<String, String>,
+    resolve: impl Fn(&str) -> Option<String>,
+) -> Vec<SiteHostname> {
+    let canonical = |key: &str| resolve(key).unwrap_or_else(|| key.to_owned());
+    let protected: std::collections::BTreeSet<String> =
+        passwords.keys().map(|k| canonical(k)).collect();
+    let mut rows: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for (key, hostname) in sites {
+        let name = canonical(key);
+        if name == *key || !rows.contains_key(&name) {
+            rows.insert(name, hostname.clone());
+        }
+    }
+    rows.into_iter()
+        .map(|(site, hostname)| SiteHostname {
+            protected: protected.contains(&site),
+            site,
+            hostname,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::test_support::state_in;
+    use yerd_core::{PhpVersion, Site};
+
+    async fn state_with_site(tmp: &Path, name: &str) -> Arc<DaemonState> {
+        let state = state_in(tmp);
+        let site = Site::linked(name, "/srv/www/blog", PhpVersion::new(8, 3)).unwrap();
+        state.router.write().await.insert(site).unwrap();
+        Arc::new(state)
+    }
+
+    #[test]
+    fn list_rows_report_canonical_names_and_keep_stale_keys() {
+        let map = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let resolve = |key: &str| match key {
+            "app" | "app.test" => Some("app".to_owned()),
+            "blog" => Some("blog".to_owned()),
+            _ => None,
+        };
+        let sites = map(&[
+            ("app.test", "old.example.com"),
+            ("app", "app.example.com"),
+            ("blog", "blog.example.com"),
+            ("gone", "gone.example.com"),
+        ]);
+        let passwords = map(&[("app.test", "pw")]);
+        let rows = list_site_hostnames(&sites, &passwords, resolve);
+        let got: Vec<(&str, &str, bool)> = rows
+            .iter()
+            .map(|r| (r.site.as_str(), r.hostname.as_str(), r.protected))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("app", "app.example.com", true),
+                ("blog", "blog.example.com", false),
+                ("gone", "gone.example.com", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn list_rows_map_a_legacy_host_key_to_its_site() {
+        let sites: std::collections::BTreeMap<String, String> =
+            [("app.test".to_owned(), "app.example.com".to_owned())].into();
+        let rows = list_site_hostnames(&sites, &std::collections::BTreeMap::new(), |k| {
+            (k == "app.test").then(|| "app".to_owned())
+        });
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.first().map(|r| r.site.as_str()), Some("app"));
+    }
+
+    const ALL: NamedFacts = NamedFacts {
+        logged_in: true,
+        installed: true,
+        has_tunnel: true,
+        site_count: 1,
+        has_origin: true,
+    };
+
+    #[test]
+    fn should_run_named_table() {
+        let cases: &[(NamedFacts, bool)] = &[
+            (ALL, true),
+            (
+                NamedFacts {
+                    site_count: 3,
+                    ..ALL
+                },
+                true,
+            ),
+            (
+                NamedFacts {
+                    logged_in: false,
+                    ..ALL
+                },
+                false,
+            ),
+            (
+                NamedFacts {
+                    installed: false,
+                    ..ALL
+                },
+                false,
+            ),
+            (
+                NamedFacts {
+                    has_tunnel: false,
+                    ..ALL
+                },
+                false,
+            ),
+            (
+                NamedFacts {
+                    site_count: 0,
+                    ..ALL
+                },
+                false,
+            ),
+            (
+                NamedFacts {
+                    has_origin: false,
+                    ..ALL
+                },
+                false,
+            ),
+        ];
+        for (facts, expected) in cases {
+            assert_eq!(should_run_named(*facts), *expected, "{facts:?}");
+        }
+    }
+
+    #[test]
+    fn named_blocker_names_the_first_missing_precondition() {
+        let message = |facts: NamedFacts| match named_blocker(facts) {
+            Some(Response::Error { message, .. }) => message,
+            other => panic!("expected an error, got {other:?}"),
+        };
+        let cases: &[(NamedFacts, &str)] = &[
+            (
+                NamedFacts {
+                    installed: false,
+                    logged_in: false,
+                    ..ALL
+                },
+                "not installed",
+            ),
+            (
+                NamedFacts {
+                    logged_in: false,
+                    ..ALL
+                },
+                "not logged in",
+            ),
+            (
+                NamedFacts {
+                    has_tunnel: false,
+                    ..ALL
+                },
+                "no named tunnel",
+            ),
+            (
+                NamedFacts {
+                    site_count: 0,
+                    ..ALL
+                },
+                "no sites enabled",
+            ),
+            (
+                NamedFacts {
+                    has_origin: false,
+                    ..ALL
+                },
+                "origin listener",
+            ),
+        ];
+        for (facts, expected) in cases {
+            assert!(message(*facts).contains(expected), "{facts:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn list_reports_protected_sites() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_with_site(tmp.path(), "blog").await;
+        assert_eq!(
+            set_site_hostname("blog", Some("blog.example.com"), &state).await,
+            Response::Ok
+        );
+        assert_eq!(
+            set_password("blog", Some("secret"), &state).await,
+            Response::Ok
+        );
+
+        let Response::NamedTunnels { sites, .. } = list(&state).await else {
+            panic!("expected NamedTunnels");
+        };
+
+        assert_eq!(
+            sites,
+            vec![SiteHostname {
+                site: "blog".to_owned(),
+                hostname: "blog.example.com".to_owned(),
+                protected: true,
+            }]
+        );
+    }
+
+    fn saved_passwords(state: &DaemonState) -> std::collections::BTreeMap<String, String> {
+        yerd_config::Config::load(&state.config_path)
+            .unwrap()
+            .tunnel
+            .passwords
+    }
+
+    #[tokio::test]
+    async fn set_password_persists_to_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_with_site(tmp.path(), "blog").await;
+
+        let resp = set_password("blog", Some("secret"), &state).await;
+
+        assert_eq!(resp, Response::Ok);
+        assert_eq!(
+            saved_passwords(&state).get("blog").map(String::as_str),
+            Some("secret")
+        );
+        assert_eq!(
+            state
+                .config
+                .lock()
+                .await
+                .tunnel
+                .passwords
+                .get("blog")
+                .map(String::as_str),
+            Some("secret")
+        );
+    }
+
+    #[tokio::test]
+    async fn hostname_and_password_changes_rebuild_the_route_map() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_with_site(tmp.path(), "blog").await;
+
+        assert_eq!(
+            set_site_hostname("blog", Some("blog.example.com"), &state).await,
+            Response::Ok
+        );
+        assert_eq!(
+            set_password("blog", Some("secret"), &state).await,
+            Response::Ok
+        );
+        assert_eq!(
+            state.tunnel_routes.read().await.get("blog.example.com"),
+            Some(&yerd_proxy::TunnelRoute {
+                site: "blog".to_owned(),
+                password: Some("secret".to_owned()),
+            })
+        );
+
+        assert_eq!(set_site_hostname("blog", None, &state).await, Response::Ok);
+        assert!(state.tunnel_routes.read().await.is_empty());
+    }
+
+    fn saved_sites(state: &DaemonState) -> std::collections::BTreeMap<String, String> {
+        yerd_config::Config::load(&state.config_path)
+            .unwrap()
+            .tunnel
+            .sites
+    }
+
+    fn pairs(list: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+        list.iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_password_set_by_host_protects_the_site() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_with_site(tmp.path(), "blog").await;
+        assert_eq!(
+            set_site_hostname("blog", Some("blog.example.com"), &state).await,
+            Response::Ok
+        );
+
+        let resp = set_password("blog.test", Some("secret"), &state).await;
+
+        assert_eq!(resp, Response::Ok);
+        assert_eq!(saved_passwords(&state), pairs(&[("blog", "secret")]));
+        assert_eq!(
+            state.tunnel_routes.read().await.get("blog.example.com"),
+            Some(&yerd_proxy::TunnelRoute {
+                site: "blog".to_owned(),
+                password: Some("secret".to_owned()),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn clearing_a_password_by_host_removes_the_canonical_and_legacy_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_with_site(tmp.path(), "blog").await;
+        state.config.lock().await.tunnel.passwords =
+            pairs(&[("blog", "new"), ("blog.test", "old")]);
+
+        let resp = set_password("blog.test", None, &state).await;
+
+        assert_eq!(resp, Response::Ok);
+        assert!(saved_passwords(&state).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_hostname_is_stored_under_the_canonical_name_replacing_legacy_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_with_site(tmp.path(), "blog").await;
+        state.config.lock().await.tunnel.sites = pairs(&[("blog.test", "blog.example.com")]);
+
+        let resp = set_site_hostname("blog", Some("blog.example.com"), &state).await;
+        assert_eq!(resp, Response::Ok);
+        assert_eq!(saved_sites(&state), pairs(&[("blog", "blog.example.com")]));
+
+        let resp = set_site_hostname("blog.test", Some("www.example.com"), &state).await;
+        assert_eq!(resp, Response::Ok);
+        assert_eq!(saved_sites(&state), pairs(&[("blog", "www.example.com")]));
+        assert_eq!(
+            state.tunnel_routes.read().await.get("www.example.com"),
+            Some(&yerd_proxy::TunnelRoute {
+                site: "blog".to_owned(),
+                password: None,
+            })
+        );
+
+        assert_eq!(
+            set_site_hostname("blog.test", None, &state).await,
+            Response::Ok
+        );
+        assert!(saved_sites(&state).is_empty());
+    }
+
+    #[tokio::test]
+    async fn stop_waits_for_tunnel_mutate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_with_site(tmp.path(), "blog").await;
+        install::install_binary_for_test(&state.dirs, "2026.6.1", b"#!/bin/sh\nexit 0\n");
+        super::super::refresh_cloudflared_cache_after_install(&state).await;
+        let guard = state.tunnel_mutate.lock().await;
+        let stopping = {
+            let state = Arc::clone(&state);
+            tokio::spawn(async move { stop(&state).await })
+        };
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!stopping.is_finished());
+        drop(guard);
+
+        let resp = tokio::time::timeout(std::time::Duration::from_secs(5), stopping)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(resp, Response::Tunnels { .. }), "{resp:?}");
+    }
+
+    #[tokio::test]
+    async fn clear_password_removes_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_with_site(tmp.path(), "blog").await;
+        assert_eq!(
+            set_password("blog", Some("secret"), &state).await,
+            Response::Ok
+        );
+
+        let resp = set_password("blog", None, &state).await;
+
+        assert_eq!(resp, Response::Ok);
+        assert!(saved_passwords(&state).is_empty());
+        assert!(state.config.lock().await.tunnel.passwords.is_empty());
+    }
+
+    #[tokio::test]
+    async fn clear_password_is_allowed_for_an_unknown_site() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        assert_eq!(set_password("gone", None, &state).await, Response::Ok);
+    }
+
+    #[tokio::test]
+    async fn too_long_password_is_rejected_without_saving() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_with_site(tmp.path(), "blog").await;
+        let long = "x".repeat(129);
+
+        let resp = set_password("blog", Some(&long), &state).await;
+
+        assert!(
+            matches!(
+                resp,
+                Response::Error {
+                    code: ErrorCode::InvalidPath,
+                    ..
+                }
+            ),
+            "{resp:?}"
+        );
+        assert!(!state.config_path.exists());
+        assert!(state.config.lock().await.tunnel.passwords.is_empty());
+    }
+
+    #[tokio::test]
+    async fn password_for_an_unknown_site_is_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        let resp = set_password("nope", Some("secret"), &state).await;
+
+        assert!(
+            matches!(
+                resp,
+                Response::Error {
+                    code: ErrorCode::NotFound,
+                    ..
+                }
+            ),
+            "{resp:?}"
+        );
+        assert!(!state.config_path.exists());
+    }
 }

@@ -28,7 +28,20 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v23 (current)
+### v24 (current)
+
+**Added:** the optional `[tunnel.passwords]` table - per-site share passwords, keyed by site name. When a site has a password, every tunnelled request to it (quick or named tunnel) must carry HTTP basic auth with that password; the username is ignored. One password protects every tunnel kind for that site. Each value is 1 to 128 bytes with no control characters, and keys follow the same safe-key rule as `[tunnel.sites]`. It defaults to empty when absent, so a file with no passwords omits it entirely. The file is saved `0600`, and passwords are never returned over IPC.
+
+```toml
+[tunnel.passwords]
+blog = "let-me-in"
+```
+
+**Migration from v23:** bare version bump - the table defaults to empty when absent, so a v23 file (including existing `[tunnel.named]` and `[tunnel.sites]` tables) needs no other change.
+
+**To downgrade to v23:** change `version = 24` to `version = 23` and delete the `[tunnel.passwords]` table if present (a v23 daemon rejects the unknown key under `deny_unknown_fields`). Shared sites are then served without a password.
+
+### v23
 
 **Added:** the optional `[domains.proxy]` table - routable-domain deltas for **whole-host proxies**, keyed by proxy name. It sits alongside the existing `[domains.linked]` (by site name) and `[domains.parked]` (by document-root string) maps and carries the same three keys: `added`, `suppressed`, and `primary`. It defaults to empty when absent, so an uncustomised file omits it entirely.
 

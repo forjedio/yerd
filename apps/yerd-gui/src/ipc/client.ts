@@ -625,7 +625,12 @@ export async function setSiteTunnel(site: string, hostname: string | null): Prom
   ensureOk(await call<Response>("set_site_tunnel", { site, hostname }));
 }
 
-/** (Re)start the consolidated Named Tunnel serving all enabled sites. */
+/** Set (or clear, with `null`) a site's share password. */
+export async function setTunnelPassword(site: string, password: string | null): Promise<void> {
+  ensureOk(await call<Response>("set_tunnel_password", { site, password }));
+}
+
+/** Start the consolidated Named Tunnel if it is not running (idempotent). */
 export async function startNamedTunnel(): Promise<TunnelsResponse> {
   return ensureOk(await call<Response>("start_named_tunnel")) as TunnelsResponse;
 }

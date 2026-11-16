@@ -2986,6 +2986,9 @@ fn response_tunnels_byte_shape() {
             state: TunnelRunState::Running,
             url: Some("https://calm-river-1234.trycloudflare.com".into()),
             hostname: None,
+            last_error: None,
+            protected: false,
+            warnings: Vec::new(),
         }],
         cloudflared: CloudflaredStatus {
             installed: true,
@@ -3011,6 +3014,9 @@ fn response_tunnels_named_and_empty_byte_shape() {
             state: TunnelRunState::Running,
             url: None,
             hostname: Some("shop.example.com".into()),
+            last_error: None,
+            protected: false,
+            warnings: Vec::new(),
         }],
         cloudflared: CloudflaredStatus {
             installed: true,
@@ -3048,9 +3054,87 @@ fn tunnel_run_state_each_variant_byte_shape() {
     for (st, expected) in [
         (TunnelRunState::Running, r#""running""#),
         (TunnelRunState::Failed, r#""failed""#),
+        (TunnelRunState::Connecting, r#""connecting""#),
+        (TunnelRunState::Reconnecting, r#""reconnecting""#),
     ] {
         assert_eq!(serde_json::to_string(&st).unwrap(), expected);
+        assert_eq!(
+            serde_json::from_str::<TunnelRunState>(expected).unwrap(),
+            st
+        );
     }
+}
+
+/// A tunnel carrying the additive health, protection, and preflight fields
+/// emits them after `hostname`; their defaults are omitted (pinned above).
+#[test]
+fn response_tunnels_with_error_protected_and_warnings_byte_shape() {
+    let r = Response::Tunnels {
+        tunnels: vec![TunnelInfo {
+            site: "app".into(),
+            kind: TunnelKind::Quick,
+            state: TunnelRunState::Reconnecting,
+            url: Some("https://calm-river-1234.trycloudflare.com".into()),
+            hostname: None,
+            last_error: Some("process exited: exit status: 1".into()),
+            protected: true,
+            warnings: vec!["Vite dev server is running".into()],
+        }],
+        cloudflared: CloudflaredStatus {
+            installed: true,
+            version: None,
+            source: None,
+            logged_in: false,
+        },
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"tunnels","tunnels":[{"site":"app","kind":"quick","state":"reconnecting","url":"https://calm-river-1234.trycloudflare.com","last_error":"process exited: exit status: 1","protected":true,"warnings":["Vite dev server is running"]}],"cloudflared":{"installed":true,"logged_in":false}}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn site_hostname_protected_byte_shape() {
+    let protected = SiteHostname {
+        site: "app".into(),
+        hostname: "app.example.com".into(),
+        protected: true,
+    };
+    let s = serde_json::to_string(&protected).unwrap();
+    assert_eq!(
+        s,
+        r#"{"site":"app","hostname":"app.example.com","protected":true}"#
+    );
+    assert_eq!(serde_json::from_str::<SiteHostname>(&s).unwrap(), protected);
+
+    let legacy: SiteHostname =
+        serde_json::from_str(r#"{"site":"app","hostname":"app.example.com"}"#).unwrap();
+    assert!(!legacy.protected);
+}
+
+#[test]
+fn request_set_tunnel_password_byte_shape() {
+    let set = Request::SetTunnelPassword {
+        site: "app".into(),
+        password: Some("secret".into()),
+    };
+    let s = serde_json::to_string(&set).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_tunnel_password","site":"app","password":"secret"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), set);
+
+    let clear = Request::SetTunnelPassword {
+        site: "app".into(),
+        password: None,
+    };
+    let s = serde_json::to_string(&clear).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_tunnel_password","site":"app","password":null}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), clear);
 }
 
 #[test]
@@ -3184,6 +3268,7 @@ fn response_named_tunnels_with_none_zone_skips_field() {
         sites: vec![SiteHostname {
             site: "app".into(),
             hostname: "app.example.com".into(),
+            protected: false,
         }],
         zone: None,
     };
