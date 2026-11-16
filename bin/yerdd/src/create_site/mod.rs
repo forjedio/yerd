@@ -527,6 +527,34 @@ fn build_job_bin(
     Err("site creation is not yet supported on this platform".to_owned())
 }
 
+/// Write a `pnpm` wrapper into the job's bin that drops every `--no-ansi`
+/// argument before running `real_pnpm`.
+///
+/// The Laravel installer appends `--no-ansi` to each command it runs whenever
+/// its output is not a terminal, which is always the case under the daemon.
+/// npm ignores the unknown flag, but pnpm 12 rejects it, and the installer
+/// reports that failure as success, leaving the project with no
+/// `node_modules` or built assets. Colour is still off because the job sets
+/// `NO_COLOR`. Unix-only.
+#[cfg(unix)]
+fn write_pnpm_wrapper(job_bin: &Path, real_pnpm: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let wrapper = job_bin.join("pnpm");
+    let script = format!(
+        "#!/bin/sh\nfor a do\n  shift\n  [ \"$a\" = --no-ansi ] || set -- \"$@\" \"$a\"\ndone\nexec {} \"$@\"\n",
+        sh_quote(real_pnpm)
+    );
+    std::fs::write(&wrapper, script).map_err(|e| format!("write pnpm wrapper: {e}"))?;
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("chmod pnpm wrapper: {e}"))
+}
+
+#[cfg(not(unix))]
+fn write_pnpm_wrapper(_job_bin: &Path, _real_pnpm: &Path) -> Result<(), String> {
+    Err("site creation is not yet supported on this platform".to_owned())
+}
+
 fn error(code: ErrorCode, message: String) -> Response {
     Response::Error { code, message }
 }
@@ -782,6 +810,41 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o111, 0o111, "wrapper should be executable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pnpm_wrapper_drops_no_ansi_and_keeps_other_args() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let job_bin = tmp.path().join("bin");
+        std::fs::create_dir_all(&job_bin).unwrap();
+        let real_dir = tmp.path().join("it's real");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        let real = real_dir.join("pnpm");
+        std::fs::write(&real, b"#!/bin/sh\nfor a do printf '[%s]' \"$a\"; done\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        write_pnpm_wrapper(&job_bin, &real).unwrap();
+
+        let cases: &[(&[&str], &str)] = &[
+            (
+                &["install", "--ignore-scripts", "--no-ansi"],
+                "[install][--ignore-scripts]",
+            ),
+            (&["build", "--no-ansi"], "[build]"),
+            (&["--no-ansi"], ""),
+            (&["run", "a b", "--no-ansi-x"], "[run][a b][--no-ansi-x]"),
+            (&[], ""),
+        ];
+        for (args, want) in cases {
+            let out = std::process::Command::new(job_bin.join("pnpm"))
+                .args(*args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), *want, "{args:?}");
+        }
     }
 
     #[cfg(unix)]
