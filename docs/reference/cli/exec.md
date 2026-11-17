@@ -94,8 +94,8 @@ project, so a nearer `.node-version` beats a farther `.nvmrc`.
 `v` prefix, plus `node` (newest installed release) and `lts/*` (newest installed
 release recorded as LTS). Leading and trailing whitespace is ignored. Named LTS
 aliases, `default`, comments, and other nvm syntax are unsupported and fail
-clearly. Legacy installations without recorded LTS metadata remain selectable
-numerically and with `node`; `lts/*` only considers newer managed installations.
+clearly. A legacy single-version installation (`{data}/tools/node`) counts as LTS, since
+that installer only ever fetched the latest LTS, so `lts/*` can select it too.
 The two supported aliases also work with `yerd install tool node <alias>`.
 
 An empty, unreadable, unsupported, or unmatched project file is an error (exit `2`);
