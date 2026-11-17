@@ -22,6 +22,9 @@ const resetDomains = vi.fn();
 const listRoutes = vi.fn();
 const addRouteRule = vi.fn();
 const removeRouteRule = vi.fn();
+const listResponseHeaders = vi.fn();
+const setResponseHeader = vi.fn();
+const removeResponseHeader = vi.fn();
 const clipboardWriteText = vi.fn();
 vi.mock("@/ipc/client", () => ({
   openInBrowser: (...args: unknown[]) => openInBrowser(...args),
@@ -44,6 +47,9 @@ vi.mock("@/ipc/client", () => ({
   listRoutes: (...args: unknown[]) => listRoutes(...args),
   addRouteRule: (...args: unknown[]) => addRouteRule(...args),
   removeRouteRule: (...args: unknown[]) => removeRouteRule(...args),
+  listResponseHeaders: (...args: unknown[]) => listResponseHeaders(...args),
+  setResponseHeader: (...args: unknown[]) => setResponseHeader(...args),
+  removeResponseHeader: (...args: unknown[]) => removeResponseHeader(...args),
   IpcError: class IpcError extends Error {},
 }));
 
@@ -146,6 +152,9 @@ describe("SiteDetailsSidebar", () => {
     listRoutes.mockReset().mockResolvedValue([]);
     addRouteRule.mockReset().mockResolvedValue(undefined);
     removeRouteRule.mockReset().mockResolvedValue(undefined);
+    listResponseHeaders.mockReset().mockResolvedValue([]);
+    setResponseHeader.mockReset().mockResolvedValue(undefined);
+    removeResponseHeader.mockReset().mockResolvedValue(undefined);
     clipboardWriteText.mockReset();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -522,6 +531,22 @@ describe("SiteDetailsSidebar", () => {
     await wrapper.get('[aria-label="Remove route /api"]').trigger("click");
     await flushPromises();
     expect(removeRouteRule).toHaveBeenCalledWith("blog", "/api");
+  });
+
+  it("manages response headers from the Headers tab", async () => {
+    listResponseHeaders.mockResolvedValue([
+      { site: "blog", name: "Access-Control-Allow-Origin", value: "https://app.test" },
+    ]);
+    const wrapper = mountSidebar();
+
+    await openTab(wrapper, "Headers");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Access-Control-Allow-Origin:");
+    expect(wrapper.text()).toContain("https://app.test");
+
+    await wrapper.get('[aria-label="Remove header Access-Control-Allow-Origin"]').trigger("click");
+    await flushPromises();
+    expect(removeResponseHeader).toHaveBeenCalledWith("blog", "Access-Control-Allow-Origin");
   });
 
   it("toggles the front controller from the Routing tab", async () => {

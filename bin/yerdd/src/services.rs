@@ -1251,22 +1251,15 @@ pub(crate) fn resolve_version(
     configured: Option<&str>,
     dirs: &PlatformDirs,
 ) -> Result<ServiceVersion, Response> {
-    let mut installed = installed_versions(def.id(), dirs);
-    if let Some(c) = configured {
-        if let Ok(v) = c.parse::<ServiceVersion>() {
-            if installed.contains(&v) {
-                return Ok(v);
-            }
-        }
-    }
-    installed.pop().ok_or_else(|| Response::Error {
-        code: ErrorCode::NotFound,
-        message: format!(
-            "no {} version installed - run `yerd service install {}` first",
-            def.display_name(),
-            def.id()
-        ),
-    })
+    yerd_services::client::select_version(installed_versions(def.id(), dirs), configured)
+        .ok_or_else(|| Response::Error {
+            code: ErrorCode::NotFound,
+            message: format!(
+                "no {} version installed - run `yerd service install {}` first",
+                def.display_name(),
+                def.id()
+            ),
+        })
 }
 
 /// Apply a mutation to a service instance's config, validate, and persist.

@@ -10,7 +10,9 @@
 //! `PlatformDirs` layout (a stub shell script standing in for the PHP
 //! interpreter), rather than calling `cover_shim::dispatch()` in-process,
 //! because it resolves `ActivePaths::new().resolve()` internally with no
-//! dirs-injection seam.
+//! dirs-injection seam. The `composer` and `laravel` front doors are covered too:
+//! they must point `PHPRC` at the default version's CLI ini, overriding the base
+//! ini the shell profile exports (issue #236).
 
 #![allow(
     clippy::unwrap_used,
@@ -378,5 +380,63 @@ mod tests {
             !expected_phprc.exists(),
             "no cover ini may be written when pcov is missing"
         );
+    }
+
+    /// Write the base and per-version CLI inis and placeholder `composer.phar` and
+    /// Laravel installer files into the faked layout. Returns `(base ini,
+    /// per-version ini)`.
+    fn faked_tool_layout(home: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dirs = PlatformDirs::for_user(home, 0);
+        let base = dirs.data.join("php-cli.ini");
+        let per_version = dirs.data.join("php-cli-8.4.ini");
+        fs::write(&base, "; base\n").expect("write base ini");
+        fs::write(&per_version, "; per-version\n").expect("write per-version ini");
+
+        let tools = dirs.data.join("tools");
+        let composer_dir = tools.join("composer");
+        fs::create_dir_all(&composer_dir).expect("mkdir composer");
+        fs::write(composer_dir.join("composer.phar"), b"").expect("write composer.phar");
+        let laravel_dir = tools.join("laravel").join("bin");
+        fs::create_dir_all(&laravel_dir).expect("mkdir laravel");
+        fs::write(laravel_dir.join("laravel"), b"").expect("write laravel installer");
+
+        (base, per_version)
+    }
+
+    /// Run the `yerd` binary under the argv[0] `shim` name with the base ini
+    /// exported as `PHPRC`, as the `yerd path` shell block does, and assert PHP
+    /// was exec'd with `PHPRC` pointing at the default version's per-version ini.
+    fn assert_tool_shim_uses_per_version_ini(shim: &str, args: &[&str]) {
+        let (tmp, home, _) = faked_php_8_4_layout();
+        let (base, per_version) = faked_tool_layout(&home);
+
+        let shim_bin = tmp.path().join(shim);
+        symlink(env!("CARGO_BIN_EXE_yerd"), &shim_bin).expect("symlink tool shim");
+
+        let base = base.to_str().expect("utf8 path");
+        let output = run_in_home_with_env(&shim_bin, args, &home, &[("PHPRC", base)]);
+        assert!(
+            output.status.success(),
+            "{shim} shim failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let want = per_version.to_str().expect("utf8 path");
+        assert_eq!(
+            phprc_lines(&output),
+            vec![want, want],
+            "the {shim} shim must override the inherited base PHPRC"
+        );
+    }
+
+    /// Issue #236: Composer must see extensions registered for the default PHP.
+    #[test]
+    fn composer_shim_points_phprc_at_the_default_versions_cli_ini() {
+        assert_tool_shim_uses_per_version_ini("composer", &["show", "--platform"]);
+    }
+
+    /// The Laravel installer runs under the default PHP's per-version ini too.
+    #[test]
+    fn laravel_shim_points_phprc_at_the_default_versions_cli_ini() {
+        assert_tool_shim_uses_per_version_ini("laravel", &["new", "demo"]);
     }
 }

@@ -1,73 +1,64 @@
-//! Compose the macOS pf redirect that lets the unprivileged daemon serve
-//! 80/443 while binding only rootless ports.
+//! Legacy pf state from pre-launchd Yerd, kept only to detect and remove it.
 //!
-//! macOS has no `setcap`; instead a privileged helper installs a pf `rdr`
-//! redirect. The empirically-validated rule (see the plan's Step 0 spike) is:
+//! Older Yerd versions served 80/443 on macOS through pf `rdr` rules in their
+//! own anchors (`dev.yerd` for loopback, `dev.yerd.lan` for LAN), hooked into
+//! `/etc/pf.conf` by marker-tagged lines and re-applied at boot by a launchd
+//! daemon running `pfctl -E -f /etc/pf.conf`. Privileged ports now use launchd
+//! socket activation (see [`super::launchd_ports`]), and every elevate or
+//! unelevate removes this legacy state for both anchors.
 //!
-//! ```text
-//! rdr pass on lo0 inet proto tcp from any to any port 80  -> 127.0.0.1 port <http_to>
-//! rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port <https_to>
-//! ```
-//!
-//! `on lo0` is load-bearing: pf `rdr` only fires for loopback-delivered
-//! `127.0.0.1→127.0.0.1` traffic when the rule is anchored to `lo0`.
-//!
-//! These rules live in their own anchor file (`/etc/pf.anchors/dev.yerd`) and
-//! are hooked into the main ruleset via two lines inserted into `/etc/pf.conf`:
-//! an `rdr-anchor` reference (in the translation section, before any filter
-//! rule) and a `load anchor` statement. We **edit** `/etc/pf.conf` rather than
-//! load a self-contained ruleset because `pfctl -f <full-ruleset>` *replaces*
-//! the running ruleset and would flush Apple's default `com.apple/*` anchors;
-//! editing the canonical file and reloading it preserves everything.
+//! Removal must not switch off pf for other software. VPN kill switches and
+//! firewall tools also enable pf through `pfctl`, so their enable references
+//! look identical to Yerd's. [`only_apple_and_yerd_pf_state`] is the fail-closed
+//! gate that decides whether releasing `pfctl`-owned references is safe.
 //!
 //! Every function here is pure and table-tested; the helper does the I/O.
 
 #![allow(clippy::similar_names)]
 
-/// pf anchor name (also the `LaunchDaemon` `Label` and plist filename stem).
+/// Legacy loopback pf anchor name.
 pub const ANCHOR_NAME: &str = "dev.yerd";
-/// Absolute path of the anchor rules file.
+/// Legacy loopback anchor rules file.
 pub const ANCHOR_PATH: &str = "/etc/pf.anchors/dev.yerd";
-/// Absolute path of the boot-persistence `LaunchDaemon` plist.
+/// Legacy loopback boot daemon plist.
 pub const PLIST_PATH: &str = "/Library/LaunchDaemons/dev.yerd.pf.plist";
+/// Legacy loopback boot daemon label.
+pub const PLIST_LABEL: &str = "dev.yerd.pf";
 /// The canonical pf config the system loads at boot.
 pub const PF_CONF_PATH: &str = "/etc/pf.conf";
 
-/// Trailing marker on every line we insert into `/etc/pf.conf`, so insertion
-/// is idempotent and removal is unambiguous.
+/// Trailing marker on the loopback lines older Yerd inserted into
+/// `/etc/pf.conf`.
 const MARKER: &str = "# yerd-managed";
 
-/// LAN pf anchor name - a **separate** anchor from the loopback `dev.yerd` one
-/// (installed by `yerd elevate ports`) so teardown of one never disturbs the
-/// other. It carries the M2 `rdr` that redirects inbound LAN 80/443 to the
-/// daemon's rootless ports on the host's LAN IP.
+/// Legacy LAN pf anchor name.
 pub const LAN_ANCHOR_NAME: &str = "dev.yerd.lan";
-/// Absolute path of the LAN anchor rules file.
+/// Legacy LAN anchor rules file.
 pub const LAN_ANCHOR_PATH: &str = "/etc/pf.anchors/dev.yerd.lan";
-/// Absolute path of the LAN boot-persistence `LaunchDaemon` plist.
+/// Legacy LAN boot daemon plist.
 pub const LAN_PLIST_PATH: &str = "/Library/LaunchDaemons/dev.yerd.lan.pf.plist";
+/// Legacy LAN boot daemon label.
+pub const LAN_PLIST_LABEL: &str = "dev.yerd.lan.pf";
 
-/// Distinct marker on LAN-managed `/etc/pf.conf` lines. Deliberately different
-/// from [`MARKER`] and non-overlapping (`"# yerd-managed"` is not a substring of
-/// `"# yerd-lan-managed"`), so removing one anchor's refs never strips the
-/// other's.
+/// Marker on the LAN lines in `/etc/pf.conf`. `"# yerd-managed"` is not a
+/// substring of it, so the two never strip each other's lines.
 const LAN_MARKER: &str = "# yerd-lan-managed";
 
-/// Compose the contents of `/etc/pf.anchors/dev.yerd`. Ends in a newline.
-#[must_use]
-pub fn compose_anchor_rules(
-    http_from: u16,
-    http_to: u16,
-    https_from: u16,
-    https_to: u16,
-) -> String {
-    format!(
-        "rdr pass on lo0 inet proto tcp from any to any port {http_from} -> 127.0.0.1 port {http_to}\n\
-         rdr pass on lo0 inet proto tcp from any to any port {https_from} -> 127.0.0.1 port {https_to}\n"
-    )
-}
+/// Apple's own anchors and sub-anchors as listed by `pfctl -s Anchors -v` on a
+/// clean macOS install, plus the static sub-anchors declared in
+/// `/etc/pf.anchors/com.apple`. Exact names only: anything else, including an
+/// unknown `com.apple/<n>.<name>` sub-anchor where a third-party tool could
+/// hide its rules, makes [`only_apple_and_yerd_pf_state`] fail closed. The
+/// `com.apple.internet-sharing` anchors are deliberately left out: Internet
+/// Sharing relies on pf being enabled, and its reference can't be told apart
+/// from Yerd's, so releasing while it's loaded could switch off its NAT.
+const APPLE_ANCHORS: &[&str] = &[
+    "com.apple",
+    "com.apple/200.AirDrop",
+    "com.apple/250.ApplicationFirewall",
+];
 
-/// Parse the destination ports of an installed `dev.yerd` or `dev.yerd.lan`
+/// Parse the destination ports of a legacy `dev.yerd` or `dev.yerd.lan`
 /// anchor file, returning `(http_to, https_to)`.
 ///
 /// Handles both the loopback shape (`... to any port 80 -> 127.0.0.1 port 8080`)
@@ -103,7 +94,6 @@ pub fn parse_anchor_targets(rules: &str) -> Option<(u16, u16)> {
     Some((http_to?, https_to?))
 }
 
-/// The last `port <N>` value in `segment`, if any.
 fn last_port_token(segment: &str) -> Option<u16> {
     let mut tokens = segment.split_whitespace().peekable();
     let mut found: Option<u16> = None;
@@ -117,17 +107,6 @@ fn last_port_token(segment: &str) -> Option<u16> {
     found
 }
 
-/// The `rdr-anchor` line for `name`, tagged with `marker`.
-fn rdr_anchor_line_for(name: &str, marker: &str) -> String {
-    format!("rdr-anchor \"{name}\" {marker}")
-}
-
-/// The `load anchor` line for `name`/`path`, tagged with `marker`.
-fn load_anchor_line_for(name: &str, path: &str, marker: &str) -> String {
-    format!("load anchor \"{name}\" from \"{path}\" {marker}")
-}
-
-/// True if `pf_conf` already carries the refs for `name`/`marker`.
 fn is_installed_for(pf_conf: &str, name: &str, marker: &str) -> bool {
     let quoted = format!("\"{name}\"");
     pf_conf
@@ -135,34 +114,6 @@ fn is_installed_for(pf_conf: &str, name: &str, marker: &str) -> bool {
         .any(|l| l.contains(marker) && l.contains(&quoted))
 }
 
-/// Insert an anchor's `rdr-anchor` + `load anchor` refs into `pf_conf`.
-fn insert_refs_for(pf_conf: &str, name: &str, path: &str, marker: &str) -> String {
-    if is_installed_for(pf_conf, name, marker) {
-        return pf_conf.to_owned();
-    }
-
-    let mut lines: Vec<String> = pf_conf.lines().map(str::to_owned).collect();
-
-    let after = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| {
-            let t = l.trim_start();
-            t.starts_with("rdr-anchor") || t.starts_with("nat-anchor")
-        })
-        .map(|(i, _)| i)
-        .next_back();
-    let insert_at = after.map_or(0, |i| i + 1);
-    lines.insert(insert_at, rdr_anchor_line_for(name, marker));
-
-    lines.push(load_anchor_line_for(name, path, marker));
-
-    let mut out = lines.join("\n");
-    out.push('\n');
-    out
-}
-
-/// Remove the lines tagged with `marker` from `pf_conf`.
 fn remove_refs_for(pf_conf: &str, marker: &str) -> String {
     let kept: Vec<&str> = pf_conf.lines().filter(|l| !l.contains(marker)).collect();
     let mut out = kept.join("\n");
@@ -172,113 +123,140 @@ fn remove_refs_for(pf_conf: &str, marker: &str) -> String {
     out
 }
 
-/// True if `pf_conf` already carries the loopback (`dev.yerd`) managed lines.
+/// True if `pf_conf` carries the legacy loopback (`dev.yerd`) lines.
 #[must_use]
 pub fn is_installed(pf_conf: &str) -> bool {
     is_installed_for(pf_conf, ANCHOR_NAME, MARKER)
 }
 
-/// Insert the loopback `rdr-anchor` + `load anchor` lines into `pf_conf`,
-/// returning the new file text. Idempotent.
-///
-/// The `rdr-anchor` line is placed immediately after the last existing
-/// `rdr-anchor`/`nat-anchor` declaration (the translation section, which pf
-/// requires to precede filter rules); if the file has neither, it is prepended.
-/// The `load anchor` line is appended (load statements may appear anywhere).
-#[must_use]
-pub fn insert_anchor_refs(pf_conf: &str) -> String {
-    insert_refs_for(pf_conf, ANCHOR_NAME, ANCHOR_PATH, MARKER)
-}
-
-/// Remove the loopback managed lines from `pf_conf` (scoped to [`MARKER`], so it
-/// never strips the LAN anchor's refs). Idempotent.
+/// Remove the legacy loopback lines from `pf_conf`. Idempotent, and never
+/// touches the LAN lines.
 #[must_use]
 pub fn remove_anchor_refs(pf_conf: &str) -> String {
     remove_refs_for(pf_conf, MARKER)
 }
 
-/// True if `pf_conf` already carries the LAN (`dev.yerd.lan`) managed lines.
+/// True if `pf_conf` carries the legacy LAN (`dev.yerd.lan`) lines.
 #[must_use]
 pub fn is_lan_installed(pf_conf: &str) -> bool {
     is_installed_for(pf_conf, LAN_ANCHOR_NAME, LAN_MARKER)
 }
 
-/// Insert the LAN anchor refs into `pf_conf`. Idempotent; same placement rules
-/// as [`insert_anchor_refs`], but tagged with [`LAN_MARKER`] so the two anchors
-/// coexist independently.
-#[must_use]
-pub fn insert_lan_anchor_refs(pf_conf: &str) -> String {
-    insert_refs_for(pf_conf, LAN_ANCHOR_NAME, LAN_ANCHOR_PATH, LAN_MARKER)
-}
-
-/// Remove the LAN managed lines from `pf_conf` (scoped to [`LAN_MARKER`], so it
-/// never strips the loopback anchor's refs). Idempotent.
+/// Remove the legacy LAN lines from `pf_conf`. Idempotent, and never touches
+/// the loopback lines.
 #[must_use]
 pub fn remove_lan_anchor_refs(pf_conf: &str) -> String {
     remove_refs_for(pf_conf, LAN_MARKER)
 }
 
-/// Compose the LAN anchor rules file (`/etc/pf.anchors/dev.yerd.lan`), the M2
-/// redirect. Ends in a newline.
+/// Remove both anchors' legacy lines from `pf_conf`.
+#[must_use]
+pub fn remove_all_refs(pf_conf: &str) -> String {
+    remove_lan_anchor_refs(&remove_anchor_refs(pf_conf))
+}
+
+/// One pf enable reference from `pfctl -s References`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PfReference {
+    /// Name of the process that took the reference.
+    pub process: String,
+    /// The reference token, as printed.
+    pub token: String,
+}
+
+/// Parse `pfctl -s References`. Data rows start with a numeric pid followed by
+/// the process name and the token; headers, blank lines and anything else are
+/// skipped.
+#[must_use]
+pub fn parse_pf_references(text: &str) -> Vec<PfReference> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?;
+            if !is_digits(pid) {
+                return None;
+            }
+            let process = fields.next()?.to_owned();
+            let token = fields.next()?.to_owned();
+            Some(PfReference { process, token })
+        })
+        .collect()
+}
+
+/// The tokens of references taken by a process named exactly `pfctl`, which
+/// is how older Yerd enabled pf. `None` when any such token is not a plain
+/// decimal number, so nothing unvalidated reaches `pfctl -X`.
+#[must_use]
+pub fn yerd_owned_tokens(refs: &[PfReference]) -> Option<Vec<&str>> {
+    refs.iter()
+        .filter(|r| r.process == "pfctl")
+        .map(|r| is_digits(&r.token).then_some(r.token.as_str()))
+        .collect()
+}
+
+/// True when a `pfctl -a <anchor> -s nat` listing contains any rule.
+#[must_use]
+pub fn anchor_has_rules(listing: &str) -> bool {
+    listing
+        .lines()
+        .map(str::trim)
+        .any(|l| !l.is_empty() && !l.starts_with('#'))
+}
+
+/// True only when the loaded pf state is provably just Apple's defaults plus
+/// Yerd's legacy anchors, so releasing `pfctl`-owned references can't disable
+/// another tool's pf.
 ///
-/// Redirects inbound 80/443 to `<lan_ip>:<rootless>`, **source-scoped to the
-/// RFC1918 + link-local ranges** (the LAN subset of [`yerd_core::is_lan_source`];
-/// loopback is deliberately excluded here - loopback traffic is served by the
-/// separate `dev.yerd` anchor and never has `<lan_ip>` as its destination) and
-/// dest-scoped to `<lan_ip>`. No `on <iface>` qualifier: the destination is a
-/// real routable local address, so no martian/loopback drop applies and no
-/// interface name is needed.
+/// `anchors` is `pfctl -s Anchors -v` (recursive); every listed anchor must be
+/// in the exact Apple allowlist or be a Yerd anchor. `nat` and `rules` are
+/// `pfctl -s nat` and `pfctl -s rules`; every main-ruleset line must be an
+/// anchor hook for `com.apple/*` or a Yerd anchor. Anything unrecognised
+/// returns false. Unknown Apple names (other macOS versions, dynamic
+/// sub-anchors) also fail closed; the cost is only that pf stays enabled until
+/// the next reboot.
 #[must_use]
-pub fn compose_lan_anchor_rules(
-    lan_ip: std::net::Ipv4Addr,
-    http_from: u16,
-    http_to: u16,
-    https_from: u16,
-    https_to: u16,
-) -> String {
-    let src = "{ 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 }";
-    format!(
-        "rdr pass inet proto tcp from {src} to {lan_ip} port {http_from} -> {lan_ip} port {http_to}\n\
-         rdr pass inet proto tcp from {src} to {lan_ip} port {https_from} -> {lan_ip} port {https_to}\n"
-    )
+pub fn only_apple_and_yerd_pf_state(anchors: &str, nat: &str, rules: &str) -> bool {
+    let anchors_ok = anchors
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .all(|name| {
+            APPLE_ANCHORS.contains(&name) || name == ANCHOR_NAME || name == LAN_ANCHOR_NAME
+        });
+    anchors_ok && only_known_hooks(nat) && only_known_hooks(rules)
 }
 
-/// Compose the `LaunchDaemon` plist that re-applies the redirect at boot by
-/// reloading (and enabling) pf from the canonical config. One-shot:
-/// `RunAtLoad` with no `KeepAlive` (launchd would otherwise respawn a process
-/// that exits 0 in a tight loop).
-#[must_use]
-pub fn compose_launchdaemon_plist() -> String {
-    compose_launchdaemon_plist_labelled(ANCHOR_NAME)
+fn only_known_hooks(listing: &str) -> bool {
+    listing
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .all(is_known_hook)
 }
 
-/// LAN variant of [`compose_launchdaemon_plist`], labelled `dev.yerd.lan.pf`.
-/// Reloads the same canonical `/etc/pf.conf` (which loads both anchors) at boot.
-#[must_use]
-pub fn compose_lan_launchdaemon_plist() -> String {
-    compose_launchdaemon_plist_labelled(LAN_ANCHOR_NAME)
+fn is_known_hook(line: &str) -> bool {
+    let mut fields = line.split_whitespace();
+    let (Some(kind), Some(target)) = (fields.next(), fields.next()) else {
+        return false;
+    };
+    let hook_kind = matches!(
+        kind,
+        "anchor"
+            | "nat-anchor"
+            | "rdr-anchor"
+            | "binat-anchor"
+            | "scrub-anchor"
+            | "dummynet-anchor"
+    );
+    let known_target = matches!(
+        target,
+        "\"com.apple/*\"" | "\"dev.yerd\"" | "\"dev.yerd.lan\""
+    );
+    hook_kind && known_target
 }
 
-fn compose_launchdaemon_plist_labelled(label_stem: &str) -> String {
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-         <plist version=\"1.0\">\n\
-         <dict>\n\
-         \t<key>Label</key>\n\
-         \t<string>{label_stem}.pf</string>\n\
-         \t<key>RunAtLoad</key>\n\
-         \t<true/>\n\
-         \t<key>ProgramArguments</key>\n\
-         \t<array>\n\
-         \t\t<string>/sbin/pfctl</string>\n\
-         \t\t<string>-E</string>\n\
-         \t\t<string>-f</string>\n\
-         \t\t<string>{PF_CONF_PATH}</string>\n\
-         \t</array>\n\
-         </dict>\n\
-         </plist>\n"
-    )
+fn is_digits(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())
 }
 
 #[cfg(test)]
@@ -300,190 +278,191 @@ anchor \"com.apple/*\"
 load anchor \"com.apple\" from \"/etc/pf.anchors/com.apple\"
 ";
 
-    #[test]
-    fn anchor_rules_have_on_lo0_and_both_ports() {
-        let r = compose_anchor_rules(80, 8080, 443, 8443);
-        assert!(r.contains(
-            "rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 8080"
-        ));
-        assert!(r.contains(
-            "rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 8443"
-        ));
-        assert!(r.ends_with('\n'));
-    }
+    const LEGACY_BOTH: &str = "\
+scrub-anchor \"com.apple/*\"
+nat-anchor \"com.apple/*\"
+rdr-anchor \"com.apple/*\"
+rdr-anchor \"dev.yerd\" # yerd-managed
+rdr-anchor \"dev.yerd.lan\" # yerd-lan-managed
+dummynet-anchor \"com.apple/*\"
+anchor \"com.apple/*\"
+load anchor \"com.apple\" from \"/etc/pf.anchors/com.apple\"
+load anchor \"dev.yerd\" from \"/etc/pf.anchors/dev.yerd\" # yerd-managed
+load anchor \"dev.yerd.lan\" from \"/etc/pf.anchors/dev.yerd.lan\" # yerd-lan-managed
+";
 
-    #[test]
-    fn insert_places_rdr_anchor_after_last_translation_anchor() {
-        let out = insert_anchor_refs(APPLE_DEFAULT);
-        let lines: Vec<&str> = out.lines().collect();
-        let rdr_apple = lines
-            .iter()
-            .position(|l| l.contains("rdr-anchor \"com.apple/*\""))
-            .unwrap();
-        let rdr_yerd = lines
-            .iter()
-            .position(|l| l.starts_with("rdr-anchor \"dev.yerd\""))
-            .unwrap();
-        let dummynet = lines
-            .iter()
-            .position(|l| l.contains("dummynet-anchor"))
-            .unwrap();
-        assert!(rdr_yerd > rdr_apple && rdr_yerd < dummynet);
-        assert!(lines
-            .last()
-            .unwrap()
-            .starts_with("load anchor \"dev.yerd\""));
-    }
-
-    #[test]
-    fn insert_is_idempotent() {
-        let once = insert_anchor_refs(APPLE_DEFAULT);
-        let twice = insert_anchor_refs(&once);
-        assert_eq!(once, twice);
-        assert!(is_installed(&once));
-    }
-
-    #[test]
-    fn remove_reverses_insert() {
-        let inserted = insert_anchor_refs(APPLE_DEFAULT);
-        let removed = remove_anchor_refs(&inserted);
-        assert_eq!(removed, APPLE_DEFAULT);
-        assert!(!is_installed(&removed));
-    }
-
-    #[test]
-    fn remove_is_idempotent_on_clean_file() {
-        assert_eq!(remove_anchor_refs(APPLE_DEFAULT), APPLE_DEFAULT);
-    }
-
-    #[test]
-    fn insert_into_empty_file_prepends_rdr_anchor() {
-        let out = insert_anchor_refs("");
-        let lines: Vec<&str> = out.lines().collect();
-        assert!(lines[0].starts_with("rdr-anchor \"dev.yerd\""));
-        assert!(lines
-            .last()
-            .unwrap()
-            .starts_with("load anchor \"dev.yerd\""));
-    }
-
-    #[test]
-    fn plist_is_one_shot_runatload() {
-        let p = compose_launchdaemon_plist();
-        assert!(p.contains("<string>dev.yerd.pf</string>"));
-        assert!(p.contains("<key>RunAtLoad</key>"));
-        assert!(!p.contains("KeepAlive"));
-        assert!(p.contains("/sbin/pfctl"));
-        assert!(p.contains(PF_CONF_PATH));
-    }
-
-    #[test]
-    fn lan_rules_are_source_scoped_and_dest_scoped_no_iface() {
-        let ip = std::net::Ipv4Addr::new(192, 168, 1, 42);
-        let r = compose_lan_anchor_rules(ip, 80, 8080, 443, 8443);
-        assert!(r.contains("to 192.168.1.42 port 80 -> 192.168.1.42 port 8080"));
-        assert!(r.contains("to 192.168.1.42 port 443 -> 192.168.1.42 port 8443"));
-        assert!(r.contains("10.0.0.0/8"));
-        assert!(r.contains("192.168.0.0/16"));
-        assert!(r.contains("169.254.0.0/16"));
-        assert!(!r.contains("on lo0"));
-        assert!(
-            !r.contains(" on "),
-            "M2 rule must carry no interface qualifier"
-        );
-        assert!(!r.contains("from any to any"));
-    }
-
-    #[test]
-    fn lan_plist_uses_distinct_label() {
-        let p = compose_lan_launchdaemon_plist();
-        assert!(p.contains("<string>dev.yerd.lan.pf</string>"));
-    }
-
-    /// The two anchors coexist: installing both then removing one leaves the
-    /// other's refs intact (distinct, non-overlapping markers).
-    #[test]
-    fn loopback_and_lan_anchors_coexist_and_remove_independently() {
-        let both = insert_lan_anchor_refs(&insert_anchor_refs(APPLE_DEFAULT));
-        assert!(is_installed(&both));
-        assert!(is_lan_installed(&both));
-
-        let lan_gone = remove_lan_anchor_refs(&both);
-        assert!(
-            is_installed(&lan_gone),
-            "removing LAN leaves loopback anchor"
-        );
-        assert!(!is_lan_installed(&lan_gone));
-
-        let loop_gone = remove_anchor_refs(&both);
-        assert!(!is_installed(&loop_gone));
-        assert!(
-            is_lan_installed(&loop_gone),
-            "removing loopback leaves LAN anchor"
-        );
-
-        assert_eq!(
-            remove_anchor_refs(&lan_gone),
-            APPLE_DEFAULT,
-            "removing both returns the original"
-        );
-    }
-
-    #[test]
-    fn lan_insert_is_idempotent() {
-        let once = insert_lan_anchor_refs(APPLE_DEFAULT);
-        let twice = insert_lan_anchor_refs(&once);
-        assert_eq!(once, twice);
-    }
-
-    #[test]
-    fn parse_roundtrips_loopback_anchor() {
-        let text = compose_anchor_rules(80, 8080, 443, 8443);
-        assert_eq!(parse_anchor_targets(&text), Some((8080, 8443)));
-    }
-
-    #[test]
-    fn parse_roundtrips_non_default_rootless_pair() {
-        let text = compose_anchor_rules(80, 9080, 443, 9443);
-        assert_eq!(parse_anchor_targets(&text), Some((9080, 9443)));
-    }
-
-    #[test]
-    fn parse_roundtrips_lan_anchor() {
-        let ip = std::net::Ipv4Addr::new(192, 168, 1, 42);
-        let text = compose_lan_anchor_rules(ip, 80, 8080, 443, 8443);
-        assert_eq!(parse_anchor_targets(&text), Some((8080, 8443)));
-    }
-
-    #[test]
-    fn parse_reads_identity_lan_rule() {
-        let ip = std::net::Ipv4Addr::new(192, 168, 0, 201);
-        let text = compose_lan_anchor_rules(ip, 80, 80, 443, 443);
-        assert_eq!(parse_anchor_targets(&text), Some((80, 443)));
-    }
-
-    #[test]
-    fn parse_none_when_https_rule_missing() {
-        let text =
-            "rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 8080\n";
-        assert_eq!(parse_anchor_targets(text), None);
-    }
-
-    #[test]
-    fn parse_none_on_empty_or_garbage() {
-        assert_eq!(parse_anchor_targets(""), None);
-        assert_eq!(parse_anchor_targets("not a rule at all\n# comment\n"), None);
-    }
-
-    #[test]
-    fn parse_ignores_comments_and_unrelated_rules() {
-        let text = "\
-# rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 9999
+    const LEGACY_LOOPBACK_ANCHOR: &str = "\
 rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 8080
 rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 8443
-# rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 1234
-pass in quick proto tcp from any to any port 80 -> 127.0.0.1 port 5555
 ";
-        assert_eq!(parse_anchor_targets(text), Some((8080, 8443)));
+
+    const LEGACY_LAN_ANCHOR: &str = "\
+rdr pass inet proto tcp from { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } to 192.168.1.42 port 80 -> 192.168.1.42 port 8080
+rdr pass inet proto tcp from { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } to 192.168.1.42 port 443 -> 192.168.1.42 port 8443
+";
+
+    #[test]
+    fn detects_and_removes_each_scope_independently() {
+        assert!(is_installed(LEGACY_BOTH));
+        assert!(is_lan_installed(LEGACY_BOTH));
+        let lan_gone = remove_lan_anchor_refs(LEGACY_BOTH);
+        assert!(is_installed(&lan_gone));
+        assert!(!is_lan_installed(&lan_gone));
+        let loop_gone = remove_anchor_refs(LEGACY_BOTH);
+        assert!(!is_installed(&loop_gone));
+        assert!(is_lan_installed(&loop_gone));
+    }
+
+    #[test]
+    fn remove_all_restores_apple_default() {
+        assert_eq!(remove_all_refs(LEGACY_BOTH), APPLE_DEFAULT);
+        assert_eq!(remove_all_refs(APPLE_DEFAULT), APPLE_DEFAULT);
+        assert!(!is_installed(APPLE_DEFAULT));
+        assert!(!is_lan_installed(APPLE_DEFAULT));
+    }
+
+    #[test]
+    fn parse_anchor_targets_table() {
+        let cases = [
+            (LEGACY_LOOPBACK_ANCHOR, Some((8080, 8443))),
+            (LEGACY_LAN_ANCHOR, Some((8080, 8443))),
+            (
+                "rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 9080\n\
+                 rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 9443\n",
+                Some((9080, 9443)),
+            ),
+            (
+                "rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 8080\n",
+                None,
+            ),
+            ("", None),
+            ("not a rule at all\n# comment\n", None),
+            (
+                "# rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 9999\n\
+                 rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 8080\n\
+                 rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 8443\n\
+                 pass in quick proto tcp from any to any port 80 -> 127.0.0.1 port 5555\n",
+                Some((8080, 8443)),
+            ),
+        ];
+        for (text, want) in cases {
+            assert_eq!(parse_anchor_targets(text), want, "{text:?}");
+        }
+    }
+
+    const REFERENCES: &str = "\
+TOKENS:
+PID      Process Name                TOKEN                     TIMESTAMP
+412      socketfilterfw              18446744073709551615      3 days 2:01:10
+1203     pfctl                       18446742974203543055      1 days 1:00:00
+2207     pfctl                       18446742974203611111      0 days 0:10:00
+";
+
+    #[test]
+    fn parses_references_and_picks_pfctl_tokens() {
+        let refs = parse_pf_references(REFERENCES);
+        assert_eq!(refs.len(), 3);
+        assert_eq!(refs[0].process, "socketfilterfw");
+        assert_eq!(
+            yerd_owned_tokens(&refs),
+            Some(vec!["18446742974203543055", "18446742974203611111"])
+        );
+    }
+
+    #[test]
+    fn references_edge_cases() {
+        assert!(parse_pf_references("").is_empty());
+        assert!(parse_pf_references("TOKENS:\nPID  Process Name  TOKEN\n").is_empty());
+        let other = parse_pf_references("77 someapp 123 now\n");
+        assert_eq!(yerd_owned_tokens(&other), Some(vec![]));
+        let tainted = parse_pf_references("77 pfctl 12a;-F all\n");
+        assert_eq!(yerd_owned_tokens(&tainted), None);
+    }
+
+    #[test]
+    fn anchor_has_rules_table() {
+        let cases = [
+            ("", false),
+            ("\n  \n", false),
+            ("# nothing here\n", false),
+            (
+                "rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 8080\n",
+                true,
+            ),
+        ];
+        for (text, want) in cases {
+            assert_eq!(anchor_has_rules(text), want, "{text:?}");
+        }
+    }
+
+    const CLEAN_ANCHORS: &str =
+        "  com.apple\n  com.apple/200.AirDrop\n  com.apple/250.ApplicationFirewall\n";
+    const CLEAN_NAT: &str = "nat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all\n";
+    const CLEAN_RULES: &str =
+        "scrub-anchor \"com.apple/*\" all fragment reassemble\nanchor \"com.apple/*\" all\n";
+
+    const INTERNET_SHARING_ANCHORS: &str = "  com.apple\n  com.apple/200.AirDrop\n  \
+        com.apple/250.ApplicationFirewall\n  com.apple.internet-sharing\n  \
+        com.apple.internet-sharing/network_isolation\n  dev.yerd\n  dev.yerd.lan\n";
+    const LEGACY_NAT: &str = "nat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all\n\
+        rdr-anchor \"dev.yerd\" all\nrdr-anchor \"dev.yerd.lan\" all\n";
+
+    #[test]
+    fn release_gate_table() {
+        let cases = [
+            (CLEAN_ANCHORS, CLEAN_NAT, CLEAN_RULES, true),
+            ("  com.apple\n", "", "", true),
+            (INTERNET_SHARING_ANCHORS, LEGACY_NAT, CLEAN_RULES, false),
+            (
+                "  com.apple\n  com.apple.internet-sharing/999.test\n",
+                CLEAN_NAT,
+                CLEAN_RULES,
+                false,
+            ),
+            (
+                "  com.apple\n  dev.yerd\n  dev.yerd.lan\n",
+                "rdr-anchor \"dev.yerd\" all\n",
+                CLEAN_RULES,
+                true,
+            ),
+            (
+                "  com.apple\n  com.example.test\n",
+                CLEAN_NAT,
+                CLEAN_RULES,
+                false,
+            ),
+            (
+                "  com.apple\n  com.apple/999.test\n",
+                CLEAN_NAT,
+                CLEAN_RULES,
+                false,
+            ),
+            (
+                CLEAN_ANCHORS,
+                "rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 9000\n",
+                CLEAN_RULES,
+                false,
+            ),
+            (
+                CLEAN_ANCHORS,
+                CLEAN_NAT,
+                "pass quick on lo0 all\nanchor \"com.apple/*\" all\n",
+                false,
+            ),
+            (
+                CLEAN_ANCHORS,
+                CLEAN_NAT,
+                "anchor \"vpn.killswitch\" all\n",
+                false,
+            ),
+            ("garbage that is not an anchor list\n", "", "", false),
+        ];
+        for (anchors, nat, rules, want) in cases {
+            assert_eq!(
+                only_apple_and_yerd_pf_state(anchors, nat, rules),
+                want,
+                "anchors={anchors:?} nat={nat:?} rules={rules:?}"
+            );
+        }
     }
 }

@@ -37,6 +37,7 @@ const TOOL_HINTS: Record<string, string> = {
   composer: "PHP dependency manager.",
   node: "Node.js runtime for building frontend assets (npm, npx).",
   bun: "Fast all-in-one JavaScript runtime and package manager.",
+  pnpm: "Fast, disk-efficient JavaScript package manager (pnpm, pnpx). Needs Node to run scripts.",
   laravel: "The laravel new installer for scaffolding new Laravel apps. Needs Composer.",
   "wp-cli": "The wp command for managing WordPress installs from the terminal. Needs Composer.",
 };

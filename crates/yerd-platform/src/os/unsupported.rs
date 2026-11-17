@@ -9,11 +9,13 @@ use std::path::Path;
 
 use crate::error::ops;
 use crate::ide::{DetectedIde, IdeLauncher};
+use crate::libvips::LibvipsProbe;
 use crate::metrics::SystemMetrics;
 use crate::opener::SystemOpener;
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::PortRedirector;
+use crate::process_table::ProcessTable;
 use crate::resolver::ResolverInstaller;
 use crate::terminal::TerminalLauncher;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
@@ -219,6 +221,33 @@ impl SystemMetrics for UnsupportedSystemMetrics {
     }
 }
 
+/// Stub `ProcessTable` for unsupported OSes. Deliberately infallible rather
+/// than returning `PlatformError::Unsupported`: the table is best-effort like
+/// `SystemMetrics`, and an OS Yerd cannot supervise processes on has no orphans
+/// to reap. Every process reads as absent and signals are no-ops.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UnsupportedProcessTable;
+
+impl UnsupportedProcessTable {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl ProcessTable for UnsupportedProcessTable {
+    fn command_line(&self, _: u32) -> Option<String> {
+        None
+    }
+
+    fn signal_group(&self, _: u32, _: bool) {}
+
+    fn is_alive(&self, _: u32) -> bool {
+        false
+    }
+}
+
 /// Unsupported-OS `PortRedirector`: always `None` (not applicable).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnsupportedPortRedirector;
@@ -239,6 +268,24 @@ impl PortRedirector for UnsupportedPortRedirector {
     /// The proxy doesn't run on unsupported platforms, so the loopback-probe
     /// default would be meaningless - report "not probed".
     fn foreign_web_listener(&self) -> Option<bool> {
+        None
+    }
+}
+
+/// Stub libvips probe for unsupported OSes: never checks.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UnsupportedLibvipsProbe;
+
+impl UnsupportedLibvipsProbe {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl LibvipsProbe for UnsupportedLibvipsProbe {
+    fn libvips_found(&self) -> Option<bool> {
         None
     }
 }

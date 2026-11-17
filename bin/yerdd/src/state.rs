@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU16};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -24,6 +24,7 @@ use yerd_proxy::SharedRouter;
 
 use crate::backend_resolver::DaemonPhpManager;
 use crate::detect_cache::DetectCache;
+use crate::ffi_cache::FfiCache;
 
 /// Mail-capture runtime fact captured at startup: whether the SMTP listener
 /// actually bound. `Status` sources `enabled`/`port` from the live config (so a
@@ -101,6 +102,28 @@ pub struct DaemonState {
     /// of a system binary runs once rather than on every tunnel action or
     /// status poll. See `tunnel::resolved_cloudflared`.
     pub cloudflared_resolution: RwLock<Option<crate::tunnel::install::Resolved>>,
+    /// The loopback port of the tunnel origin listener `cloudflared` dials, or
+    /// `None` when binding it failed at startup (sharing is then unavailable).
+    pub tunnel_origin_port: Option<u16>,
+    /// The tunnel listener's `public host -> site` route map, rebuilt by
+    /// `tunnel::rebuild_routes` and read per request by the listener. Its lock
+    /// is a leaf: never held across another lock.
+    pub tunnel_routes: yerd_proxy::SharedTunnelRoutes,
+    /// Serializes `tunnel::rebuild_routes`, so two concurrent rebuilds can't
+    /// swap the route map in an order that loses the newer one.
+    pub tunnel_routes_rebuild: Mutex<()>,
+    /// Source of a fresh loopback address for a `cloudflared` metrics server,
+    /// called on every tunnel spawn (passed as `TUNNEL_METRICS` and probed for
+    /// `/ready`). Production uses `tunnel::pick_metrics_addr`; tests replace it
+    /// with a listener that answers the probe.
+    pub tunnel_metrics_addr: yerd_tunnel::MetricsAddrSource,
+    /// Share preflight warnings by site name, computed when a share starts and
+    /// read (never recomputed) when tunnel state is reported.
+    pub share_warnings: Mutex<HashMap<String, Vec<String>>>,
+    /// Bumped under `tunnel_mutate` whenever the named tunnel is stopped, so a
+    /// background start queued before the stop sees it is stale and does not
+    /// relaunch the connector.
+    pub named_stop_epoch: AtomicU64,
     /// Captured-mail store (the built-in SMTP sink writes here; IPC reads/clears
     /// it). Always present even when capture is disabled, so stored mail remains
     /// listable/clearable after the server is turned off.
@@ -116,7 +139,7 @@ pub struct DaemonState {
     /// Port the HTTP→HTTPS redirect `Location` header currently advertises.
     /// Starts at `https.bound`; when `https.fell_back`, a background prober
     /// (`redirect_probe_handle` in `lib.rs`) flips it to `https.requested`
-    /// once it observes a live privileged-port redirect (macOS `pf`, via
+    /// once it observes a live privileged-port redirect (the macOS port forwarder, via
     /// `yerd elevate ports`) via `yerd_platform::PortRedirector::is_active`,
     /// and back when that redirect goes away - so the proxy can advertise a
     /// portless `https://site.test` without restarting. Shared with
@@ -151,6 +174,11 @@ pub struct DaemonState {
     /// Web-root detection cache, shared between the mutation path and the
     /// filesystem watcher so repeated parked-root rescans stay cheap.
     pub detect_cache: Arc<DetectCache>,
+    /// Which installed PHP versions include the FFI extension, cached per
+    /// version on the CLI binary's freshness stamp.
+    pub ffi_cache: Arc<FfiCache>,
+    /// Host probe for libvips, reported next to the GUI's FFI toggle.
+    pub libvips_probe: Arc<dyn yerd_platform::LibvipsProbe + Send + Sync>,
     /// Pinged after a config mutation commits so the filesystem watcher
     /// reconciles its watch set (e.g. a newly-parked root) without waiting for
     /// an unrelated filesystem event.
@@ -158,9 +186,10 @@ pub struct DaemonState {
     /// Dump-telemetry ring buffer + server control, shared with the dump-server
     /// task and the IPC dump handlers.
     pub dumps: Arc<crate::dump_server::DumpStore>,
-    /// Serializes `php_install::reconcile_shims` runs. IPC dispatch is
-    /// `tokio::spawn`-per-connection, so two clients can reconcile the `{data}/bin`
-    /// shims concurrently; this guard keeps the (sync) scan→prune from interleaving.
+    /// Serializes every `{data}/bin` reconcile: the PHP shims, the dev-tool
+    /// shims, and the service client shims (plus the `cloudflared` link). IPC
+    /// dispatch is `tokio::spawn`-per-connection, so two clients can reconcile
+    /// concurrently; this guard keeps the (sync) scan→prune from interleaving.
     pub shim_reconcile: Mutex<()>,
     /// Serializes dev-tool (`composer`/`node`/`bun`) install/uninstall mutations.
     /// IPC dispatch is `tokio::spawn`-per-connection, so two clients could swap

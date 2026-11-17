@@ -646,7 +646,8 @@ async function shareSitePublicly(s: Site): Promise<void> {
   sharing.value = s.name;
   try {
     const r = await startQuickTunnel(s.name);
-    const url = r.tunnels.find((t) => t.site === s.name)?.url;
+    const entry = r.tunnels.find((t) => t.site === s.name);
+    const url = entry?.url;
     if (url) {
       const copied = await navigator.clipboard
         .writeText(url)
@@ -656,8 +657,18 @@ async function shareSitePublicly(s: Site): Promise<void> {
         `Sharing ${s.name}`,
         copied ? `${url} (copied) - manage in Integrations` : `${url} - manage in Integrations`,
       );
+    } else if (entry?.state === "failed") {
+      toast.info(
+        `Sharing ${s.name}`,
+        entry.last_error
+          ? `Retrying: ${entry.last_error} - see Share for status`
+          : "Retrying - see Share for status",
+      );
     } else {
-      toast.success(`Sharing ${s.name}`, "Starting - see Integrations for the URL");
+      toast.success(`Sharing ${s.name}`, "Connecting - see Share for the URL");
+    }
+    if (entry?.warnings?.length) {
+      toast.info(`Check ${s.name} before sharing`, entry.warnings.join(" "), 10000);
     }
   } catch (e) {
     toast.error(`Couldn't share ${s.name}`, (e as IpcError).message);

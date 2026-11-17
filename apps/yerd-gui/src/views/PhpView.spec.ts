@@ -19,12 +19,16 @@ function stubIpc(opts: {
   legacy?: PhpVersion[];
   extensions?: Record<string, unknown[]>;
   pool?: Record<string, Record<string, string>>;
+  settings?: Record<string, string>;
+  ffiVersions?: PhpVersion[];
+  libvipsFound?: boolean | null;
 }) {
   const installed = opts.installed ?? ["8.1", "8.4"];
   const available = opts.available ?? ["8.5"];
   const legacy = opts.legacy ?? ["7.4", "8.0"];
   const extensions = opts.extensions ?? {};
   const pool = opts.pool ?? {};
+  const settings = opts.settings ?? {};
   invokeMock.mockImplementation((cmd: string) => {
     switch (cmd) {
       case "list_php":
@@ -33,9 +37,18 @@ function stubIpc(opts: {
           installed,
           default: "8.4",
           updates: [],
-          settings: {},
+          settings,
           version_settings: {},
           pool,
+          ffi_versions: opts.ffiVersions,
+          libvips_found: opts.libvipsFound,
+        });
+      case "set_php_settings":
+        return Promise.resolve({
+          type: "php_versions",
+          installed,
+          default: "8.4",
+          settings: {},
         });
       case "list_php_extensions":
         return Promise.resolve({ type: "php_extensions", by_version: extensions });
@@ -269,5 +282,93 @@ describe("PhpView per-version configuration", () => {
     const wrapper = await mountView();
 
     expect(wrapper.text()).not.toContain("Per-version configuration");
+  });
+});
+
+describe("PhpView FFI switch", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    resetResourceCache();
+    useDaemon().report.value = null;
+  });
+
+  afterEach(() => {
+    mounted.forEach((w) => w.unmount());
+    mounted.length = 0;
+  });
+
+  const toggle = '[data-testid="toggle-ffi"]';
+
+  function lastSettingsPayload(): Record<string, string> | undefined {
+    const calls = invokeMock.mock.calls.filter(([cmd]) => cmd === "set_php_settings");
+    const last = calls[calls.length - 1];
+    return (last?.[1] as { settings: Record<string, string> } | undefined)?.settings;
+  }
+
+  async function save(wrapper: Awaited<ReturnType<typeof mountView>>) {
+    const button = wrapper.findAll("button").find((b) => b.text() === "Save");
+    await button!.trigger("click");
+    await flushPromises();
+  }
+
+  it("is disabled with a note when no installed version has FFI", async () => {
+    stubIpc({ installed: ["8.4"], ffiVersions: [] });
+    const wrapper = await mountView();
+    expect(wrapper.find(toggle).attributes("disabled")).toBeDefined();
+    expect(wrapper.find('[data-testid="ffi-unavailable"]').exists()).toBe(true);
+  });
+
+  it("stays enabled when already on so a CLI-set value can be cleared", async () => {
+    stubIpc({ installed: ["8.4"], ffiVersions: [], settings: { "ffi.enable": "On" } });
+    const wrapper = await mountView();
+    expect(wrapper.find(toggle).attributes("disabled")).toBeUndefined();
+    await wrapper.find(toggle).trigger("click");
+    await save(wrapper);
+    expect(lastSettingsPayload()?.["ffi.enable"]).toBe("");
+  });
+
+  it("keeps a saved On switch usable after toggling it off unsaved", async () => {
+    stubIpc({ installed: ["8.4"], ffiVersions: [], settings: { "ffi.enable": "On" } });
+    const wrapper = await mountView();
+    await wrapper.find(toggle).trigger("click");
+    expect(wrapper.find(toggle).attributes("aria-checked")).toBe("false");
+    expect(wrapper.find(toggle).attributes("disabled")).toBeUndefined();
+    await wrapper.find(toggle).trigger("click");
+    expect(wrapper.find(toggle).attributes("aria-checked")).toBe("true");
+  });
+
+  it("sends On when switched on and saved", async () => {
+    stubIpc({ installed: ["8.4"], ffiVersions: ["8.4"] });
+    const wrapper = await mountView();
+    expect(wrapper.find('[data-testid="ffi-unavailable"]').exists()).toBe(false);
+    await wrapper.find(toggle).trigger("click");
+    await save(wrapper);
+    expect(lastSettingsPayload()?.["ffi.enable"]).toBe("On");
+  });
+
+  it("shows the libvips hint only while on and libvips is missing", async () => {
+    stubIpc({ installed: ["8.4"], ffiVersions: ["8.4"], libvipsFound: false });
+    const wrapper = await mountView();
+    const hint = '[data-testid="ffi-global"] [data-testid="libvips-hint"]';
+    expect(wrapper.find(hint).exists()).toBe(false);
+    await wrapper.find(toggle).trigger("click");
+    expect(wrapper.find(hint).exists()).toBe(true);
+  });
+
+  it("makes no FFI claim before the PHP list has loaded", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      switch (cmd) {
+        case "list_php":
+          return Promise.reject(new Error("daemon unavailable"));
+        case "list_php_extensions":
+          return Promise.resolve({ type: "php_extensions", by_version: {} });
+        default:
+          return Promise.reject(new Error(`unexpected invoke ${cmd}`));
+      }
+    });
+    const wrapper = await mountView();
+    expect(wrapper.find('[data-testid="ffi-unavailable"]').exists()).toBe(false);
+    expect(wrapper.find(toggle).exists()).toBe(true);
+    expect(wrapper.find(toggle).attributes("disabled")).toBeUndefined();
   });
 });

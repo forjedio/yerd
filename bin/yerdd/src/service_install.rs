@@ -16,7 +16,8 @@ use yerd_supervise::Downloader;
 use yerd_platform::PlatformDirs;
 use yerd_services::version::{self, VERSION_MARKER};
 use yerd_services::{
-    current_os_arch, listing_url, resolve_from_listing, DatadirScope, ServiceError, ServiceVersion,
+    client, current_os_arch, listing_url, resolve_from_listing, DatadirScope, ServiceError,
+    ServiceRegistry, ServiceVersion,
 };
 
 /// Install `service_id` at `version` into `data/services/<id>/<version>/`.
@@ -186,6 +187,48 @@ fn extract_all(gz_bytes: &[u8], dest: &Path, url: &str) -> Result<(), ServiceErr
     Ok(())
 }
 
+/// Reconcile the service client shims in `{data}/bin` against what's installed:
+/// link each installed engine's allowlisted client names that at least one
+/// installed build ships to `yerd_bin` (the multi-call binary that resolves the
+/// running version at call time) and prune the rest. Prunes by name-ownership
+/// and only ever removes symlinks. Callers must hold the shared `shim_reconcile`
+/// mutex. Unix-only; no-op elsewhere.
+#[cfg(unix)]
+pub fn reconcile_client_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), ServiceError> {
+    let bin = crate::tools::bin_dir(dirs);
+    fs_ctx(std::fs::create_dir_all(&bin), &bin)?;
+    let registry = ServiceRegistry::builtin();
+    let installed = version::discover_installed(dirs, &registry)?;
+    let has_client = |id: &str, name: &str| {
+        installed.get(id).is_some_and(|versions| {
+            versions.iter().any(|v| {
+                version::install_dir(dirs, id, v)
+                    .join("bin")
+                    .join(name)
+                    .is_file()
+            })
+        })
+    };
+    let plan = client::shim_plan(&registry, &installed, &has_client);
+    for name in plan.link {
+        let link = bin.join(name);
+        crate::php_install::place_symlink(&link, yerd_bin).map_err(|e| ServiceError::Extract {
+            what: link.display().to_string(),
+            detail: e.to_string(),
+        })?;
+    }
+    for name in plan.prune {
+        let _ = crate::php_install::remove_if_symlink(&bin.join(name));
+    }
+    Ok(())
+}
+
+/// Non-Unix: service client shims are not supported, so there is nothing to reconcile.
+#[cfg(not(unix))]
+pub fn reconcile_client_shims(_dirs: &PlatformDirs, _yerd_bin: &Path) -> Result<(), ServiceError> {
+    Ok(())
+}
+
 fn fs_ctx<T>(r: std::io::Result<T>, path: &Path) -> Result<T, ServiceError> {
     r.map_err(|e| fs_err(path, &e))
 }
@@ -220,6 +263,105 @@ mod tests {
             state: root.join("state"),
             cache: root.join("cache"),
             runtime: root.join("runtime"),
+        }
+    }
+
+    #[cfg(unix)]
+    fn fake_install(dirs: &PlatformDirs, id: &str, server: &str, version: &str) {
+        let bin = version::service_root(dirs, id).join(version).join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join(server), b"binary").unwrap();
+        let registry = ServiceRegistry::builtin();
+        let tools = registry.get(id).and_then(|d| d.client_tools()).unwrap();
+        for name in tools.binaries {
+            std::fs::write(bin.join(name), b"client").unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    fn client_names() -> Vec<&'static str> {
+        ServiceRegistry::builtin()
+            .iter()
+            .filter_map(|d| d.client_tools())
+            .flat_map(|t| t.binaries.iter().copied())
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_client_shims_links_installed_engine_clients_to_yerd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        fake_install(&dirs, "mysql", "mysqld", "8.4.2");
+        fake_install(&dirs, "postgres", "postgres", "17.0");
+        let yerd = tmp.path().join("yerd");
+
+        reconcile_client_shims(&dirs, &yerd).unwrap();
+
+        let bin = dirs.data.join("bin");
+        for name in [
+            "mysql",
+            "mysqldump",
+            "psql",
+            "pg_dump",
+            "pg_dumpall",
+            "pg_restore",
+            "createdb",
+        ] {
+            assert_eq!(std::fs::read_link(bin.join(name)).unwrap(), yerd, "{name}");
+        }
+        for name in ["mariadb", "mariadb-dump", "valkey-cli"] {
+            assert!(bin.join(name).symlink_metadata().is_err(), "{name}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_client_shims_skips_clients_the_installed_build_lacks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        fake_install(&dirs, "postgres", "postgres", "17.0");
+        let missing = version::service_root(&dirs, "postgres")
+            .join("17.0")
+            .join("bin")
+            .join("createdb");
+        std::fs::remove_file(missing).unwrap();
+        let yerd = tmp.path().join("yerd");
+
+        reconcile_client_shims(&dirs, &yerd).unwrap();
+
+        let bin = dirs.data.join("bin");
+        assert_eq!(std::fs::read_link(bin.join("psql")).unwrap(), yerd);
+        assert!(bin.join("createdb").symlink_metadata().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_client_shims_prunes_stale_symlinks_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let bin = dirs.data.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("yerd"), bin.join("valkey-cli")).unwrap();
+        std::fs::write(bin.join("mysql"), b"user file").unwrap();
+
+        reconcile_client_shims(&dirs, &tmp.path().join("yerd")).unwrap();
+
+        assert!(bin.join("valkey-cli").symlink_metadata().is_err());
+        assert_eq!(std::fs::read(bin.join("mysql")).unwrap(), b"user file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_client_shims_with_nothing_installed_leaves_no_clients() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+
+        reconcile_client_shims(&dirs, &tmp.path().join("yerd")).unwrap();
+
+        let bin = dirs.data.join("bin");
+        for name in client_names() {
+            assert!(bin.join(name).symlink_metadata().is_err(), "{name}");
         }
     }
 

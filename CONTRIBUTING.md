@@ -85,8 +85,8 @@ Everything else follows from that:
 - **Side effects go behind traits** (`ProcessSpawner`, `TrustStore`,
   `PortBinder`, `Clock`, …). Logic depends on the trait; tests inject a fake; the
   real impl lives in `yerd-platform` or a crate's `os` module behind `#[cfg(...)]`.
-- **Binaries are thin.** `bin/yerdd`, `bin/yerd`, `bin/yerd-helper`, and the
-  Tauri `src-tauri` layer wire crates together; they hold orchestration, not
+- **Binaries are thin.** `bin/yerdd`, `bin/yerd`, `bin/yerd-helper`,
+  `bin/yerd-forward`, and the Tauri `src-tauri` layer wire crates together; they hold orchestration, not
   behaviour.
 - **One source of truth.** The daemon (`yerdd`) owns runtime state. The CLI and
   GUI are both `yerd-ipc` clients - neither reimplements daemon logic.

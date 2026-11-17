@@ -21,7 +21,7 @@ on:
       targets:
         description: >-
           JSON array of build targets, each {id, runner, container, kind}.
-          e.g. [{"id":"macos","runner":"macos-14","container":"","kind":"gui"}].
+          e.g. [{"id":"macos","runner":"macos-latest","container":"","kind":"gui"}].
           Pass "[]" to build nothing (the job is skipped).
         required: true
         type: string
@@ -101,7 +101,7 @@ jobs:
             -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KP" "$KC"
           # Prepend the ephemeral keychain to the existing user search list,
-          # reading each path space-safely. NB the macos-14 runner ships bash 3.2
+          # reading each path space-safely. NB the macOS runner ships bash 3.2
           # (no `mapfile`), so use a while-read loop; guard the empty expansion
           # for `set -u`.
           EXISTING=()
@@ -144,6 +144,11 @@ jobs:
           for b in yerd yerdd yerd-helper; do
             cp "target/release/$b" "apps/yerd-gui/src-tauri/binaries/$b-$triple"
           done
+          # macOS only: the launchd port forwarder `yerd elevate ports` installs.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            cargo build --release -p yerd-forward
+            cp target/release/yerd-forward "apps/yerd-gui/src-tauri/binaries/yerd-forward-$triple"
+          fi
 
       - name: Build Tauri bundles (signed + notarised on macOS)
         if: matrix.kind == 'gui'
@@ -204,7 +209,7 @@ jobs:
           # The .app is stapled, so this assesses offline and reliably.
           spctl -a -t exec -vvv "$APP"
 
-          # ── Embedded binaries (daemon + CLI + helper) + SMAppService plist ──
+          # ── Embedded binaries (daemon + CLI + helper + forwarder) + SMAppService plist ──
           AGENT="$APP/Contents/Library/LaunchAgents/dev.yerd.daemon.plist"
           [ -f "$AGENT" ] || { echo "::error::missing embedded LaunchAgent $AGENT"; exit 1; }
           # The plist must be sealed into the bundle's code signature (not a late,
@@ -217,7 +222,7 @@ jobs:
             || /usr/libexec/PlistBuddy -c 'Print :files:Library/LaunchAgents/dev.yerd.daemon.plist' "$CR" >/dev/null 2>&1 \
             || { echo "::error::LaunchAgent plist is not sealed into the app signature"; exit 1; }
           APP_TEAM=$(sed -n 's/^TeamIdentifier=//p' /tmp/cs.txt)
-          for b in yerd yerdd yerd-helper; do
+          for b in yerd yerdd yerd-helper yerd-forward; do
             BIN="$APP/Contents/MacOS/$b"
             [ -f "$BIN" ] || { echo "::error::missing bundled binary $BIN"; exit 1; }
             # Developer-ID signed, Hardened Runtime, timestamped, same team as the
@@ -267,7 +272,7 @@ jobs:
           hdiutil attach -nobrowse -quiet -mountpoint "$MP" "$DMG"
           DMG_APP=$(find "$MP" -maxdepth 1 -name 'Yerd.app' -type d | head -n1)
           miss=""
-          for b in yerd yerdd yerd-helper; do
+          for b in yerd yerdd yerd-helper yerd-forward; do
             [ -f "$DMG_APP/Contents/MacOS/$b" ] || miss="$miss $b"
           done
           [ -f "$DMG_APP/Contents/Library/LaunchAgents/dev.yerd.daemon.plist" ] || miss="$miss plist"

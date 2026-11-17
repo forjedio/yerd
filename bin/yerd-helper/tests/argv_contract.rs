@@ -32,6 +32,8 @@ fn op_tag(inv: &HelperInvocation) -> &'static str {
         HelperInvocation::Setcap { .. } => ops::SETCAP,
         HelperInvocation::InstallPortRedirect { .. } => ops::INSTALL_PORT_REDIRECT,
         HelperInvocation::UninstallPortRedirect => ops::UNINSTALL_PORT_REDIRECT,
+        HelperInvocation::InstallLanPortRedirect { .. } => ops::INSTALL_LAN_PORT_REDIRECT,
+        HelperInvocation::UninstallLanPortRedirect => ops::UNINSTALL_LAN_PORT_REDIRECT,
         _ => "unknown",
     }
 }
@@ -59,8 +61,17 @@ fn every_variant_round_trips_via_from_argv() {
             http_to: 8080,
             https_from: 443,
             https_to: 8443,
+            uid: 501,
         },
         HelperInvocation::UninstallPortRedirect,
+        HelperInvocation::InstallLanPortRedirect {
+            http_from: 80,
+            http_to: 8080,
+            https_from: 443,
+            https_to: 8443,
+            uid: 501,
+        },
+        HelperInvocation::UninstallLanPortRedirect,
     ];
     for inv in cases {
         let v = argv_for(inv);

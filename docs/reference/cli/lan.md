@@ -48,13 +48,29 @@ LAN devices expect the well-known ports. Binding them needs a one-time,
 per-machine privileged step - the same mechanism as ordinary Yerd use:
 
 - **macOS:** run `sudo yerd elevate ports` (if you haven't already) **and**
-  `sudo yerd elevate lan`. The first installs the loopback redirect for on-host
-  access; the second installs a `pf` redirect that carries inbound LAN 80/443 to
-  Yerd on your LAN IP. Remove the LAN rule later with `sudo yerd unelevate lan`.
+  `sudo yerd elevate lan`. The first installs the loopback port forwarder for
+  on-host access; the second installs a LAN port forwarder that carries inbound
+  LAN 80/443 to Yerd on your LAN IP. Remove it later with
+  `sudo yerd unelevate lan`.
+
+  The LAN forwarder listens on `0.0.0.0:80`/`443` (a wildcard, so it loads at
+  boot before the network is up and survives your LAN IP changing). It drops
+  connections aimed at loopback and connections from addresses that aren't
+  private/LAN ranges (`10/8`, `172.16/12`, `192.168/16`, `169.254/16`). It
+  forwards to Yerd on your LAN IP, so after `yerd lan disable` LAN connections
+  are refused. If you used LAN access with an older, `pf`-based Yerd, re-run
+  `sudo yerd elevate ports` and then `sudo yerd elevate lan` after upgrading
+  (either one removes both old pf redirects).
 - **Linux:** run `sudo yerd elevate ports` once (it grants
   `cap_net_bind_service`, which covers the `0.0.0.0` bind). No separate LAN step.
 
 `yerd lan status` tells you whether these are in place.
+
+::: info `REMOTE_ADDR` on macOS
+The macOS forwarder is a TCP relay, so for requests arriving from another device
+PHP's `REMOTE_ADDR` shows your Mac's own LAN address rather than the client
+device's. On-host requests are unaffected.
+:::
 
 ## Firewall
 
@@ -146,6 +162,6 @@ See the [daemon guide](./daemon) for details.
 yerd lan disable
 ```
 
-This restarts the daemon back onto loopback. On macOS the `pf` LAN redirect is
+This restarts the daemon back onto loopback. On macOS the LAN port forwarder is
 separate privileged state - `yerd lan status` flags it as residual until you run
 `sudo yerd unelevate lan`. A full `yerd uninstall` removes it too.

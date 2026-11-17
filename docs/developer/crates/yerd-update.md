@@ -62,7 +62,7 @@ uses it to gate its periodic background poll.
 `select_asset` picks the right downloadable artifact (plus its detached
 signature and the `SHA256SUMS` manifest) out of a release's assets, by
 filename convention: the macOS artifact ends `.app.tar.gz`, the Linux artifact
-ends `.deb` or `.pkg.tar.zst` depending on [`PkgFormat`]. Intel macOS and any
+ends `.deb` or `.pkg.tar.zst` depending on [`PkgFormat`]. Intel macOS (unsupported) and any
 other [`Platform::Unsupported`] host get `AssetError::NoArtifactForPlatform`
 rather than a mis-selected file.
 

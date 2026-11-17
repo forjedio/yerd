@@ -89,6 +89,11 @@ struct WireSer<'a> {
     // are empty, so a default config emits no `[route_rules]` region.
     #[serde(skip_serializing_if = "Option::is_none")]
     route_rules: Option<RouteRulesSectionSer<'a>>,
+    // v24: optional `[response_headers]` table, emitted after `[route_rules]`
+    // so an existing config's byte shape is untouched. `None` (skipped) when
+    // both maps are empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_headers: Option<ResponseHeadersSectionSer<'a>>,
 }
 
 #[derive(Serialize)]
@@ -129,6 +134,20 @@ struct RouteRuleSer<'a> {
 }
 
 #[derive(Serialize)]
+struct ResponseHeadersSectionSer<'a> {
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    linked: BTreeMap<&'a str, Vec<ResponseHeaderSer<'a>>>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    parked: BTreeMap<&'a str, Vec<ResponseHeaderSer<'a>>>,
+}
+
+#[derive(Serialize)]
+struct ResponseHeaderSer<'a> {
+    name: &'a str,
+    value: &'a str,
+}
+
+#[derive(Serialize)]
 struct DomainsSectionSer<'a> {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     linked: BTreeMap<&'a str, DomainDeltaSer<'a>>,
@@ -156,6 +175,8 @@ struct TunnelSectionSer<'a> {
     named: &'a BTreeMap<String, String>,
     #[serde(skip_serializing_if = "map_is_empty")]
     sites: &'a BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "map_is_empty")]
+    passwords: &'a BTreeMap<String, String>,
 }
 
 #[derive(Serialize)]
@@ -400,6 +421,7 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
             Some(TunnelSectionSer {
                 named: &c.tunnel.named,
                 sites: &c.tunnel.sites,
+                passwords: &c.tunnel.passwords,
             })
         },
         groups: if c.groups.is_empty() {
@@ -453,8 +475,39 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 Some(RouteRulesSectionSer { linked, parked })
             }
         },
+        response_headers: {
+            let linked = response_header_map(&c.response_headers.linked);
+            let parked = response_header_map(&c.response_headers.parked);
+            if linked.is_empty() && parked.is_empty() {
+                None
+            } else {
+                Some(ResponseHeadersSectionSer { linked, parked })
+            }
+        },
     };
     toml::to_string_pretty(&w).map_err(Into::into)
+}
+
+/// Build a borrowed `[response_headers.*]` map, pruning any site whose header
+/// list is empty, for the same round-trip reason as [`proxy_rule_map`].
+fn response_header_map(
+    src: &BTreeMap<String, Vec<yerd_core::ResponseHeader>>,
+) -> BTreeMap<&str, Vec<ResponseHeaderSer<'_>>> {
+    src.iter()
+        .filter(|(_, headers)| !headers.is_empty())
+        .map(|(k, headers)| {
+            (
+                k.as_str(),
+                headers
+                    .iter()
+                    .map(|h| ResponseHeaderSer {
+                        name: h.name(),
+                        value: h.value(),
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 /// Build a borrowed `[route_rules.*]` map, pruning any site whose rule list is
@@ -536,8 +589,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 23\n"),
-            "expected `version = 23` first line; got: {s}"
+            s.starts_with("version = 26\n"),
+            "expected `version = 26` first line; got: {s}"
         );
     }
 
@@ -587,10 +640,15 @@ mod tests {
         c.tunnel = crate::TunnelSection {
             named: BTreeMap::from([("mysite".to_owned(), "uuid-123".to_owned())]),
             sites: BTreeMap::from([("app".to_owned(), "app.example.com".to_owned())]),
+            passwords: BTreeMap::from([("app".to_owned(), "secret".to_owned())]),
         };
         let s = to_toml(&c).unwrap();
         assert!(s.contains("[tunnel.named]"), "must emit named table: {s}");
         assert!(s.contains("[tunnel.sites]"), "must emit sites table: {s}");
+        assert!(
+            s.contains("[tunnel.passwords]"),
+            "must emit passwords table: {s}"
+        );
         let back = Config::from_toml(&s).unwrap();
         assert_eq!(back, c);
     }

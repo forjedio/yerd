@@ -23,6 +23,7 @@ yerd-platform  = { path = "../../crates/yerd-platform" }
 yerd-config    = { path = "../../crates/yerd-config" }
 yerd-update    = { path = "../../crates/yerd-update" }
 yerd-service-ctl = { path = "../../crates/yerd-service-ctl" }
+yerd-services  = { path = "../../crates/yerd-services" }
 clap           = { workspace = true }
 tokio          = { workspace = true, features = ["rt", "io-util", "net", "time"] }
 interprocess   = { workspace = true }

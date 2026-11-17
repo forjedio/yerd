@@ -12,7 +12,7 @@
 use std::collections::BTreeSet;
 
 use yerd_config::{Config, ServiceInstance, SiteOverride};
-use yerd_core::{PhpVersion, RouteRule, Site, Tld};
+use yerd_core::{PhpVersion, ResponseHeader, RouteRule, Site, Tld};
 
 fn populated() -> Config {
     let mut c = Config::default();
@@ -54,8 +54,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 23\n"),
-        "expected first line `version = 23`; got: {s}"
+        s.starts_with("version = 26\n"),
+        "expected first line `version = 26`; got: {s}"
     );
 }
 
@@ -620,6 +620,90 @@ fn populated_route_rules_section_emits_after_defaults_and_round_trips() {
 }
 
 #[test]
+fn default_config_emits_no_response_headers_table() {
+    let s = Config::default().to_toml().unwrap();
+    assert!(
+        !s.contains("[response_headers"),
+        "default config must omit the response_headers table; got: {s}"
+    );
+}
+
+#[test]
+fn populated_response_headers_section_emits_after_route_rules_and_round_trips() {
+    let mut c = Config::default();
+    c.linked
+        .push(Site::linked("api", "docroot", PhpVersion::new(8, 3)).unwrap());
+    c.route_rules.linked.insert(
+        "api".to_string(),
+        vec![RouteRule::new("/api", "api/index.php").unwrap()],
+    );
+    c.response_headers.linked.insert(
+        "api".to_string(),
+        vec![ResponseHeader::new("Access-Control-Allow-Origin", "https://app.test").unwrap()],
+    );
+    c.response_headers.parked.insert(
+        "docroot-a".to_string(),
+        vec![ResponseHeader::new("X-Frame-Options", "DENY").unwrap()],
+    );
+    let s = c.to_toml().unwrap();
+
+    let php_at = s.find("\n[php]\n").expect("[php] table present");
+    let routes_at = s
+        .find("[route_rules")
+        .expect("[route_rules] region present");
+    let headers_at = s
+        .find("[response_headers")
+        .expect("[response_headers] region present");
+    assert!(
+        php_at < headers_at && routes_at < headers_at,
+        "[response_headers] must trail [php] and [route_rules]; got: {s}"
+    );
+    assert!(
+        s.contains("name = \"Access-Control-Allow-Origin\"\nvalue = \"https://app.test\""),
+        "a header must emit as a name/value pair; got: {s}"
+    );
+
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
+    c.validate().unwrap();
+}
+
+#[test]
+fn tunnel_passwords_emit_a_sub_table_only_when_set() {
+    let mut c = Config::default();
+    c.tunnel
+        .sites
+        .insert("app".to_string(), "app.example.com".to_string());
+    let without = c.to_toml().unwrap();
+    assert!(
+        without.contains("[tunnel.sites]\napp = \"app.example.com\"\n"),
+        "got: {without}"
+    );
+    assert!(!without.contains("[tunnel.passwords]"), "got: {without}");
+
+    c.tunnel
+        .passwords
+        .insert("app".to_string(), "s3cret".to_string());
+    let with = c.to_toml().unwrap();
+    assert!(
+        with.contains("[tunnel.passwords]\napp = \"s3cret\"\n"),
+        "got: {with}"
+    );
+    let sites_at = with.find("[tunnel.sites]").expect("sites table present");
+    let passwords_at = with
+        .find("[tunnel.passwords]")
+        .expect("passwords table present");
+    assert!(sites_at < passwords_at, "got: {with}");
+    assert_eq!(
+        with.replace("\n[tunnel.passwords]\napp = \"s3cret\"\n", ""),
+        without
+    );
+
+    let back = Config::from_toml(&with).unwrap();
+    assert_eq!(back, c);
+}
+
+#[test]
 fn empty_parked_emits_empty_array_and_services_omitted() {
     let c = Config::default();
     let s = c.to_toml().unwrap();
@@ -636,4 +720,35 @@ fn empty_parked_emits_empty_array_and_services_omitted() {
     );
 
     let _: BTreeSet<String> = BTreeSet::new();
+}
+
+#[test]
+fn ffi_enable_emits_quoted_key_and_round_trips() {
+    let mut c = Config::default();
+    c.php
+        .settings
+        .insert("ffi.enable".to_string(), "On".to_string());
+    c.php
+        .version_settings
+        .entry(PhpVersion::new(8, 4))
+        .or_default()
+        .insert("ffi.enable".to_string(), "Off".to_string());
+    let s = c.to_toml().unwrap();
+
+    let settings_at = s.find("[php.settings]").expect("[php.settings] present");
+    let version_at = s
+        .find("[php.version_settings.\"8.4\"]")
+        .expect("[php.version_settings.\"8.4\"] present");
+    let global_line = s.find("\"ffi.enable\" = \"On\"").expect("global ffi line");
+    let version_line = s
+        .find("\"ffi.enable\" = \"Off\"")
+        .expect("per-version ffi line");
+    assert!(settings_at < global_line, "got: {s}");
+    assert!(version_at < version_line, "got: {s}");
+
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
+
+    let default = Config::default().to_toml().unwrap();
+    assert!(!default.contains("ffi"), "got: {default}");
 }

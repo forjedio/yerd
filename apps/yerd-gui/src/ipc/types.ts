@@ -238,7 +238,7 @@ export interface StatusReport {
   ca: CaStatus;
   /** Tri-state - null means "unknown", never coerce to false. */
   resolver_installed: boolean | null;
-  /** macOS: is the pf redirect carrying 80/443 to the rootless ports? true =
+  /** macOS: is the port forwarder carrying 80/443 to the rootless ports? true =
    *  privileged ports served via the redirect, false = not, null/undefined =
    *  unknown / not applicable (Linux binds directly after setcap). Omitted on the
    *  wire when not set (the Rust field is `#[serde(default, skip_serializing_if)]`,
@@ -295,14 +295,18 @@ export interface StatusReport {
   /** Whether `yerd mcp` serves Yerd's tools to local AI agents. Defaults to
    *  `false` (opt-in) when omitted by a daemon predating the field. */
   mcp_enabled?: boolean;
-  /** macOS: destination ports the installed loopback (`dev.yerd`) pf anchor
-   *  carries 80/443 to. Compare with `http.bound`/`https.bound` to detect a
+  /** macOS: destination ports the installed loopback port forwarder (or a
+   *  legacy pf anchor) carries 80/443 to. Compare with `http.bound`/`https.bound` to detect a
    *  stale redirect that black-holes on-host access. Omitted when not installed,
    *  unreadable, or not macOS. */
   port_redirect_targets?: { http: number; https: number } | null;
   /** macOS: same as `port_redirect_targets` for the LAN (`dev.yerd.lan`) anchor.
    *  A stale target here black-holes other devices while LAN mode is on. */
   lan_redirect_targets?: { http: number; https: number } | null;
+  /** macOS: whether a pf redirect from an older Yerd is still installed, so
+   *  80/443 still go through pf instead of the launchd port forwarder. Omitted
+   *  when not macOS or undeterminable. */
+  legacy_pf_redirect?: boolean | null;
 }
 
 /** One apex-shadow relationship: `site`'s apex is claimed by `shadowed_by`. */
@@ -336,6 +340,7 @@ export type DiagnosisCode =
   | "domain_shadowed"
   | "port_redirect_stale"
   | "lan_redirect_stale"
+  | "legacy_port_redirect"
   | "all_good";
 
 export interface Diagnosis {
@@ -419,7 +424,7 @@ export type StarterKit = StarterKitTag | { community: string };
 export type AuthProvider = "laravel" | "work_os";
 export type Testing = "pest" | "php_unit";
 export type Database = "sqlite" | "mysql" | "mariadb" | "pgsql" | "sqlsrv";
-export type JsRuntime = "npm" | "bun" | "skip";
+export type JsRuntime = "npm" | "bun" | "pnpm" | "skip";
 
 /** crates/yerd-ipc/src/create.rs - LaravelOptions. */
 export interface LaravelOptions {
@@ -540,6 +545,14 @@ export interface RouteRuleEntry {
   target: string;
 }
 
+/** One per-site custom response header, added to every response the site
+ *  serves. Reply element of a `"response_headers"` response. */
+export interface ResponseHeaderEntry {
+  site: string;
+  name: string;
+  value: string;
+}
+
 /**
  * Response is internally tagged on `type`. The bridge returns the decoded
  * Response directly; helpers below narrow it. A `Response::Error` is converted
@@ -553,6 +566,7 @@ export type Response =
   | { type: "parked"; paths: string[] }
   | { type: "proxies"; proxies: ProxyEntry[]; rules: ProxyRuleEntry[] }
   | { type: "routes"; rules: RouteRuleEntry[] }
+  | { type: "response_headers"; headers: ResponseHeaderEntry[] }
   | {
       type: "info";
       dns_addr: string;
@@ -589,6 +603,12 @@ export type Response =
        *  by version string. A version that is absent runs the built-in
        *  default of 16. Absent when none are set / older daemon. */
       pool?: Record<PhpVersion, Record<string, string>>;
+      /** Installed versions whose PHP build includes the FFI extension. Absent
+       *  when none do / older daemon. */
+      ffi_versions?: PhpVersion[];
+      /** Whether libvips (needed by php-vips) was found on the host. Absent
+       *  when the daemon doesn't check on this OS / older daemon. */
+      libvips_found?: boolean | null;
     }
   | {
       type: "available_php";
@@ -732,7 +752,7 @@ export interface DatabaseSummary {
 export type TunnelKind = "quick" | "named";
 
 /** crates/yerd-ipc/src/status.rs - TunnelRunState. */
-export type TunnelRunState = "running" | "failed";
+export type TunnelRunState = "running" | "failed" | "connecting" | "reconnecting";
 
 /** crates/yerd-ipc/src/status.rs - TunnelInfo. */
 export interface TunnelInfo {
@@ -743,6 +763,12 @@ export interface TunnelInfo {
   url?: string;
   /** Configured public hostname of a Named tunnel; absent otherwise. */
   hostname?: string;
+  /** Most recent error reported for the tunnel; absent when none. */
+  last_error?: string;
+  /** Whether the shared site has a share password; absent means false. */
+  protected?: boolean;
+  /** Preflight warnings computed when the share started; absent when none. */
+  warnings?: string[];
 }
 
 /** crates/yerd-ipc/src/status.rs - CloudflaredSource. */
@@ -769,6 +795,8 @@ export interface NamedTunnelMeta {
 export interface SiteHostname {
   site: string;
   hostname: string;
+  /** Whether the site has a share password; absent means false. */
+  protected?: boolean;
 }
 
 // Narrowed aliases for the variants the views actually read.

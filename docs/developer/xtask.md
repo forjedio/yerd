@@ -43,7 +43,7 @@ pub enum Command {
 ```
 
 ::: info Scope
-`xtask` only keeps **versions in sync**. It does *not* build any artifacts - the shipped products are the **GUI bundle** (`.dmg` on macOS, `.deb` on Linux) with the three binaries (`yerd`/`yerdd`/`yerd-helper`) embedded via `externalBin` (per-platform overlays in `apps/yerd-gui/src-tauri/`), plus a native **Arch package** (`.pkg.tar.zst`, x86-64) built from `packaging/arch/PKGBUILD` in the workflow's `arch` job. Tauri builds the `.app` (macOS) and `.deb` (Linux) directly; the macOS `.dmg` is packaged as a separate headless step (`apps/yerd-gui/scripts/build-macos-dmg.sh`, via `appdmg`) since Tauri's own dmg bundler drives Finder via AppleScript, which isn't reliable outside an interactive session. There is no standalone CLI tarball/`.deb`. `xtask` also doesn't download or cache PHP - PHP builds are fetched at runtime by the daemon (see [yerd-php](./crates/yerd-php)). Cross-platform release artifacts and checksums are assembled by the GitHub Actions workflows.
+`xtask` only keeps **versions in sync**. It does *not* build any artifacts - the shipped products are the **GUI bundle** (`.dmg` on macOS, `.deb` on Linux) with `yerd`/`yerdd`/`yerd-helper` (plus `yerd-forward` on macOS) embedded via `externalBin` (per-platform overlays in `apps/yerd-gui/src-tauri/`), plus a native **Arch package** (`.pkg.tar.zst`, x86-64) built from `packaging/arch/PKGBUILD` in the workflow's `arch` job and a **Fedora package** (`.rpm`, x86-64 and arm64). Tauri builds the `.app` (macOS) and `.deb` (Linux) directly; the macOS `.dmg` is packaged as a separate headless step (`apps/yerd-gui/scripts/build-macos-dmg.sh`, via `appdmg`) since Tauri's own dmg bundler drives Finder via AppleScript, which isn't reliable outside an interactive session. There is no standalone CLI tarball/`.deb`. `xtask` also doesn't download or cache PHP - PHP builds are fetched at runtime by the daemon (see [yerd-php](./crates/yerd-php)). Cross-platform release artifacts and checksums are assembled by the GitHub Actions workflows.
 :::
 
 ## Module map
@@ -129,7 +129,7 @@ exist locally or on the remote. It then:
 4. Commits the bump as `Release: vX.Y.Z`, tags it (`git tag -a`), and pushes -
    the branch and the tag by default, or just the tag with `--tag-only`.
 
-The release CI builds the single GUI bundle for macOS (`arm64`) and Linux (`amd64` and `arm64`) - each embedding the three binaries - and a mismatched tag fails fast via `cargo xtask version-check`. Because `version-check` strips the leading `v`, it accepts both the tag form (`v2.0.2`) and the bare version (`2.0.2`). See [Building from Source](./building) and [Contributing](./contributing) for the full developer gate.
+The release CI builds the single GUI bundle for macOS (`arm64`) and Linux (`amd64` and `arm64`) - each embedding `yerd`, `yerdd` and `yerd-helper` (plus `yerd-forward` on macOS) - and a mismatched tag fails fast via `cargo xtask version-check`. Because `version-check` strips the leading `v`, it accepts both the tag form (`v2.0.2`) and the bare version (`2.0.2`). See [Building from Source](./building) and [Contributing](./contributing) for the full developer gate.
 
 ## Conventions and invariants
 

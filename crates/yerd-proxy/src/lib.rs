@@ -21,7 +21,9 @@ pub mod traits;
 pub use backend::Backend;
 pub use client_tls::ProxyClientTls;
 pub use error::ProxyError;
-pub use server::{HttpsBinding, ProxyServer, SharedRouter};
+pub use server::{
+    HttpsBinding, ProxyServer, SharedRouter, SharedTunnelRoutes, TunnelBinding, TunnelRoute,
+};
 pub use traits::{BackendResolver, CertStore, LoginTokenConsumer};
 
 // Compile-time guard: ProxyError must stay Send+Sync+'static so it can

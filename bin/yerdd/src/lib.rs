@@ -21,6 +21,7 @@ pub mod detect_cache;
 pub mod dump_server;
 pub mod error;
 pub mod ext_install;
+pub mod ffi_cache;
 pub mod fs_watch;
 pub mod ipc_server;
 pub mod jobs;
@@ -95,6 +96,47 @@ fn build_proxy_client_tls() -> Result<Arc<yerd_proxy::ProxyClientTls>, rustls::E
     Ok(Arc::new(yerd_proxy::ProxyClientTls::new(
         local,
         Arc::new(public),
+    )))
+}
+
+/// Spawn the loopback tunnel origin listener `cloudflared` dials, serving it
+/// with the shared router and the public host route map
+/// ([`state::DaemonState::tunnel_routes`]). `None` when the listener failed to
+/// bind at startup or the proxy client TLS bundle could not be built; sharing
+/// is then unavailable but the daemon keeps running.
+fn spawn_tunnel_listener(
+    listener: Option<tokio::net::TcpListener>,
+    public_url_prepend: Option<std::path::PathBuf>,
+    state: &Arc<state::DaemonState>,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Option<tokio::task::JoinHandle<Result<(), yerd_proxy::ProxyError>>> {
+    let listener = listener?;
+    let client_tls = match build_proxy_client_tls() {
+        Ok(tls) => tls,
+        Err(e) => {
+            tracing::warn!(error = %e, "tunnel origin listener disabled: client TLS setup failed");
+            return None;
+        }
+    };
+    let resolver = Arc::new(DaemonBackendResolver {
+        php_manager: state.php_manager.clone(),
+        wordpress_sites: state.wordpress_sites.clone(),
+    });
+    let binding = yerd_proxy::TunnelBinding {
+        listener,
+        routes: state.tunnel_routes.clone(),
+        public_url_prepend,
+    };
+    let mut rx = shutdown_rx;
+    Some(tokio::spawn(yerd_proxy::ProxyServer::serve_tunnel(
+        binding,
+        state.router.clone(),
+        resolver,
+        state.symlink_protection.clone(),
+        client_tls,
+        async move {
+            let _ = rx.changed().await;
+        },
     )))
 }
 
@@ -200,6 +242,15 @@ async fn run_until_shutdown(
         None
     };
 
+    let tunnel_handle = spawn_tunnel_listener(
+        daemon.tunnel_listener,
+        daemon.tunnel_wp_prepend,
+        &daemon.state,
+        shutdown_rx.clone(),
+    );
+    crate::tunnel::orphans::reap(&daemon.state.dirs).await;
+    crate::tunnel::rebuild_routes(&daemon.state).await;
+
     let redirect_probe_handle =
         spawn_redirect_probe(proxy_handle.is_some(), &daemon.state, shutdown_rx.clone());
 
@@ -267,6 +318,13 @@ async fn run_until_shutdown(
     });
 
     let _autostart = tokio::spawn(crate::services::auto_start_installed(daemon.state.clone()));
+    let _tunnel_resume = tokio::spawn(crate::tunnel::supervise::resume(
+        daemon.state.clone(),
+        daemon
+            .state
+            .named_stop_epoch
+            .load(std::sync::atomic::Ordering::SeqCst),
+    ));
 
     let _ext_install = {
         let state = daemon.state.clone();
@@ -290,6 +348,7 @@ async fn run_until_shutdown(
         let state = daemon.state.clone();
         tokio::spawn(async move {
             crate::ipc_server::reconcile_tool_shims_now(&state).await;
+            crate::ipc_server::reconcile_client_shims_now(&state).await;
         })
     };
 
@@ -301,6 +360,9 @@ async fn run_until_shutdown(
     }
     if let Some(proxy_handle) = proxy_handle {
         let _ = tokio::time::timeout(Duration::from_secs(10), proxy_handle).await;
+    }
+    if let Some(tunnel_handle) = tunnel_handle {
+        let _ = tokio::time::timeout(Duration::from_secs(10), tunnel_handle).await;
     }
     if let Some(redirect_probe_handle) = redirect_probe_handle {
         let _ = tokio::time::timeout(Duration::from_secs(5), redirect_probe_handle).await;
@@ -340,7 +402,8 @@ async fn run_until_shutdown(
 
 /// Spawns the background task that keeps
 /// [`crate::state::DaemonState::redirect_https_port`] in sync with a live
-/// privileged-port redirect (macOS `pf`, installed by `yerd elevate ports`) -
+/// privileged-port redirect (the macOS port forwarder, installed by
+/// `yerd elevate ports`) -
 /// the only case where the daemon's own bound HTTPS port can diverge from
 /// what's actually reachable without a restart. Returns `None` (spawning
 /// nothing) when the proxy isn't running or the HTTPS listener bound its
@@ -466,7 +529,7 @@ fn spawn_redirect_probe(
 ///
 /// When the daemon bound the well-known port directly there's nothing to
 /// correct. When it fell back to a rootless port, a live privileged-port
-/// redirect (macOS `pf`, installed by `yerd elevate ports`) makes the
+/// redirect (the macOS port forwarder, installed by `yerd elevate ports`) makes the
 /// well-known port reachable too, so the redirect should advertise it instead
 /// of leaking the internal fallback port into the browser's address bar. This
 /// holds in LAN mode too: the loopback probe measures exactly whether `:443` is

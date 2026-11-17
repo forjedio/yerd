@@ -13,6 +13,10 @@ security boundary.
 - `install-resolver --tld <name> --addr <socketaddr>`
 - `uninstall-resolver --tld <name>`
 - `setcap --binary <path>` (Linux only)
+- `install-port-redirect --http-from 80 --http-to <port> --https-from 443 --https-to <port> --uid <uid>` (macOS only)
+- `uninstall-port-redirect` (macOS only)
+- `install-lan-port-redirect --http-from 80 --http-to <port> --https-from 443 --https-to <port> --uid <uid>` (macOS only)
+- `uninstall-lan-port-redirect` (macOS only)
 
 The argv shape is the frozen wire contract pinned by
 `yerd-platform`'s `helper_argv_shape.rs` and `helper_argv_roundtrip.rs`

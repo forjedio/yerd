@@ -17,8 +17,9 @@ pub(crate) mod active {
 
     #[cfg(target_os = "linux")]
     pub use super::linux::{
-        LinuxIdeLauncher as ActiveIdeLauncher, LinuxPaths as ActivePaths,
-        LinuxPortBinder as ActivePortBinder, LinuxPortRedirector as ActivePortRedirector,
+        LinuxIdeLauncher as ActiveIdeLauncher, LinuxLibvipsProbe as ActiveLibvipsProbe,
+        LinuxPaths as ActivePaths, LinuxPortBinder as ActivePortBinder,
+        LinuxPortRedirector as ActivePortRedirector, LinuxProcessTable as ActiveProcessTable,
         LinuxResolverInstaller as ActiveResolverInstaller,
         LinuxSystemMetrics as ActiveSystemMetrics, LinuxSystemOpener as ActiveSystemOpener,
         LinuxTerminalLauncher as ActiveTerminalLauncher, LinuxTrustStore as ActiveTrustStore,
@@ -26,8 +27,9 @@ pub(crate) mod active {
 
     #[cfg(target_os = "macos")]
     pub use super::macos::{
-        MacosIdeLauncher as ActiveIdeLauncher, MacosPaths as ActivePaths,
-        MacosPortBinder as ActivePortBinder, MacosPortRedirector as ActivePortRedirector,
+        MacosIdeLauncher as ActiveIdeLauncher, MacosLibvipsProbe as ActiveLibvipsProbe,
+        MacosPaths as ActivePaths, MacosPortBinder as ActivePortBinder,
+        MacosPortRedirector as ActivePortRedirector, MacosProcessTable as ActiveProcessTable,
         MacosResolverInstaller as ActiveResolverInstaller,
         MacosSystemMetrics as ActiveSystemMetrics, MacosSystemOpener as ActiveSystemOpener,
         MacosTerminalLauncher as ActiveTerminalLauncher, MacosTrustStore as ActiveTrustStore,
@@ -35,9 +37,10 @@ pub(crate) mod active {
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub use super::unsupported::{
-        UnsupportedIdeLauncher as ActiveIdeLauncher, UnsupportedPaths as ActivePaths,
-        UnsupportedPortBinder as ActivePortBinder,
+        UnsupportedIdeLauncher as ActiveIdeLauncher, UnsupportedLibvipsProbe as ActiveLibvipsProbe,
+        UnsupportedPaths as ActivePaths, UnsupportedPortBinder as ActivePortBinder,
         UnsupportedPortRedirector as ActivePortRedirector,
+        UnsupportedProcessTable as ActiveProcessTable,
         UnsupportedResolverInstaller as ActiveResolverInstaller,
         UnsupportedSystemMetrics as ActiveSystemMetrics,
         UnsupportedSystemOpener as ActiveSystemOpener,

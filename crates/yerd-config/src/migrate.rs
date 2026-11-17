@@ -47,6 +47,9 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v20_to_v21,
     migrate_v21_to_v22,
     migrate_v22_to_v23,
+    migrate_v23_to_v24,
+    migrate_v24_to_v25,
+    migrate_v25_to_v26,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -246,6 +249,27 @@ fn migrate_v22_to_v23(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 23)
 }
 
+/// `v23 → v24`: bump the version. v24 added the optional `[tunnel.passwords]`
+/// table of per-site share passwords, which defaults to empty when absent, so
+/// an in-place version bump is the entire migration.
+fn migrate_v23_to_v24(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 24)
+}
+
+/// `v24 → v25`: bump the version. v25 added the optional `[response_headers]`
+/// table of per-site custom response headers, which defaults to empty when
+/// absent, so an in-place version bump is the entire migration.
+fn migrate_v24_to_v25(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 25)
+}
+
+/// `v25 → v26`: bump the version. v26 added the optional, unseeded
+/// `ffi.enable` PHP setting, which is absent unless the user sets it, so an
+/// in-place version bump is the entire migration.
+fn migrate_v25_to_v26(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 26)
+}
+
 /// Set the top-level `version` key, erroring if the root is not a table.
 fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
     let table = value.as_table_mut().ok_or(ConfigError::Migration {
@@ -315,7 +339,7 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 23);
+        assert_eq!(crate::CURRENT_VERSION, 26);
     }
 
     #[test]
@@ -365,6 +389,31 @@ mod tests {
         let mut v: Value = toml::from_str("version = 22\n").unwrap();
         migrate_v22_to_v23(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 23);
+    }
+
+    #[test]
+    fn v23_to_v24_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 23\n").unwrap();
+        migrate_v23_to_v24(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 24);
+    }
+
+    #[test]
+    fn v24_to_v25_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str(
+            "version = 24
+",
+        )
+        .unwrap();
+        migrate_v24_to_v25(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 25);
+    }
+
+    #[test]
+    fn v25_to_v26_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 25\n").unwrap();
+        migrate_v25_to_v26(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 26);
     }
 
     #[test]

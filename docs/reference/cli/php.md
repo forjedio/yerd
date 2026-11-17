@@ -109,6 +109,7 @@ The setting name (and, for `set`, the value) is validated client-side before con
 | `post_max_size` | byte size (e.g. `64M`) |
 | `display_errors` | boolean flag (e.g. `On` / `Off`) |
 | `error_reporting` | an `error_reporting` expression |
+| `ffi.enable` | on/off (e.g. `on` / `off`); off by default. Web (FPM) only: `on` writes `php_admin_value[ffi.enable] = true` so FFI works in web requests (needed for php-vips); `off` or unset keeps PHP's `preload` default. The CLI already allows FFI. libvips is installed separately |
 
 ::: tip
 The configured settings are echoed back by `yerd list php` under a `settings:` block, and each version's overrides, directives, and pool size follow in a `PHP <version>:` section, so you can confirm what's currently applied. See the [Configuration Reference](../configuration) for how these are stored and rendered into FPM config.

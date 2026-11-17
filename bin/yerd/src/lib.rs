@@ -26,6 +26,8 @@ pub mod map;
 pub mod mcp_cmd;
 pub mod path_cmd;
 #[cfg(unix)]
+pub mod service_client_shim;
+#[cfg(unix)]
 pub mod shim;
 #[cfg(unix)]
 pub mod site_scope;
@@ -93,6 +95,9 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Route {
             action: crate::cli::RouteAction::List { site: Some(site) },
         } => return run_route_list(site, cli.json).await,
+        Command::Header {
+            action: crate::cli::HeaderAction::List { site: Some(site) },
+        } => return run_header_list(site, cli.json).await,
         Command::Uninstall { target: None, yes } => return uninstall::run(*yes),
         Command::Install {
             target: crate::cli::InstallTarget::Tool { id },
@@ -296,7 +301,7 @@ async fn run_lan_toggle(enabled: bool, json: bool) -> ExitCode {
         );
         if cfg!(target_os = "macos") {
             println!();
-            println!("The macOS pf LAN redirect is separate privileged state — remove it with:");
+            println!("The macOS LAN port forwarder is separate privileged state — remove it with:");
             println!("    sudo yerd unelevate lan");
             println!("Until you do, `yerd lan status` will flag it as residual.");
         }
@@ -306,7 +311,7 @@ async fn run_lan_toggle(enabled: bool, json: bool) -> ExitCode {
 
 /// `yerd lan status`: a LAN-focused view of the daemon's `Status`, showing
 /// configured-vs-effective state so "enabled but not exposed" (and, on macOS,
-/// "disabled but pf still redirecting") are both visible.
+/// "disabled but the LAN forwarder still installed") are both visible.
 async fn run_lan_status(json: bool) -> ExitCode {
     use yerd_ipc::{Request, Response};
     let report = match transport::exchange(&Request::Status).await {
@@ -340,7 +345,7 @@ async fn run_lan_status(json: bool) -> ExitCode {
         println!("Enable it with:  yerd lan enable");
         #[cfg(target_os = "macos")]
         println!(
-            "Note: if you previously ran `sudo yerd elevate lan`, remove the residual pf rule \
+            "Note: if you previously ran `sudo yerd elevate lan`, remove the residual LAN forwarder \
              with `sudo yerd unelevate lan`."
         );
         return ExitCode::SUCCESS;
@@ -422,6 +427,43 @@ async fn run_route_list(site: &str, json: bool) -> ExitCode {
     match transport::exchange(&Request::ListRoutes).await {
         Ok(Response::Routes { rules }) => {
             let r = map::render_routes(&rules, Some(site), json);
+            if !r.stdout.is_empty() {
+                println!("{}", r.stdout);
+            }
+            if !r.stderr.is_empty() {
+                eprintln!("{}", r.stderr);
+            }
+            ExitCode::from(r.code)
+        }
+        Ok(other) => {
+            let r = map::render(&other, json);
+            if !r.stdout.is_empty() {
+                println!("{}", r.stdout);
+            }
+            if !r.stderr.is_empty() {
+                eprintln!("{}", r.stderr);
+            }
+            ExitCode::from(r.code)
+        }
+        Err(e) if e.is_daemon_down() => {
+            eprintln!("yerd: {e}");
+            ExitCode::from(69)
+        }
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            ExitCode::from(74)
+        }
+    }
+}
+
+/// `yerd header list <site>`: one `ListResponseHeaders` round-trip, narrowed
+/// to `site` client-side. The unfiltered form goes through the normal `render`
+/// path.
+async fn run_header_list(site: &str, json: bool) -> ExitCode {
+    use yerd_ipc::{Request, Response};
+    match transport::exchange(&Request::ListResponseHeaders).await {
+        Ok(Response::ResponseHeaders { headers }) => {
+            let r = map::render_response_headers(&headers, Some(site), json);
             if !r.stdout.is_empty() {
                 println!("{}", r.stdout);
             }

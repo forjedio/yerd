@@ -95,22 +95,40 @@ impl yerd_proxy::LoginTokenConsumer for LoginTokenRegistry {
 /// Only ever loaded via a per-request `auto_prepend_file` FastCGI override
 /// added by `yerd-proxy` for a single already-token-validated request - never
 /// written into any site's own files, never reachable on an ordinary request.
-const PREPEND_SCRIPT: &str = include_str!("../assets/wordpress_autologin_prepend.php");
+pub const PREPEND_SCRIPT: &str = include_str!("../assets/wordpress_autologin_prepend.php");
 
-/// Write the auto-login prepend script out to a stable path under `data_dir`,
-/// overwriting any previous copy (so an updated yerd always refreshes it).
-/// Returns the path on success; failures are logged and treated as "one-click
-/// login is unavailable this boot" rather than fatal - the ordinary,
-/// non-authenticated `/wp-admin/` link still works either way.
-pub fn write_prepend_script(data_dir: &std::path::Path) -> Option<std::path::PathBuf> {
-    let path = data_dir.join("wordpress-autologin-prepend.php");
-    match std::fs::write(&path, PREPEND_SCRIPT) {
+/// File name the auto-login prepend script is written to under `{data}`.
+pub const PREPEND_SCRIPT_FILE: &str = "wordpress-autologin-prepend.php";
+
+/// The `WordPress` public-URL override for tunnelled requests, compiled into the
+/// binary. Only ever loaded via the tunnel listener's per-request
+/// `auto_prepend_file` override, and gated on the `YERD_PUBLIC_URL` param that
+/// only tunnelled requests carry.
+pub const PUBLIC_URL_PREPEND_SCRIPT: &str =
+    include_str!("../assets/wordpress_public_url_prepend.php");
+
+/// File name the public-URL prepend script is written to under `{data}`.
+pub const PUBLIC_URL_PREPEND_SCRIPT_FILE: &str = "wordpress-public-url-prepend.php";
+
+/// Write a prepend script out to `data_dir/file_name`, overwriting any previous
+/// copy (so an updated yerd always refreshes it). Returns the path on success;
+/// failures are logged and treated as "this prepend is unavailable this boot"
+/// rather than fatal - for the auto-login script the ordinary,
+/// non-authenticated `/wp-admin/` link still works, and for the public-URL
+/// script a tunnelled `WordPress` site simply keeps its stored URLs.
+pub fn write_prepend_script(
+    data_dir: &std::path::Path,
+    file_name: &str,
+    contents: &str,
+) -> Option<std::path::PathBuf> {
+    let path = data_dir.join(file_name);
+    match std::fs::write(&path, contents) {
         Ok(()) => Some(path),
         Err(e) => {
             tracing::warn!(
                 error = %e,
                 path = %path.display(),
-                "couldn't write the WordPress auto-login prepend script; one-click login is unavailable this boot"
+                "couldn't write a WordPress prepend script; the feature it backs is unavailable this boot"
             );
             None
         }
@@ -359,6 +377,58 @@ mod tests {
             );
         }
         assert_eq!(reg.consume("blog", &token), None);
+    }
+
+    #[test]
+    fn write_prepend_script_writes_and_overwrites_both_scripts() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (file_name, contents) in [
+            (PREPEND_SCRIPT_FILE, PREPEND_SCRIPT),
+            (PUBLIC_URL_PREPEND_SCRIPT_FILE, PUBLIC_URL_PREPEND_SCRIPT),
+        ] {
+            let path = tmp.path().join(file_name);
+            std::fs::write(&path, "stale").unwrap();
+
+            let written = write_prepend_script(tmp.path(), file_name, contents).unwrap();
+
+            assert_eq!(written, path);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), contents);
+        }
+    }
+
+    #[test]
+    fn write_prepend_script_failure_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing_dir = tmp.path().join("missing");
+        assert!(write_prepend_script(&missing_dir, PREPEND_SCRIPT_FILE, PREPEND_SCRIPT).is_none());
+    }
+
+    #[test]
+    fn public_url_script_gates_on_yerd_public_url_first() {
+        let first_statement = PUBLIC_URL_PREPEND_SCRIPT
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty() && *l != "<?php")
+            .unwrap();
+        assert_eq!(
+            first_statement,
+            "if (!isset($_SERVER['YERD_PUBLIC_URL'])) {"
+        );
+    }
+
+    #[test]
+    fn public_url_script_overrides_and_protects_home_and_siteurl() {
+        for hook in [
+            "'option_home'",
+            "'option_siteurl'",
+            "'pre_update_option_home'",
+            "'pre_update_option_siteurl'",
+            "PHP_INT_MAX",
+            "'accepted_args' => 2",
+            "PHP_URL_PATH",
+        ] {
+            assert!(PUBLIC_URL_PREPEND_SCRIPT.contains(hook), "missing {hook}");
+        }
     }
 
     #[test]

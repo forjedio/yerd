@@ -34,7 +34,7 @@ The landing dashboard. With the daemon running it shows a **serving** summary - 
 
 App- and daemon-level settings (one of the pages that stays usable when the daemon is down, since it can start or install it):
 
-- **Daemon.** Whether `yerdd` is running (with pid), a Start or Stop button, and a list of the daemon's in-process subsystems - the DNS resolver, the HTTP and HTTPS proxy listeners (with bound ports, including when macOS's `pf` redirect carries `:80`/`:443`), **Mail capture** (by port), and **Dump capture** (by port). The daemon row has a Restart button. Start/Stop/Restart go through your per-user service manager (systemd `--user` on Linux, a launchd LaunchAgent on macOS), with a detached-process fallback where none exists; the same actions are in the tray menu.
+- **Daemon.** Whether `yerdd` is running (with pid), a Start or Stop button, and a list of the daemon's in-process subsystems - the DNS resolver, the HTTP and HTTPS proxy listeners (with bound ports, including when macOS's launchd port forwarder carries `:80`/`:443`), **Mail capture** (by port), and **Dump capture** (by port). The daemon row has a Restart button. Start/Stop/Restart go through your per-user service manager (systemd `--user` on Linux, a launchd LaunchAgent on macOS), with a detached-process fallback where none exists; the same actions are in the tray menu.
 - **Application Ports** (while the daemon is running). Editable HTTP/HTTPS (the rootless fallback ports used when 80/443 need elevation), DNS, mail-capture, and dumps ports. If a port is in use elsewhere the page flags it here (site serving or `.test` resolution shows as unbound) so you can pick a free one. Change a value and **Save & restart** validates it, saves, restarts the daemon, and rechecks. HTTP/HTTPS are locked while ports are elevated - un-elevate them on the Doctor page first.
 - **Start at login.** Three toggles - start the daemon at login, start the app at login, and start the app minimized (hidden to the tray). The daemon-at-login toggle is disabled where no per-user service manager is available.
 - **Terminal CLI** (macOS and Linux). Installs `yerd` - and your installed tools (`php`, `composer`, ...) - onto your shell `PATH`. On a packaged Linux install `yerd` itself is already on `PATH`, so this is mainly how Linux users get the PHP/tool shims on `PATH` too.
@@ -50,7 +50,7 @@ Manages your installed [PHP versions](./php-versions):
 - Install opens a picker of installable versions (already-installed ones are hidden). Installs download a prebuilt static build; progress streams live next to the Install button as it happens.
 - Refresh re-checks for updates. Update all updates every version with a pending update. Updates are notify-only.
 - Each row's `⋯` menu offers Restart (only when the pool is running or failed), Update (only when available), Set default (marks it with a star), and Uninstall. Restart all restarts every running pool.
-- A Default settings card edits the global ini defaults applied to every version: `memory_limit`, `max_execution_time`, `max_input_time`, `max_file_uploads`, `upload_max_filesize`, `post_max_size`, `error_reporting`, and `display_errors`. Leave a field blank to use PHP's built-in default. Saving restarts running pools to apply.
+- A Default settings card edits the global ini defaults applied to every version: `memory_limit`, `max_execution_time`, `max_input_time`, `max_file_uploads`, `upload_max_filesize`, `post_max_size`, `error_reporting`, and `display_errors`. Leave a field blank to use PHP's built-in default. An "Allow FFI in web requests (needed for php-vips)" switch sets `ffi.enable` for web requests (off by default; a hint appears when libvips isn't installed), and each version's tab can override it when that version's build includes FFI. Saving restarts running pools to apply.
 - A Per-version configuration card lists your versions down the side, newest first. Picking one scopes everything to that version: a settings form overriding the defaults above (empty fields inherit), its custom extensions, free-form ini directives, and its FPM pool size. See [Per-version configuration](./php-versions#per-version-configuration).
 - The Extensions section of that card registers extra `.so` extensions for the selected version (loaded into both FPM and the CLI): Add… browses for the file, optionally names it and toggles Zend extension. Each is load-probed before saving, and any whose file has gone missing is flagged. See [Custom extensions](./php-versions#custom-extensions).
 - **FPM pool size** sets how many PHP workers that version may run at once (`pm.max_children`, 1-1024, default 16). It applies to the web pool only, never the CLI. The pool is on-demand, so a higher ceiling costs nothing while idle - raise it when requests queue behind queue workers, parallel test runs, or long-lived streams. Saving restarts that version's pool. See [Pool size](./php-versions#pool-size).
@@ -73,11 +73,12 @@ Sites can also be organized into named, reorderable groups shown as collapsible 
 
 #### The site details sidebar
 
-Four tabs, covering everything Yerd knows about one site:
+Five tabs, covering everything Yerd knows about one site:
 
 - **General.** An **Open site** button, then a row of actions - **Terminal** (opens your terminal in the project directory), the **editor** button (macOS and Linux), **Dumps** or **WP Admin** depending on the site, and **Share publicly…** (a [Cloudflare Quick Tunnel](#share)). Below them: PHP version, the **Editor** used for this site, the path (with reveal), the served web root (blank means auto-detect), the URL, the **HTTPS** toggle, **WordPress Auto Admin Login** with an admin picker on WordPress sites, its [group](./sites#site-groups), and - for a linked site only - **Unlink**. Parked sites have no destructive action here; remove them by un-parking their folder, or they'd reappear.
 - **Domains.** Set the primary domain and add or remove aliases, subdomains, and wildcards. See [Domains](../reference/cli/domains).
 - **Routing.** The **Route through front controller** switch (on: everything funnels through `index.php`, as Laravel and Symfony want; off: named `.php` files execute directly), and beneath it the per-prefix [routing rules](../reference/cli/routes) that carve exceptions out of that default - a nested `api/index.php`, or `index.html` for an SPA.
+- **Headers.** Custom [response headers](../reference/cli/headers) added to every response the site serves, such as `Access-Control-Allow-Origin` for CORS. Set a name and value, or remove one with its trash button.
 - **Information.** A read-only summary: detected application, every domain the site answers, web root, kind, protocol, front-controller mode, and WordPress auto-login state.
 
 The **Editor** row defaults to the Preferred editor set in [Settings](#settings), shown as `Use default (…)`; pick a specific editor to override it for that one site, and the choice is remembered.
@@ -90,7 +91,7 @@ If your local CA isn't trusted in the system store, the Sites view shows a banne
 
 <ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="Tooling page" />
 
-Installs self-contained developer tools - Composer, Node, and Bun - onto your PATH alongside PHP, each managed by Yerd (install / update / uninstall) so they don't collide with system installs. See [Tooling](./tooling).
+Installs self-contained developer tools - Composer, Node, Bun, and pnpm - onto your PATH alongside PHP, each managed by Yerd (install / update / uninstall) so they don't collide with system installs. See [Tooling](./tooling).
 
 ### Proxies
 
@@ -125,7 +126,7 @@ Laravel telemetry interception - `dump()`/`dd()` plus queries, jobs, views, requ
 
 <ThemedImage light="/images/share-light.png" dark="/images/share-dark.png" alt="Share page" />
 
-Publishes a local site to the public internet over Cloudflare Tunnel. A **Cloudflare Tunnel** card shows the detected `cloudflared` version; a **Shared sites** card picks a site and opens a Quick Tunnel with one click, alongside a live table of active tunnels. A separate **Named tunnels** card walks through connecting a Cloudflare account and exposing sites on your own domain. See [Sharing Sites](./sharing).
+Publishes a local site to the public internet over Cloudflare Tunnel. A **Cloudflare Tunnel** card shows the detected `cloudflared` version; a **Shared sites** card picks a site and opens a Quick Tunnel with one click, alongside a live table of active tunnels showing each one's health (Connecting, Online, Reconnecting, Failed), its last error, and any preflight warnings. A separate **Named tunnels** card walks through connecting a Cloudflare account and exposing sites on your own domain. A key button on each shared site sets an optional share password. See [Sharing Sites](./sharing).
 
 ### Doctor
 
@@ -138,6 +139,8 @@ Mirrors [`yerd doctor`](./diagnostics):
 
 ::: info "Fix" actions never run the GUI as root
 The Fix buttons run the audited `yerd elevate` helper under an OS prompt; the GUI never runs elevated. On Linux this uses `pkexec`, on macOS an `osascript … with administrator privileges` prompt. You may be asked for your password. See [Elevation & Privileges](./elevation).
+
+On macOS, fixing Privileged ports from the app also removes any `pf` LAN redirect left by an older Yerd, without a message. If you use [LAN access](../reference/cli/lan), run `sudo yerd elevate lan` from a terminal afterwards.
 :::
 
 ### About

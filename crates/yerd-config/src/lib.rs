@@ -24,8 +24,9 @@ mod serialize;
 pub use error::{ConfigError, MigrationErrorReason, ValidateErrorReason};
 pub use schema::{
     Config, DomainDelta, DomainsSection, DumpsSection, ExtEntry, GroupsSection, MailSection,
-    ParkedSection, PhpSection, Ports, ServiceInstance, ServicesSection, SiteOverride,
-    TunnelSection, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
+    ParkedSection, PhpSection, Ports, ResponseHeadersSection, ServiceInstance, ServicesSection,
+    SiteOverride, TunnelSection, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT,
+    RESERVED_GROUP_NAME,
 };
 
 /// The on-disk schema version this crate writes. Bumped together with a new
@@ -104,7 +105,17 @@ pub use schema::{
 /// v23 added the optional `[domains.proxy]` table ([`Config::domains`]) for
 /// whole-host proxy domain deltas; it defaults (empty) when absent, so v22→v23
 /// is a bare bump too.
+/// v24 added the optional `[tunnel.passwords]` table ([`TunnelSection`]) of
+/// per-site share passwords; it defaults (empty) when absent, so v23→v24 is a
+/// bare bump too.
+/// v25 added the optional `[response_headers]` table
+/// ([`Config::response_headers`]) holding per-site custom response headers; it
+/// defaults (empty) when absent, so v24→v25 is a bare bump too.
+/// v26 added the optional, unseeded `ffi.enable` key to `[php.settings]` and
+/// `[php.version_settings]`; it is absent unless set, so v25→v26 is a bare bump
+/// too. The bump makes an older binary refuse the file by version rather than
+/// failing on an unknown setting name.
 ///
 /// The per-version detail, including how to hand-edit a file back down for an
 /// older binary, lives in `docs/developer/config-schema-history.md`.
-pub const CURRENT_VERSION: u32 = 23;
+pub const CURRENT_VERSION: u32 = 26;

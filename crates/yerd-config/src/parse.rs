@@ -139,6 +139,9 @@ struct Wire {
     // v20: optional `[route_rules]` table; absent in v19 and earlier → empty.
     #[serde(default)]
     route_rules: RouteRulesSectionWire,
+    // v24: optional `[response_headers]` table; absent in v23 and earlier → empty.
+    #[serde(default)]
+    response_headers: ResponseHeadersSectionWire,
 }
 
 /// One `[[proxies]]` table: a whole-host proxy's name, upstream, and HTTPS flag.
@@ -193,6 +196,27 @@ struct RouteRuleWire {
     target: String,
 }
 
+/// The `[response_headers]` table. Both maps default to empty, so an absent
+/// table parses to [`crate::schema::ResponseHeadersSection::default`].
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResponseHeadersSectionWire {
+    #[serde(default)]
+    linked: BTreeMap<String, Vec<ResponseHeaderWire>>,
+    #[serde(default)]
+    parked: BTreeMap<String, Vec<ResponseHeaderWire>>,
+}
+
+/// One `[[response_headers.linked.<name>]]` /
+/// `[[response_headers.parked."<docroot>"]]` header (validated into
+/// `yerd_core::ResponseHeader` in `TryFrom`).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResponseHeaderWire {
+    name: String,
+    value: String,
+}
+
 /// The `[domains]` table. Every map defaults to empty, so an absent table parses
 /// to [`crate::schema::DomainsSection::default`].
 #[derive(Default, Deserialize)]
@@ -231,7 +255,7 @@ struct GroupsSectionWire {
     members: BTreeMap<String, String>,
 }
 
-/// The `[tunnel]` table. Both maps default to empty, so an absent table parses
+/// The `[tunnel]` table. All maps default to empty, so an absent table parses
 /// to [`crate::schema::TunnelSection::default`].
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -240,6 +264,8 @@ struct TunnelSectionWire {
     named: BTreeMap<String, String>,
     #[serde(default)]
     sites: BTreeMap<String, String>,
+    #[serde(default)]
+    passwords: BTreeMap<String, String>,
 }
 
 /// The `[dumps]` table. All fields default, so an absent table parses to
@@ -591,6 +617,7 @@ impl TryFrom<Wire> for Config {
         let tunnel = crate::schema::TunnelSection {
             named: w.tunnel.named,
             sites: w.tunnel.sites,
+            passwords: w.tunnel.passwords,
         };
         let groups = crate::schema::GroupsSection {
             order: w.groups.order,
@@ -609,6 +636,10 @@ impl TryFrom<Wire> for Config {
         let route_rules = crate::schema::RouteRulesSection {
             linked: convert_route_rules(w.route_rules.linked)?,
             parked: convert_route_rules(w.route_rules.parked)?,
+        };
+        let response_headers = crate::schema::ResponseHeadersSection {
+            linked: convert_response_headers(w.response_headers.linked)?,
+            parked: convert_response_headers(w.response_headers.parked)?,
         };
         Ok(Config {
             version: crate::CURRENT_VERSION,
@@ -633,6 +664,7 @@ impl TryFrom<Wire> for Config {
             proxies,
             proxy_rules,
             route_rules,
+            response_headers,
         })
     }
 }
@@ -681,6 +713,23 @@ fn convert_route_rules(
                 .map(|r| Ok(yerd_core::RouteRule::new(&r.prefix, &r.target)?))
                 .collect::<Result<Vec<_>, ConfigError>>()?;
             Ok((key, rules))
+        })
+        .collect()
+}
+
+/// Convert a `[response_headers.*]` wire map into validated
+/// [`yerd_core::ResponseHeader`] lists. A bad name or value surfaces as
+/// [`ConfigError::Core`].
+fn convert_response_headers(
+    wire: BTreeMap<String, Vec<ResponseHeaderWire>>,
+) -> Result<BTreeMap<String, Vec<yerd_core::ResponseHeader>>, ConfigError> {
+    wire.into_iter()
+        .map(|(key, headers)| {
+            let headers = headers
+                .into_iter()
+                .map(|h| Ok(yerd_core::ResponseHeader::new(&h.name, &h.value)?))
+                .collect::<Result<Vec<_>, ConfigError>>()?;
+            Ok((key, headers))
         })
         .collect()
 }
@@ -885,6 +934,7 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     validate_domains(c)?;
     validate_proxies(c)?;
     validate_route_rules(c)?;
+    validate_response_headers(c)?;
     Ok(())
 }
 
@@ -961,6 +1011,33 @@ fn validate_route_rule_set(rules: &[yerd_core::RouteRule]) -> Result<(), ConfigE
     for r in rules {
         if !seen_prefix.insert(r.prefix()) {
             return Err(ve(ValidateErrorReason::RouteRuleDuplicatePrefix));
+        }
+    }
+    Ok(())
+}
+
+/// Linked `[response_headers]` keys must name a `[[linked]]` site, and each
+/// site's header names must be unique ignoring ASCII case. Parked headers key
+/// by document-root and can't be checked here, exactly as for `[route_rules]`.
+fn validate_response_headers(c: &Config) -> Result<(), ConfigError> {
+    let linked_names: BTreeSet<&str> = c.linked.iter().map(yerd_core::Site::name).collect();
+    for (site, headers) in &c.response_headers.linked {
+        if !linked_names.contains(site.as_str()) {
+            return Err(ve(ValidateErrorReason::ResponseHeaderUnknownSite));
+        }
+        validate_response_header_set(headers)?;
+    }
+    for headers in c.response_headers.parked.values() {
+        validate_response_header_set(headers)?;
+    }
+    Ok(())
+}
+
+fn validate_response_header_set(headers: &[yerd_core::ResponseHeader]) -> Result<(), ConfigError> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for h in headers {
+        if !seen.insert(h.name().to_ascii_lowercase()) {
+            return Err(ve(ValidateErrorReason::ResponseHeaderDuplicateName));
         }
     }
     Ok(())
@@ -1084,9 +1161,12 @@ fn validate_groups(c: &Config) -> Result<(), ConfigError> {
 /// Two cardinality invariants the daemon relies on are also enforced, so a
 /// hand-edited config can't load into a state the runtime silently mishandles:
 /// at most one `[tunnel.named]` entry (the daemon runs a single consolidated
-/// tunnel and starts only the first), and unique `[tunnel.sites]` hostnames (one
-/// ingress rule is emitted per pair, so a duplicate hostname would shadow all
-/// but the first site).
+/// tunnel and starts only the first), and unique `[tunnel.sites]` hostnames,
+/// compared case-insensitively (the tunnel listener routes by the lowercased
+/// host, so a duplicate would shadow all but the first site).
+///
+/// `[tunnel.passwords]` keys follow the same safe-key rule as site names, and
+/// each password is 1..=128 bytes with no ASCII control characters.
 fn validate_tunnel(c: &Config) -> Result<(), ConfigError> {
     if c.tunnel.named.len() > 1 {
         return Err(ve(ValidateErrorReason::TunnelMultipleNamed));
@@ -1110,11 +1190,25 @@ fn validate_tunnel(c: &Config) -> Result<(), ConfigError> {
         if !is_plausible_hostname(hostname) {
             return Err(ve(ValidateErrorReason::TunnelHostnameInvalid));
         }
-        if !seen_hostnames.insert(hostname.as_str()) {
+        if !seen_hostnames.insert(hostname.to_ascii_lowercase()) {
             return Err(ve(ValidateErrorReason::TunnelDuplicateHostname));
         }
     }
+    for (site, password) in &c.tunnel.passwords {
+        if !is_safe_key(site) {
+            return Err(ve(ValidateErrorReason::TunnelKeyInvalid));
+        }
+        if !is_valid_tunnel_password(password) {
+            return Err(ve(ValidateErrorReason::TunnelPasswordInvalid));
+        }
+    }
     Ok(())
+}
+
+/// A share password is 1..=128 bytes with no ASCII control characters, so it
+/// stays a single printable TOML line and a sane basic-auth credential.
+fn is_valid_tunnel_password(password: &str) -> bool {
+    (1..=128).contains(&password.len()) && !password.chars().any(|c| c.is_ascii_control())
 }
 
 /// A `[tunnel]` map key or UUID is safe when it is a short token of DNS-label-ish
@@ -1352,7 +1446,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 23,
+                current: 26,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -1437,6 +1531,15 @@ mod tests {
         let unique = "version = 8\n[tunnel.sites]\n\
                       app = \"app.example.com\"\nblog = \"blog.example.com\"\n";
         assert!(Config::from_toml(unique).is_ok());
+
+        let differs_by_case = "version = 8\n[tunnel.sites]\n\
+                               app = \"Shared.Example.com\"\nblog = \"shared.example.COM\"\n";
+        assert!(matches!(
+            Config::from_toml(differs_by_case),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::TunnelDuplicateHostname,
+            })
+        ));
     }
 
     #[test]
@@ -1569,7 +1672,7 @@ mod tests {
 
     #[test]
     #[allow(clippy::field_reassign_with_default)]
-    fn v22_config_migrates_to_v23_changing_only_the_version_line() {
+    fn v22_config_migrates_to_current_changing_only_the_version_line() {
         let mut c = Config::default();
         c.domains.linked.insert(
             "blog".to_owned(),
@@ -1579,15 +1682,98 @@ mod tests {
                 primary: None,
             },
         );
-        let v23 = c.to_toml().unwrap();
-        let v22 = v23.replacen("version = 23\n", "version = 22\n", 1);
+        let current = c.to_toml().unwrap();
+        let v22 = current.replacen(
+            &format!("version = {}\n", crate::CURRENT_VERSION),
+            "version = 22\n",
+            1,
+        );
         assert_ne!(
-            v22, v23,
+            v22, current,
             "the replace must actually downgrade the version line"
         );
         let migrated = Config::from_toml(&v22).unwrap();
         assert_eq!(migrated, c);
-        assert_eq!(migrated.to_toml().unwrap(), v23);
+        assert_eq!(migrated.to_toml().unwrap(), current);
+    }
+
+    #[test]
+    fn v25_config_with_ffi_enable_migrates_to_v26_keeping_it() {
+        let mut c = Config::default();
+        c.php
+            .settings
+            .insert("ffi.enable".to_owned(), "On".to_owned());
+        let current = c.to_toml().unwrap();
+        let v25 = current.replacen("version = 26\n", "version = 25\n", 1);
+        assert_ne!(v25, current);
+        let migrated = Config::from_toml(&v25).unwrap();
+        assert_eq!(migrated, c);
+        assert_eq!(migrated.to_toml().unwrap(), current);
+    }
+
+    #[test]
+    fn v23_tunnel_config_migrates_to_current_keeping_both_maps() {
+        let s = "version = 23\n[tunnel.named]\nmysite = \"uuid-1\"\n\
+                 [tunnel.sites]\napp = \"app.example.com\"\n";
+        let c = Config::from_toml(s).unwrap();
+        assert_eq!(c.version, crate::CURRENT_VERSION);
+        assert_eq!(
+            c.tunnel.named.get("mysite").map(String::as_str),
+            Some("uuid-1")
+        );
+        assert_eq!(
+            c.tunnel.sites.get("app").map(String::as_str),
+            Some("app.example.com")
+        );
+        assert!(c.tunnel.passwords.is_empty());
+        let emitted = c.to_toml().unwrap();
+        assert!(!emitted.contains("[tunnel.passwords]"), "got: {emitted}");
+    }
+
+    #[test]
+    fn tunnel_passwords_accept_valid_values() {
+        for password in ["s", "secret with spaces", "p\u{e9}ss", &"x".repeat(128)] {
+            let mut c = Config::default();
+            c.tunnel
+                .passwords
+                .insert("app".to_owned(), password.to_owned());
+            c.validate().unwrap();
+            let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+            assert_eq!(back.tunnel.passwords, c.tunnel.passwords);
+        }
+    }
+
+    #[test]
+    fn tunnel_passwords_reject_invalid_values() {
+        for password in ["", "tab\there", "nl\nhere", "del\u{7f}", &"x".repeat(129)] {
+            let mut c = Config::default();
+            c.tunnel
+                .passwords
+                .insert("app".to_owned(), password.to_owned());
+            assert!(
+                matches!(
+                    c.validate(),
+                    Err(ConfigError::Validate {
+                        reason: ValidateErrorReason::TunnelPasswordInvalid,
+                    })
+                ),
+                "password {password:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn tunnel_passwords_reject_unsafe_site_keys() {
+        let mut c = Config::default();
+        c.tunnel
+            .passwords
+            .insert("../escape".to_owned(), "secret".to_owned());
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::TunnelKeyInvalid,
+            })
+        ));
     }
 
     #[test]
@@ -2129,6 +2315,98 @@ target = \"../../etc/passwd\"\n";
     }
 
     #[test]
+    fn response_headers_round_trip() {
+        let mut c = Config::default();
+        c.linked.push(linked_site("app", "/srv/app"));
+        c.response_headers.linked.insert(
+            "app".to_owned(),
+            vec![
+                yerd_core::ResponseHeader::new("Access-Control-Allow-Origin", "*").unwrap(),
+                yerd_core::ResponseHeader::new("X-Frame-Options", "DENY").unwrap(),
+            ],
+        );
+        c.response_headers.parked.insert(
+            "/srv/blog".to_owned(),
+            vec![yerd_core::ResponseHeader::new("Cache-Control", "no-store").unwrap()],
+        );
+        let toml = c.to_toml().unwrap();
+        let back = Config::from_toml(&toml).unwrap();
+        assert_eq!(c, back);
+        assert_eq!(back.to_toml().unwrap(), toml);
+    }
+
+    #[test]
+    fn removing_last_response_header_returns_to_byte_identical_default() {
+        let mut c = Config::default();
+        c.response_headers
+            .linked
+            .insert("app".to_owned(), Vec::new());
+        assert_eq!(c.to_toml().unwrap(), Config::default().to_toml().unwrap());
+    }
+
+    #[test]
+    fn validate_rejects_unknown_response_header_site() {
+        let mut c = Config::default();
+        c.response_headers.linked.insert(
+            "ghost".to_owned(),
+            vec![yerd_core::ResponseHeader::new("X-A", "1").unwrap()],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::ResponseHeaderUnknownSite,
+            }) => {}
+            other => panic!("expected ResponseHeaderUnknownSite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_response_header_name_ignoring_case() {
+        let mut c = Config::default();
+        c.linked.push(linked_site("app", "/srv/app"));
+        c.response_headers.parked.insert(
+            "/srv/blog".to_owned(),
+            vec![
+                yerd_core::ResponseHeader::new("X-A", "1").unwrap(),
+                yerd_core::ResponseHeader::new("x-a", "2").unwrap(),
+            ],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::ResponseHeaderDuplicateName,
+            }) => {}
+            other => panic!("expected ResponseHeaderDuplicateName, got {other:?}"),
+        }
+        c.response_headers.parked.clear();
+        c.response_headers.linked.insert(
+            "app".to_owned(),
+            vec![
+                yerd_core::ResponseHeader::new("Access-Control-Allow-Origin", "*").unwrap(),
+                yerd_core::ResponseHeader::new("ACCESS-CONTROL-ALLOW-ORIGIN", "x").unwrap(),
+            ],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::ResponseHeaderDuplicateName,
+            }) => {}
+            other => panic!("expected ResponseHeaderDuplicateName, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_rejects_bad_response_headers() {
+        for entry in [
+            "name = \"Content-Length\"\nvalue = \"5\"\n",
+            "name = \"X-A\"\nvalue = \"a\\u0001b\"\n",
+        ] {
+            let s = format!("version = 25\n[[response_headers.linked.app]]\n{entry}");
+            assert!(
+                matches!(Config::from_toml(&s), Err(ConfigError::Core(_))),
+                "a hand-edited invalid header must fail at load: {entry}"
+            );
+        }
+    }
+
+    #[test]
     fn validate_rejects_proxy_name_collision_with_linked() {
         let mut c = Config::default();
         c.linked.push(
@@ -2596,6 +2874,17 @@ target = \"../../etc/passwd\"\n";
                 reason: ValidateErrorReason::InvalidPhpSetting,
             })
         ));
+
+        let mut c = Config::default();
+        c.php
+            .settings
+            .insert("ffi.enable".to_string(), "preload".to_string());
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::InvalidPhpSetting,
+            })
+        ));
     }
 
     #[test]
@@ -2685,12 +2974,14 @@ target = \"../../etc/passwd\"\n";
                  memory_limit = \"1G\"\n\
                  allow_url_fopen = \"1\"\n\
                  max_execution_time = \"bogus\"\n\
+                 \"ffi.enable\" = \"preload\"\n\
                  [php.directives.\"8.3\"]\n\
                  \"xdebug.mode\" = \"debug\"\n\
                  \"1bad\" = \"x\"\n\
                  \"opcache.bad\" = \"a;b\"\n\
                  extension = \"/evil.so\"\n\
-                 memory_limit = \"2G\"\n";
+                 memory_limit = \"2G\"\n\
+                 \"ffi.enable\" = \"true\"\n";
         let c = Config::from_toml(s).unwrap();
         let v83 = yerd_core::PhpVersion::new(8, 3);
         let vs = c.php.version_settings.get(&v83).unwrap();

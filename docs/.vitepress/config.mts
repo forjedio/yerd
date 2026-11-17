@@ -51,6 +51,16 @@ export default withMermaid({
         crossorigin: '',
       },
     ],
+    // Plausible analytics (self-hosted at annie.forjed.io).
+    [
+      'script',
+      { async: '', src: 'https://annie.forjed.io/js/pa-DCYl0BxgJ-QjKNq6qzmUd.js' },
+    ],
+    [
+      'script',
+      {},
+      'window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};\nplausible.init()',
+    ],
     ['meta', { name: 'author', content: 'Forjed' }],
     [
       'meta',
@@ -205,6 +215,7 @@ export default withMermaid({
             { text: 'Domains', link: '/reference/cli/domains' },
             { text: 'Proxies', link: '/reference/cli/proxies' },
             { text: 'Routing rules', link: '/reference/cli/routes' },
+            { text: 'Response headers', link: '/reference/cli/headers' },
             { text: 'HTTPS', link: '/reference/cli/https' },
             { text: 'PHP', link: '/reference/cli/php' },
             { text: 'Exec and Which', link: '/reference/cli/exec' },
@@ -282,6 +293,10 @@ export default withMermaid({
             {
               text: 'yerd-helper (privileged)',
               link: '/developer/binaries/yerd-helper',
+            },
+            {
+              text: 'yerd-forward (macOS ports)',
+              link: '/developer/binaries/yerd-forward',
             },
           ],
         },

@@ -68,6 +68,13 @@ async fn handle_client(stream: IpcStream, state: Arc<DaemonState>) {
                 crate::tunnel::install_cloudflared_streamed(state.clone()).await
             }
             Request::CloudflaredLogin => crate::tunnel::named::login_streamed(state.clone()).await,
+            Request::StartQuickTunnel { site } => {
+                crate::tunnel::start_quick_tunnel(&site, &state).await
+            }
+            Request::StartNamedTunnel => crate::tunnel::named::start(&state).await,
+            Request::SetSiteTunnel { site, hostname } => {
+                crate::tunnel::named::set_site_hostname(&site, hostname.as_deref(), &state).await
+            }
             Request::InstallPhpStreamed {
                 version,
                 confirm_legacy,
@@ -170,7 +177,9 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         | Request::RemoveProxy { .. }
         | Request::RemoveProxyRule { .. }
         | Request::AddRouteRule { .. }
-        | Request::RemoveRouteRule { .. } => handle_mutation(req, state).await,
+        | Request::RemoveRouteRule { .. }
+        | Request::SetResponseHeader { .. }
+        | Request::RemoveResponseHeader { .. } => handle_mutation(req, state).await,
         Request::AddProxy { ref url, .. } | Request::AddProxyRule { ref url, .. } => {
             if is_self_forward(url, &[state.http.bound, state.https.bound]) {
                 Response::Error {
@@ -184,6 +193,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         }
         Request::ListProxies => list_proxies(state).await,
         Request::ListRoutes => list_routes(state).await,
+        Request::ListResponseHeaders => list_response_headers(state).await,
         Request::ListGroups => {
             let cfg = state.config.lock().await;
             Response::Groups {
@@ -274,13 +284,20 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         }
         Request::InstallService { service, version } => {
             let dl = crate::php_install::ReqwestDownloader::new();
-            crate::services::install_service(&service, &version, state, &dl).await
+            let response = crate::services::install_service(&service, &version, state, &dl).await;
+            reconcile_client_shims_now(state).await;
+            response
         }
         Request::UninstallService {
             service,
             version,
             purge,
-        } => crate::services::uninstall_service(&service, &version, purge, state).await,
+        } => {
+            let response =
+                crate::services::uninstall_service(&service, &version, purge, state).await;
+            reconcile_client_shims_now(state).await;
+            response
+        }
         Request::StartService { service } => crate::services::start_service(&service, state).await,
         Request::StopService { service } => crate::services::stop_service(&service, state).await,
         Request::RestartService { service } => {
@@ -306,7 +323,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             autostart,
         } => {
             let dl = crate::php_install::ReqwestDownloader::new();
-            crate::services::add_service(
+            let response = crate::services::add_service(
                 &type_id,
                 site.as_deref(),
                 port,
@@ -315,7 +332,9 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
                 state,
                 &dl,
             )
-            .await
+            .await;
+            reconcile_client_shims_now(state).await;
+            response
         }
         Request::RemoveService { service, purge } => {
             crate::services::remove_service(&service, purge, state).await
@@ -349,7 +368,10 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         } => crate::db_admin::restore(&service, &name, &path, state).await,
         Request::ChangeServiceVersion { service, version } => {
             let dl = crate::php_install::ReqwestDownloader::new();
-            crate::services::change_service_version(&service, &version, state, &dl).await
+            let response =
+                crate::services::change_service_version(&service, &version, state, &dl).await;
+            reconcile_client_shims_now(state).await;
+            response
         }
         Request::ListDumps { since_id } => crate::dump_server::list(state, since_id).await,
         Request::ClearDumps => crate::dump_server::clear(state).await,
@@ -418,7 +440,6 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             crate::self_update::stage_update(channel, state, &dl, yerd_update::UPDATE_PUBLIC_KEY)
                 .await
         }
-        Request::StartQuickTunnel { site } => crate::tunnel::start_quick_tunnel(&site, state).await,
         Request::StopTunnel { site } => crate::tunnel::stop_tunnel(&site, state).await,
         Request::TunnelStatus => crate::tunnel::tunnel_status(state).await,
         Request::CreateNamedTunnel { name } => crate::tunnel::named::create(&name, state).await,
@@ -426,12 +447,11 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::RouteTunnelDns { tunnel, hostname } => {
             crate::tunnel::named::route_dns(&tunnel, &hostname, state).await
         }
-        Request::SetSiteTunnel { site, hostname } => {
-            crate::tunnel::named::set_site_hostname(&site, hostname.as_deref(), state).await
-        }
-        Request::StartNamedTunnel => crate::tunnel::named::start(state).await,
         Request::StopNamedTunnel => crate::tunnel::named::stop(state).await,
         Request::DeleteNamedTunnel { name } => crate::tunnel::named::delete(&name, state).await,
+        Request::SetTunnelPassword { site, password } => {
+            crate::tunnel::named::set_password(&site, password.as_deref(), state).await
+        }
         _ => Response::Error {
             code: ErrorCode::Internal,
             message: "unsupported request".into(),
@@ -483,9 +503,43 @@ fn installed_versions(state: &DaemonState) -> Vec<yerd_core::PhpVersion> {
     installed
 }
 
+/// Each version paired with its CLI binary, the input to FFI probes.
+fn cli_bins(
+    state: &DaemonState,
+    versions: &[yerd_core::PhpVersion],
+) -> Vec<(yerd_core::PhpVersion, std::path::PathBuf)> {
+    versions
+        .iter()
+        .map(|v| (*v, crate::php_install::cli_binary_path(&state.dirs, *v)))
+        .collect()
+}
+
+/// The per-version ini overrides to hand the live `PhpManager`: the config's
+/// overrides, FFI-gated so a build without FFI never gets an `ffi.enable` pool
+/// line (see [`crate::ffi_cache::FfiCache::gate_ini_overrides`]). Every path
+/// that pushes settings into the manager goes through this.
+pub(crate) async fn manager_ini_overrides(
+    state: &DaemonState,
+    global: &std::collections::BTreeMap<String, String>,
+    overrides: &std::collections::BTreeMap<
+        yerd_core::PhpVersion,
+        std::collections::BTreeMap<String, String>,
+    >,
+) -> std::collections::BTreeMap<yerd_core::PhpVersion, std::collections::BTreeMap<String, String>> {
+    let bins = cli_bins(state, &installed_versions(state));
+    state
+        .ffi_cache
+        .gate_ini_overrides(global, overrides, &bins)
+        .await
+}
+
 /// Build the `PhpVersions` reply: installed versions, the live global default,
-/// cached update annotations, and the global ini settings. Read-only; no network.
+/// cached update annotations, the global ini settings, which versions include
+/// FFI (cached probe), and whether libvips was found. Read-only; no network.
 async fn php_versions_response(state: &DaemonState) -> Response {
+    let installed = installed_versions(state);
+    let bins = cli_bins(state, &installed);
+    let ffi_versions = state.ffi_cache.capable_versions(&bins).await;
     let (default, settings, version_settings, directives, pool) = {
         let cfg = state.config.lock().await;
         (
@@ -497,13 +551,15 @@ async fn php_versions_response(state: &DaemonState) -> Response {
         )
     };
     Response::PhpVersions {
-        installed: installed_versions(state),
+        installed,
         default,
         updates: crate::php_updates::cached_updates(state).await,
         settings,
         version_settings: Box::new(version_settings),
         directives: Box::new(directives),
         pool: Box::new(pool),
+        ffi_versions: Box::new(ffi_versions),
+        libvips_found: state.libvips_probe.libvips_found(),
     }
 }
 
@@ -818,19 +874,25 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     .ok()
     .flatten();
 
-    let (port_redirect, foreign_web_listener, port_redirect_targets, lan_redirect_targets) =
-        tokio::task::spawn_blocking(|| {
-            use yerd_platform::PortRedirector;
-            let r = yerd_platform::ActivePortRedirector::new();
-            (
-                r.is_active(),
-                r.foreign_web_listener(),
-                r.redirect_targets().map(redirect_targets_to_wire),
-                r.lan_redirect_targets().map(redirect_targets_to_wire),
-            )
-        })
-        .await
-        .unwrap_or((None, None, None, None));
+    let (
+        port_redirect,
+        foreign_web_listener,
+        port_redirect_targets,
+        lan_redirect_targets,
+        legacy_pf_redirect,
+    ) = tokio::task::spawn_blocking(|| {
+        use yerd_platform::PortRedirector;
+        let r = yerd_platform::ActivePortRedirector::new();
+        (
+            r.is_active(),
+            r.foreign_web_listener(),
+            r.redirect_targets().map(redirect_targets_to_wire),
+            r.lan_redirect_targets().map(redirect_targets_to_wire),
+            r.legacy_pf_redirect(),
+        )
+    })
+    .await
+    .unwrap_or((None, None, None, None, None));
 
     let backup_tld = tld.clone();
     let resolver_backup = tokio::task::spawn_blocking(move || latest_resolver_backup(&backup_tld))
@@ -865,6 +927,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         foreign_web_listener,
         port_redirect_targets,
         lan_redirect_targets,
+        legacy_pf_redirect,
         resolver_backup,
         default_php,
         php,
@@ -1139,12 +1202,22 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
 /// instead of the stale process. A never-started / stopped ondemand pool is left
 /// alone (the next request spawns it from the new binary), matching
 /// [`restart_all_php`]'s semantics. Per-pool failures are logged, not fatal - the
-/// update itself already succeeded. Runs under the caller's `php_mutate` guard.
+/// update itself already succeeded. The FFI-gated overrides are re-pushed first,
+/// since an updated build may have gained or lost FFI. Runs under the caller's
+/// `php_mutate` guard and takes `php_settings_mutate` itself, so a concurrent
+/// settings save cannot be overwritten by this stale snapshot.
 async fn restart_updated_pools(state: &DaemonState, updated: &[yerd_core::PhpVersion]) {
     if updated.is_empty() {
         return;
     }
+    let _settings_guard = state.php_settings_mutate.lock().await;
+    let (global, overrides) = {
+        let cfg = state.config.lock().await;
+        (cfg.php.settings.clone(), cfg.php.version_settings.clone())
+    };
+    let gated = manager_ini_overrides(state, &global, &overrides).await;
     let mut mgr = state.php_manager.lock().await;
+    mgr.set_ini_overrides(gated);
     let active: std::collections::HashSet<yerd_core::PhpVersion> =
         mgr.snapshots().into_iter().map(|s| s.version).collect();
     for minor in pools_needing_restart(&active, updated) {
@@ -1374,7 +1447,9 @@ async fn adopt_default_if_unset(version: yerd_core::PhpVersion, state: &DaemonSt
 }
 
 /// Re-discover installed PHP binaries (bundled) and hand the refreshed map to
-/// the live `PhpManager`. Mirrors the discovery done at startup.
+/// the live `PhpManager`. Mirrors the discovery done at startup. Holds
+/// `php_settings_mutate` while it re-pushes the FFI-gated overrides, so a
+/// concurrent settings save cannot be overwritten by a stale snapshot.
 async fn refresh_php_binaries(state: &DaemonState) {
     let binaries: std::collections::BTreeMap<yerd_core::PhpVersion, std::path::PathBuf> =
         match yerd_php::discover_bundled(&state.dirs) {
@@ -1384,7 +1459,15 @@ async fn refresh_php_binaries(state: &DaemonState) {
                 return;
             }
         };
-    state.php_manager.lock().await.set_binaries(binaries);
+    let _settings_guard = state.php_settings_mutate.lock().await;
+    let (global, overrides) = {
+        let cfg = state.config.lock().await;
+        (cfg.php.settings.clone(), cfg.php.version_settings.clone())
+    };
+    let gated = manager_ini_overrides(state, &global, &overrides).await;
+    let mut mgr = state.php_manager.lock().await;
+    mgr.set_binaries(binaries);
+    mgr.set_ini_overrides(gated);
 }
 
 /// Absolute path to the `yerd` CLI binary, assumed a sibling of the running
@@ -1530,7 +1613,7 @@ async fn reconcile_shims_now(state: &DaemonState) {
     reconcile_shims_for(state).await;
 }
 
-/// Reconcile the dev-tool shims (`composer`/`node`/`npm`/`npx`/`bun`/`bunx`) under
+/// Reconcile the dev-tool shims (`composer`/`node`/`npm`/`npx`/`bun`/`bunx`/`pnpm`/`pnpx`) under
 /// the **shared** `shim_reconcile` mutex (same dir as the PHP reconcile).
 /// Best-effort: failures are logged. Used at startup and after install/uninstall.
 pub(crate) async fn reconcile_tool_shims_now(state: &DaemonState) {
@@ -1541,6 +1624,26 @@ pub(crate) async fn reconcile_tool_shims_now(state: &DaemonState) {
     let _guard = state.shim_reconcile.lock().await;
     if let Err(e) = crate::tools::reconcile_tool_shims(&state.dirs, &yerd_bin) {
         tracing::warn!(error = %e, "tool-shim reconcile failed");
+    }
+}
+
+/// Reconcile the service client shims (`mysql`, `psql`, `valkey-cli`, ...) and
+/// the `cloudflared` link under the **shared** `shim_reconcile` mutex.
+/// Best-effort: failures are logged. The `cloudflared` link needs no `yerd`
+/// binary, so it is reconciled even when the sibling cannot be located. Used at
+/// startup, after every service install/uninstall/version change, and after a
+/// `cloudflared` install.
+pub(crate) async fn reconcile_client_shims_now(state: &DaemonState) {
+    let _guard = state.shim_reconcile.lock().await;
+    if let Err(e) = crate::tunnel::install::reconcile_cloudflared_shim(&state.dirs) {
+        tracing::warn!(error = %e, "cloudflared shim reconcile failed");
+    }
+    let Some(yerd_bin) = yerd_sibling() else {
+        tracing::warn!("cannot locate the `yerd` binary; skipping service-client shim reconcile");
+        return;
+    };
+    if let Err(e) = crate::service_install::reconcile_client_shims(&state.dirs, &yerd_bin) {
+        tracing::warn!(error = %e, "service-client shim reconcile failed");
     }
 }
 
@@ -2106,12 +2209,15 @@ async fn set_php_settings(
         return internal(format!("config save failed: {e}"));
     }
     let applied = new.php.settings.clone();
+    let overrides = new.php.version_settings.clone();
     *cfg_guard = new;
     drop(cfg_guard);
+    let gated = manager_ini_overrides(state, &applied, &overrides).await;
 
     {
         let mut mgr = state.php_manager.lock().await;
         mgr.set_ini_settings(applied);
+        mgr.set_ini_overrides(gated);
         for snap in mgr.snapshots() {
             if let Err(e) = mgr.restart(snap.version).await {
                 tracing::warn!(version = %snap.version, error = %e, "failed to restart FPM pool after settings change");
@@ -2146,7 +2252,7 @@ async fn set_php_version_settings(
             }
             continue;
         }
-        if let Err(e) = yerd_core::php_settings::validate_value(&key, &value) {
+        if let Err(e) = yerd_core::php_settings::validate_version_value(&key, &value, version) {
             return Response::Error {
                 code: ErrorCode::InvalidPath,
                 message: e.to_string(),
@@ -2359,17 +2465,19 @@ fn require_installed(version: yerd_core::PhpVersion, state: &DaemonState) -> Opt
 /// settings mutation. The pool map never reaches `write_cli_ini`, so pool
 /// settings cannot leak into a CLI `php.ini`.
 async fn apply_version_php_config(state: &DaemonState, affected: yerd_core::PhpVersion) {
-    let (version_settings, directives, pool) = {
+    let (global, version_settings, directives, pool) = {
         let cfg = state.config.lock().await;
         (
+            cfg.php.settings.clone(),
             cfg.php.version_settings.clone(),
             cfg.php.directives.clone(),
             cfg.php.pool.clone(),
         )
     };
+    let gated = manager_ini_overrides(state, &global, &version_settings).await;
     {
         let mut mgr = state.php_manager.lock().await;
-        mgr.set_ini_overrides(version_settings);
+        mgr.set_ini_overrides(gated);
         mgr.set_directives(directives);
         mgr.set_pool_overrides(pool);
         if mgr.snapshots().iter().any(|s| s.version == affected) {
@@ -2656,6 +2764,7 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
     *state.wordpress_sites.write().await = candidate_wordpress;
     *state.laravel_sites.write().await = candidate_laravel;
     drop(cfg_guard);
+    crate::tunnel::rebuild_routes(state).await;
 
     state.watch_dirty.notify_one();
 
@@ -2805,6 +2914,41 @@ async fn list_routes(state: &DaemonState) -> Response {
         }
     }
     Response::Routes { rules }
+}
+
+/// Reply to [`Request::ListResponseHeaders`]: every per-site custom response
+/// header. Parked docroots resolve to the current site name exactly as
+/// [`list_routes`] does, falling back to the raw key.
+async fn list_response_headers(state: &DaemonState) -> Response {
+    let cfg = state.config.lock().await;
+    let router = state.router.read().await;
+    let mut headers = Vec::new();
+    for (site, site_headers) in &cfg.response_headers.linked {
+        for h in site_headers {
+            headers.push(yerd_ipc::ResponseHeaderEntry {
+                site: site.clone(),
+                name: h.name().to_owned(),
+                value: h.value().to_owned(),
+            });
+        }
+    }
+    for (docroot, site_headers) in &cfg.response_headers.parked {
+        let site_name = router
+            .iter()
+            .find(|s| {
+                s.kind() == yerd_core::SiteKind::Parked
+                    && s.document_root().to_string_lossy().as_ref() == docroot.as_str()
+            })
+            .map_or_else(|| docroot.clone(), |s| s.name().to_owned());
+        for h in site_headers {
+            headers.push(yerd_ipc::ResponseHeaderEntry {
+                site: site_name.clone(),
+                name: h.name().to_owned(),
+                value: h.value().to_owned(),
+            });
+        }
+    }
+    Response::ResponseHeaders { headers }
 }
 
 /// Apply a group mutation (create/delete/reorder/assign). Groups are a
@@ -3109,6 +3253,39 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dispatch_uninstall_service_prunes_client_shims() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let bin = state
+            .dirs
+            .data
+            .join("services")
+            .join("mysql")
+            .join("9.7.1")
+            .join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("mysqld"), b"#!/bin/sh\n").unwrap();
+        std::fs::write(bin.join("mysql"), b"#!/bin/sh\n").unwrap();
+        let link = state.dirs.data.join("bin").join("mysql");
+
+        reconcile_client_shims_now(&state).await;
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+
+        let response = dispatch(
+            Request::UninstallService {
+                service: "mysql".to_owned(),
+                version: "9.7.1".to_owned(),
+                purge: false,
+            },
+            &state,
+        )
+        .await;
+        assert!(matches!(response, Response::Ok), "{response:?}");
+        assert!(link.symlink_metadata().is_err());
+    }
+
     #[tokio::test]
     async fn list_proxies_reports_domains_only_for_a_customised_proxy() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3335,6 +3512,43 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
         assert!(state.config_path.exists());
         assert!(!state.config.lock().await.parked.paths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn linking_a_site_routes_its_preconfigured_tunnel_hostname() {
+        let tmp = tempfile::tempdir().unwrap();
+        let docroot = tmp.path().join("blog");
+        std::fs::create_dir_all(&docroot).unwrap();
+        let state = state_in(tmp.path());
+        state
+            .config
+            .lock()
+            .await
+            .tunnel
+            .sites
+            .insert("blog".into(), "blog.example.com".into());
+        crate::tunnel::rebuild_routes(&state).await;
+        assert!(state.tunnel_routes.read().await.is_empty());
+
+        let ok = dispatch(
+            Request::Link {
+                name: "blog".into(),
+                path: docroot,
+            },
+            &state,
+        )
+        .await;
+
+        assert!(matches!(ok, Response::Ok), "got {ok:?}");
+        assert_eq!(
+            state
+                .tunnel_routes
+                .read()
+                .await
+                .get("blog.example.com")
+                .map(|r| r.site.as_str()),
+            Some("blog")
+        );
     }
 
     #[tokio::test]
@@ -4286,6 +4500,188 @@ Subject: Captured\r\n\r\nhi\r\n";
                 assert!(settings.contains_key("display_errors"));
             }
             other => panic!("expected PhpVersions, got {other:?}"),
+        }
+    }
+
+    async fn set_global_setting(state: &DaemonState, name: &str, value: &str) -> Response {
+        dispatch(
+            Request::SetPhpSettings {
+                settings: std::collections::BTreeMap::from([(name.to_string(), value.to_string())]),
+            },
+            state,
+        )
+        .await
+    }
+
+    struct FfiOnlyForRunner {
+        php_bin: std::path::PathBuf,
+    }
+
+    #[async_trait::async_trait]
+    impl yerd_php::CommandRunner for FfiOnlyForRunner {
+        async fn run(&self, cmd: std::process::Command) -> std::io::Result<yerd_php::ProbeOutput> {
+            let stdout = if std::path::Path::new(cmd.get_program()) == self.php_bin {
+                "[PHP Modules]\nCore\nFFI\n"
+            } else {
+                "[PHP Modules]\nCore\n"
+            };
+            Ok(yerd_php::ProbeOutput {
+                status_ok: true,
+                stdout: stdout.to_owned(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn list_php_reports_ffi_versions_and_libvips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut state = state_in(tmp.path());
+        let v84 = PhpVersion::new(8, 4);
+        fake_install_patch(&state.dirs, v84, "8.4.1");
+        fake_install_patch(&state.dirs, PhpVersion::new(7, 4), "7.4.33");
+        state.ffi_cache = Arc::new(crate::ffi_cache::FfiCache::new(Arc::new(
+            FfiOnlyForRunner {
+                php_bin: crate::php_install::cli_binary_path(&state.dirs, v84),
+            },
+        )));
+        state.libvips_probe = Arc::new(yerd_platform::FakeLibvipsProbe { found: Some(false) });
+
+        match dispatch(Request::ListPhp, &state).await {
+            Response::PhpVersions {
+                installed,
+                ffi_versions,
+                libvips_found,
+                ..
+            } => {
+                assert_eq!(installed.len(), 2, "{installed:?}");
+                assert_eq!(*ffi_versions, vec![v84]);
+                assert_eq!(libvips_found, Some(false));
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+    }
+
+    fn render_pool_for(
+        state: &DaemonState,
+        global: &std::collections::BTreeMap<String, String>,
+        overrides: &std::collections::BTreeMap<
+            PhpVersion,
+            std::collections::BTreeMap<String, String>,
+        >,
+        v: PhpVersion,
+    ) -> String {
+        let empty = std::collections::BTreeMap::new();
+        let listen = yerd_php::Listen::UnixSocket(state.dirs.runtime.join("fpm.sock"));
+        let mut cfg = yerd_php::PoolConfig::dev_defaults(v, listen, &state.dirs, 1);
+        cfg.ini =
+            yerd_core::php_settings::merge_effective(global, overrides.get(&v).unwrap_or(&empty))
+                .into_iter()
+                .collect();
+        yerd_php::pure::fpm_conf::render_fpm_conf(&cfg)
+    }
+
+    #[tokio::test]
+    async fn manager_overrides_drop_ffi_for_a_build_without_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut state = state_in(tmp.path());
+        let with_ffi = PhpVersion::new(8, 5);
+        let without_ffi = PhpVersion::new(8, 4);
+        fake_install_patch(&state.dirs, with_ffi, "8.5.1");
+        fake_install_patch(&state.dirs, without_ffi, "8.4.1");
+        state.ffi_cache = Arc::new(crate::ffi_cache::FfiCache::new(Arc::new(
+            FfiOnlyForRunner {
+                php_bin: crate::php_install::cli_binary_path(&state.dirs, with_ffi),
+            },
+        )));
+        let global =
+            std::collections::BTreeMap::from([("ffi.enable".to_string(), "On".to_string())]);
+
+        let gated =
+            manager_ini_overrides(&state, &global, &std::collections::BTreeMap::new()).await;
+
+        assert!(render_pool_for(&state, &global, &gated, with_ffi)
+            .contains("php_admin_value[ffi.enable] = true"));
+        assert!(!render_pool_for(&state, &global, &gated, without_ffi).contains("ffi.enable"));
+    }
+
+    #[tokio::test]
+    async fn ffi_enable_override_is_refused_for_legacy_but_clearable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let v81 = PhpVersion::new(8, 1);
+        fake_install(&state.dirs, v81);
+
+        match set_version_setting(&state, v81, "ffi.enable", "on").await {
+            Response::Error { message, .. } => {
+                assert!(message.contains("not available for PHP 8.1"), "{message}");
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+        assert!(matches!(
+            set_version_setting(&state, v81, "ffi.enable", "").await,
+            Response::PhpVersions { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn set_php_settings_ffi_enable_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        match set_global_setting(&state, "ffi.enable", "on").await {
+            Response::PhpVersions { settings, .. } => {
+                assert_eq!(settings.get("ffi.enable").map(String::as_str), Some("On"));
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+        assert_eq!(
+            state
+                .config
+                .lock()
+                .await
+                .php
+                .settings
+                .get("ffi.enable")
+                .cloned(),
+            Some("On".to_string())
+        );
+
+        assert!(matches!(
+            set_global_setting(&state, "ffi.enable", "preload").await,
+            Response::Error { .. }
+        ));
+
+        match set_global_setting(&state, "ffi.enable", "").await {
+            Response::PhpVersions { settings, .. } => {
+                assert!(!settings.contains_key("ffi.enable"));
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ffi_enable_per_version_override_and_directive_refusal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let v83 = PhpVersion::new(8, 3);
+        fake_install(&state.dirs, v83);
+
+        match set_version_setting(&state, v83, "ffi.enable", "off").await {
+            Response::PhpVersions {
+                version_settings, ..
+            } => {
+                let map = version_settings.get(&v83).expect("8.3 overrides present");
+                assert_eq!(map.get("ffi.enable").map(String::as_str), Some("Off"));
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+
+        match set_directive(&state, v83, "ffi.enable", "true").await {
+            Response::Error { message, .. } => {
+                assert!(message.contains("Allow FFI in web requests"), "{message}");
+            }
+            other => panic!("expected Error, got {other:?}"),
         }
     }
 

@@ -58,6 +58,22 @@ fn group_signal_target(leader_pid: u32) -> Option<i32> {
 #[cfg(not(unix))]
 pub fn kill_process_group(_leader_pid: u32) {}
 
+/// Whether a [`ChildHandle::kill`] error means the target process (or group)
+/// no longer exists (`ESRCH` on Unix, `NotFound` elsewhere), so a stop can
+/// treat it as already done.
+#[must_use]
+pub fn is_no_such_process(err: &io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        err.raw_os_error() == Some(nix::errno::Errno::ESRCH as i32)
+            || err.kind() == io::ErrorKind::NotFound
+    }
+    #[cfg(not(unix))]
+    {
+        err.kind() == io::ErrorKind::NotFound
+    }
+}
+
 /// Spawns commands via `tokio::process::Command`, sets `kill_on_drop(true)` so
 /// unexpected crashes of the daemon take the child down with them.
 pub struct TokioProcessSpawner;
@@ -148,7 +164,7 @@ impl ChildHandle for TokioChild {
                 (KillSignal::Term, StopProtocol::GroupTerm) => killpg(pid, Signal::SIGTERM),
                 (KillSignal::Term, StopProtocol::MasterInterrupt) => kill(pid, Signal::SIGINT),
             };
-            result.map_err(|e| io::Error::other(e.to_string()))
+            result.map_err(io::Error::from)
         }
         #[cfg(windows)]
         {
@@ -163,6 +179,18 @@ impl ChildHandle for TokioChild {
 mod tests {
     use super::{group_signal_target, is_text_file_busy};
     use std::io;
+
+    #[test]
+    fn is_no_such_process_table() {
+        let esrch = io::Error::from(nix::errno::Errno::ESRCH);
+        let eperm = io::Error::from(nix::errno::Errno::EPERM);
+        assert!(super::is_no_such_process(&esrch));
+        assert!(super::is_no_such_process(&io::Error::from(
+            io::ErrorKind::NotFound
+        )));
+        assert!(!super::is_no_such_process(&eperm));
+        assert!(!super::is_no_such_process(&io::Error::other("x")));
+    }
 
     #[test]
     fn group_signal_target_rejects_zero_and_overflow() {

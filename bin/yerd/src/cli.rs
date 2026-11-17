@@ -135,7 +135,7 @@ pub enum Command {
     },
     /// List local managed services and their status.
     Services,
-    /// List installable dev tools (Composer, Node, Bun) and their install status.
+    /// List installable dev tools (Composer, Node, Bun, pnpm) and their install status.
     Tools,
     /// Manage a local service (redis, mysql, mariadb, postgres, meilisearch).
     Service {
@@ -223,6 +223,14 @@ pub enum Command {
         /// What to do.
         #[command(subcommand)]
         action: RouteAction,
+    },
+    /// Manage a site's custom response headers, added to every response the
+    /// site serves except those from path-prefix proxy rules (for example
+    /// `Access-Control-Allow-Origin` for CORS).
+    Header {
+        /// What to do.
+        #[command(subcommand)]
+        action: HeaderAction,
     },
     /// Grant yerd OS-level privileges (run via `sudo`). No subcommand = all.
     Elevate {
@@ -432,6 +440,35 @@ pub enum RouteAction {
     /// `index.php` already gets SPA routing automatically, with no rule.
     List {
         /// Site name; omit to list every site's rules.
+        site: Option<String>,
+    },
+}
+
+/// Action of `yerd header`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum HeaderAction {
+    /// Set a header on every response for the site, including errors and
+    /// redirects, except responses from path-prefix proxy rules. Replaces a
+    /// same-named header from PHP or Yerd, and replaces the site's existing
+    /// entry for that name.
+    Set {
+        /// Site name.
+        site: String,
+        /// Header name, e.g. `Access-Control-Allow-Origin`.
+        name: String,
+        /// Header value, e.g. `https://app.test`.
+        value: String,
+    },
+    /// Remove a header from a site by name (case-insensitive).
+    Remove {
+        /// Site name.
+        site: String,
+        /// Header name to remove.
+        name: String,
+    },
+    /// List custom response headers.
+    List {
+        /// Site name; omit to list every site's headers.
         site: Option<String>,
     },
 }
@@ -657,10 +694,25 @@ pub enum TunnelAction {
         #[arg(long, conflicts_with = "hostname")]
         clear: bool,
     },
-    /// (Re)start the named tunnel, exposing every site that has a hostname set.
-    /// Requires login and a created tunnel.
+    /// Set (or clear, with `--clear`) a site's share password. Visitors to the
+    /// shared site must then sign in with HTTP basic auth (any username).
+    Password {
+        /// Site name.
+        site: String,
+        /// The share password. Required unless `--clear` is given, so forgetting
+        /// it can't silently remove protection.
+        #[arg(required_unless_present = "clear")]
+        password: Option<String>,
+        /// Remove the site's share password instead of setting one.
+        #[arg(long, conflicts_with = "password")]
+        clear: bool,
+    },
+    /// Start the named tunnel if it is not running, exposing every site that has
+    /// a hostname set. Never restarts a live tunnel. Requires login and a
+    /// created tunnel.
     Publish,
-    /// Stop the named tunnel (takes every named site offline).
+    /// Stop the named tunnel until the daemon next starts (takes every named
+    /// site offline). Clear every hostname to keep it offline across restarts.
     Unpublish,
 }
 
@@ -885,9 +937,9 @@ pub enum UninstallTarget {
         /// PHP version, e.g. `8.5`.
         version: String,
     },
-    /// Uninstall a dev tool (`composer`, `node`, `bun`, `laravel`, `wp-cli`).
+    /// Uninstall a dev tool (`composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`).
     Tool {
-        /// Tool id: `composer`, `node`, `bun`, `laravel`, or `wp-cli`.
+        /// Tool id: `composer`, `node`, `bun`, `pnpm`, `laravel`, or `wp-cli`.
         id: String,
     },
 }
@@ -905,10 +957,10 @@ pub enum InstallTarget {
         #[arg(long)]
         legacy: bool,
     },
-    /// Install a dev tool (`composer`, `node`, `bun`, `laravel`, `wp-cli`) at
+    /// Install a dev tool (`composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`) at
     /// its latest release.
     Tool {
-        /// Tool id: `composer`, `node`, `bun`, `laravel`, or `wp-cli`.
+        /// Tool id: `composer`, `node`, `bun`, `pnpm`, `laravel`, or `wp-cli`.
         id: String,
     },
 }
@@ -949,10 +1001,11 @@ pub enum ElevateTarget {
     Trust,
     /// Route `*.<tld>` queries to yerd's DNS responder.
     Resolver,
-    /// Allow the daemon to bind privileged ports 80/443 (setcap).
+    /// Serve privileged ports 80/443: setcap on Linux, the launchd port
+    /// forwarder on macOS.
     Ports,
-    /// Install the macOS LAN pf redirect so other devices reach 80/443 (macOS
-    /// only; on Linux this reuses the `ports` setcap grant). Run after
+    /// Install the macOS LAN port forwarder so other devices reach 80/443
+    /// (macOS only; on Linux this reuses the `ports` setcap grant). Run after
     /// `yerd lan enable`.
     Lan,
 }
@@ -1035,5 +1088,46 @@ mod tests {
     #[test]
     fn exec_rejects_an_unknown_tool() {
         assert!(Cli::try_parse_from(["yerd", "exec", "artisan"]).is_err());
+    }
+
+    #[test]
+    fn tunnel_password_parses_a_value_or_clear() {
+        let cli = parse(&["yerd", "tunnel", "password", "app", "s3cret"]);
+        let Command::Tunnel {
+            action:
+                TunnelAction::Password {
+                    site,
+                    password,
+                    clear,
+                },
+        } = cli.command
+        else {
+            panic!("expected Tunnel Password");
+        };
+        assert_eq!(site, "app");
+        assert_eq!(password.as_deref(), Some("s3cret"));
+        assert!(!clear);
+
+        let cli = parse(&["yerd", "tunnel", "password", "app", "--clear"]);
+        let Command::Tunnel {
+            action: TunnelAction::Password {
+                password, clear, ..
+            },
+        } = cli.command
+        else {
+            panic!("expected Tunnel Password");
+        };
+        assert_eq!(password, None);
+        assert!(clear);
+    }
+
+    /// Omitting both the password and `--clear` must fail rather than silently
+    /// removing protection, and giving both is contradictory.
+    #[test]
+    fn tunnel_password_requires_exactly_one_of_value_or_clear() {
+        assert!(Cli::try_parse_from(["yerd", "tunnel", "password", "app"]).is_err());
+        assert!(
+            Cli::try_parse_from(["yerd", "tunnel", "password", "app", "x", "--clear"]).is_err()
+        );
     }
 }
