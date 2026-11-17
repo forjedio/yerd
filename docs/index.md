@@ -77,7 +77,7 @@ capabilities:
       link: /guide/php-versions
     - icon: database
       title: Databases & caches
-      details: MySQL, MariaDB, PostgreSQL, Redis and Meilisearch, supervised as native processes and started with the daemon.
+      details: MySQL, MariaDB, PostgreSQL, Redis, Meilisearch and RustFS (S3), supervised as native processes and started with the daemon.
       command: yerd db create app
       link: /guide/services
     - icon: mail
@@ -127,6 +127,7 @@ app:
     - PostgreSQL
     - Redis
     - Meilisearch
+    - RustFS
     - SMTP mail
     - Composer
     - Node

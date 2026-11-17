@@ -16,11 +16,12 @@ The config-backed engines it models:
 | MariaDB | `mariadb` | `MariaDB` | Database | 3306 | `mariadbd` | `MyCnf` |
 | PostgreSQL | `postgres` | `PostgreSQL` | Database | 5432 | `postgres` | `PostgresConf` |
 
-Two further types are supervised the same way but have **no config file**:
-Meilisearch (`meilisearch`, `Search`) and Laravel Reverb (`reverb:<site>`,
-`AppServer` - one instance per linked Laravel site, running against that site's
-PHP rather than a downloaded binary). Both are argv/env driven, so both accept
-no [configuration overrides](#configuration-overrides).
+Three further types are supervised the same way but have **no config file**:
+Meilisearch (`meilisearch`, `Search`), RustFS (`rustfs`, `ObjectStorage`, S3 API
+on 9000 with its all-interfaces console switched off) and Laravel Reverb
+(`reverb:<site>`, `AppServer` - one instance per linked Laravel site, running
+against that site's PHP rather than a downloaded binary). All three are argv/env
+driven, so none accepts [configuration overrides](#configuration-overrides).
 
 ::: info Redis is served by Valkey
 The "Redis" slot is filled by **Valkey** - the BSD-licensed fork - because Redis

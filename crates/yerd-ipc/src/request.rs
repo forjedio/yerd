@@ -316,7 +316,8 @@ pub enum Request {
     },
     /// Download + install a prebuilt service version into yerd's data dir.
     InstallService {
-        /// Service id (`"redis"`, `"mysql"`, `"mariadb"`, `"postgres"`, `"meilisearch"`).
+        /// Service id (`"redis"`, `"mysql"`, `"mariadb"`, `"postgres"`, `"meilisearch"`,
+        /// `"rustfs"`).
         service: String,
         /// The version to install.
         version: String,
@@ -361,7 +362,7 @@ pub enum Request {
     /// and refuses a directive it manages itself, with a hint naming the typed
     /// path. Takes effect on the next start/restart (nothing is reloaded or
     /// restarted implicitly), like [`Self::SetServicePort`]. A service that
-    /// accepts no overrides (Meilisearch, Reverb) is refused.
+    /// accepts no overrides (Meilisearch, `RustFS`, Reverb) is refused.
     SetServiceOverrides {
         /// Service id.
         service: String,

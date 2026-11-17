@@ -228,3 +228,61 @@ describe("ServicesView overrides menu item", () => {
     expect(wrapper.text()).not.toContain("Override settings");
   });
 });
+
+describe("ServicesView RustFS configuration", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    resetResourceCache();
+    useDaemon().report.value = null;
+  });
+
+  afterEach(() => {
+    mounted.forEach((w) => w.unmount());
+    mounted.length = 0;
+  });
+
+  /** Same inline menu as above, but the item forwards a click as `select` so
+   *  the Configuration action can be driven. */
+  const clickableMenuStubs = {
+    ...dropdownStubs,
+    DropdownMenuItem: {
+      emits: ["select"],
+      template: "<div role=\"menuitem\" @click=\"$emit('select')\"><slot /></div>",
+    },
+  };
+
+  it("shows the S3 .env block on the instance's port and how to create a bucket", async () => {
+    const rustfs = mysqlRow({
+      service: "rustfs",
+      display_name: "RustFS",
+      installed_versions: ["1.0.3"],
+      selected_version: "1.0.3",
+      listen: "127.0.0.1:9002",
+      port: 9002,
+      supports_databases: false,
+    });
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "list_services") return Promise.resolve({ type: "services", services: [rustfs] });
+      return Promise.reject(new Error(`unexpected invoke ${cmd}`));
+    });
+    const wrapper = mount(ServicesView, {
+      global: { stubs: { teleport: true, RouterLink: true, ...clickableMenuStubs } },
+    });
+    mounted.push(wrapper);
+    await flushPromises();
+
+    const item = wrapper.findAll('[role="menuitem"]').find((i) => i.text().includes("Configuration"));
+    if (!item) throw new Error("no Configuration menu item");
+    await item.trigger("click");
+    await flushPromises();
+
+    const dialog = wrapper.find('[role="dialog"]');
+    expect(dialog.text()).toContain("RustFS configuration");
+    const snippet = dialog.find("pre").text();
+    expect(snippet).toContain("FILESYSTEM_DISK=s3");
+    expect(snippet).toContain("AWS_ACCESS_KEY_ID=rustfsadmin");
+    expect(snippet).toContain("AWS_ENDPOINT=http://127.0.0.1:9002");
+    expect(snippet).toContain("AWS_USE_PATH_STYLE_ENDPOINT=true");
+    expect(dialog.text()).toContain("s3 mb s3://your_bucket");
+  });
+});
