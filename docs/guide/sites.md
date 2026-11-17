@@ -64,6 +64,8 @@ Choose a **starter kit**: **None** (a plain skeleton, no auth scaffolding), the 
 
 When two or more Yerd [Node releases](./node) are installed and the frontend isn't skipped, a **Node version** picker appears beside it: **Default** (the global default) or a specific release. A specific release is used for the install and build, and is saved as the new site's [Node version](./node#per-site-versions). With one Yerd release (or none, so a Node on your `PATH` is used) there's nothing to choose and the build uses that.
 
+<ThemedImage light="/images/node-newsite-version-light.png" dark="/images/node-newsite-version-dark.png" alt="The Stack step with Frontend dependencies set to npm and the Node version picker on Default (Node 26.13.1)" />
+
 ### Testing
 
 <ThemedImage light="/images/create-laravel-3-light.png" dark="/images/create-laravel-3-dark.png" alt="The Create-a-new-Laravel-site wizard, Testing step" />

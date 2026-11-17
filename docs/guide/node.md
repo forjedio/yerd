@@ -10,6 +10,8 @@ One release is the **global default**; a project can ask for another with an
 
 Open the **Node** page from the sidebar (under **Environment**):
 
+<ThemedImage light="/images/node-versions-light.png" dark="/images/node-versions-dark.png" alt="The Node page listing Node 26.13.1 (the default) and Node 24.22.3 with their LTS codenames" />
+
 - **Installed versions** lists each release with its LTS codename and a star on
   the global default. Each row offers **Set default**, **Uninstall**, and
   **Update** when a newer patch of that major exists. The daemon checks for
@@ -25,6 +27,9 @@ Open the **Node** page from the sidebar (under **Environment**):
   versions**. A switch in the dialog lets you type an exact version instead. Majors below 9
   aren't offered. If the release schedule can't be fetched the list still
   loads, without EOL badges.
+
+<ThemedImage light="/images/node-install-light.png" dark="/images/node-install-dark.png" alt="The Install a Node version dialog, with the exact-version and end-of-life switches and Node 22 preselected" />
+
 - Installs run in the background with a live log you can close; the operations
   indicator keeps tracking them. Other version actions are disabled until the
   install finishes. The first install becomes the global default.
@@ -40,6 +45,8 @@ Open the **Node** page from the sidebar (under **Environment**):
   or the global default.
 
 ## Per-site versions
+
+<ThemedImage light="/images/node-site-selectversion-light.png" dark="/images/node-site-selectversion-dark.png" alt="A site's details sidebar with the Node version row set to Default" />
 
 Each site's details sidebar has a **Node** row: pick a saved preference, or
 **Default** to clear it (the project file, then the global default, decide). A
