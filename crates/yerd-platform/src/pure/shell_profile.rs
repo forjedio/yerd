@@ -269,10 +269,11 @@ pub fn bin_dir_needs_setup(
     !(on_login_path || in_rc)
 }
 
-/// True if a non-comment line of `content` that touches `PATH` spells out `dir`
-/// as a whole path entry, either absolutely or as `$HOME/..`, `${HOME}/..`, or
-/// `~/..` relative to `home`. A heuristic: lines naming a file inside `dir`
-/// (an alias to `{dir}/composer`) or a sibling (`{dir}-old`) don't count.
+/// True if a line of `content` that sets `PATH` spells out `dir` as a whole
+/// path entry, either absolutely or as `$HOME/..`, `${HOME}/..`, or `~/..`
+/// relative to `home`. Comments are ignored. A heuristic: lines naming a file
+/// inside `dir` (an alias to `{dir}/composer`), a sibling (`{dir}-old`), a
+/// longer path ending in `dir`, or another variable (`MANPATH`) don't count.
 #[must_use]
 pub fn mentions_dir(content: &str, dir: &Path, home: &Path) -> bool {
     let mut spellings = vec![dir.display().to_string()];
@@ -284,20 +285,66 @@ pub fn mentions_dir(content: &str, dir: &Path, home: &Path) -> bool {
     }
     content
         .lines()
-        .map(str::trim_start)
-        .filter(|l| !l.starts_with('#') && l.to_ascii_lowercase().contains("path"))
+        .map(strip_comment)
+        .filter(|l| sets_path(l))
         .any(|l| spellings.iter().any(|sp| has_path_entry(l, sp)))
 }
 
-/// True if `needle` occurs in `line` followed by a path-entry boundary (end of
-/// line, `:`, a quote, `)`, whitespace, or a single trailing `/` before one).
+/// `line` without its shell comment: everything from the first `#` that
+/// starts a word outside quotes.
+fn strip_comment(line: &str) -> &str {
+    let mut quote = None;
+    let mut prev_blank = true;
+    for (i, c) in line.char_indices() {
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+        } else if c == '"' || c == '\'' {
+            quote = Some(c);
+        } else if c == '#' && prev_blank {
+            return line.get(..i).unwrap_or(line);
+        }
+        prev_blank = c.is_whitespace();
+    }
+    line
+}
+
+/// True if `line` assigns or edits the `PATH` variable: `PATH`/`path` as a
+/// whole word that isn't an expansion (`$PATH`, `${PATH}`), or `fish_add_path`.
+fn sets_path(line: &str) -> bool {
+    if line.contains("fish_add_path") {
+        return true;
+    }
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    ["PATH", "path"].iter().any(|word| {
+        line.match_indices(word).any(|(i, _)| {
+            let before = line.get(..i).and_then(|b| b.chars().next_back());
+            let after = line.get(i + word.len()..).and_then(|a| a.chars().next());
+            !before.is_some_and(|c| is_word(c) || c == '$' || c == '{')
+                && !after.is_some_and(is_word)
+        })
+    })
+}
+
+/// True if `needle` occurs in `line` as a whole path entry: preceded by the
+/// start of the line, `:`, `=`, `(`, a quote, or whitespace, and followed by the
+/// end of the line, `:`, a quote, `)`, `;`, or whitespace (a single trailing `/`
+/// is allowed).
 fn has_path_entry(line: &str, needle: &str) -> bool {
     line.match_indices(needle).any(|(i, _)| {
+        let starts = line
+            .get(..i)
+            .and_then(|b| b.chars().next_back())
+            .map_or(true, |c| {
+                matches!(c, ':' | '=' | '(' | '"' | '\'') || c.is_whitespace()
+            });
         let rest = line.get(i + needle.len()..).unwrap_or("");
         let rest = rest.strip_prefix('/').unwrap_or(rest);
-        rest.chars().next().map_or(true, |c| {
+        let ends = rest.chars().next().map_or(true, |c| {
             matches!(c, ':' | '"' | '\'' | ')' | ';') || c.is_whitespace()
-        })
+        });
+        starts && ends
     })
 }
 
@@ -487,6 +534,8 @@ mod tests {
             format!("PATH=\"${{HOME}}/{rel}:$PATH\""),
             format!("path+=(~/{rel})"),
             format!("fish_add_path '{ds}'"),
+            format!("set -gx PATH \"{ds}\" $PATH # yerd"),
+            format!("export PATH=\"/opt/a#b:{ds}:$PATH\""),
         ];
         for line in &hits {
             assert!(mentions_dir(line, &d, &home()), "{line}");
@@ -497,6 +546,10 @@ mod tests {
             format!("export PATH=\"{ds}-old:$PATH\""),
             format!("export PATH=\"{ds}/sub:$PATH\""),
             format!("cd {ds}"),
+            format!("export FOO=1 # PATH {ds}"),
+            format!("export PATH=\"/opt{ds}:$PATH\""),
+            format!("export MANPATH=\"{ds}:$MANPATH\""),
+            format!("alias p=\"echo $PATH {ds}\""),
             "export PATH=\"/usr/bin\"".to_owned(),
             String::new(),
         ];

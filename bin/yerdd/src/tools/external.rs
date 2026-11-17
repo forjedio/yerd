@@ -122,12 +122,6 @@ fn between<'a>(s: &'a str, begin: &str, end: &str) -> Option<&'a str> {
 
 // ── shell spawn (Unix) ───────────────────────────────────────────────────────
 
-/// Minimal `PATH` the probe shell starts from, so an entry inherited from the
-/// daemon's own environment (e.g. a daemon launched from a terminal) can't make
-/// the user's rc files look like they add it.
-#[cfg(unix)]
-const PROBE_BASE_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
-
 #[cfg(unix)]
 async fn capture_path_string() -> Option<String> {
     let shell = user_shell();
@@ -147,7 +141,6 @@ async fn capture_until_end(shell: &str, args: &[String]) -> Option<String> {
 
     let mut cmd = tokio::process::Command::new(shell);
     cmd.args(args)
-        .env("PATH", PROBE_BASE_PATH)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -372,13 +365,6 @@ mod tests {
         let out = capture_until_end("/bin/sh", &sh(&script)).await.unwrap();
         assert_eq!(between(&out, BEGIN, END), Some("/x"));
         assert!(started.elapsed() < Duration::from_secs(2));
-    }
-
-    #[tokio::test]
-    async fn capture_starts_from_the_base_path_not_the_daemon_path() {
-        let script = format!("printf '{BEGIN}%s{END}' \"$PATH\"");
-        let out = capture_until_end("/bin/sh", &sh(&script)).await.unwrap();
-        assert_eq!(between(&out, BEGIN, END), Some(PROBE_BASE_PATH));
     }
 
     #[tokio::test]
