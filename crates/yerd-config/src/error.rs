@@ -124,6 +124,8 @@ pub enum ValidateErrorReason {
     /// `lan_setup_port` is below the first unprivileged port (1024). The
     /// bootstrap endpoint binds unprivileged, so a privileged port is rejected.
     LanSetupPortPrivileged,
+    /// `[network] mode = "manual"` with neither `http_proxy` nor `https_proxy`.
+    ManualProxyMissingUrl,
     /// A `[tunnel]` map contained an empty key or value.
     TunnelEntryEmpty,
     /// A `[tunnel.sites]` hostname was not a plausible DNS hostname (empty,
@@ -218,6 +220,9 @@ impl fmt::Display for ValidateErrorReason {
             }
             Self::FallbackPortsEqual => "ports.fallback_http and ports.fallback_https must differ",
             Self::LanSetupPortPrivileged => "lan_setup_port must be 1024 or higher",
+            Self::ManualProxyMissingUrl => {
+                "network mode \"manual\" needs http_proxy or https_proxy"
+            }
             Self::TunnelEntryEmpty => "tunnel entries must have non-empty names and values",
             Self::TunnelHostnameInvalid => "tunnel.sites hostnames must be valid DNS names",
             Self::TunnelKeyInvalid => "tunnel keys and UUIDs contain unsafe characters",
@@ -329,6 +334,7 @@ mod tests {
             ValidateErrorReason::FallbackPortPrivileged,
             ValidateErrorReason::FallbackPortsEqual,
             ValidateErrorReason::LanSetupPortPrivileged,
+            ValidateErrorReason::ManualProxyMissingUrl,
             ValidateErrorReason::TunnelEntryEmpty,
             ValidateErrorReason::TunnelHostnameInvalid,
             ValidateErrorReason::TunnelKeyInvalid,

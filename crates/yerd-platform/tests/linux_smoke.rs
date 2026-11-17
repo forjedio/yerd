@@ -228,3 +228,14 @@ fn libvips_probe_checks_this_host() {
     use yerd_platform::{ActiveLibvipsProbe, LibvipsProbe};
     assert!(ActiveLibvipsProbe.libvips_found().is_some());
 }
+
+#[test]
+fn system_proxy_source_reads_without_panicking() {
+    use yerd_platform::{ActiveSystemProxySource, SystemProxySource};
+    let source = ActiveSystemProxySource::new();
+    assert_eq!(
+        source.kind(),
+        yerd_core::network::ProxySource::GnomeSettings
+    );
+    let _ = source.read();
+}

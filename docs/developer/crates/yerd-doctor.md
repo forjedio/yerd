@@ -29,7 +29,7 @@ Source: [`crates/yerd-doctor/src/lib.rs`](https://github.com/forjedio/yerd/blob/
 
 ## Public API
 
-### `diagnose(&StatusReport, Option<bool>, &[(String, String, String)]) -> Vec<Diagnosis>`
+### `diagnose(&StatusReport, Option<bool>, &[(String, String, String)], Option<&OutboundProxyProbe>) -> Vec<Diagnosis>`
 
 Runs every check against the report and returns the findings in a stable order.
 Everything past the report is daemon-supplied input that can't be read from it,
@@ -43,6 +43,11 @@ because this crate does no I/O:
   is scanned with `yerd_core::service_directives::scan_local`, and every issue
   becomes a `ServiceOverrideInvalid` warning. A service id with no dialect is
   skipped, so an argv-driven or unknown service is never scanned.
+- `outbound_proxy` is the daemon's outbound-proxy probe: a doctor-local
+  `OutboundProxyProbe { proxy, reachable, pac_unsupported }` (never on the IPC
+  wire). `reachable == Some(false)` raises `OutboundProxyUnreachable`;
+  `pac_unsupported` (System mode, PAC/WPAD detected, no static proxy) raises
+  `OutboundProxyPacUnsupported`. `None` skips both.
 
 ```rust
 #[must_use]
@@ -50,6 +55,7 @@ pub fn diagnose(
     report: &StatusReport,
     path_needs_setup: Option<bool>,
     local_override_files: &[(String, String, String)],
+    outbound_proxy: Option<&OutboundProxyProbe>, // None when not probing
 ) -> Vec<Diagnosis>;
 ```
 

@@ -37,7 +37,11 @@ pub fn composer_home(dirs: &PlatformDirs) -> PathBuf {
 
 /// Build + install the latest Laravel installer via the managed Composer,
 /// streaming Composer's output to `progress` when attached.
-pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Result<(), ToolError> {
+pub async fn install(
+    dirs: &PlatformDirs,
+    proxy_env: &yerd_core::network::ChildEnvPlan,
+    progress: Option<&ProgressTx>,
+) -> Result<(), ToolError> {
     let Some(php_version) = installed_versions(dirs)
         .into_iter()
         .max_by_key(|v| (v.major, v.minor))
@@ -64,8 +68,8 @@ pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Resu
     let build = tools_root.join(format!(".laravel-build-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&build);
 
-    let mut child = tokio::process::Command::new(&php)
-        .arg(&phar)
+    let mut cmd = tokio::process::Command::new(&php);
+    cmd.arg(&phar)
         .arg("create-project")
         .arg("--prefer-dist")
         .arg("--no-interaction")
@@ -76,7 +80,9 @@ pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Resu
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    crate::network::apply_plan(&mut cmd, proxy_env);
+    let mut child = cmd
         .spawn()
         .map_err(|e| ToolError::Io(format!("spawn composer: {e}")))?;
 

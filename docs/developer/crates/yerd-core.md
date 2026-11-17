@@ -55,6 +55,7 @@ mod domain;
 mod error;
 mod host;
 mod net;
+pub mod network;
 mod php;
 pub mod php_directives;
 pub mod php_extensions;
@@ -507,6 +508,33 @@ never rewrites) and returns one `LocalOverrideIssue` per line that names a
 reserved directive or parses as no directive at all. [`yerd-doctor`](./yerd-doctor)
 turns each into a `ServiceOverrideInvalid` warning; the remedy is the user's own
 editor, since rewriting the file would undo their work.
+
+## `network` - outbound proxy model {#network}
+
+Every outbound-proxy decision, with no I/O:
+
+- `OutboundProxyMode` (`system` / `manual` / `off`) and `ProxySource` (which
+  source won), both serialised `snake_case` and pinned in `wire_stability.rs`.
+- `ProxyUrl::parse` validates `http[s]://[user[:password]@]host[:port]` (scheme
+  defaults to `http`; SOCKS, paths and queries are rejected). Its `Debug` prints
+  `redacted()`, so a derived `Debug` on a containing struct never leaks a
+  password. Parse errors are `CoreError::InvalidProxyUrl { reason }` with no
+  input.
+- `normalize_bypass_entry` / `bypass_list` build the bypass list:
+  `MANDATORY_BYPASS` (`localhost`, `127.0.0.1`, `127.0.0.0/8`, `::1`), then
+  `.<tld>`, then user and source entries, normalised by
+  `normalize_bypass_entries` (`*.x` becomes `.x`; plain hosts, leading-dot
+  entries, IPs and CIDRs are kept; duplicates dropped in order).
+- `from_env_lookup` reads `*_proxy` variables through an injected lookup;
+  `resolve` takes the manual URLs (HTTPS falls back to HTTP) or the first
+  non-empty reading among env, OS and login shell.
+- `scrub` and `merge_submitted` keep passwords out of messages and stop a
+  redacted `***` from ever being stored.
+- `child_env_plan`, `render_env_file`, `parse_env_file` and `shim_fill_in`
+  define the child-process environment, the `network.env` format, and the rule
+  that a shim adds nothing when the caller already names a proxy
+  (`http_proxy`, `https_proxy`, `all_proxy`, either case), and merges a
+  caller-only `no_proxy` with Yerd's bypass list.
 
 ## `detect`
 

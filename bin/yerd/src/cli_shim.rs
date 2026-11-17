@@ -97,6 +97,7 @@ fn run(spec: &CliSpec) -> ExitCode {
     if let Some(phprc) = cover_ini.or_else(|| cli_phprc(&dirs, &minor)) {
         cmd.env("PHPRC", phprc);
     }
+    crate::shim::apply_network_env(&mut cmd, &dirs);
     let err = cmd.args(std::env::args_os().skip(1)).exec();
     if err.kind() == std::io::ErrorKind::NotFound {
         return fail(format!(

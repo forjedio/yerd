@@ -14,6 +14,7 @@ mod domain;
 mod error;
 mod host;
 mod net;
+pub mod network;
 mod php;
 pub mod php_directives;
 pub mod php_extensions;
@@ -51,8 +52,8 @@ pub use detect::{detect, Detection, ProjectSignals};
 pub use domain::{choose_primary, effective_domains, Domain};
 pub use error::{
     CoreError, DomainErrorReason, PhpVersionErrorReason, ProxyNameErrorReason,
-    ProxyRuleErrorReason, ResponseHeaderErrorReason, RouteRuleErrorReason, SiteNameErrorReason,
-    TldErrorReason, UpstreamTargetErrorReason,
+    ProxyRuleErrorReason, ProxyUrlErrorReason, ResponseHeaderErrorReason, RouteRuleErrorReason,
+    SiteNameErrorReason, TldErrorReason, UpstreamTargetErrorReason,
 };
 pub use net::is_lan_source;
 pub use php::{PhpVersion, FIRST_SUPPORTED_MINOR};

@@ -237,6 +237,27 @@ and "process cwd" decoupled via `--path=` - see
 for the daemon-side scaffolding path that hits the same bug and works around it
 the same way.
 
+## Tool shims and the proxy fill-in (`tool_shim.rs`, `shim.rs`)
+
+`{data}/bin/{node,npm,npx,pnpm,pnpx,bun,bunx}` are links to the `yerd` binary.
+`tool_shim::dispatch` matches `argv[0]` with the pure `target_kind`, resolves the
+same executable the daemon used to link directly (the global default Node's
+`bin/<name>` via `node_cmd::default_selector`, or the pnpm / Bun root via
+`yerd_platform::single_top_level_dir`), and execs it with
+`CommandExt::arg0(name)` so pnpx and bunx still dispatch on their name.
+
+Before every shim's `exec` (`composer`, `laravel`, `wp`, `php*`, the cover
+shims, `yerd exec`, and the Node tools) `shim::apply_network_env` reads
+`{data}/network.env` and adds its entries unless the caller already names a
+proxy (`http_proxy`, `https_proxy` or `all_proxy`, either case), so the user's
+own proxy always wins. A caller that sets only `no_proxy`/`NO_PROXY` still gets
+Yerd's proxy, with both bypass variables set to the caller's entries followed
+by Yerd's. A missing file is a no-op.
+
+`yerd network proxy status|set|system|off|test` maps to `GetNetworkSettings`,
+`SetNetworkSettings` and `TestNetwork` through the normal `to_request` /
+`render` path; a failed `test` exits 1, with or without `--json`.
+
 ## Pure mapping and rendering (`map.rs`)
 
 `map.rs` is the heart of the client and is entirely I/O-free, which is what

@@ -7,6 +7,7 @@
 //! apart.
 
 use std::fs;
+use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -73,6 +74,47 @@ pub(crate) fn spawn_and_check(
     }
 }
 
+/// Runs `cmd` with stdout piped and returns its stdout when it exits
+/// successfully within `timeout`; kills and reaps it otherwise. Stdout is
+/// drained on a reader thread while the exit is polled, so output larger than
+/// the pipe buffer can't stall the child until the timeout.
+pub(crate) fn capture_stdout_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<String> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + timeout;
+    let (tx, rx) = std::sync::mpsc::channel();
+    if let Some(mut stdout) = child.stdout.take() {
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            let _ = stdout.read_to_end(&mut out);
+            let _ = tx.send(out);
+        });
+    }
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    if !status.success() {
+        return None;
+    }
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let out = rx.recv_timeout(remaining.max(POLL_INTERVAL)).ok()?;
+    Some(String::from_utf8_lossy(&out).into_owned())
+}
+
 /// Send SIGTERM (or SIGKILL when `force`) to the process group led by `pid`,
 /// falling back to the process alone when it leads no group. Refuses the PIDs
 /// [`crate::pure::process_signal::signal_target`] rejects. Best-effort: errors
@@ -117,6 +159,35 @@ mod tests {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", script]);
         command
+    }
+
+    #[test]
+    fn capture_drains_output_larger_than_the_pipe_buffer() {
+        let out = capture_stdout_with_timeout(
+            &mut shell("head -c 300000 /dev/zero | tr '\\0' a"),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert_eq!(out.len(), 300_000);
+        assert!(out.bytes().all(|b| b == b'a'));
+    }
+
+    #[test]
+    fn capture_times_out_kills_and_reports_failure() {
+        let started = Instant::now();
+        assert!(
+            capture_stdout_with_timeout(&mut shell("sleep 5"), Duration::from_millis(100))
+                .is_none()
+        );
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(
+            capture_stdout_with_timeout(&mut shell("echo hi; exit 3"), Duration::from_secs(5))
+                .is_none()
+        );
+        assert_eq!(
+            capture_stdout_with_timeout(&mut shell("echo hi"), Duration::from_secs(5)).as_deref(),
+            Some("hi\n")
+        );
     }
 
     #[test]

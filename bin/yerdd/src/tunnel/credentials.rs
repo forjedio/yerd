@@ -9,8 +9,8 @@
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
+use crate::state::DaemonState;
 use serde::Deserialize;
-use yerd_platform::PlatformDirs;
 
 /// Bound on the zone-resolution API call so a `list` never stalls.
 const ZONE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -45,8 +45,10 @@ pub fn parse_origin_token(pem: &str) -> Option<OriginToken> {
 /// Resolve the authorized zone's domain name via `GET /zones/{id}`, memoized by
 /// the cert's mtime so repeated `list()` calls don't re-hit the API. Returns
 /// `None` if the cert is absent/unparseable or the API doesn't answer in time.
-pub async fn resolve_zone(dirs: &PlatformDirs) -> Option<String> {
-    let cert_path = super::named::origincert(dirs);
+/// The client comes from the outbound-proxy factory, built only after a cache
+/// miss.
+pub async fn resolve_zone(state: &DaemonState) -> Option<String> {
+    let cert_path = super::named::origincert(&state.dirs);
     let mtime = std::fs::metadata(&cert_path)
         .and_then(|m| m.modified())
         .ok()?;
@@ -63,7 +65,7 @@ pub async fn resolve_zone(dirs: &PlatformDirs) -> Option<String> {
         "https://api.cloudflare.com/client/v4/zones/{}",
         token.zone_id
     );
-    let client = reqwest::Client::builder().build().ok()?;
+    let client = crate::network::client(state).await.ok()?;
     let resp = client
         .get(&url)
         .bearer_auth(&token.api_token)
@@ -168,5 +170,18 @@ mod tests {
                 .is_none()
         );
         assert!(parse_origin_token("not a pem").is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_zone_cache_hit_never_builds_a_client() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state_in(tmp.path());
+        let cert = super::super::named::origincert(&state.dirs);
+        std::fs::create_dir_all(cert.parent().unwrap()).unwrap();
+        std::fs::write(&cert, "not a cert").unwrap();
+        let mtime = std::fs::metadata(&cert).unwrap().modified().unwrap();
+        *ZONE_CACHE.lock().unwrap() = Some((mtime, "example.com".to_owned()));
+        assert_eq!(resolve_zone(&state).await.as_deref(), Some("example.com"));
+        assert!(!state.network.has_snapshot());
     }
 }

@@ -24,9 +24,9 @@ mod serialize;
 pub use error::{ConfigError, MigrationErrorReason, ValidateErrorReason};
 pub use schema::{
     Config, DomainDelta, DomainsSection, DumpsSection, ExtEntry, GroupsSection, MailSection,
-    NodeSection, ParkedSection, PhpSection, Ports, ResponseHeadersSection, ServiceInstance,
-    ServicesSection, SiteOverride, TunnelSection, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT,
-    DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
+    NetworkSection, NodeSection, ParkedSection, PhpSection, Ports, ResponseHeadersSection,
+    ServiceInstance, ServicesSection, SiteOverride, TunnelSection, DEFAULT_DNS_PORT,
+    DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
 };
 
 /// The on-disk schema version this crate writes. Bumped together with a new
@@ -116,6 +116,10 @@ pub use schema::{
 /// too. The bump makes an older binary refuse the file by version rather than
 /// failing on an unknown setting name.
 ///
+/// v27 added the optional `[node]` table ([`Config::node`]); v28 added the
+/// optional `[network]` outbound-proxy table ([`Config::network`]). Both
+/// default when absent, so v26→v27 and v27→v28 are bare bumps too.
+///
 /// The per-version detail, including how to hand-edit a file back down for an
 /// older binary, lives in `docs/developer/config-schema-history.md`.
-pub const CURRENT_VERSION: u32 = 27;
+pub const CURRENT_VERSION: u32 = 28;

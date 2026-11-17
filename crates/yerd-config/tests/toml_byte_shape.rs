@@ -54,8 +54,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 27\n"),
-        "expected first line `version = 27`; got: {s}"
+        s.starts_with("version = 28\n"),
+        "expected first line `version = 28`; got: {s}"
     );
 }
 
@@ -751,4 +751,20 @@ fn ffi_enable_emits_quoted_key_and_round_trips() {
 
     let default = Config::default().to_toml().unwrap();
     assert!(!default.contains("ffi"), "got: {default}");
+}
+
+#[test]
+fn manual_network_section_emits_last_and_round_trips() {
+    use yerd_core::network::{OutboundProxyMode, ProxyUrl};
+    let mut c = Config::default();
+    c.network.mode = OutboundProxyMode::Manual;
+    c.network.http_proxy = Some(ProxyUrl::parse("http://u:pw@proxy.corp:3128").unwrap());
+    c.network.no_proxy = vec![".corp.com".to_string()];
+    let s = c.to_toml().unwrap();
+    let expected = "\n[network]\nmode = \"manual\"\nhttp_proxy = \"http://u:pw@proxy.corp:3128\"\nno_proxy = [\".corp.com\"]\n";
+    assert!(s.ends_with(expected), "got: {s}");
+    assert_eq!(Config::from_toml(&s).unwrap(), c);
+
+    let default = Config::default().to_toml().unwrap();
+    assert!(!default.contains("[network]"), "got: {default}");
 }

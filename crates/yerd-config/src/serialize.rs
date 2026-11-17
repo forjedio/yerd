@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
+use yerd_core::network::ProxyUrl;
 
 use crate::{Config, ConfigError, CURRENT_VERSION};
 
@@ -96,6 +97,21 @@ struct WireSer<'a> {
     // both maps are empty.
     #[serde(skip_serializing_if = "Option::is_none")]
     response_headers: Option<ResponseHeadersSectionSer<'a>>,
+    // v28: optional `[network]` table, emitted last so an existing config's
+    // byte shape is untouched. `None` (skipped) when the section is default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    network: Option<NetworkSectionSer<'a>>,
+}
+
+#[derive(Serialize)]
+struct NetworkSectionSer<'a> {
+    mode: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    http_proxy: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    https_proxy: Option<&'a str>,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    no_proxy: &'a [String],
 }
 
 #[derive(Serialize)]
@@ -494,6 +510,16 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 Some(ResponseHeadersSectionSer { linked, parked })
             }
         },
+        network: if c.network == crate::NetworkSection::default() {
+            None
+        } else {
+            Some(NetworkSectionSer {
+                mode: c.network.mode.as_str(),
+                http_proxy: c.network.http_proxy.as_ref().map(ProxyUrl::as_str),
+                https_proxy: c.network.https_proxy.as_ref().map(ProxyUrl::as_str),
+                no_proxy: &c.network.no_proxy,
+            })
+        },
     };
     toml::to_string_pretty(&w).map_err(Into::into)
 }
@@ -607,8 +633,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 27\n"),
-            "expected `version = 27` first line; got: {s}"
+            s.starts_with("version = 28\n"),
+            "expected `version = 28` first line; got: {s}"
         );
     }
 

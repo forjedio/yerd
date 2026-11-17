@@ -129,6 +129,9 @@ The model mirrors [PHP versions](./php-versions) and [services](./services):
 - **Exposed on `PATH`.** Their commands are symlinked into `{data}/bin`, the same
   directory that holds the `php`/`php<ver>` shims. Put that directory on your
   `PATH` once (see below) and `composer`, `node`, `npm`, `bun`, … just work.
+- **Proxy-aware.** Each command runs through Yerd, which fills in the
+  [outbound proxy](./corporate-networks) when your shell doesn't name a proxy
+  of its own.
 - **Rootless.** Everything runs as your user, no elevation.
 
 ## Put Yerd's bin directory on your PATH

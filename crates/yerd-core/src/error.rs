@@ -122,6 +122,66 @@ pub enum CoreError {
         /// Why it failed.
         reason: ResponseHeaderErrorReason,
     },
+
+    /// A string was not an
+    /// [`OutboundProxyMode`](crate::network::OutboundProxyMode).
+    #[error("invalid proxy mode {input:?}: expected system, manual, or off")]
+    InvalidProxyMode {
+        /// The raw input.
+        input: String,
+    },
+
+    /// A string failed to parse as an outbound
+    /// [`ProxyUrl`](crate::network::ProxyUrl). Carries no input, so the message
+    /// can never echo a proxy password.
+    #[error("invalid proxy URL: {reason}")]
+    InvalidProxyUrl {
+        /// Why it failed.
+        reason: ProxyUrlErrorReason,
+    },
+}
+
+/// Specific failure modes for outbound [`ProxyUrl`](crate::network::ProxyUrl)
+/// parsing and merging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProxyUrlErrorReason {
+    /// Input was empty.
+    Empty,
+    /// Scheme was neither `http` nor `https` (SOCKS included).
+    UnsupportedScheme,
+    /// Input carried a path, query, or fragment.
+    HasPathOrQuery,
+    /// The `user[:password]@` part was malformed (empty user, whitespace).
+    InvalidUserinfo,
+    /// The host was empty.
+    MissingHost,
+    /// The host was not an IP address or a plain DNS hostname.
+    InvalidHost,
+    /// The port was non-numeric, zero, or out of `u16` range.
+    InvalidPort,
+    /// A redacted `***` password was submitted for a URL whose scheme, user,
+    /// host, or port changed (or with nothing stored), so the real password
+    /// must be re-entered.
+    RedactedPasswordChanged,
+}
+
+impl fmt::Display for ProxyUrlErrorReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let msg = match self {
+            Self::Empty => "proxy URL must not be empty",
+            Self::UnsupportedScheme => {
+                "proxy scheme must be http or https (SOCKS is not supported)"
+            }
+            Self::HasPathOrQuery => "proxy URL must not contain a path, query, or fragment",
+            Self::InvalidUserinfo => "proxy credentials must be user[:password]@ with no spaces",
+            Self::MissingHost => "proxy host must not be empty",
+            Self::InvalidHost => "proxy host is not a valid IP or hostname",
+            Self::InvalidPort => "proxy port must be a number in 1..=65535",
+            Self::RedactedPasswordChanged => "re-enter the proxy password",
+        };
+        f.write_str(msg)
+    }
 }
 
 /// Specific failure modes for [`UpstreamTarget`](crate::UpstreamTarget) parsing.
@@ -547,6 +607,24 @@ mod tests {
             DomainErrorReason::LabelTooLong,
             DomainErrorReason::LeadingOrTrailingHyphen,
             DomainErrorReason::TooLong,
+        ] {
+            assert!(!r.to_string().is_empty());
+            let _debug = format!("{r:?}");
+        }
+
+        let _ = CoreError::InvalidProxyMode { input: "x".into() };
+        let _ = CoreError::InvalidProxyUrl {
+            reason: ProxyUrlErrorReason::Empty,
+        };
+        for r in [
+            ProxyUrlErrorReason::Empty,
+            ProxyUrlErrorReason::UnsupportedScheme,
+            ProxyUrlErrorReason::HasPathOrQuery,
+            ProxyUrlErrorReason::InvalidUserinfo,
+            ProxyUrlErrorReason::MissingHost,
+            ProxyUrlErrorReason::InvalidHost,
+            ProxyUrlErrorReason::InvalidPort,
+            ProxyUrlErrorReason::RedactedPasswordChanged,
         ] {
             assert!(!r.to_string().is_empty());
             let _debug = format!("{r:?}");

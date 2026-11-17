@@ -33,7 +33,7 @@ use crate::state::DaemonState;
 /// The signed release manifest the daemon reads to learn about releases. Its
 /// body is a [`LatestManifest`] (latest stable + RC); it is verified against
 /// [`yerd_update::UPDATE_PUBLIC_KEY`] before it is trusted.
-const LATEST_MANIFEST_URL: &str = "https://files.yerd.app/latest.json";
+pub(crate) const LATEST_MANIFEST_URL: &str = "https://files.yerd.app/latest.json";
 /// The detached minisign signature over [`LATEST_MANIFEST_URL`].
 const LATEST_MANIFEST_SIG_URL: &str = "https://files.yerd.app/latest.json.minisig";
 

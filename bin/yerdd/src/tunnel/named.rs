@@ -377,7 +377,7 @@ pub async fn list(state: &DaemonState) -> Response {
         })
     };
     let zone = if is_logged_in(&state.dirs) {
-        super::credentials::resolve_zone(&state.dirs).await
+        super::credentials::resolve_zone(state).await
     } else {
         None
     };

@@ -17,9 +17,11 @@ use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::PortRedirector;
 use crate::process_table::ProcessTable;
 use crate::resolver::ResolverInstaller;
+use crate::system_proxy::SystemProxySource;
 use crate::terminal::TerminalLauncher;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
 use crate::PlatformError;
+use yerd_core::network::{ProxySource, SystemProxy};
 
 /// Stub terminal launcher for unsupported OSes.
 #[derive(Debug, Default, Clone, Copy)]
@@ -286,6 +288,28 @@ impl UnsupportedLibvipsProbe {
 
 impl LibvipsProbe for UnsupportedLibvipsProbe {
     fn libvips_found(&self) -> Option<bool> {
+        None
+    }
+}
+
+/// Stub proxy source for unsupported OSes: never reads anything.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UnsupportedSystemProxySource;
+
+impl UnsupportedSystemProxySource {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl SystemProxySource for UnsupportedSystemProxySource {
+    fn kind(&self) -> ProxySource {
+        ProxySource::None
+    }
+
+    fn read(&self) -> Option<SystemProxy> {
         None
     }
 }

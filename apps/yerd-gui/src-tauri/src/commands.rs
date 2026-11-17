@@ -774,6 +774,36 @@ pub async fn set_mcp_enabled(enabled: bool) -> Result<Response, GuiError> {
     finish(exchange(&Request::SetMcpEnabled { enabled }).await?)
 }
 
+// ── outbound proxy ─────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn get_network_settings() -> Result<Response, GuiError> {
+    finish(exchange(&Request::GetNetworkSettings).await?)
+}
+
+#[tauri::command]
+pub async fn set_network_settings(
+    mode: yerd_core::network::OutboundProxyMode,
+    http_proxy: Option<String>,
+    https_proxy: Option<String>,
+    no_proxy: Option<Vec<String>>,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::SetNetworkSettings {
+            mode,
+            http_proxy,
+            https_proxy,
+            no_proxy,
+        })
+        .await?,
+    )
+}
+
+#[tauri::command]
+pub async fn test_network() -> Result<Response, GuiError> {
+    finish(exchange(&Request::TestNetwork).await?)
+}
+
 // ── status / doctor / info ─────────────────────────────────────────────────
 
 #[tauri::command]

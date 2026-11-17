@@ -1438,6 +1438,14 @@ fn diagnosis_code_each_variant_byte_shape() {
             DiagnosisCode::ServiceOverrideInvalid,
             r#""service_override_invalid""#,
         ),
+        (
+            DiagnosisCode::OutboundProxyUnreachable,
+            r#""outbound_proxy_unreachable""#,
+        ),
+        (
+            DiagnosisCode::OutboundProxyPacUnsupported,
+            r#""outbound_proxy_pac_unsupported""#,
+        ),
         (DiagnosisCode::AllGood, r#""all_good""#),
     ];
     for (code, expected) in cases {
@@ -2407,6 +2415,83 @@ fn request_set_symlink_protection_byte_shape() {
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(s, r#"{"type":"set_symlink_protection","enabled":true}"#);
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_network_byte_shapes() {
+    use yerd_core::network::OutboundProxyMode;
+    for (r, expected) in [
+        (
+            Request::GetNetworkSettings,
+            r#"{"type":"get_network_settings"}"#,
+        ),
+        (Request::TestNetwork, r#"{"type":"test_network"}"#),
+        (
+            Request::SetNetworkSettings {
+                mode: OutboundProxyMode::Manual,
+                http_proxy: Some("http://u:***@proxy:3128".into()),
+                https_proxy: Some(String::new()),
+                no_proxy: Some(vec![".corp.com".into()]),
+            },
+            r#"{"type":"set_network_settings","mode":"manual","http_proxy":"http://u:***@proxy:3128","https_proxy":"","no_proxy":[".corp.com"]}"#,
+        ),
+        (
+            Request::SetNetworkSettings {
+                mode: OutboundProxyMode::Off,
+                http_proxy: None,
+                https_proxy: None,
+                no_proxy: None,
+            },
+            r#"{"type":"set_network_settings","mode":"off"}"#,
+        ),
+    ] {
+        let s = serde_json::to_string(&r).unwrap();
+        assert_eq!(s, expected);
+        assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+    }
+}
+
+#[test]
+fn response_network_byte_shapes() {
+    use yerd_core::network::{OutboundProxyMode, ProxySource};
+    let settings = Response::NetworkSettings {
+        settings: Box::new(yerd_ipc::NetworkSettings {
+            mode: OutboundProxyMode::System,
+            http_proxy: None,
+            https_proxy: None,
+            no_proxy: vec![],
+            effective: Some(yerd_ipc::EffectiveProxy {
+                mode: OutboundProxyMode::System,
+                source: ProxySource::MacosSystemSettings,
+                http_proxy: Some("http://proxy:8080".into()),
+                https_proxy: None,
+                bypass: vec!["localhost".into(), ".test".into()],
+            }),
+        }),
+    };
+    let s = serde_json::to_string(&settings).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"network_settings","settings":{"mode":"system","no_proxy":[],"effective":{"mode":"system","source":"macos_system_settings","http_proxy":"http://proxy:8080","bypass":["localhost",".test"]}}}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), settings);
+
+    let test = Response::NetworkTest {
+        result: Box::new(yerd_ipc::NetworkTestResult {
+            ok: true,
+            url: "https://files.yerd.app/latest.json".into(),
+            status: Some(200),
+            error: None,
+            via: Some("http://u:***@proxy:3128".into()),
+            source: ProxySource::Manual,
+        }),
+    };
+    let s = serde_json::to_string(&test).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"network_test","result":{"ok":true,"url":"https://files.yerd.app/latest.json","status":200,"via":"http://u:***@proxy:3128","source":"manual"}}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), test);
 }
 
 #[test]

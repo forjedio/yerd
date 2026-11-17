@@ -47,6 +47,10 @@ pub enum FixAction {
 /// hand-edited `50-local.<ext>` exists. The daemon reads them because this crate
 /// does no I/O; see [`service_override_findings`].
 ///
+/// `outbound_proxy` is a third daemon-supplied side channel: the outbound
+/// proxy's reachability and PAC state, which are not on the IPC wire. `None`
+/// skips the outbound-proxy checks; see [`outbound_proxy_findings`].
+///
 /// Findings are emitted in a stable order. When no `Warn`/`Fail` finding is
 /// produced, a single [`DiagnosisCode::AllGood`] `Ok` finding is appended so the
 /// caller always has something to show. `Option<bool>` probes that are `None`
@@ -56,6 +60,7 @@ pub fn diagnose(
     report: &StatusReport,
     path_needs_setup: Option<bool>,
     local_override_files: &[(String, String, String)],
+    outbound_proxy: Option<&OutboundProxyProbe>,
 ) -> Vec<Diagnosis> {
     let mut out = Vec::new();
 
@@ -70,6 +75,11 @@ pub fn diagnose(
     out.extend(symlink_protection_finding(report));
     out.extend(no_sites_finding(report));
     out.extend(shadow_findings(report));
+    out.extend(
+        outbound_proxy
+            .map(outbound_proxy_findings)
+            .unwrap_or_default(),
+    );
 
     if path_needs_setup == Some(true) {
         out.push(warn(
@@ -95,6 +105,50 @@ pub fn diagnose(
         });
     }
 
+    out
+}
+
+/// The daemon's outbound-proxy probe results for [`diagnose`]. Doctor-local:
+/// it is never sent over IPC.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OutboundProxyProbe {
+    /// Pre-redacted label naming the proxy and its source, such as
+    /// `http://u:***@proxy:8080 (macOS System Settings)`.
+    pub proxy: Option<String>,
+    /// Whether a TCP connection to the proxy succeeded; `None` when no proxy
+    /// resolved or the probe did not run.
+    pub reachable: Option<bool>,
+    /// System mode found a PAC script or WPAD and no static proxy.
+    pub pac_unsupported: bool,
+}
+
+/// Outbound-proxy findings: an unreachable proxy, and a PAC/WPAD setup Yerd
+/// cannot evaluate.
+fn outbound_proxy_findings(probe: &OutboundProxyProbe) -> Vec<Diagnosis> {
+    let mut out = Vec::new();
+    if probe.reachable == Some(false) {
+        let proxy = probe.proxy.as_deref().unwrap_or("the configured proxy");
+        out.push(warn(
+            DiagnosisCode::OutboundProxyUnreachable,
+            "Outbound proxy unreachable",
+            format!(
+                "Yerd's downloads and update checks go through {proxy}, which did not \
+                 accept a connection."
+            ),
+            "yerd network proxy test",
+        ));
+    }
+    if probe.pac_unsupported {
+        out.push(warn(
+            DiagnosisCode::OutboundProxyPacUnsupported,
+            "Proxy auto-config can't be used",
+            "Your system uses a PAC script or WPAD to choose a proxy, which Yerd can't \
+             evaluate, so it connects directly. Set the proxy manually, or run a local \
+             PAC-aware proxy such as px and point Yerd at it."
+                .to_owned(),
+            "yerd network proxy set http://127.0.0.1:3128",
+        ));
+    }
     out
 }
 
@@ -696,7 +750,7 @@ mod tests {
 
     #[test]
     fn healthy_report_is_all_good_only() {
-        let ds = diagnose(&healthy(), None, &[]);
+        let ds = diagnose(&healthy(), None, &[], None);
         assert_eq!(codes(&ds), vec![DiagnosisCode::AllGood]);
         assert!(plan_auto_fixes(&healthy()).is_empty());
     }
@@ -711,7 +765,7 @@ mod tests {
     }
 
     fn override_findings(files: &[(String, String, String)]) -> Vec<Diagnosis> {
-        diagnose(&healthy(), None, files)
+        diagnose(&healthy(), None, files, None)
             .into_iter()
             .filter(|d| d.code == DiagnosisCode::ServiceOverrideInvalid)
             .collect()
@@ -772,6 +826,7 @@ mod tests {
             &healthy(),
             None,
             &[local_file("mysql", "[mysqld]\nport = 3307\n")],
+            None,
         );
         assert!(codes(&ds).contains(&DiagnosisCode::ServiceOverrideInvalid));
         assert!(!codes(&ds).contains(&DiagnosisCode::AllGood));
@@ -780,11 +835,13 @@ mod tests {
     #[test]
     fn resolver_backup_surfaces_as_ok_finding_with_no_remedy() {
         let mut r = healthy();
-        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::ResolverBackupSaved));
+        assert!(
+            !codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::ResolverBackupSaved)
+        );
 
         r.resolver_backup =
             Some("/Library/Application Support/io.yerd.Yerd/resolver-backups/test-1.conf".into());
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         let finding = ds
             .iter()
             .find(|d| d.code == DiagnosisCode::ResolverBackupSaved)
@@ -803,12 +860,13 @@ mod tests {
     fn symlink_protection_off_surfaces_as_ok_finding_with_no_remedy() {
         let mut r = healthy();
         assert!(
-            !codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::SymlinkProtectionDisabled),
+            !codes(&diagnose(&r, None, &[], None))
+                .contains(&DiagnosisCode::SymlinkProtectionDisabled),
             "on by default surfaces nothing"
         );
 
         r.symlink_protection = false;
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         let finding = ds
             .iter()
             .find(|d| d.code == DiagnosisCode::SymlinkProtectionDisabled)
@@ -825,13 +883,13 @@ mod tests {
     #[test]
     fn shadowed_domain_warns_once_per_losing_site() {
         let mut r = healthy();
-        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::DomainShadowed));
+        assert!(!codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::DomainShadowed));
 
         r.shadows = vec![yerd_ipc::DomainShadow {
             site: "blog".into(),
             shadowed_by: "shop".into(),
         }];
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         let finding = ds
             .iter()
             .find(|d| d.code == DiagnosisCode::DomainShadowed)
@@ -858,7 +916,7 @@ mod tests {
                 shadowed_by: "proxy:reverb".into(),
             },
         ];
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         let details: Vec<&str> = ds
             .iter()
             .filter(|d| d.code == DiagnosisCode::DomainShadowed)
@@ -875,13 +933,13 @@ mod tests {
         r.http.requested = 80;
         r.http.bound = 8080;
         r.http.fell_back = true;
-        assert!(codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PortFallback));
+        assert!(codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::PortFallback));
 
         let mut r2 = healthy();
         r2.http.requested = 8080;
         r2.http.bound = 8081;
         r2.http.fell_back = true;
-        assert!(!codes(&diagnose(&r2, None, &[])).contains(&DiagnosisCode::PortFallback));
+        assert!(!codes(&diagnose(&r2, None, &[], None)).contains(&DiagnosisCode::PortFallback));
     }
 
     #[test]
@@ -890,7 +948,7 @@ mod tests {
         r.http.requested = 80;
         r.http.bound = 8080;
         r.http.fell_back = true;
-        let remedy = diagnose(&r, None, &[])
+        let remedy = diagnose(&r, None, &[], None)
             .into_iter()
             .find(|d| d.code == DiagnosisCode::PortFallback)
             .and_then(|d| d.remedy)
@@ -928,7 +986,7 @@ mod tests {
             http: 8080,
             https: 8443,
         });
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(cs.contains(&DiagnosisCode::WebPortsUnbound));
         assert!(!cs.contains(&DiagnosisCode::PortFallback));
         assert!(!cs.contains(&DiagnosisCode::AllGood));
@@ -959,7 +1017,7 @@ mod tests {
             http: 8080,
             https: 8443,
         });
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(!cs.contains(&DiagnosisCode::PortRedirectStale));
         assert!(!cs.contains(&DiagnosisCode::LanRedirectStale));
     }
@@ -972,7 +1030,7 @@ mod tests {
             http: 9090,
             https: 9443,
         });
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         let cs = codes(&ds);
         assert!(cs.contains(&DiagnosisCode::PortRedirectStale));
         assert!(!cs.contains(&DiagnosisCode::PortFallback));
@@ -1005,7 +1063,7 @@ mod tests {
             let mut r = healthy();
             r.legacy_pf_redirect = legacy;
             r.lan_enabled = lan_enabled;
-            let ds = diagnose(&r, None, &[]);
+            let ds = diagnose(&r, None, &[], None);
             let got = ds
                 .iter()
                 .find(|d| d.code == DiagnosisCode::LegacyPortRedirect)
@@ -1035,7 +1093,7 @@ mod tests {
             http: 80,
             https: 443,
         });
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         let cs = codes(&ds);
         assert!(cs.contains(&DiagnosisCode::LanRedirectStale));
         assert!(!cs.contains(&DiagnosisCode::PortRedirectStale));
@@ -1060,7 +1118,7 @@ mod tests {
             http: 80,
             https: 443,
         });
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(!cs.contains(&DiagnosisCode::LanRedirectStale));
     }
 
@@ -1068,7 +1126,7 @@ mod tests {
     fn dns_unbound_warns_independently_of_web() {
         let mut r = healthy();
         r.dns_unbound = Some(1053);
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         let cs = codes(&ds);
         assert!(cs.contains(&DiagnosisCode::DnsPortUnbound));
         assert!(!cs.contains(&DiagnosisCode::AllGood));
@@ -1087,7 +1145,7 @@ mod tests {
             http: 8080,
             https: 8443,
         });
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(cs.contains(&DiagnosisCode::DnsPortUnbound));
         assert!(cs.contains(&DiagnosisCode::WebPortsUnbound));
     }
@@ -1099,13 +1157,13 @@ mod tests {
         r.http.bound = 8080;
         r.http.fell_back = true;
         r.port_redirect = Some(true);
-        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PortFallback));
+        assert!(!codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::PortFallback));
 
         r.port_redirect = Some(false);
-        assert!(codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PortFallback));
+        assert!(codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::PortFallback));
 
         r.port_redirect = None;
-        assert!(codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PortFallback));
+        assert!(codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::PortFallback));
     }
 
     #[test]
@@ -1115,7 +1173,7 @@ mod tests {
         r.http.bound = 8080;
         r.http.fell_back = true;
         r.foreign_web_listener = Some(true);
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(cs.contains(&DiagnosisCode::ForeignWebListener));
         assert!(
             !cs.contains(&DiagnosisCode::PortFallback),
@@ -1124,12 +1182,12 @@ mod tests {
         assert!(!cs.contains(&DiagnosisCode::AllGood));
 
         r.foreign_web_listener = Some(false);
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(!cs.contains(&DiagnosisCode::ForeignWebListener));
         assert!(cs.contains(&DiagnosisCode::PortFallback));
 
         r.foreign_web_listener = None;
-        assert!(codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PortFallback));
+        assert!(codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::PortFallback));
     }
 
     #[test]
@@ -1147,13 +1205,13 @@ mod tests {
         r.port_redirect = Some(false);
         r.foreign_web_listener = Some(true);
         r.port_redirect_targets = Some(stale);
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(cs.contains(&DiagnosisCode::PortRedirectStale));
         assert!(!cs.contains(&DiagnosisCode::ForeignWebListener));
         assert!(!cs.contains(&DiagnosisCode::PortFallback));
 
         r.port_redirect_targets = Some(bound);
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         let fallback = ds
             .iter()
             .find(|d| d.code == DiagnosisCode::PortFallback)
@@ -1170,7 +1228,7 @@ mod tests {
         r.port_redirect_targets = None;
         r.lan_redirect_targets = Some(bound);
         r.lan_enabled = true;
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         let fallback = ds
             .iter()
             .find(|d| d.code == DiagnosisCode::PortFallback)
@@ -1184,7 +1242,7 @@ mod tests {
         assert!(!codes(&ds).contains(&DiagnosisCode::ForeignWebListener));
 
         r.foreign_web_listener = Some(false);
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         let fallback = ds
             .iter()
             .find(|d| d.code == DiagnosisCode::PortFallback)
@@ -1195,7 +1253,7 @@ mod tests {
 
         r.lan_redirect_targets = None;
         r.lan_enabled = false;
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(cs.contains(&DiagnosisCode::ForeignWebListener));
         assert!(!cs.contains(&DiagnosisCode::PortFallback));
     }
@@ -1210,7 +1268,7 @@ mod tests {
             http: r.http.bound,
             https: r.https.bound,
         });
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(cs.contains(&DiagnosisCode::ForeignWebListener));
         assert!(!cs.contains(&DiagnosisCode::AllGood));
     }
@@ -1219,7 +1277,7 @@ mod tests {
     fn foreign_web_listener_warns_even_without_fallback() {
         let mut r = healthy();
         r.foreign_web_listener = Some(true);
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(cs.contains(&DiagnosisCode::ForeignWebListener));
         assert!(!cs.contains(&DiagnosisCode::AllGood));
     }
@@ -1229,7 +1287,7 @@ mod tests {
         let mut r = healthy();
         r.ca.trusted_system = None;
         r.resolver_installed = None;
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(!cs.contains(&DiagnosisCode::CaNotTrusted));
         assert!(!cs.contains(&DiagnosisCode::ResolverNotInstalled));
     }
@@ -1239,7 +1297,7 @@ mod tests {
         let mut r = healthy();
         r.ca.trusted_system = Some(false);
         r.resolver_installed = Some(false);
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(cs.contains(&DiagnosisCode::CaNotTrusted));
         assert!(cs.contains(&DiagnosisCode::ResolverNotInstalled));
     }
@@ -1248,7 +1306,7 @@ mod tests {
     fn browser_untrusted_warns() {
         let mut r = healthy();
         r.ca.browser_trust = Some(BrowserTrust::Untrusted);
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         assert!(ds.iter().any(
             |d| d.code == DiagnosisCode::CaNotTrustedByBrowsers && d.severity == Severity::Warn
         ));
@@ -1259,7 +1317,7 @@ mod tests {
     fn browser_tool_missing_warns_with_install_hint() {
         let mut r = healthy();
         r.ca.browser_trust = Some(BrowserTrust::ToolMissing);
-        let d = diagnose(&r, None, &[])
+        let d = diagnose(&r, None, &[], None)
             .into_iter()
             .find(|d| d.code == DiagnosisCode::CaNotTrustedByBrowsers)
             .expect("tool-missing warns");
@@ -1301,16 +1359,20 @@ mod tests {
     fn browser_trusted_or_unknown_is_silent() {
         let mut r = healthy();
         r.ca.browser_trust = Some(BrowserTrust::Trusted);
-        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::CaNotTrustedByBrowsers));
+        assert!(
+            !codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::CaNotTrustedByBrowsers)
+        );
         r.ca.browser_trust = None;
-        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::CaNotTrustedByBrowsers));
+        assert!(
+            !codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::CaNotTrustedByBrowsers)
+        );
     }
 
     #[test]
     fn no_php_suppresses_default_not_installed() {
         let mut r = healthy();
         r.php.clear();
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(cs.contains(&DiagnosisCode::NoPhpInstalled));
         assert!(!cs.contains(&DiagnosisCode::DefaultPhpNotInstalled));
     }
@@ -1319,7 +1381,7 @@ mod tests {
     fn default_not_installed_when_other_versions_present() {
         let mut r = healthy();
         r.php[0].version = PhpVersion::new(8, 4);
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(cs.contains(&DiagnosisCode::DefaultPhpNotInstalled));
         assert!(!cs.contains(&DiagnosisCode::NoPhpInstalled));
     }
@@ -1328,7 +1390,7 @@ mod tests {
     fn failed_pool_is_fail_and_auto_fixable() {
         let mut r = healthy();
         r.php[0].state = PoolRunState::Failed;
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         assert!(codes(&ds).contains(&DiagnosisCode::FpmPoolFailed));
         assert!(ds
             .iter()
@@ -1345,7 +1407,7 @@ mod tests {
     fn php_ca_untrusted_warns_and_plans_rebuild() {
         let mut r = healthy();
         r.ca.php_trusts_ca = Some(false);
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         assert!(ds
             .iter()
             .any(|d| d.code == DiagnosisCode::PhpCaNotTrusted && d.severity == Severity::Warn));
@@ -1357,9 +1419,9 @@ mod tests {
     fn php_ca_none_or_true_emits_no_finding() {
         let mut r = healthy();
         r.ca.php_trusts_ca = None;
-        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PhpCaNotTrusted));
+        assert!(!codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::PhpCaNotTrusted));
         r.ca.php_trusts_ca = Some(true);
-        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PhpCaNotTrusted));
+        assert!(!codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::PhpCaNotTrusted));
         assert!(!plan_auto_fixes(&r).contains(&FixAction::RebuildPhpCaBundle));
     }
 
@@ -1367,7 +1429,7 @@ mod tests {
     fn update_available_is_informational_and_still_all_good() {
         let mut r = healthy();
         r.php[0].update_available = Some("8.5.7".into());
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         let cs = codes(&ds);
         assert!(cs.contains(&DiagnosisCode::PhpUpdateAvailable));
         assert!(cs.contains(&DiagnosisCode::AllGood));
@@ -1377,23 +1439,86 @@ mod tests {
     fn no_sites_is_informational() {
         let mut r = healthy();
         r.sites = SiteCounts::default();
-        assert!(codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::NoSites));
+        assert!(codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::NoSites));
     }
 
     #[test]
     fn problems_suppress_all_good() {
         let mut r = healthy();
         r.ca.trusted_system = Some(false);
-        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::AllGood));
+        assert!(!codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::AllGood));
     }
 
     #[test]
     fn bin_dir_not_on_path_warns_only_on_some_true() {
         let r = healthy();
-        let on = codes(&diagnose(&r, Some(true), &[]));
+        let on = codes(&diagnose(&r, Some(true), &[], None));
         assert!(on.contains(&DiagnosisCode::BinDirNotOnPath));
         assert!(!on.contains(&DiagnosisCode::AllGood));
-        assert!(!codes(&diagnose(&r, Some(false), &[])).contains(&DiagnosisCode::BinDirNotOnPath));
-        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::BinDirNotOnPath));
+        assert!(
+            !codes(&diagnose(&r, Some(false), &[], None)).contains(&DiagnosisCode::BinDirNotOnPath)
+        );
+        assert!(!codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::BinDirNotOnPath));
+    }
+
+    #[test]
+    fn outbound_proxy_findings_table() {
+        let label = Some("http://u:***@proxy:8080 (manual setting)".to_owned());
+        let cases: [(Option<OutboundProxyProbe>, &[DiagnosisCode]); 6] = [
+            (None, &[DiagnosisCode::AllGood]),
+            (
+                Some(OutboundProxyProbe {
+                    proxy: label.clone(),
+                    reachable: Some(true),
+                    pac_unsupported: false,
+                }),
+                &[DiagnosisCode::AllGood],
+            ),
+            (
+                Some(OutboundProxyProbe {
+                    proxy: label.clone(),
+                    reachable: Some(false),
+                    pac_unsupported: false,
+                }),
+                &[DiagnosisCode::OutboundProxyUnreachable],
+            ),
+            (
+                Some(OutboundProxyProbe {
+                    proxy: label.clone(),
+                    reachable: None,
+                    pac_unsupported: false,
+                }),
+                &[DiagnosisCode::AllGood],
+            ),
+            (
+                Some(OutboundProxyProbe {
+                    proxy: None,
+                    reachable: None,
+                    pac_unsupported: true,
+                }),
+                &[DiagnosisCode::OutboundProxyPacUnsupported],
+            ),
+            (
+                Some(OutboundProxyProbe {
+                    proxy: None,
+                    reachable: None,
+                    pac_unsupported: false,
+                }),
+                &[DiagnosisCode::AllGood],
+            ),
+        ];
+        for (probe, expected) in cases {
+            let ds = diagnose(&healthy(), None, &[], probe.as_ref());
+            assert_eq!(codes(&ds), expected, "{probe:?}");
+        }
+        let probe = OutboundProxyProbe {
+            proxy: label,
+            reachable: Some(false),
+            pac_unsupported: false,
+        };
+        let ds = diagnose(&healthy(), None, &[], Some(&probe));
+        let finding = ds.first().unwrap();
+        assert!(finding.detail.contains("http://u:***@proxy:8080"));
+        assert_eq!(finding.remedy.as_deref(), Some("yerd network proxy test"));
     }
 }

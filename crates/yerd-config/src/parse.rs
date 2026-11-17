@@ -144,6 +144,9 @@ struct Wire {
     // v24: optional `[response_headers]` table; absent in v23 and earlier → empty.
     #[serde(default)]
     response_headers: ResponseHeadersSectionWire,
+    // v28: optional `[network]` table; absent in v27 and earlier → system mode.
+    #[serde(default)]
+    network: NetworkSectionWire,
 }
 
 /// One `[[proxies]]` table: a whole-host proxy's name, upstream, and HTTPS flag.
@@ -643,6 +646,7 @@ impl TryFrom<Wire> for Config {
             linked: convert_response_headers(w.response_headers.linked)?,
             parked: convert_response_headers(w.response_headers.parked)?,
         };
+        let network = convert_network(w.network)?;
         Ok(Config {
             version: crate::CURRENT_VERSION,
             tld,
@@ -671,8 +675,25 @@ impl TryFrom<Wire> for Config {
             proxy_rules,
             route_rules,
             response_headers,
+            network,
         })
     }
+}
+
+/// Convert the `[network]` wire table. A bad proxy URL surfaces as
+/// [`ConfigError::Core`] without echoing the URL.
+fn convert_network(w: NetworkSectionWire) -> Result<crate::NetworkSection, ConfigError> {
+    let parse = |s: Option<String>| {
+        s.filter(|v| !v.trim().is_empty())
+            .map(|v| yerd_core::network::ProxyUrl::parse(&v))
+            .transpose()
+    };
+    Ok(crate::NetworkSection {
+        mode: w.mode,
+        http_proxy: parse(w.http_proxy)?,
+        https_proxy: parse(w.https_proxy)?,
+        no_proxy: yerd_core::network::normalize_bypass_entries(&w.no_proxy),
+    })
 }
 
 /// Convert `[[proxies]]` wire tables into validated [`yerd_core::ProxySite`]s.
@@ -949,6 +970,12 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     validate_proxies(c)?;
     validate_route_rules(c)?;
     validate_response_headers(c)?;
+    if c.network.mode == yerd_core::network::OutboundProxyMode::Manual
+        && c.network.http_proxy.is_none()
+        && c.network.https_proxy.is_none()
+    {
+        return Err(ve(ValidateErrorReason::ManualProxyMissingUrl));
+    }
     Ok(())
 }
 
@@ -1405,6 +1432,21 @@ fn web_root_escapes(p: &std::path::Path) -> bool {
         .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
 }
 
+/// The `[network]` table. Every key defaults, so an absent table parses to
+/// system mode with no manual URLs.
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NetworkSectionWire {
+    #[serde(default)]
+    mode: yerd_core::network::OutboundProxyMode,
+    #[serde(default)]
+    http_proxy: Option<String>,
+    #[serde(default)]
+    https_proxy: Option<String>,
+    #[serde(default)]
+    no_proxy: Vec<String>,
+}
+
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NodeSectionWire {
@@ -1468,7 +1510,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 27,
+                current: 28,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -3148,5 +3190,60 @@ target = \"../../etc/passwd\"\n";
             .insert("max_execution_time".to_string(), "300".to_string());
         let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
         assert_eq!(back, c);
+    }
+    #[test]
+    fn network_section_absent_loads_default() {
+        let c = Config::from_toml("version = 28\n").unwrap();
+        assert_eq!(c.network, crate::NetworkSection::default());
+    }
+
+    #[test]
+    fn manual_network_section_round_trips() {
+        let toml = "version = 28\n[network]\nmode = \"manual\"\nhttp_proxy = \"proxy:3128\"\nhttps_proxy = \"https://u:p@s:8443\"\nno_proxy = [\"*.corp.com\", \"<local>\"]\n";
+        let c = Config::from_toml(toml).unwrap();
+        assert_eq!(
+            c.network.mode,
+            yerd_core::network::OutboundProxyMode::Manual
+        );
+        assert_eq!(
+            c.network
+                .http_proxy
+                .as_ref()
+                .map(yerd_core::network::ProxyUrl::as_str),
+            Some("http://proxy:3128")
+        );
+        assert_eq!(c.network.no_proxy, vec![".corp.com".to_string()]);
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn bad_proxy_url_is_rejected_without_echo() {
+        let toml =
+            "version = 28\n[network]\nmode = \"manual\"\nhttp_proxy = \"socks5://u:hunter2@x:1\"\n";
+        let err = Config::from_toml(toml).unwrap_err();
+        assert!(matches!(err, ConfigError::Core(_)), "{err:?}");
+        assert!(!err.to_string().contains("hunter2"));
+    }
+
+    #[test]
+    fn manual_network_without_url_is_rejected() {
+        let toml = "version = 28\n[network]\nmode = \"manual\"\n";
+        match Config::from_toml(toml) {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::ManualProxyMissingUrl,
+            }) => {}
+            other => panic!("expected ManualProxyMissingUrl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn network_debug_hides_password() {
+        let toml =
+            "version = 28\n[network]\nmode = \"manual\"\nhttp_proxy = \"http://u:hunter2@x:1\"\n";
+        let c = Config::from_toml(toml).unwrap();
+        let dbg = format!("{c:?}");
+        assert!(!dbg.contains("hunter2"));
+        assert!(dbg.contains("u:***@x:1"));
     }
 }

@@ -108,6 +108,12 @@ pub fn state_in(tmp: &Path) -> DaemonState {
         detect_cache: Arc::new(crate::detect_cache::DetectCache::new()),
         ffi_cache: Arc::new(crate::ffi_cache::FfiCache::new(Arc::new(NoFfiRunner))),
         libvips_probe: Arc::new(yerd_platform::FakeLibvipsProbe { found: None }),
+        network: crate::network::NetworkRuntime::new(
+            Arc::new(yerd_platform::FakeSystemProxySource::default()),
+            false,
+            crate::network::no_env,
+            Arc::new(|| Box::pin(async { None })),
+        ),
         watch_dirty: tokio::sync::Notify::new(),
         dumps: Arc::new(crate::dump_server::DumpStore::new()),
         shim_reconcile: Mutex::new(()),

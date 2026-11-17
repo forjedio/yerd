@@ -87,3 +87,41 @@ fn major_line_byte_shape_frozen() {
         r#"{"major":25,"latest":"25.1.0","update_available":false}"#
     );
 }
+
+#[test]
+fn outbound_proxy_mode_serialises_as_snake_case_string() {
+    use yerd_core::network::OutboundProxyMode;
+    for (mode, expected) in [
+        (OutboundProxyMode::System, r#""system""#),
+        (OutboundProxyMode::Manual, r#""manual""#),
+        (OutboundProxyMode::Off, r#""off""#),
+    ] {
+        assert_eq!(serde_json::to_string(&mode).unwrap(), expected);
+        assert_eq!(
+            serde_json::from_str::<OutboundProxyMode>(expected).unwrap(),
+            mode
+        );
+    }
+}
+
+#[test]
+fn proxy_source_serialises_as_snake_case_string() {
+    use yerd_core::network::ProxySource;
+    for (source, expected) in [
+        (ProxySource::Manual, r#""manual""#),
+        (ProxySource::DaemonEnv, r#""daemon_env""#),
+        (
+            ProxySource::MacosSystemSettings,
+            r#""macos_system_settings""#,
+        ),
+        (ProxySource::GnomeSettings, r#""gnome_settings""#),
+        (ProxySource::LoginShell, r#""login_shell""#),
+        (ProxySource::None, r#""none""#),
+    ] {
+        assert_eq!(serde_json::to_string(&source).unwrap(), expected);
+        assert_eq!(
+            serde_json::from_str::<ProxySource>(expected).unwrap(),
+            source
+        );
+    }
+}

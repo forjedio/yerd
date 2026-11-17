@@ -242,9 +242,10 @@ async fn install_tool_inline(id: &str, tool: Tool, state: &Arc<DaemonState>) -> 
         })
     };
 
-    let dl = crate::php_install::ReqwestDownloader::new();
+    let dl = crate::network::downloader(state).await;
     let guard = state.tool_mutate.lock().await;
-    let result = tools::install(tool, &state.dirs, &dl, Some(&tx)).await;
+    let proxy_env = crate::network::child_env_plan(state).await;
+    let result = tools::install(tool, &state.dirs, &dl, &proxy_env, Some(&tx)).await;
     drop(guard);
     drop(tx);
     let _ = drain.await;
@@ -334,6 +335,7 @@ async fn run_streamed(
             );
         }
     }
+    crate::network::apply_child_env(&mut cmd, state).await;
     #[cfg(unix)]
     cmd.process_group(0);
 

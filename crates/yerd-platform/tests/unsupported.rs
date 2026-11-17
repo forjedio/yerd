@@ -145,3 +145,9 @@ fn libvips_probe_is_unchecked() {
     use yerd_platform::{ActiveLibvipsProbe, LibvipsProbe};
     assert_eq!(ActiveLibvipsProbe.libvips_found(), None);
 }
+
+#[test]
+fn system_proxy_source_reads_nothing() {
+    use yerd_platform::{ActiveSystemProxySource, SystemProxySource};
+    assert_eq!(ActiveSystemProxySource::new().read(), None);
+}

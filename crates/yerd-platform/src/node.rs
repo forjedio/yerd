@@ -90,6 +90,17 @@ pub fn installed(dirs: &PlatformDirs) -> Vec<InstalledNode> {
     versions
 }
 
+/// The global default Node selector: `configured` (the `[node] default` from
+/// config), else the legacy single-version install's version. The daemon (when
+/// linking and reporting) and the CLI (when a shim or `yerd exec` runs Node) both
+/// use this, so they always agree on which release is the default.
+#[must_use]
+pub fn default_selector(dirs: &PlatformDirs, configured: Option<&str>) -> Option<String> {
+    configured
+        .map(str::to_owned)
+        .or_else(|| legacy_default(dirs))
+}
+
 /// Resolve a selector using only installed, complete releases.
 ///
 /// # Errors

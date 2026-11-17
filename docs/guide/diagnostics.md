@@ -137,6 +137,8 @@ When nothing is wrong:
 | `NoSites` | `Ok` | No sites configured yet. | `yerd park <dir>` or `yerd link <name> <dir>` |
 | `DomainShadowed` | `Warn` | Two sites claim the same domain, so one was dropped from routing. Which site wins can depend on directory scan order, so it may change on restart (usually the result of a hand-edited config). | Make each site's domains unique with `yerd domain remove` or `yerd domain primary` |
 | `ServiceOverrideInvalid` | `Warn` | A line in a service's hand-edited `conf.d/50-local.<ext>` file names a directive Yerd manages itself, or reads as no directive at all. One finding per bad line, naming the file and line number. | Edit the file (Yerd never rewrites it), then `yerd service restart <SVC>` |
+| `OutboundProxyUnreachable` | `Warn` | The outbound proxy Yerd is using (manual or detected) didn't accept a TCP connection, so downloads and update checks will fail. The message names the proxy (password redacted) and where it came from. | `yerd network proxy test`, then fix the proxy or run `yerd network proxy off` |
+| `OutboundProxyPacUnsupported` | `Warn` | System mode found a PAC script or WPAD and no fixed proxy. Yerd can't evaluate PAC, so it connects directly. See [Outbound Proxy](./corporate-networks). | Set the proxy manually, or run a local PAC-aware proxy such as px: `yerd network proxy set http://127.0.0.1:3128` |
 | `AllGood` | `Ok` | Nothing else is wrong. | _(none)_ |
 
 ::: tip No false alarms

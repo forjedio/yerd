@@ -29,7 +29,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 
 | Key         | TOML type            | Meaning                                                            | Default        |
 | ----------- | -------------------- | ----------------------------------------------------------------- | -------------- |
-| `version`   | integer              | On-disk schema version. **Mandatory**; written as `27` by this release. | `n/a (required)` |
+| `version`   | integer              | On-disk schema version. **Mandatory**; written as `28` by this release. | `n/a (required)` |
 | `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
 | `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
 | `update_channel` | string          | Self-update channel: `"stable"` or `"edge"`.                      | `"stable"`     |
@@ -52,16 +52,17 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 | `proxy_rules` | table              | Per-site path-prefix reverse-proxy rules.                         | empty          |
 | `route_rules` | table              | Per-site path-prefix routing rules (prefix → a file inside the site). | empty       |
 | `response_headers` | table         | Per-site custom response headers (name + value) added to every response. | empty       |
+| `network`   | table                | Outbound HTTP proxy for Yerd's downloads and the tools it runs.   | system detection |
 
 ::: warning Unknown keys are rejected
-The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, `[mail]`, `[dumps]`, `[dumps.features]`, `[domains]`, a `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` / `[domains.proxy.<name>]` entry, `[proxy_rules]`, `[route_rules]`, `[response_headers]`, a `[[proxies]]` entry, a `[services.<id>]` table, a `[[linked]]` entry, an `[[overrides]]` entry, or a `[[php.extensions.<version>]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
+The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, `[mail]`, `[dumps]`, `[dumps.features]`, `[domains]`, a `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` / `[domains.proxy.<name>]` entry, `[proxy_rules]`, `[route_rules]`, `[response_headers]`, `[network]`, a `[[proxies]]` entry, a `[services.<id>]` table, a `[[linked]]` entry, an `[[overrides]]` entry, or a `[[php.extensions.<version>]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
 
 The free-form maps are the exception, because their keys *are* the data. `[services.<id>.overrides]` (like `[php.directives."<version>"]`) takes arbitrary directive names, so `deny_unknown_fields` does not apply *inside* it - the keys are shape-checked instead, and a bad one is dropped rather than failing the load. It still applies to the enclosing `[services.<id>]` table.
 :::
 
 ### `version`
 
-The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `27`, and Yerd always writes `version = 27`. Older `version = 1` through `version = 26` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `28`, and Yerd always writes `version = 28`. Older `version = 1` through `version = 27` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
 
 ### `tld`
 
@@ -637,16 +638,44 @@ fails is a hard parse error, and two entries for one site sharing a name
 Manage these with [`yerd header`](cli/headers), or the **Headers** tab of the
 desktop app's site details sidebar.
 
+### `[network]`
+
+The outbound HTTP proxy (schema v28) Yerd uses for its own downloads, update
+checks, and the tools it runs. **Omitted** while it holds the defaults (system
+detection, no manual URLs, no bypass entries). See the
+[Outbound Proxy guide](../guide/corporate-networks).
+
+| Key           | TOML type        | Meaning                                                                 | Default    |
+| ------------- | ---------------- | ----------------------------------------------------------------------- | ---------- |
+| `mode`        | string           | `"system"` (detect), `"manual"` (use the URLs below) or `"off"` (direct). | `"system"` |
+| `http_proxy`  | string           | Manual proxy for `http://` requests, e.g. `"http://user:pass@proxy.corp:3128"`. | absent |
+| `https_proxy` | string           | Manual proxy for `https://` requests. Falls back to `http_proxy` when absent. | absent |
+| `no_proxy`    | array of strings | Your bypass entries, stored normalised (`*.corp.com` becomes `.corp.com`, ports are dropped). Loopback and `.<tld>` are always bypassed and are not stored here. | `[]` |
+
+```toml
+[network]
+mode = "manual"
+http_proxy = "http://alice:s3cret@proxy.corp:3128"
+no_proxy = [".corp.com", "10.0.0.0/8"]
+```
+
+URLs must be `http://` or `https://` with no path; a bad URL is a hard load
+error that never echoes the URL. `mode = "manual"` with neither URL set fails
+validation (`ManualProxyMissingUrl`). URLs are kept with their credentials, which
+is one reason the file is written owner-only (see [Atomic saves](#atomic-saves)).
+Manage this with [`yerd network proxy`](cli/network) or the **Network** card in
+the desktop app's General settings.
+
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `27`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `28`.
 
 When the daemon loads a file, it routes on the version it finds:
 
 ```text
-found  > CURRENT (27)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (27)   →  parse directly
-found  < CURRENT (27)   →  walk forward migration steps, then parse
+found  > CURRENT (28)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (28)   →  parse directly
+found  < CURRENT (28)   →  walk forward migration steps, then parse
 ```
 
 A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
@@ -677,6 +706,7 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v24 → v25`** is a bare version bump: v25 only **added** the optional `[response_headers]` table (per-site custom response headers), which defaults to empty when absent.
 - **`v25 → v26`** is a bare version bump: v26 only **added** the optional `"ffi.enable"` key in `[php.settings]` and `[php.version_settings."<version>"]` (the Allow FFI in web requests switch), which is absent unless set.
 - **`v26 → v27`** is a bare version bump: v27 only **added** the optional `[node]` table (global Node default) and `[node.sites]` (per-project Node preferences), which default to empty when absent.
+- **`v27 → v28`** is a bare version bump: v28 only **added** the optional `[network]` table (outbound proxy), which defaults to system detection when absent.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 

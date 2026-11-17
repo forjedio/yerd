@@ -28,6 +28,7 @@ pub mod jobs;
 pub mod lan_setup;
 pub mod laravel_detect;
 pub mod mutate;
+pub mod network;
 pub mod node_updates;
 pub mod php_install;
 pub mod php_updates;
@@ -277,16 +278,50 @@ async fn run_until_shutdown(
         tokio::spawn(crate::dump_server::run(state, shutdown_rx.clone()))
     };
 
+    let _network_probe = {
+        let state = daemon.state.clone();
+        tokio::spawn(async move {
+            state
+                .network
+                .refresh(&state, crate::network::LoginShell::Probe)
+                .await;
+            state.network.mark_ready();
+        })
+    };
+
+    let network_refresher = {
+        let state = daemon.state.clone();
+        let mut rx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(crate::network::RESOLVE_TTL);
+            tick.tick().await;
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        state
+                            .network
+                            .refresh(&state, crate::network::LoginShell::UseCached)
+                            .await;
+                    }
+                    _ = rx.changed() => break,
+                }
+            }
+        })
+    };
+
     let update_check_handle = {
         let state = daemon.state.clone();
         let mut rx = shutdown_rx.clone();
         tokio::spawn(async move {
-            let dl = crate::php_install::ReqwestDownloader::new();
+            if !state.network.wait_ready_or_shutdown(&mut rx).await {
+                return;
+            }
             let mut php_tick = tokio::time::interval(Duration::from_secs(12 * 60 * 60));
             let mut self_tick = tokio::time::interval(SELF_UPDATE_WAKE);
             loop {
                 tokio::select! {
                     _ = php_tick.tick() => {
+                        let dl = crate::network::downloader(&state).await;
                         let polls = async {
                             tokio::join!(
                                 crate::php_updates::poll_and_refresh(
@@ -303,6 +338,7 @@ async fn run_until_shutdown(
                         }
                     }
                     _ = self_tick.tick() => {
+                        let dl = crate::network::downloader(&state).await;
                         crate::self_update::poll_if_due(&state, &dl, yerd_update::UPDATE_PUBLIC_KEY)
                             .await;
                     }
@@ -337,9 +373,13 @@ async fn run_until_shutdown(
 
     let _ext_install = {
         let state = daemon.state.clone();
+        let mut rx = shutdown_rx.clone();
         tokio::spawn(async move {
+            if !state.network.wait_ready_or_shutdown(&mut rx).await {
+                return;
+            }
             if state.config.lock().await.dumps.enabled {
-                let dl = crate::php_install::ReqwestDownloader::new();
+                let dl = crate::network::downloader(&state).await;
                 crate::ext_install::ensure_for_installed(&state.dirs, &dl).await;
             }
         })
@@ -347,7 +387,11 @@ async fn run_until_shutdown(
 
     let _pcov_shims = {
         let state = daemon.state.clone();
+        let mut rx = shutdown_rx.clone();
         tokio::spawn(async move {
+            if !state.network.wait_ready_or_shutdown(&mut rx).await {
+                return;
+            }
             crate::ipc_server::refresh_pcov_and_shims(&state).await;
             crate::ipc_server::write_cli_ini_now(&state).await;
         })
@@ -382,6 +426,7 @@ async fn run_until_shutdown(
     let _ = tokio::time::timeout(Duration::from_secs(5), ipc_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), dump_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), update_check_handle).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), network_refresher).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), watch_handle).await;
     if let Some(mail_handle) = mail_handle {
         let _ = tokio::time::timeout(Duration::from_secs(5), mail_handle).await;

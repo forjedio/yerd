@@ -711,6 +711,14 @@ pub enum DiagnosisCode {
     /// the engine's option-file grammar won't parse. Remedy: edit the file, then
     /// restart that service.
     ServiceOverrideInvalid,
+    /// The resolved outbound proxy did not accept a TCP connection, so
+    /// downloads and updates will fail. Remedy: `yerd network proxy test`, then
+    /// fix or switch off the proxy.
+    OutboundProxyUnreachable,
+    /// System proxy detection found a PAC script or WPAD and no static proxy.
+    /// Yerd cannot evaluate PAC, so it connects directly. Remedy: set a manual
+    /// proxy, or run a local PAC-aware proxy such as px.
+    OutboundProxyPacUnsupported,
     /// Everything checks out.
     AllGood,
 }

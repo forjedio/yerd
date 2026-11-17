@@ -28,8 +28,8 @@ use crate::libvips::LibvipsProbe;
 use crate::metrics::SystemMetrics;
 use crate::opener::SystemOpener;
 use crate::os::unix::{
-    executable_in_directories, process_exists, signal_process_group, spawn_and_check,
-    DEFAULT_STARTUP_WINDOW,
+    capture_stdout_with_timeout, executable_in_directories, process_exists, signal_process_group,
+    spawn_and_check, DEFAULT_STARTUP_WINDOW,
 };
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
@@ -42,16 +42,19 @@ use crate::pure::ide_spec::{
     IDE_SPECS,
 };
 use crate::pure::libvips;
+use crate::pure::system_proxy::{parse_scutil_proxy, MacProxySettings};
 use crate::pure::{
     launchd_ports, pem_match, pf_anchor, port_plan, process_signal, ps_metrics, resolver_file,
 };
 use crate::resolver::ResolverInstaller;
+use crate::system_proxy::SystemProxySource;
 use crate::terminal::TerminalLauncher;
 use crate::trust_store::{BrowserCaTrust, CaFingerprint, NssOutcome, TrustStore};
 use crate::{
     BindPairErrorReason, IdeErrorReason, OpenErrorReason, PlatformError, ResolverErrorReason,
     TerminalErrorReason, TrustStoreErrorReason,
 };
+use yerd_core::network::{ProxySource, SystemProxy};
 
 /// macOS terminal launcher.
 #[derive(Debug, Default, Clone, Copy)]
@@ -931,6 +934,38 @@ impl LibvipsProbe for MacosLibvipsProbe {
             &libvips::candidates_macos(),
             Path::is_file,
         ))
+    }
+}
+
+/// How long the `scutil --proxy` read may take before it is abandoned, so the
+/// daemon's awaited startup probe can never hang.
+const SCUTIL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// macOS proxy source: System Settings as reported by `scutil --proxy` (the
+/// `SCDynamicStore` proxy dictionary). The safe Core Foundation bindings cannot
+/// read the `ExceptionsList` array without `unsafe`, so the dictionary is read
+/// through `scutil` and parsed by [`parse_scutil_proxy`].
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MacosSystemProxySource;
+
+impl MacosSystemProxySource {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl SystemProxySource for MacosSystemProxySource {
+    fn kind(&self) -> ProxySource {
+        ProxySource::MacosSystemSettings
+    }
+
+    fn read(&self) -> Option<SystemProxy> {
+        let mut cmd = Command::new("/usr/sbin/scutil");
+        cmd.arg("--proxy");
+        let output = capture_stdout_with_timeout(&mut cmd, SCUTIL_TIMEOUT)?;
+        parse_scutil_proxy(&output).map(MacProxySettings::into_system_proxy)
     }
 }
 

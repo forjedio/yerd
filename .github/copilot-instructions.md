@@ -76,6 +76,14 @@ yerd-tls  ◄── yerd-platform ◄── yerd-php, yerd-proxy, binaries
   strict typed args, never shell out, never take network input, do exactly one
   operation, then exit. The GUI process must **never** run as root.
 - **Document public items.** `missing_docs` is `warn`; pedantic clippy is on.
+- **Outbound network goes through the configured proxy.** Every external HTTP
+  request uses a client from `yerdd`'s `crate::network` factory
+  (`network::downloader` / `network::client`), never
+  `reqwest::Client::builder()` or a new `ReqwestDownloader` directly. Every
+  subprocess Yerd runs that reaches the network gets `network::apply_child_env`
+  (or `network::apply_plan` with a plan from `network::child_env_plan`). The
+  documented exception is cloudflared (tunnel edge traffic and its management
+  commands, which are deferred; see docs).
 - **Pin dependencies in `[workspace.dependencies]`** and reference them with
   `dep.workspace = true`. Some versions are pinned with `=` for MSRV or
   wire-stability reasons; do not bump a pinned crate without understanding the

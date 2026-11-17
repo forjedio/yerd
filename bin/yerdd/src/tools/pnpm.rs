@@ -415,14 +415,8 @@ mod tests {
             std::fs::write(&yerd_bin, b"#!fake").unwrap();
             let bin = super::super::bin_dir(&dirs);
             super::super::reconcile_tool_shims(&dirs, &yerd_bin, None).unwrap();
-            assert_eq!(
-                std::fs::read_link(bin.join("pnpm")).unwrap(),
-                root.join("pnpm")
-            );
-            assert_eq!(
-                std::fs::read_link(bin.join("pnpx")).unwrap(),
-                root.join("pnpx")
-            );
+            assert_eq!(std::fs::read_link(bin.join("pnpm")).unwrap(), yerd_bin);
+            assert_eq!(std::fs::read_link(bin.join("pnpx")).unwrap(), yerd_bin);
 
             super::super::uninstall(&dirs, Tool::Pnpm).unwrap();
             super::super::reconcile_tool_shims(&dirs, &yerd_bin, None).unwrap();

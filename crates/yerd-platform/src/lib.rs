@@ -40,7 +40,9 @@ pub mod port_redirect;
 pub mod process_table;
 pub mod pure;
 pub mod resolver;
+pub mod system_proxy;
 pub mod terminal;
+pub mod tool_root;
 pub mod trust_store;
 
 mod os;
@@ -61,7 +63,9 @@ pub use port_binder::{BoundPort, PortBinder, PortPair};
 pub use port_redirect::PortRedirector;
 pub use process_table::{FakeProcessTable, ProcessTable, RecordedSignal};
 pub use resolver::ResolverInstaller;
+pub use system_proxy::{FakeSystemProxySource, SystemProxySource};
 pub use terminal::TerminalLauncher;
+pub use tool_root::{single_top_level_dir, RootDirError};
 pub use trust_store::{
     BrowserCaTrust, CaFingerprint, FingerprintParseError, NssFailure, NssOutcome, TrustStore,
 };
@@ -69,5 +73,5 @@ pub use trust_store::{
 pub use os::active::{
     ActiveIdeLauncher, ActiveLibvipsProbe, ActivePaths, ActivePortBinder, ActivePortRedirector,
     ActiveProcessTable, ActiveResolverInstaller, ActiveSystemMetrics, ActiveSystemOpener,
-    ActiveTerminalLauncher, ActiveTrustStore,
+    ActiveSystemProxySource, ActiveTerminalLauncher, ActiveTrustStore,
 };

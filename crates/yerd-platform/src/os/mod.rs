@@ -22,6 +22,7 @@ pub(crate) mod active {
         LinuxPortRedirector as ActivePortRedirector, LinuxProcessTable as ActiveProcessTable,
         LinuxResolverInstaller as ActiveResolverInstaller,
         LinuxSystemMetrics as ActiveSystemMetrics, LinuxSystemOpener as ActiveSystemOpener,
+        LinuxSystemProxySource as ActiveSystemProxySource,
         LinuxTerminalLauncher as ActiveTerminalLauncher, LinuxTrustStore as ActiveTrustStore,
     };
 
@@ -32,6 +33,7 @@ pub(crate) mod active {
         MacosPortRedirector as ActivePortRedirector, MacosProcessTable as ActiveProcessTable,
         MacosResolverInstaller as ActiveResolverInstaller,
         MacosSystemMetrics as ActiveSystemMetrics, MacosSystemOpener as ActiveSystemOpener,
+        MacosSystemProxySource as ActiveSystemProxySource,
         MacosTerminalLauncher as ActiveTerminalLauncher, MacosTrustStore as ActiveTrustStore,
     };
 
@@ -44,6 +46,7 @@ pub(crate) mod active {
         UnsupportedResolverInstaller as ActiveResolverInstaller,
         UnsupportedSystemMetrics as ActiveSystemMetrics,
         UnsupportedSystemOpener as ActiveSystemOpener,
+        UnsupportedSystemProxySource as ActiveSystemProxySource,
         UnsupportedTerminalLauncher as ActiveTerminalLauncher,
         UnsupportedTrustStore as ActiveTrustStore,
     };

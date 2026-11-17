@@ -216,7 +216,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         } => install_php(version, confirm_legacy, state).await,
         Request::SetDefaultPhp { version } => set_default_php(version, state).await,
         Request::CheckPhpUpdates => {
-            let dl = crate::php_install::ReqwestDownloader::new();
+            let dl = crate::network::downloader(state).await;
             crate::php_updates::poll_and_refresh(state, &dl, yerd_update::PHP_LISTING_PUBLIC_KEY)
                 .await;
             php_versions_response(state).await
@@ -250,13 +250,17 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::Status => Response::Status {
             report: Box::new(build_status_report(state).await),
         },
-        Request::Diagnose => Response::Diagnoses {
-            items: yerd_doctor::diagnose(
-                &build_status_report(state).await,
-                path_needs_setup(state).await,
-                &crate::services::local_override_files(&state.dirs),
-            ),
-        },
+        Request::Diagnose => {
+            let outbound = crate::network::doctor_probe(state).await;
+            Response::Diagnoses {
+                items: yerd_doctor::diagnose(
+                    &build_status_report(state).await,
+                    path_needs_setup(state).await,
+                    &crate::services::local_override_files(&state.dirs),
+                    Some(&outbound),
+                ),
+            }
+        }
         Request::DoctorFix => run_doctor_fix(state).await,
         #[cfg(unix)]
         Request::RestartDaemon => {
@@ -272,11 +276,11 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         },
         Request::ListServices => crate::services::list_services(state).await,
         Request::AvailableServices => {
-            let dl = crate::php_install::ReqwestDownloader::new();
+            let dl = crate::network::downloader(state).await;
             crate::services::available_services(state, &dl).await
         }
         Request::AvailableWordpressVersions => {
-            let dl = crate::php_install::ReqwestDownloader::new();
+            let dl = crate::network::downloader(state).await;
             crate::wordpress_versions::available_versions(state, &dl).await
         }
         Request::MintWordpressLoginToken { site } => {
@@ -286,7 +290,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             crate::wordpress_users::admin_users(&site, state).await
         }
         Request::InstallService { service, version } => {
-            let dl = crate::php_install::ReqwestDownloader::new();
+            let dl = crate::network::downloader(state).await;
             let response = crate::services::install_service(&service, &version, state, &dl).await;
             reconcile_client_shims_now(state).await;
             response
@@ -325,7 +329,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             version,
             autostart,
         } => {
-            let dl = crate::php_install::ReqwestDownloader::new();
+            let dl = crate::network::downloader(state).await;
             let response = crate::services::add_service(
                 &type_id,
                 site.as_deref(),
@@ -349,7 +353,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             crate::services::set_service_site(&service, &site, state).await
         }
         Request::AddableServiceTypes => {
-            let dl = crate::php_install::ReqwestDownloader::new();
+            let dl = crate::network::downloader(state).await;
             crate::services::addable_service_types(state, &dl).await
         }
         Request::CreateDatabase { service, name } => {
@@ -370,7 +374,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             path,
         } => crate::db_admin::restore(&service, &name, &path, state).await,
         Request::ChangeServiceVersion { service, version } => {
-            let dl = crate::php_install::ReqwestDownloader::new();
+            let dl = crate::network::downloader(state).await;
             let response =
                 crate::services::change_service_version(&service, &version, state, &dl).await;
             reconcile_client_shims_now(state).await;
@@ -421,6 +425,14 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::SetMailEnabled { enabled } => set_mail_enabled(enabled, state).await,
         Request::SetSymlinkProtection { enabled } => set_symlink_protection(enabled, state).await,
         Request::SetMcpEnabled { enabled } => set_mcp_enabled(enabled, state).await,
+        Request::GetNetworkSettings => crate::network::get_settings(state).await,
+        Request::SetNetworkSettings {
+            mode,
+            http_proxy,
+            https_proxy,
+            no_proxy,
+        } => crate::network::set_settings(state, mode, http_proxy, https_proxy, no_proxy).await,
+        Request::TestNetwork => crate::network::test_network(state).await,
         Request::SetLanEnabled { enabled } => set_lan_enabled(enabled, state).await,
         Request::MintRemoteSetupCode => mint_remote_setup_code(state).await,
         Request::TrustBrowsers { uninstall } => trust_browsers(uninstall, state).await,
@@ -439,7 +451,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::NodeSite { site } => node_site_response(&site, state).await,
         Request::UninstallTool { tool } => uninstall_tool(&tool, state).await,
         Request::CheckUpdate { channel } => {
-            let dl = crate::php_install::ReqwestDownloader::new();
+            let dl = crate::network::downloader(state).await;
             crate::self_update::check_update(channel, state, &dl, yerd_update::UPDATE_PUBLIC_KEY)
                 .await
         }
@@ -448,7 +460,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             crate::self_update::set_update_channel(channel, state).await
         }
         Request::StageUpdate { channel } => {
-            let dl = crate::php_install::ReqwestDownloader::new();
+            let dl = crate::network::downloader(state).await;
             crate::self_update::stage_update(channel, state, &dl, yerd_update::UPDATE_PUBLIC_KEY)
                 .await
         }
@@ -581,7 +593,7 @@ async fn php_versions_response(state: &DaemonState) -> Response {
 /// signature-verification failure is an error (an empty parse result is still a
 /// valid empty list).
 async fn available_php_response(state: &DaemonState) -> Response {
-    let dl = crate::php_install::ReqwestDownloader::new();
+    let dl = crate::network::downloader(state).await;
     available_php_with(state, &dl, yerd_update::PHP_LISTING_PUBLIC_KEY).await
 }
 
@@ -1057,10 +1069,12 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
     }
 
     let after = build_status_report(state).await;
+    let outbound = crate::network::doctor_probe(state).await;
     let manual = yerd_doctor::diagnose(
         &after,
         path_needs_setup(state).await,
         &crate::services::local_override_files(&state.dirs),
+        Some(&outbound),
     )
     .into_iter()
     .filter(|d| {
@@ -1092,7 +1106,7 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
 /// Not re-entrant: dispatched directly, never while `php_mutate` is already held.
 #[allow(clippy::too_many_lines)]
 async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState) -> Response {
-    let dl = crate::php_install::ReqwestDownloader::new();
+    let dl = crate::network::downloader(state).await;
     let (os, arch) = match yerd_php::current_os_arch() {
         Ok(p) => p,
         Err(e) => {
@@ -1279,7 +1293,7 @@ async fn install_php(
     if let Some(rejection) = legacy_install_gate(version, confirm_legacy) {
         return rejection;
     }
-    let dl = crate::php_install::ReqwestDownloader::new();
+    let dl = crate::network::downloader(state).await;
     let _guard = state.php_mutate.lock().await;
     match crate::php_install::install(
         version,
@@ -1358,7 +1372,7 @@ pub(crate) async fn install_php_streamed(
             .jobs
             .set_phase(&id, format!("Installing PHP {version}"))
             .await;
-        let dl = crate::php_install::ReqwestDownloader::new();
+        let dl = crate::network::downloader(&state).await;
         let guard = tokio::select! {
             g = state.php_mutate.lock() => g,
             _ = cancel.changed() => {
@@ -1695,7 +1709,7 @@ async fn install_tool(tool: &str, state: &DaemonState) -> Response {
             message: format!("unknown tool {tool:?}"),
         };
     };
-    let dl = crate::php_install::ReqwestDownloader::new();
+    let dl = crate::network::downloader(state).await;
     let _mutate = state.tool_mutate.lock().await;
     install_tool_with(t, state, &dl).await
 }
@@ -1707,7 +1721,8 @@ async fn install_tool_with(
     dl: &dyn yerd_php::Downloader,
 ) -> Response {
     let previous = node_default_before_install(t, state).await;
-    match crate::tools::install(t, &state.dirs, dl, None).await {
+    let proxy_env = crate::network::child_env_plan(state).await;
+    match crate::tools::install(t, &state.dirs, dl, &proxy_env, None).await {
         Ok(()) => finish_tool_install(t, state, dl, previous).await,
         Err(e) => Response::Error {
             code: tool_error_code(&e),
@@ -1782,11 +1797,12 @@ pub(crate) async fn install_tool_streamed(tool: String, state: Arc<DaemonState>)
             .jobs
             .set_phase(&id, format!("Installing {}", t.display_name()))
             .await;
-        let dl = crate::php_install::ReqwestDownloader::new();
+        let dl = crate::network::downloader(&state).await;
         let _guard = state.tool_mutate.lock().await;
         let previous = node_default_before_install(t, &state).await;
+        let proxy_env = crate::network::child_env_plan(&state).await;
         let result = tokio::select! {
-            r = crate::tools::install(t, &state.dirs, &dl, Some(&tx)) => Some(r),
+            r = crate::tools::install(t, &state.dirs, &dl, &proxy_env, Some(&tx)) => Some(r),
             _ = cancel.changed() => None,
         };
         drop(tx);
@@ -1870,7 +1886,7 @@ fn tool_error_code(e: &crate::tools::ToolError) -> ErrorCode {
 /// the cover/clean versioned CLI shims. Ungated (pcov is always bundled). Used at
 /// startup and after a PHP install.
 pub(crate) async fn refresh_pcov_and_shims(state: &DaemonState) {
-    let dl = crate::php_install::ReqwestDownloader::new();
+    let dl = crate::network::downloader(state).await;
     crate::ext_install::ensure_pcov_for_installed(&state.dirs, &dl).await;
     reconcile_shims_now(state).await;
 }
@@ -3204,7 +3220,7 @@ fn lan_not_ready(message: String) -> Response {
 async fn install_node(version: &str, state: &DaemonState) -> Response {
     let _mutate = state.tool_mutate.lock().await;
     let had_default = node_had_default(state).await;
-    let dl = crate::php_install::ReqwestDownloader::new();
+    let dl = crate::network::downloader(state).await;
     match crate::tools::node::install_release(&state.dirs, &dl, Some(version), None).await {
         Ok(installed) => {
             crate::node_updates::store(state, installed.latest).await;
@@ -3225,7 +3241,7 @@ async fn node_had_default(state: &DaemonState) -> bool {
 /// The effective global Node default: the config value, else a legacy pointer.
 async fn effective_node_default(state: &DaemonState) -> Option<String> {
     let configured = state.config.lock().await.node.default.clone();
-    crate::tools::node::default_selector(&state.dirs, configured.as_deref())
+    yerd_platform::node::default_selector(&state.dirs, configured.as_deref())
 }
 
 /// `InstallNodeStreamed` - install a Node release as a background job with the
@@ -3253,7 +3269,7 @@ pub(crate) async fn install_node_streamed(
             .jobs
             .set_phase(&id, format!("Installing Node {version}"))
             .await;
-        let dl = crate::php_install::ReqwestDownloader::new();
+        let dl = crate::network::downloader(&state).await;
         let _guard = state.tool_mutate.lock().await;
         let had_default = node_had_default(&state).await;
         let result = tokio::select! {
@@ -3315,7 +3331,7 @@ async fn after_node_install(
     {
         let mut guard = state.config.lock().await;
         let effective =
-            crate::tools::node::default_selector(&state.dirs, guard.node.default.as_deref());
+            yerd_platform::node::default_selector(&state.dirs, guard.node.default.as_deref());
         let next = if had_default {
             update
                 .then(|| yerd_core::node::moved_default(effective.as_deref(), &pairs, exact))
@@ -3432,7 +3448,7 @@ async fn node_versions_response(state: &DaemonState) -> Response {
         let cfg = state.config.lock().await;
         (cfg.node.default.clone(), cfg.node.sites.clone())
     };
-    let default = crate::tools::node::default_selector(&state.dirs, configured.as_deref());
+    let default = yerd_platform::node::default_selector(&state.dirs, configured.as_deref());
     let roots = if prefs.is_empty() {
         Vec::new()
     } else {
@@ -3479,7 +3495,7 @@ async fn node_versions_response(state: &DaemonState) -> Response {
 
 /// `AvailableNode` - the published releases grouped by major, fetched on demand.
 async fn available_node_response(state: &DaemonState) -> Response {
-    let dl = crate::php_install::ReqwestDownloader::new();
+    let dl = crate::network::downloader(state).await;
     let d = time::OffsetDateTime::now_utc().date();
     let today = format!("{:04}-{:02}-{:02}", d.year(), u8::from(d.month()), d.day());
     available_node_with(state, &dl, &today).await
@@ -3520,7 +3536,7 @@ async fn uninstall_node(version: &str, state: &DaemonState) -> Response {
         let cfg = state.config.lock().await;
         (cfg.node.default.clone(), cfg.node.sites.clone())
     };
-    let default = crate::tools::node::default_selector(&state.dirs, configured.as_deref());
+    let default = yerd_platform::node::default_selector(&state.dirs, configured.as_deref());
     let installed = yerd_platform::node::installed(&state.dirs);
     let pairs = node_pairs(&installed);
     let plan = match yerd_core::node::plan_uninstall(target, &pairs, default.as_deref(), &prefs) {
@@ -3629,7 +3645,7 @@ async fn node_site_response(name: &str, state: &DaemonState) -> Response {
             }
         }
     };
-    let default = crate::tools::node::default_selector(&state.dirs, configured.as_deref());
+    let default = yerd_platform::node::default_selector(&state.dirs, configured.as_deref());
     let chosen = yerd_core::node::choose(
         file.as_ref().map(|f| (f.selector.as_str(), f.kind)),
         preference.as_deref(),
@@ -6499,6 +6515,161 @@ Subject: Captured\r\n\r\nhi\r\n";
             !build_status_report(&state).await.mcp_enabled,
             "status report back off"
         );
+    }
+
+    fn network_settings(resp: Response) -> yerd_ipc::NetworkSettings {
+        match resp {
+            Response::NetworkSettings { settings } => *settings,
+            other => panic!("expected NetworkSettings, got {other:?}"),
+        }
+    }
+
+    fn set_network(
+        mode: yerd_core::network::OutboundProxyMode,
+        http: Option<&str>,
+        https: Option<&str>,
+    ) -> Request {
+        Request::SetNetworkSettings {
+            mode,
+            http_proxy: http.map(str::to_owned),
+            https_proxy: https.map(str::to_owned),
+            no_proxy: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn network_settings_redact_and_keep_the_stored_password() {
+        use yerd_core::network::OutboundProxyMode;
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        std::fs::create_dir_all(&state.dirs.data).unwrap();
+
+        let resp = dispatch(
+            set_network(
+                OutboundProxyMode::Manual,
+                Some("http://u:hunter2@proxy.corp:8080"),
+                Some(""),
+            ),
+            &state,
+        )
+        .await;
+        assert!(!serde_json::to_string(&resp).unwrap().contains("hunter2"));
+        let settings = network_settings(resp);
+        assert_eq!(
+            settings.http_proxy.as_deref(),
+            Some("http://u:***@proxy.corp:8080")
+        );
+        let effective = settings.effective.unwrap();
+        assert_eq!(
+            effective.https_proxy.as_deref(),
+            Some("http://u:***@proxy.corp:8080"),
+            "HTTP-only manual falls back for HTTPS"
+        );
+        let on_disk = std::fs::read_to_string(&state.config_path).unwrap();
+        assert!(
+            on_disk.contains("http://u:hunter2@proxy.corp:8080"),
+            "{on_disk}"
+        );
+
+        let get = dispatch(Request::GetNetworkSettings, &state).await;
+        assert!(!serde_json::to_string(&get).unwrap().contains("hunter2"));
+
+        dispatch(
+            set_network(
+                OutboundProxyMode::Manual,
+                Some("http://u:***@proxy.corp:8080"),
+                None,
+            ),
+            &state,
+        )
+        .await;
+        let on_disk = std::fs::read_to_string(&state.config_path).unwrap();
+        assert!(
+            on_disk.contains("http://u:hunter2@proxy.corp:8080"),
+            "{on_disk}"
+        );
+        assert!(!on_disk.contains("***"), "{on_disk}");
+
+        let rejected = dispatch(
+            set_network(
+                OutboundProxyMode::Manual,
+                Some("http://u:***@otherhost:8080"),
+                None,
+            ),
+            &state,
+        )
+        .await;
+        match rejected {
+            Response::Error { code, message } => {
+                assert_eq!(code, ErrorCode::InvalidPath);
+                assert!(message.contains("re-enter"), "{message}");
+            }
+            other => panic!("expected InvalidPath, got {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(&state.config_path).unwrap(),
+            on_disk,
+            "a rejected save leaves the file unchanged"
+        );
+
+        let bad = dispatch(
+            set_network(
+                OutboundProxyMode::Manual,
+                Some("socks5://u:hunter2@proxy:1080"),
+                None,
+            ),
+            &state,
+        )
+        .await;
+        match bad {
+            Response::Error { code, message } => {
+                assert_eq!(code, ErrorCode::InvalidPath);
+                assert!(!message.contains("hunter2"), "{message}");
+            }
+            other => panic!("expected InvalidPath, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn network_settings_manual_without_url_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let resp = dispatch(
+            set_network(yerd_core::network::OutboundProxyMode::Manual, None, None),
+            &state,
+        )
+        .await;
+        assert!(
+            matches!(
+                resp,
+                Response::Error {
+                    code: ErrorCode::InvalidPath,
+                    ..
+                }
+            ),
+            "{resp:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn network_settings_off_removes_the_env_file() {
+        use yerd_core::network::OutboundProxyMode;
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        std::fs::create_dir_all(&state.dirs.data).unwrap();
+        let env_file = crate::network::env_file_path(&state);
+        dispatch(
+            set_network(OutboundProxyMode::Manual, Some("http://proxy:3128"), None),
+            &state,
+        )
+        .await;
+        assert!(env_file.is_file());
+        let settings = network_settings(
+            dispatch(set_network(OutboundProxyMode::Off, None, None), &state).await,
+        );
+        assert_eq!(settings.mode, OutboundProxyMode::Off);
+        assert_eq!(settings.http_proxy.as_deref(), Some("http://proxy:3128"));
+        assert!(!env_file.exists());
     }
 
     #[tokio::test]

@@ -229,6 +229,7 @@ pub async fn run_exec(tool: ExecTool, site: Option<&str>, args: &[OsString]) -> 
     if let Some(phprc) = cli_phprc(&dirs, selection.minor()) {
         cmd.env("PHPRC", phprc);
     }
+    crate::shim::apply_network_env(&mut cmd, &dirs);
 
     let err = cmd.exec();
     if err.kind() == std::io::ErrorKind::NotFound {

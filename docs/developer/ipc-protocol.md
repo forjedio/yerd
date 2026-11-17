@@ -367,6 +367,10 @@ Fields marked `skip_serializing_if` are omitted when empty: `NodeRelease.codenam
 Per-site [response headers](../reference/cli/headers) follow the same pattern: `SetResponseHeader { site, name, value }` and `RemoveResponseHeader { site, name }` (both reply with the generic `Ok`) plus the `ListResponseHeaders` query, answered by `Response::ResponseHeaders { headers: Vec<ResponseHeaderEntry> }` where `ResponseHeaderEntry` is `{ site, name, value }`. The daemon validates the name and value with `yerd_core::ResponseHeader` and replies `Error` for a malformed or reserved header. These are additive too, with no `PROTOCOL_VERSION` bump.
 :::
 
+::: info Outbound proxy settings
+`GetNetworkSettings` and `SetNetworkSettings { mode, http_proxy?, https_proxy?, no_proxy? }` both reply `Response::NetworkSettings { settings: NetworkSettings }` (`mode`, the redacted manual `http_proxy` / `https_proxy`, `no_proxy`, and `effective: Option<EffectiveProxy>` - the mode, `ProxySource`, redacted URLs and bypass list actually in use). `TestNetwork` replies `Response::NetworkTest { result: NetworkTestResult }` (`ok`, `url`, `status?`, `error?`, `via?`, `source`). In `SetNetworkSettings` an omitted field keeps the stored value and an empty one clears it; a URL whose password is the redacted `***` keeps the stored password only while scheme, user, host and port are unchanged, otherwise the daemon replies `ErrorCode::InvalidPath` ("re-enter the proxy password"). Every URL on the wire is redacted, and `OutboundProxyMode` / `ProxySource` are `yerd_core::network` enums serialised `snake_case`. `DiagnosisCode` gained `OutboundProxyUnreachable` and `OutboundProxyPacUnsupported`; reachability and PAC state are a Doctor side channel, not `StatusReport` fields. All additive, no `PROTOCOL_VERSION` bump.
+:::
+
 ### ErrorCode
 
 Failures are a `Response::Error { code, message }` where `code` is machine-readable and `message` is for human display:

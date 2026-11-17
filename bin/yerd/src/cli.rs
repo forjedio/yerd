@@ -327,6 +327,52 @@ pub enum Command {
     /// Mint a one-time bootstrap command to provision another device (installs
     /// Yerd's CA and points its `.test` resolver here). Requires LAN mode on.
     RemoteSetup,
+    /// Outbound network settings for Yerd's own downloads, updates, and the
+    /// tools it runs.
+    Network {
+        /// What to configure.
+        #[command(subcommand)]
+        action: NetworkAction,
+    },
+}
+
+/// `yerd network <action>`.
+#[derive(clap::Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum NetworkAction {
+    /// Outbound HTTP proxy (corporate networks).
+    Proxy {
+        /// What to do.
+        #[command(subcommand)]
+        action: OutboundProxyAction,
+    },
+}
+
+/// `yerd network proxy <action>`.
+#[derive(clap::Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum OutboundProxyAction {
+    /// Show the mode, the proxy in use and where it came from, and the bypass
+    /// list.
+    Status,
+    /// Use a manual proxy, e.g. `http://user:pass@proxy.corp:3128`. HTTPS
+    /// requests use the same proxy unless `--https` is given.
+    Set {
+        /// Proxy for `http://` (and, by default, `https://`) requests.
+        url: String,
+        /// A different proxy for `https://` requests.
+        #[arg(long, value_name = "URL")]
+        https: Option<String>,
+        /// Hosts to reach directly, comma-separated (e.g. `corp.com,10.0.0.0/8`).
+        /// Loopback and the site TLD are always bypassed.
+        #[arg(long = "no-proxy", value_name = "HOSTS", value_delimiter = ',')]
+        no_proxy: Option<Vec<String>>,
+    },
+    /// Detect the proxy automatically (environment, System Settings or GNOME,
+    /// then your login shell). The default.
+    System,
+    /// Connect directly, ignoring any proxy environment.
+    Off,
+    /// Re-detect the proxy and fetch Yerd's release manifest through it.
+    Test,
 }
 
 /// `yerd lan <action>`.

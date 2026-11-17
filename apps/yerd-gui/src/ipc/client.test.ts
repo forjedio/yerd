@@ -39,6 +39,9 @@ import {
   setResponseHeader,
   setSymlinkProtection,
   setMcpEnabled,
+  getNetworkSettings,
+  setNetworkSettings,
+  testNetwork,
   status,
   uninstallNode,
   unlink,
@@ -152,6 +155,24 @@ describe("client → command mapping", () => {
     invokeMock.mockResolvedValue({ type: "ok" });
     await setMcpEnabled(true);
     expect(invokeMock).toHaveBeenCalledWith("set_mcp_enabled", { enabled: true });
+  });
+
+  it("network settings calls send camelCase args and unwrap the reply", async () => {
+    const settings = { mode: "manual", http_proxy: "http://u:***@p:1", no_proxy: [] };
+    invokeMock.mockResolvedValue({ type: "network_settings", settings });
+    expect(await getNetworkSettings()).toEqual(settings);
+    expect(invokeMock).toHaveBeenCalledWith("get_network_settings", undefined);
+    await setNetworkSettings("manual", "http://u:***@p:1", "", [".corp.com"]);
+    expect(invokeMock).toHaveBeenCalledWith("set_network_settings", {
+      mode: "manual",
+      httpProxy: "http://u:***@p:1",
+      httpsProxy: "",
+      noProxy: [".corp.com"],
+    });
+    const result = { ok: true, url: "https://files.yerd.app/latest.json", status: 200, source: "none" };
+    invokeMock.mockResolvedValue({ type: "network_test", result });
+    expect(await testNetwork()).toEqual(result);
+    expect(invokeMock).toHaveBeenCalledWith("test_network", undefined);
   });
 
   it("setFrontController sends the site name and flag", async () => {

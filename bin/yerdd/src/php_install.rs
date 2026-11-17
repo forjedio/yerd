@@ -1,8 +1,9 @@
 //! PHP version install: download prebuilt static builds and unpack them into
 //! yerd's data dir.
 //!
-//! The `reqwest`-backed [`Downloader`] lives here (a binary) so `yerd-php`
-//! stays dependency-light. Version resolution + tar-member safety are pure
+//! Downloads go through the `reqwest`-backed [`Downloader`] from
+//! [`crate::network`] (the outbound-proxy client factory), so `yerd-php` stays
+//! dependency-light. Version resolution + tar-member safety are pure
 //! helpers from `yerd_php::release`; this module is the I/O edge: fetch +
 //! **verify** the signed `php.json` manifest → resolve → fetch tarballs →
 //! **SHA-256-verify** and safe-extract the single binary → atomic install.
@@ -12,21 +13,13 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
-
-use async_trait::async_trait;
 
 use yerd_core::PhpVersion;
 use yerd_php::{
     current_os_arch, is_safe_member, listing_sig_url, listing_url, Artifact, BinaryKind,
-    DownloadError, Downloader, PhpError,
+    Downloader, PhpError,
 };
 use yerd_platform::PlatformDirs;
-
-/// `reqwest`-backed downloader (rustls, no OpenSSL; follows redirects).
-pub struct ReqwestDownloader {
-    client: reqwest::Client,
-}
 
 /// Emit a coarse byte-progress line at most once per [`PROGRESS_STEP`] (plus the
 /// first call and completion), so a 40 MB+ download streams "X / Y MB" updates
@@ -59,75 +52,6 @@ pub(crate) fn emit_byte_progress(
         None => format!("Downloading {label}: {}", mb(done)),
     };
     let _ = tx.send(line);
-}
-
-impl ReqwestDownloader {
-    /// Construct a fresh client. Sets a `User-Agent` (some hosts - notably the
-    /// GitHub API used for Bun releases - reject requests without one); falls
-    /// back to the default client if the builder fails.
-    ///
-    /// Bounds the two ways a download can wedge indefinitely: a `connect_timeout`
-    /// for a connection that never establishes, and a `read_timeout` (idle/stall
-    /// timeout between reads) for a body that stops mid-stream. reqwest's default
-    /// is *unbounded*: the cause of a PHP install "spinning" for minutes until
-    /// the kernel gives up. Deliberately no hard overall `.timeout()`, so a
-    /// slow-but-progressing large download isn't killed.
-    #[must_use]
-    pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("yerd/", env!("CARGO_PKG_VERSION")))
-            .connect_timeout(Duration::from_secs(30))
-            .read_timeout(Duration::from_secs(60))
-            .build()
-            .unwrap_or_default();
-        Self { client }
-    }
-}
-
-impl Default for ReqwestDownloader {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl Downloader for ReqwestDownloader {
-    async fn download(&self, url: &str) -> Result<Vec<u8>, DownloadError> {
-        self.download_with_progress(url, &|_, _| {}).await
-    }
-
-    /// Streams the body chunk-by-chunk so progress can be reported and a
-    /// mid-stream stall trips `read_timeout` rather than buffering forever. The
-    /// `Content-Length` capacity hint is clamped (the header is server-controlled;
-    /// a bogus huge value would otherwise abort the daemon on a failed
-    /// allocation), and the `Vec` still grows past the cap as needed.
-    async fn download_with_progress(
-        &self,
-        url: &str,
-        progress: &(dyn Fn(u64, Option<u64>) + Send + Sync),
-    ) -> Result<Vec<u8>, DownloadError> {
-        let transport = |e: reqwest::Error| DownloadError::Transport {
-            url: url.to_owned(),
-            reason: e.to_string(),
-        };
-        let mut resp = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(transport)?
-            .error_for_status()
-            .map_err(transport)?;
-        let total = resp.content_length();
-        let cap = total.map_or(0, |n| n.min(64 * 1024 * 1024) as usize);
-        let mut buf = Vec::with_capacity(cap);
-        progress(0, total);
-        while let Some(chunk) = resp.chunk().await.map_err(transport)? {
-            buf.extend_from_slice(&chunk);
-            progress(buf.len() as u64, total);
-        }
-        Ok(buf)
-    }
 }
 
 /// Sink for human-readable progress lines streamed into a job log (the streamed
@@ -711,7 +635,10 @@ pub fn reconcile_shims(_dirs: &PlatformDirs, _yerd_bin: &Path) -> Result<(), Php
 #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use std::io::Write as _;
+    use std::time::Duration;
+    use yerd_php::DownloadError;
 
     // Run each client in a separate process: native-root loading reads process
     // environment, and changing it here would race unrelated parallel tests.
@@ -724,7 +651,7 @@ mod tests {
         let result = runtime.block_on(async {
             tokio::time::timeout(
                 Duration::from_secs(10),
-                ReqwestDownloader::new().download(&url),
+                crate::network::ReqwestDownloader::direct().download(&url),
             )
             .await
             .unwrap()
