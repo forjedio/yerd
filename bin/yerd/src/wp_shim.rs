@@ -158,6 +158,7 @@ fn run() -> ExitCode {
     if let Some(served_root) = scope.as_ref().and_then(|s| s.served_root.as_ref()) {
         cmd.arg(format!("--path={}", served_root.display()));
     }
+    crate::shim::apply_network_env(&mut cmd, &dirs);
 
     let err = cmd.exec();
     if err.kind() == std::io::ErrorKind::NotFound {

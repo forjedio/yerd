@@ -7,6 +7,7 @@
 //! apart.
 
 use std::fs;
+use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -71,6 +72,39 @@ pub(crate) fn spawn_and_check(
             None => std::thread::sleep(POLL_INTERVAL),
         }
     }
+}
+
+/// Runs `cmd` with stdout piped and returns its stdout when it exits
+/// successfully within `timeout`; kills and reaps it otherwise. Only for
+/// commands whose output fits in the pipe buffer, since stdout is read after
+/// exit.
+pub(crate) fn capture_stdout_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<String> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    if !status.success() {
+        return None;
+    }
+    let mut out = String::new();
+    child.stdout.take()?.read_to_string(&mut out).ok()?;
+    Some(out)
 }
 
 /// Send SIGTERM (or SIGKILL when `force`) to the process group led by `pid`,

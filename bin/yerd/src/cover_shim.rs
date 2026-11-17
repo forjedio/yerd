@@ -86,11 +86,12 @@ fn run(spec: &CoverSpec, forward: &[OsString]) -> ExitCode {
         Err(msg) => return fail(msg),
     };
 
-    let err = Command::new(&php_bin)
-        .env("PHPRC", &cover_ini_path)
+    let mut cmd = Command::new(&php_bin);
+    cmd.env("PHPRC", &cover_ini_path)
         .env("YERD_COVER", "1")
-        .args(forward)
-        .exec();
+        .args(forward);
+    crate::shim::apply_network_env(&mut cmd, &dirs);
+    let err = cmd.exec();
     if err.kind() == std::io::ErrorKind::NotFound {
         return fail(format!(
             "PHP binary not found at {} ({err}) — reinstall with `yerd install php {minor}`",

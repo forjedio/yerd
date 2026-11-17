@@ -343,6 +343,8 @@ export type DiagnosisCode =
   | "port_redirect_stale"
   | "lan_redirect_stale"
   | "legacy_port_redirect"
+  | "outbound_proxy_unreachable"
+  | "outbound_proxy_pac_unsupported"
   | "all_good";
 
 export interface Diagnosis {
@@ -680,6 +682,8 @@ export type Response =
       /** The chosen selector that matches no installed release, so it can be installed. */
       missing?: string;
     }
+  | { type: "network_settings"; settings: NetworkSettings }
+  | { type: "network_test"; result: NetworkTestResult }
   | { type: "job_started"; job_id: string }
   | {
       type: "job_progress";
@@ -892,6 +896,49 @@ export type MailResponse = Extract<Response, { type: "mail" }>;
 export type NodeVersionsResponse = Extract<Response, { type: "node_versions" }>;
 export type AvailableNodeResponse = Extract<Response, { type: "available_node" }>;
 export type NodeSiteResponse = Extract<Response, { type: "node_site" }>;
+
+/** How the daemon picks its outbound proxy. */
+export type OutboundProxyMode = "system" | "manual" | "off";
+
+/** Where the resolved outbound proxy came from. */
+export type ProxySource =
+  | "manual"
+  | "daemon_env"
+  | "macos_system_settings"
+  | "gnome_settings"
+  | "login_shell"
+  | "none";
+
+/** The proxy the daemon is actually using. URLs are redacted (`***`). */
+export interface EffectiveProxy {
+  mode: OutboundProxyMode;
+  source: ProxySource;
+  http_proxy?: string;
+  https_proxy?: string;
+  /** Effective bypass list, loopback and the site TLD included. */
+  bypass: string[];
+}
+
+/** Saved outbound-proxy settings plus what they resolve to. URLs are redacted. */
+export interface NetworkSettings {
+  mode: OutboundProxyMode;
+  http_proxy?: string;
+  https_proxy?: string;
+  /** User bypass entries. */
+  no_proxy: string[];
+  effective?: EffectiveProxy;
+}
+
+/** Result of a connection test through the resolved proxy. */
+export interface NetworkTestResult {
+  ok: boolean;
+  url: string;
+  status?: number;
+  error?: string;
+  /** Redacted proxy the request went through; absent for a direct request. */
+  via?: string;
+  source: ProxySource;
+}
 export type JobStartedResponse = Extract<Response, { type: "job_started" }>;
 export type JobProgressResponse = Extract<Response, { type: "job_progress" }>;
 export type TunnelsResponse = Extract<Response, { type: "tunnels" }>;

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 
+import NetworkProxyCard from "@/components/NetworkProxyCard.vue";
 import PageHeader from "@/components/PageHeader.vue";
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
@@ -787,6 +788,8 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
           </div>
         </CardContent>
       </Card>
+
+      <NetworkProxyCard v-if="running" />
 
       <Card>
         <CardHeader>

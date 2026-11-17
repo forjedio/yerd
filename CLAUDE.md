@@ -81,6 +81,14 @@ no other `yerd-*` crate; libraries never depend on binaries.
 - **Async only at the I/O edge** — pure crates/modules stay sync.
 - **`yerd-helper` is the security boundary** — the only privileged surface; the
   GUI must never run as root.
+- **Outbound network goes through the configured proxy.** Every external HTTP
+  request uses a client from `yerdd`'s `crate::network` factory
+  (`network::downloader` / `network::client`), never
+  `reqwest::Client::builder()` or a new `ReqwestDownloader` directly. Every
+  subprocess Yerd runs that reaches the network gets `network::apply_child_env`
+  (or `network::apply_plan` with a plan from `network::child_env_plan`). The
+  documented exception is cloudflared (tunnel edge traffic and its management
+  commands, which are deferred; see docs).
 - **Pin dependencies** in `[workspace.dependencies]`; read the comment beside any
   `=`-pin before bumping it.
 - **Mirror per-OS changes** across `linux` / `macos` / `unsupported`; CI runs on

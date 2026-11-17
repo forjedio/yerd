@@ -159,3 +159,14 @@ fn save_into_readonly_parent_returns_io_error() {
         other => panic!("expected Io error from temp-file creation, got {other:?}"),
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn save_writes_owner_only_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    Config::default().save(&path).unwrap();
+    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+}

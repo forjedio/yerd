@@ -425,6 +425,7 @@ pub async fn bring_up_with_dirs(
         detect_cache,
         ffi_cache,
         libvips_probe: Arc::new(yerd_platform::ActiveLibvipsProbe::new()),
+        network: crate::network::NetworkRuntime::production(),
         watch_dirty: tokio::sync::Notify::new(),
         dumps: Arc::new(crate::dump_server::DumpStore::new()),
         shim_reconcile: tokio::sync::Mutex::new(()),

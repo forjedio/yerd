@@ -481,7 +481,7 @@ async fn resolve_and_install_latest(
 ) -> Result<ServiceVersion, String> {
     use yerd_supervise::Downloader;
 
-    let dl = crate::php_install::ReqwestDownloader::new();
+    let dl = crate::network::downloader(state).await;
     let (os, arch) = yerd_services::current_os_arch().map_err(|e| e.to_string())?;
     let listing_bytes = dl
         .download(&yerd_services::listing_url())

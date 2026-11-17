@@ -186,6 +186,8 @@ pub struct DaemonState {
     pub ffi_cache: Arc<FfiCache>,
     /// Host probe for libvips, reported next to the GUI's FFI toggle.
     pub libvips_probe: Arc<dyn yerd_platform::LibvipsProbe + Send + Sync>,
+    /// Outbound proxy state behind the client factory (`crate::network`).
+    pub network: crate::network::NetworkRuntime,
     /// Pinged after a config mutation commits so the filesystem watcher
     /// reconciles its watch set (e.g. a newly-parked root) without waiting for
     /// an unrelated filesystem event.

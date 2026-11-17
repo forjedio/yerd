@@ -354,6 +354,17 @@ pub enum Response {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         missing: Option<String>,
     },
+    /// Reply to [`crate::Request::GetNetworkSettings`] and
+    /// [`crate::Request::SetNetworkSettings`].
+    NetworkSettings {
+        /// The saved settings (redacted) and the resolved proxy.
+        settings: Box<crate::NetworkSettings>,
+    },
+    /// Reply to [`crate::Request::TestNetwork`].
+    NetworkTest {
+        /// The test outcome (redacted, scrubbed).
+        result: Box<crate::NetworkTestResult>,
+    },
     /// Reply to [`crate::Request::CreateSite`] - the background job was started.
     JobStarted {
         /// The job id to poll with [`crate::Request::JobStatus`].
@@ -750,6 +761,8 @@ mod variant_name_pinning {
             Response::NodeVersions { .. } => {}
             Response::AvailableNode { .. } => {}
             Response::NodeSite { .. } => {}
+            Response::NetworkSettings { .. } => {}
+            Response::NetworkTest { .. } => {}
             Response::JobStarted { .. } => {}
             Response::JobProgress { .. } => {}
             Response::UpdateStatus { .. } => {}
@@ -1024,6 +1037,25 @@ mod variant_name_pinning {
             source: Some(yerd_core::node::NodeSource::Nvmrc),
             error: None,
             missing: None,
+        });
+        pin_response(Response::NetworkSettings {
+            settings: Box::new(crate::NetworkSettings {
+                mode: yerd_core::network::OutboundProxyMode::System,
+                http_proxy: None,
+                https_proxy: None,
+                no_proxy: vec![],
+                effective: None,
+            }),
+        });
+        pin_response(Response::NetworkTest {
+            result: Box::new(crate::NetworkTestResult {
+                ok: true,
+                url: "https://files.yerd.app/latest.json".into(),
+                status: Some(200),
+                error: None,
+                via: None,
+                source: yerd_core::network::ProxySource::None,
+            }),
         });
         pin_response(Response::JobStarted {
             job_id: "j1".into(),

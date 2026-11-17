@@ -41,11 +41,7 @@ fn default_release(
     config: &Config,
     versions: &[node::InstalledNode],
 ) -> (Option<String>, Option<String>) {
-    let default = config
-        .node
-        .default
-        .clone()
-        .or_else(|| node::legacy_default(dirs));
+    let default = node::default_selector(dirs, config.node.default.as_deref());
     let exact = default.as_deref().and_then(|d| {
         yerd_core::node::select_release(d, versions.iter().map(node::InstalledNode::candidate)).ok()
     });
@@ -186,6 +182,9 @@ pub async fn run_exec(tool: &str, site: Option<&str>, args: &[OsString]) -> Exit
         Ok(c) => c,
         Err(e) => return report(&e, 2),
     };
+    if let Ok(dirs) = ActivePaths::new().resolve() {
+        crate::shim::apply_network_env(&mut cmd, &dirs);
+    }
     let error = cmd.exec();
     report(&format!("failed to exec managed {tool}: {error}"), 74)
 }

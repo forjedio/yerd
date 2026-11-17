@@ -28,7 +28,22 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v27 (current)
+### v28 (current)
+
+**Added:** the optional `[network]` table - the outbound HTTP proxy for Yerd's own downloads and the tools it runs: `mode` (`"system"`, `"manual"` or `"off"`), `http_proxy`, `https_proxy` and `no_proxy`. It is omitted while it holds the defaults (system detection, nothing manual).
+
+```toml
+[network]
+mode = "manual"
+http_proxy = "http://proxy.corp:3128"
+no_proxy = [".corp.com"]
+```
+
+**Migration from v27:** bare version bump - the table defaults to system detection when absent, so a v27 file needs no other change.
+
+**To downgrade to v27:** change `version = 28` to `version = 27` and delete the `[network]` table if present (a v27 daemon rejects the unknown table under `deny_unknown_fields`). An older Yerd ignores proxies set only in Yerd; it still picks up nothing from the system on its own, so downloads go direct.
+
+### v27
 
 **Added:** the optional `[node]` table (`default`, the global Node selector) and `[node.sites]` (per-project Node preferences keyed by canonical absolute project root). Both default to empty when absent; a legacy single-version Node install stays discoverable and acts as the default until one is saved.
 

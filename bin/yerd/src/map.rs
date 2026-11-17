@@ -326,7 +326,91 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             action: crate::cli::LanAction::Disable,
         } => Request::SetLanEnabled { enabled: false },
         Command::RemoteSetup => Request::MintRemoteSetupCode,
+        Command::Network {
+            action: crate::cli::NetworkAction::Proxy { action },
+        } => network_proxy_request(action),
     })
+}
+
+/// Map a `yerd network proxy <action>` to its wire request. `set` sends an
+/// empty HTTPS URL when `--https` is absent, which the daemon resolves to the
+/// HTTP proxy; `system` and `off` keep the stored URLs.
+fn network_proxy_request(action: &crate::cli::OutboundProxyAction) -> Request {
+    use crate::cli::OutboundProxyAction as ProxyAction;
+    use yerd_core::network::OutboundProxyMode;
+    match action {
+        ProxyAction::Status => Request::GetNetworkSettings,
+        ProxyAction::Test => Request::TestNetwork,
+        ProxyAction::Set {
+            url,
+            https,
+            no_proxy,
+        } => Request::SetNetworkSettings {
+            mode: OutboundProxyMode::Manual,
+            http_proxy: Some(url.clone()),
+            https_proxy: Some(https.clone().unwrap_or_default()),
+            no_proxy: no_proxy.clone(),
+        },
+        ProxyAction::System => Request::SetNetworkSettings {
+            mode: OutboundProxyMode::System,
+            http_proxy: None,
+            https_proxy: None,
+            no_proxy: None,
+        },
+        ProxyAction::Off => Request::SetNetworkSettings {
+            mode: OutboundProxyMode::Off,
+            http_proxy: None,
+            https_proxy: None,
+            no_proxy: None,
+        },
+    }
+}
+
+/// Human view of [`Response::NetworkSettings`]: the mode, the proxy in use
+/// (redacted) with its source, and the bypass list.
+fn format_network_settings(s: &yerd_ipc::NetworkSettings) -> String {
+    let mut out = format!("mode: {}", s.mode.as_str());
+    if s.http_proxy.is_some() || s.https_proxy.is_some() {
+        let _ = write!(
+            out,
+            "\nmanual: http {} / https {}",
+            s.http_proxy.as_deref().unwrap_or("-"),
+            s.https_proxy.as_deref().unwrap_or("same as http")
+        );
+    }
+    match &s.effective {
+        Some(e) if e.http_proxy.is_some() || e.https_proxy.is_some() => {
+            let _ = write!(
+                out,
+                "\nin use: http {} / https {} (from {})",
+                e.http_proxy.as_deref().unwrap_or("direct"),
+                e.https_proxy.as_deref().unwrap_or("direct"),
+                e.source.label()
+            );
+            let _ = write!(out, "\nbypass: {}", e.bypass.join(", "));
+        }
+        Some(_) => out.push_str("\nin use: direct (no proxy)"),
+        None => {}
+    }
+    if !s.no_proxy.is_empty() {
+        let _ = write!(out, "\nyour bypass entries: {}", s.no_proxy.join(", "));
+    }
+    out
+}
+
+/// Human view of [`Response::NetworkTest`]; a failed test exits 1.
+fn format_network_test(r: &yerd_ipc::NetworkTestResult) -> Rendered {
+    let route = match &r.via {
+        Some(via) => format!("via {via} ({})", r.source.label()),
+        None => "direct".to_owned(),
+    };
+    let status = r.status.map_or_else(String::new, |s| format!(" HTTP {s}"));
+    if r.ok {
+        Rendered::ok(format!("ok: {}{status} {route}", r.url))
+    } else {
+        let reason = r.error.as_deref().unwrap_or("request failed");
+        Rendered::err(format!("failed: {}{status} {route}: {reason}", r.url))
+    }
 }
 
 /// Map a `yerd service <action>` to its wire request. Service ids are passed
@@ -1224,6 +1308,8 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             Rendered::ok(format_response_headers(headers, None))
         }
         Response::NodeVersions { installed } => Rendered::ok(format_node_versions(installed)),
+        Response::NetworkSettings { settings } => Rendered::ok(format_network_settings(settings)),
+        Response::NetworkTest { result } => format_network_test(result),
         _ => Rendered::err("unexpected response from daemon".to_owned()),
     }
 }
@@ -1390,6 +1476,7 @@ pub fn doctor_exit_code(resp: &Response) -> u8 {
         Response::DoctorFix { report } => {
             u8::from(report.manual.iter().any(|d| d.severity == Severity::Fail))
         }
+        Response::NetworkTest { result } => u8::from(!result.ok),
         _ => 0,
     }
 }
@@ -2259,6 +2346,176 @@ mod tests {
             .unwrap(),
             Request::StopNamedTunnel
         );
+    }
+
+    fn proxy_cmd(action: crate::cli::OutboundProxyAction) -> Command {
+        Command::Network {
+            action: crate::cli::NetworkAction::Proxy { action },
+        }
+    }
+
+    #[test]
+    fn maps_network_proxy_commands() {
+        use crate::cli::OutboundProxyAction as ProxyAction;
+        use yerd_core::network::OutboundProxyMode;
+        let cases = [
+            (ProxyAction::Status, Request::GetNetworkSettings),
+            (ProxyAction::Test, Request::TestNetwork),
+            (
+                ProxyAction::Set {
+                    url: "http://proxy:3128".into(),
+                    https: None,
+                    no_proxy: None,
+                },
+                Request::SetNetworkSettings {
+                    mode: OutboundProxyMode::Manual,
+                    http_proxy: Some("http://proxy:3128".into()),
+                    https_proxy: Some(String::new()),
+                    no_proxy: None,
+                },
+            ),
+            (
+                ProxyAction::Set {
+                    url: "http://a:1".into(),
+                    https: Some("http://b:2".into()),
+                    no_proxy: Some(vec!["corp.com".into(), "10.0.0.0/8".into()]),
+                },
+                Request::SetNetworkSettings {
+                    mode: OutboundProxyMode::Manual,
+                    http_proxy: Some("http://a:1".into()),
+                    https_proxy: Some("http://b:2".into()),
+                    no_proxy: Some(vec!["corp.com".into(), "10.0.0.0/8".into()]),
+                },
+            ),
+            (
+                ProxyAction::System,
+                Request::SetNetworkSettings {
+                    mode: OutboundProxyMode::System,
+                    http_proxy: None,
+                    https_proxy: None,
+                    no_proxy: None,
+                },
+            ),
+            (
+                ProxyAction::Off,
+                Request::SetNetworkSettings {
+                    mode: OutboundProxyMode::Off,
+                    http_proxy: None,
+                    https_proxy: None,
+                    no_proxy: None,
+                },
+            ),
+        ];
+        for (action, expected) in cases {
+            assert_eq!(to_request(&proxy_cmd(action)).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn parses_network_proxy_set_flags() {
+        use clap::Parser as _;
+        let cli = crate::cli::Cli::try_parse_from([
+            "yerd",
+            "network",
+            "proxy",
+            "set",
+            "http://p:1",
+            "--https",
+            "http://s:2",
+            "--no-proxy",
+            "corp.com,10.0.0.0/8",
+        ])
+        .unwrap();
+        let Command::Network {
+            action: crate::cli::NetworkAction::Proxy { action },
+        } = cli.command
+        else {
+            panic!("expected network proxy");
+        };
+        assert_eq!(
+            action,
+            crate::cli::OutboundProxyAction::Set {
+                url: "http://p:1".into(),
+                https: Some("http://s:2".into()),
+                no_proxy: Some(vec!["corp.com".into(), "10.0.0.0/8".into()]),
+            }
+        );
+    }
+
+    #[test]
+    fn renders_network_status_redacted() {
+        use yerd_core::network::{OutboundProxyMode, ProxySource};
+        let resp = Response::NetworkSettings {
+            settings: Box::new(yerd_ipc::NetworkSettings {
+                mode: OutboundProxyMode::Manual,
+                http_proxy: Some("http://u:***@proxy:3128".into()),
+                https_proxy: None,
+                no_proxy: vec![".corp.com".into()],
+                effective: Some(yerd_ipc::EffectiveProxy {
+                    mode: OutboundProxyMode::Manual,
+                    source: ProxySource::Manual,
+                    http_proxy: Some("http://u:***@proxy:3128".into()),
+                    https_proxy: Some("http://u:***@proxy:3128".into()),
+                    bypass: vec!["localhost".into(), ".test".into(), ".corp.com".into()],
+                }),
+            }),
+        };
+        let r = render(&resp, false);
+        assert_eq!(r.code, 0);
+        assert!(r.stdout.contains("mode: manual"), "{}", r.stdout);
+        assert!(r.stdout.contains("http://u:***@proxy:3128"), "{}", r.stdout);
+        assert!(r.stdout.contains("(from manual setting)"), "{}", r.stdout);
+        assert!(
+            r.stdout.contains("bypass: localhost, .test, .corp.com"),
+            "{}",
+            r.stdout
+        );
+
+        let direct = Response::NetworkSettings {
+            settings: Box::new(yerd_ipc::NetworkSettings {
+                mode: OutboundProxyMode::System,
+                http_proxy: None,
+                https_proxy: None,
+                no_proxy: vec![],
+                effective: Some(yerd_ipc::EffectiveProxy {
+                    mode: OutboundProxyMode::System,
+                    source: ProxySource::None,
+                    http_proxy: None,
+                    https_proxy: None,
+                    bypass: vec![],
+                }),
+            }),
+        };
+        assert!(render(&direct, false).stdout.contains("in use: direct"));
+    }
+
+    #[test]
+    fn renders_network_test_and_exit_code() {
+        use yerd_core::network::ProxySource;
+        let result = |ok: bool| Response::NetworkTest {
+            result: Box::new(yerd_ipc::NetworkTestResult {
+                ok,
+                url: "https://files.yerd.app/latest.json".into(),
+                status: ok.then_some(200),
+                error: (!ok).then(|| "connection refused".into()),
+                via: Some("http://u:***@proxy:3128".into()),
+                source: ProxySource::LoginShell,
+            }),
+        };
+        let pass = render(&result(true), false);
+        assert_eq!(pass.code, 0);
+        assert!(pass
+            .stdout
+            .contains("HTTP 200 via http://u:***@proxy:3128 (login shell)"));
+        let fail = render(&result(false), false);
+        assert_eq!(fail.code, 1);
+        assert!(
+            fail.stderr.contains("connection refused"),
+            "{}",
+            fail.stderr
+        );
+        assert_eq!(render(&result(false), true).code, 1);
+        assert_eq!(render(&result(true), true).code, 0);
     }
 
     #[test]

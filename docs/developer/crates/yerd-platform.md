@@ -31,7 +31,9 @@ src/
   port_redirect.rs  PortRedirector trait + loopback_port_reachable / loopback_redirect_reaches_proxy
   process_table.rs  ProcessTable trait (best-effort) + FakeProcessTable
   resolver.rs       ResolverInstaller trait
+  system_proxy.rs   SystemProxySource trait + FakeSystemProxySource
   terminal.rs       TerminalLauncher trait
+  tool_root.rs      single_top_level_dir (the one top-level dir of an unpacked tool)
   trust_store.rs    TrustStore trait + CaFingerprint + NssOutcome / NssFailure
   os/
     mod.rs          cfg-selects exactly one impl; exposes `active` aliases
@@ -56,6 +58,7 @@ src/
     dns_probe.rs        compose/validate the loopback DNS probe
     resolved_drop_in.rs compose/parse systemd-resolved drop-in
     resolver_file.rs    compose/parse macOS /etc/resolver/<tld>
+    system_proxy.rs     parse_gsettings / parse_scutil_proxy + MacProxySettings
     terminal_spec.rs    TERMINAL_SPECS probe table
 ```
 
@@ -264,6 +267,24 @@ Opens a terminal with `path` as its working directory - what the site details si
 - **A trailing `.wrapper` is stripped first.** Debian's `x-terminal-emulator` alternative points at `gnome-terminal.wrapper`, which forwards its arguments to `gnome-terminal` and so takes the same flags.
 
 `x-terminal-emulator` itself is deliberately absent from the table: it is an alternatives symlink rather than a terminal, so it carries no flags of its own. The Linux impl probes it separately and resolves the link before looking flags up. An unrecognised program returns `None`, and the caller falls back to the spawned child inheriting the current directory.
+
+### `SystemProxySource`
+
+`kind() -> ProxySource` and `read() -> Option<SystemProxy>`: the OS proxy
+settings the daemon's outbound-proxy System mode falls back to after its own
+environment. macOS runs `scutil --proxy` (the `SCDynamicStore` proxy
+dictionary; the safe Core Foundation bindings can't read its `ExceptionsList`
+without `unsafe`), Linux runs `gsettings list-recursively
+org.gnome.system.proxy`; both are bounded by a 3 s timeout and parsed by the pure
+`pure::system_proxy` helpers. A missing tool, non-GNOME desktop, or timeout
+reads as `None`; the unsupported stub always returns `None`.
+`FakeSystemProxySource { reading, kind }` serves tests.
+
+### `single_top_level_dir`
+
+Returns the single child directory of an unpacked tool archive (Node, pnpm,
+Bun), or a `RootDirError`. The daemon uses it when linking `{data}/bin` and the
+CLI's tool shims use it at run time, so both always agree on the target.
 
 ## OS implementations and the `Active*` aliases
 

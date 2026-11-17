@@ -313,6 +313,57 @@ The pcov code-coverage launcher (the [`yerd` multi-call binary](./yerd#cover-shi
 This is all daemon-internal: **no new IPC `Request`/`Response` variants were added** and `crates/yerd-ipc` was untouched. The shim reconciliation rides on the existing install / uninstall / set-default requests.
 :::
 
+## Outbound HTTP (`network.rs`)
+
+Every external HTTP request the daemon makes goes through one factory in
+`network.rs`: `network::downloader(&state)` (a `yerd_php::Downloader`) or
+`network::client(&state)` (a raw `reqwest::Client`, used for the Cloudflare
+API). `build_client` is the only `reqwest::Client::builder()` call in the crate.
+It calls `.no_proxy()` first, so reqwest's implicit environment proxy never
+applies, then adds the resolved proxy explicitly per scheme with the bypass
+list. A builder failure does not panic or fall back: the downloader holds the
+`Err`, and every download returns `DownloadError::Transport` with an
+"outbound proxy configuration is invalid" message scrubbed of passwords.
+
+`NetworkRuntime` (in `DaemonState::network`) caches the `ResolvedProxy` from
+`yerd_core::network::resolve` for 60 s:
+
+- **Sources.** The daemon env (`std::env`), the OS settings through
+  `yerd_platform::SystemProxySource` (`scutil --proxy` on macOS, `gsettings` on
+  Linux, both with a 3 s timeout), and the login shell's `*_proxy` exports
+  (`tools::external::capture_user_proxy_env`).
+- **Probe policy.** The login shell is only run by `refresh(LoginShell::Probe)`:
+  once at startup (awaited before the update poller and extension install
+  spawn), on `SetNetworkSettings`, and on `TestNetwork`. Every other refresh,
+  including the 60 s refresher task, Diagnose, DoctorFix, site creation and
+  tool installs, reuses the stored result. `invalidate()` drops only the
+  snapshot.
+- **`network.env`.** `refresh` is the only writer of `{data}/network.env`: it
+  renders `child_env_plan` as `KEY=VALUE` lines, writes it 0600 when it changed,
+  and removes it when there is nothing to export (Off, or no proxy).
+- **Subprocesses.** `run_streamed` (site creation) calls
+  `network::apply_child_env`; the Laravel installer and WP-CLI builds get a plan
+  from `network::child_env_plan` and apply it with `network::apply_plan`. Off
+  mode removes every inherited proxy variable.
+- **Long-lived work.** The update poller builds a fresh downloader on each tick,
+  so a settings change applies without a restart.
+- **Doctor.** Diagnose and DoctorFix run a 3 s TCP connect to the proxy
+  (`probe_reachable`) and pass `outbound_proxy_probe(..)` to
+  `yerd_doctor::diagnose` as a side channel.
+
+Do not call the factory functions while holding `state.config`; a refresh takes
+that lock. cloudflared is the documented exception: its tunnel edge traffic
+can't use an HTTP proxy, and its management commands don't get the proxy
+environment yet.
+
+The `{data}/bin` links for `node`, `npm`, `npx`, `pnpm`, `pnpx`, `bun` and
+`bunx` point at the `yerd` multi-call binary (like `composer`, `laravel` and
+`wp`), so the CLI can add the proxy environment before it execs the real tool.
+One edge: a user symlink such as `~/.local/bin/pnpm → {data}/bin/pnpm` now
+canonicalises to the `yerd` binary outside `{data}`, so external-tool detection
+can tag it External. The effect is cosmetic (it still runs Yerd's managed
+tool), and the same edge already exists for `composer`, `laravel` and `wp`.
+
 ## Cert store (`cert_store.rs`)
 
 `DaemonCertStore` implements `yerd_proxy::CertStore`. On the first SNI miss for a host it issues a fresh leaf via the in-memory `CertAuthority` (~395-day validity), persists the PEM under `data/leaves/<host>.{cert,key}.pem`, parses it into a `rustls::sign::CertifiedKey`, and caches it. SNI lookups are normalised (trailing dot stripped, lowercased) so `app.test`, `APP.TEST.`, and `app.test` share one cached `Arc`. The unit tests assert the issue-then-cache identity (`Arc::ptr_eq`), PEM persistence, and case-insensitive lookup.

@@ -170,6 +170,56 @@ async fn capture_path_string() -> Option<String> {
     None
 }
 
+/// Read the `*_proxy` exports of the user's interactive-login shell.
+///
+/// Uncached: `crate::network::NetworkRuntime` owns caching and only probes at
+/// daemon start, on a settings save, and on a connection test. `None` when the
+/// shell could not be run or printed no markers.
+#[cfg(unix)]
+pub async fn capture_user_proxy_env() -> Option<yerd_core::network::SystemProxy> {
+    use yerd_core::network::{from_env_lookup, parse_env_file, PROXY_ENV_NAMES};
+
+    let shell = user_shell();
+    let args = proxy_env_invocation(&shell);
+    let raw = capture_until_end(&shell, &args).await?;
+    let vars = parse_env_file(between(&raw, BEGIN, END)?, &PROXY_ENV_NAMES);
+    Some(from_env_lookup(&|k| {
+        vars.iter()
+            .find(|(name, _)| name == k)
+            .map(|(_, v)| v.clone())
+    }))
+}
+
+/// Non-Unix stub: there is no login shell to probe.
+#[cfg(not(unix))]
+pub async fn capture_user_proxy_env() -> Option<yerd_core::network::SystemProxy> {
+    None
+}
+
+/// Shell args printing `KEY=value` for each of the eight
+/// [`yerd_core::network::PROXY_ENV_NAMES`] between [`BEGIN`]/[`END`]. The
+/// same `printf` script runs under fish (which expands `"$var"` too), so only
+/// the flags differ, chosen as in [`shell_invocation`].
+#[cfg(unix)]
+fn proxy_env_invocation(shell: &str) -> Vec<String> {
+    use yerd_platform::pure::shell_profile::{detect_shell, Shell};
+
+    let base = Path::new(shell)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let lines: Vec<String> = yerd_core::network::PROXY_ENV_NAMES
+        .iter()
+        .map(|name| format!("printf '{name}=%s\\n' \"${name}\""))
+        .collect();
+    let script = format!("printf '{BEGIN}'; {}; printf '{END}'", lines.join("; "));
+    match detect_shell(base) {
+        Some(Shell::Fish) => vec!["-il".to_owned(), "-c".to_owned(), script],
+        Some(Shell::Zsh | Shell::Bash) => vec!["-ilc".to_owned(), script],
+        _ => vec!["-ic".to_owned(), script],
+    }
+}
+
 /// The user's login shell: `$SHELL` → the passwd entry for this uid (launchd /
 /// `systemd --user` often drop `$SHELL`) → a per-OS default.
 #[cfg(unix)]
@@ -352,6 +402,43 @@ mod tests {
             Some(v) => std::env::set_var("SHELL", v),
             None => std::env::remove_var("SHELL"),
         }
+    }
+
+    #[test]
+    fn proxy_env_invocation_flags_per_shell() {
+        for (shell, flags) in [
+            ("/bin/zsh", vec!["-ilc"]),
+            ("/usr/bin/bash", vec!["-ilc"]),
+            ("/opt/homebrew/bin/fish", vec!["-il", "-c"]),
+            ("/bin/dash", vec!["-ic"]),
+        ] {
+            let args = proxy_env_invocation(shell);
+            assert_eq!(args.len(), flags.len() + 1, "{shell}");
+            for (got, want) in args.iter().zip(&flags) {
+                assert_eq!(got, want, "{shell}");
+            }
+            let script = args.last().unwrap();
+            assert!(script.contains(BEGIN) && script.contains(END), "{shell}");
+            for name in yerd_core::network::PROXY_ENV_NAMES {
+                assert!(script.contains(&format!("\"${name}\"")), "{shell} {name}");
+            }
+            assert!(!script.contains("NODE_USE_ENV_PROXY"));
+        }
+    }
+
+    #[tokio::test]
+    async fn proxy_env_script_prints_parseable_lines() {
+        let args = proxy_env_invocation("/bin/dash");
+        let script = format!(
+            "http_proxy=http://p:1 NO_PROXY=corp.com; export http_proxy NO_PROXY; {}",
+            args.last().unwrap()
+        );
+        let out = capture_until_end("/bin/sh", &sh(&script)).await.unwrap();
+        let inner = between(&out, BEGIN, END).unwrap();
+        let vars = yerd_core::network::parse_env_file(inner, &yerd_core::network::PROXY_ENV_NAMES);
+        assert!(vars.contains(&("http_proxy".to_owned(), "http://p:1".to_owned())));
+        assert!(vars.contains(&("NO_PROXY".to_owned(), "corp.com".to_owned())));
+        assert!(vars.contains(&("https_proxy".to_owned(), String::new())));
     }
 
     fn sh(script: &str) -> Vec<String> {

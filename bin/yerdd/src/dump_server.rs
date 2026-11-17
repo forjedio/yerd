@@ -422,7 +422,7 @@ pub async fn set_enabled(state: &DaemonState, enabled: bool) -> Response {
 /// Download the extension for installed versions (best-effort, time-bounded) and
 /// restart started pools so the new `-d zend_extension` flag takes effect.
 async fn ensure_ext_and_restart(state: &DaemonState) {
-    let dl = crate::php_install::ReqwestDownloader::new();
+    let dl = crate::network::downloader(state).await;
     let ensure = crate::ext_install::ensure_for_installed(&state.dirs, &dl);
     if tokio::time::timeout(std::time::Duration::from_secs(30), ensure)
         .await

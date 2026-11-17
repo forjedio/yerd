@@ -51,6 +51,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v24_to_v25,
     migrate_v25_to_v26,
     migrate_v26_to_v27,
+    migrate_v27_to_v28,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -278,6 +279,13 @@ fn migrate_v26_to_v27(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 27)
 }
 
+/// `v27 → v28`: bump the version. v28 added the optional `[network]` outbound
+/// proxy table, which defaults to system detection when absent, so an in-place
+/// version bump is the entire migration.
+fn migrate_v27_to_v28(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 28)
+}
+
 /// Set the top-level `version` key, erroring if the root is not a table.
 fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
     let table = value.as_table_mut().ok_or(ConfigError::Migration {
@@ -347,7 +355,7 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 27);
+        assert_eq!(crate::CURRENT_VERSION, 28);
     }
 
     #[test]
@@ -429,6 +437,19 @@ mod tests {
         let mut v: Value = toml::from_str("version = 26\n").unwrap();
         migrate_v26_to_v27(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 27);
+    }
+
+    #[test]
+    fn v27_to_v28_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 27\n").unwrap();
+        migrate_v27_to_v28(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 28);
+    }
+
+    #[test]
+    fn v27_file_loads_with_default_network() {
+        let c = crate::Config::from_toml("version = 27\n").unwrap();
+        assert_eq!(c.network, crate::NetworkSection::default());
     }
 
     #[test]

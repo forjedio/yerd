@@ -185,7 +185,7 @@ pub(crate) fn installed_version(
     node_default: Option<&str>,
 ) -> Option<String> {
     if tool == Tool::Node {
-        return node::default_selector(dirs, node_default).and_then(|v| {
+        return yerd_platform::node::default_selector(dirs, node_default).and_then(|v| {
             yerd_platform::node::resolve(dirs, &v)
                 .ok()
                 .map(|v| format!("v{}", v.version))
@@ -243,11 +243,13 @@ fn note(progress: Option<&ProgressTx>, msg: impl Into<String>) {
 /// Download + install `tool`'s latest release. Idempotent (replaces in place via
 /// staging + atomic swap). Best-effort integrity is sha256-verified per asset.
 /// When `progress` is set, coarse status (and, for the Laravel installer, the
-/// live Composer output) is streamed to it.
+/// live Composer output) is streamed to it. `proxy_env` is applied to the
+/// Composer subprocess that builds the Laravel installer and WP-CLI.
 pub async fn install(
     tool: Tool,
     dirs: &PlatformDirs,
     dl: &dyn Downloader,
+    proxy_env: &yerd_core::network::ChildEnvPlan,
     progress: Option<&ProgressTx>,
 ) -> Result<(), ToolError> {
     note(progress, format!("Installing {}…", tool.display_name()));
@@ -256,8 +258,8 @@ pub async fn install(
         Tool::Node => node::install(dirs, dl).await,
         Tool::Bun => bun::install(dirs, dl).await,
         Tool::Pnpm => pnpm::install(dirs, dl).await,
-        Tool::Laravel => laravel::install(dirs, progress).await,
-        Tool::WpCli => wp_cli::install(dirs, progress).await,
+        Tool::Laravel => laravel::install(dirs, proxy_env, progress).await,
+        Tool::WpCli => wp_cli::install(dirs, proxy_env, progress).await,
     };
     match &result {
         Ok(()) => note(progress, format!("Installed {}", tool.display_name())),
@@ -282,8 +284,22 @@ pub fn uninstall(dirs: &PlatformDirs, tool: Tool) -> Result<(), ToolError> {
     Ok(())
 }
 
+/// Point every resolvable command of a Node, pnpm, or Bun install at the yerd
+/// multi-call binary. The module-level `shim_links` still decides *which*
+/// names get a link (none when the root or the Node default can't be
+/// resolved); the CLI's `tool_shim` then resolves the same target at run time
+/// and adds the outbound proxy environment before `exec`.
+#[cfg(unix)]
+fn via_yerd(links: Vec<(String, PathBuf)>, yerd_bin: &Path) -> Vec<(String, PathBuf)> {
+    links
+        .into_iter()
+        .map(|(name, _)| (name, yerd_bin.to_path_buf()))
+        .collect()
+}
+
 /// The `(name_in_bin, symlink_target)` pairs for an installed `tool`. Empty if
-/// the tool isn't installed or its root can't be resolved.
+/// the tool isn't installed or its root can't be resolved. Every command is a
+/// link to the yerd multi-call binary.
 #[cfg(unix)]
 fn shim_links(
     dirs: &PlatformDirs,
@@ -293,9 +309,9 @@ fn shim_links(
 ) -> Vec<(String, PathBuf)> {
     match tool {
         Tool::Composer => vec![("composer".to_owned(), yerd_bin.to_path_buf())],
-        Tool::Node => node::shim_links(dirs, node_default),
-        Tool::Bun => bun::shim_links(dirs),
-        Tool::Pnpm => pnpm::shim_links(dirs),
+        Tool::Node => via_yerd(node::shim_links(dirs, node_default), yerd_bin),
+        Tool::Bun => via_yerd(bun::shim_links(dirs), yerd_bin),
+        Tool::Pnpm => via_yerd(pnpm::shim_links(dirs), yerd_bin),
         Tool::Laravel => vec![("laravel".to_owned(), yerd_bin.to_path_buf())],
         Tool::WpCli => vec![("wp".to_owned(), yerd_bin.to_path_buf())],
     }
@@ -382,21 +398,7 @@ pub(crate) fn verify_sha256(bytes: &[u8], want_sha: &str, label: &str) -> Result
 /// in one top-level dir whose name encodes the version). Errors unless exactly
 /// one directory entry exists - never reconstructed from a version string.
 pub(crate) fn extract_root_dir(dir: &Path) -> Result<PathBuf, ToolError> {
-    let mut found: Option<PathBuf> = None;
-    let entries =
-        std::fs::read_dir(dir).map_err(|e| ToolError::Unpack(format!("{}: {e}", dir.display())))?;
-    for entry in entries.flatten() {
-        if entry.path().is_dir() {
-            if found.is_some() {
-                return Err(ToolError::Unpack(format!(
-                    "expected one top-level dir in {}, found multiple",
-                    dir.display()
-                )));
-            }
-            found = Some(entry.path());
-        }
-    }
-    found.ok_or_else(|| ToolError::Unpack(format!("no top-level dir in {}", dir.display())))
+    yerd_platform::single_top_level_dir(dir).map_err(|e| ToolError::Unpack(e.to_string()))
 }
 
 /// Stage `tool`'s payload via a fresh staging dir, write the `.version` marker,
@@ -657,18 +659,15 @@ mod tests {
     }
 
     #[test]
-    fn extract_root_dir_requires_exactly_one() {
+    fn extract_root_dir_maps_errors_to_unpack() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        assert!(extract_root_dir(root).is_err());
+        assert!(matches!(extract_root_dir(root), Err(ToolError::Unpack(_))));
         std::fs::create_dir(root.join("node-v24.17.0-darwin-arm64")).unwrap();
-        std::fs::write(root.join(".version"), "x").unwrap();
         assert_eq!(
             extract_root_dir(root).unwrap(),
             root.join("node-v24.17.0-darwin-arm64")
         );
-        std::fs::create_dir(root.join("second")).unwrap();
-        assert!(extract_root_dir(root).is_err());
     }
 
     #[cfg(unix)]
@@ -696,14 +695,32 @@ mod tests {
 
         reconcile_tool_shims(&dirs, &yerd_bin, None).unwrap();
 
-        assert_eq!(
-            std::fs::read_link(bin.join("node")).unwrap(),
-            node_root.join("bin").join("node")
-        );
-        assert!(bin.join("npm").exists());
-        assert!(bin.join("npx").exists());
-        assert_eq!(std::fs::read_link(bin.join("composer")).unwrap(), yerd_bin);
+        for name in ["node", "npm", "npx", "composer"] {
+            assert_eq!(
+                std::fs::read_link(bin.join(name)).unwrap(),
+                yerd_bin,
+                "{name}"
+            );
+        }
+        assert!(node_root.join("bin").join("node").is_file());
         assert!(!bin.join("bun").exists());
+
+        let bun_root = tool_dir(&dirs, Tool::Bun).join("bun-darwin-aarch64");
+        std::fs::create_dir_all(&bun_root).unwrap();
+        std::fs::write(bun_root.join("bun"), b"b").unwrap();
+        std::fs::write(
+            tool_dir(&dirs, Tool::Bun).join(VERSION_MARKER),
+            "bun-v1.0.0",
+        )
+        .unwrap();
+        reconcile_tool_shims(&dirs, &yerd_bin, None).unwrap();
+        for name in ["bun", "bunx"] {
+            assert_eq!(
+                std::fs::read_link(bin.join(name)).unwrap(),
+                yerd_bin,
+                "{name}"
+            );
+        }
     }
 
     #[test]

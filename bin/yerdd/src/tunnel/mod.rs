@@ -719,7 +719,7 @@ pub async fn install_cloudflared_streamed(state: Arc<DaemonState>) -> Response {
         };
 
         state.jobs.set_phase(&id, "Installing cloudflared").await;
-        let dl = crate::php_install::ReqwestDownloader::new();
+        let dl = crate::network::downloader(&state).await;
         let guard = tokio::select! {
             g = state.tunnel_mutate.lock() => g,
             _ = cancel.changed() => {

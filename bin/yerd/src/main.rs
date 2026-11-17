@@ -29,6 +29,10 @@ fn main() -> ExitCode {
         return code;
     }
     #[cfg(unix)]
+    if let Some(code) = yerd::tool_shim::dispatch() {
+        return code;
+    }
+    #[cfg(unix)]
     if let Some(code) = yerd::service_client_shim::dispatch() {
         return code;
     }

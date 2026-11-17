@@ -393,3 +393,40 @@ fn decode_rejects_unknown_error_code() {
     let err = decode_message::<Response>(bytes).unwrap_err();
     assert!(matches!(err, IpcError::Decode(_)), "got {err:?}");
 }
+
+#[test]
+fn network_variants_roundtrip() {
+    assert_request_roundtrips(Request::GetNetworkSettings);
+    assert_request_roundtrips(Request::TestNetwork);
+    assert_request_roundtrips(Request::SetNetworkSettings {
+        mode: yerd_core::network::OutboundProxyMode::Off,
+        http_proxy: None,
+        https_proxy: Some(String::new()),
+        no_proxy: Some(vec![]),
+    });
+    assert_response_roundtrips(Response::NetworkSettings {
+        settings: Box::new(yerd_ipc::NetworkSettings {
+            mode: yerd_core::network::OutboundProxyMode::Manual,
+            http_proxy: Some("http://u:***@proxy:3128".into()),
+            https_proxy: None,
+            no_proxy: vec![".corp.com".into()],
+            effective: Some(yerd_ipc::EffectiveProxy {
+                mode: yerd_core::network::OutboundProxyMode::Manual,
+                source: yerd_core::network::ProxySource::Manual,
+                http_proxy: Some("http://u:***@proxy:3128".into()),
+                https_proxy: Some("http://u:***@proxy:3128".into()),
+                bypass: vec!["localhost".into(), ".test".into()],
+            }),
+        }),
+    });
+    assert_response_roundtrips(Response::NetworkTest {
+        result: Box::new(yerd_ipc::NetworkTestResult {
+            ok: false,
+            url: "https://files.yerd.app/latest.json".into(),
+            status: None,
+            error: Some("connect failed".into()),
+            via: Some("http://proxy:3128".into()),
+            source: yerd_core::network::ProxySource::DaemonEnv,
+        }),
+    });
+}

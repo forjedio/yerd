@@ -33,6 +33,8 @@ pub mod service_client_shim;
 pub mod shim;
 #[cfg(unix)]
 pub mod site_scope;
+#[cfg(unix)]
+pub mod tool_shim;
 pub mod transport;
 pub mod uninstall;
 #[cfg(unix)]

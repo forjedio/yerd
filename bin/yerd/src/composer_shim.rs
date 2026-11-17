@@ -52,6 +52,7 @@ fn run() -> ExitCode {
     if let Some(phprc) = cli_phprc(&dirs, &minor) {
         cmd.env("PHPRC", phprc);
     }
+    crate::shim::apply_network_env(&mut cmd, &dirs);
     let err = cmd.exec();
     if err.kind() == std::io::ErrorKind::NotFound {
         return fail(format!(

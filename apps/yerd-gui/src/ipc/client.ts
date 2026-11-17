@@ -29,8 +29,11 @@ import type {
   MailDetail,
   MailSummary,
   MajorLine,
+  NetworkSettings,
+  NetworkTestResult,
   NodeRelease,
   NodeSiteResponse,
+  OutboundProxyMode,
   AddableServiceType,
   PhpExtInfo,
   PhpVersion,
@@ -1035,6 +1038,38 @@ export async function setSymlinkProtection(enabled: boolean): Promise<void> {
  *  started afterwards. */
 export async function setMcpEnabled(enabled: boolean): Promise<void> {
   ensureOk(await call<Response>("set_mcp_enabled", { enabled }));
+}
+
+/** Read the outbound-proxy settings and the proxy they resolve to (redacted). */
+export async function getNetworkSettings(): Promise<NetworkSettings> {
+  const r = ensureOk(await call<Response>("get_network_settings"));
+  if (r.type !== "network_settings") throw new IpcError("unexpected response to get_network_settings");
+  return r.settings;
+}
+
+/**
+ * Save the outbound-proxy settings. An omitted field keeps the stored value; an
+ * empty string clears it (an empty HTTPS URL falls back to the HTTP proxy). A
+ * URL still carrying the redacted `***` password keeps the stored password.
+ */
+export async function setNetworkSettings(
+  mode: OutboundProxyMode,
+  httpProxy?: string,
+  httpsProxy?: string,
+  noProxy?: string[],
+): Promise<NetworkSettings> {
+  const r = ensureOk(
+    await call<Response>("set_network_settings", { mode, httpProxy, httpsProxy, noProxy }),
+  );
+  if (r.type !== "network_settings") throw new IpcError("unexpected response to set_network_settings");
+  return r.settings;
+}
+
+/** Re-detect the proxy and fetch Yerd's release manifest through it. */
+export async function testNetwork(): Promise<NetworkTestResult> {
+  const r = ensureOk(await call<Response>("test_network"));
+  if (r.type !== "network_test") throw new IpcError("unexpected response to test_network");
+  return r.result;
 }
 
 /** Open (or focus) the separate Mails viewer window. Host command, not daemon IPC. */

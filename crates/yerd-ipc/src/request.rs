@@ -901,6 +901,31 @@ pub enum Request {
     },
     /// Enumerate every site's custom response headers.
     ListResponseHeaders,
+    /// Read the outbound-proxy settings and the proxy they resolve to. Replies
+    /// [`crate::Response::NetworkSettings`]; every URL is redacted.
+    GetNetworkSettings,
+    /// Save the outbound-proxy settings, then re-detect (login shell included).
+    /// A `None` field keeps the stored value; `Some("")` or `Some(vec![])`
+    /// clears it. A URL whose password is the redacted `***` keeps the stored
+    /// password only while scheme, user, host and port are unchanged. Replies
+    /// [`crate::Response::NetworkSettings`].
+    SetNetworkSettings {
+        /// The mode to use.
+        mode: yerd_core::network::OutboundProxyMode,
+        /// Manual proxy for `http://` requests.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        http_proxy: Option<String>,
+        /// Manual proxy for `https://` requests; empty falls back to the HTTP
+        /// proxy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        https_proxy: Option<String>,
+        /// User bypass entries.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        no_proxy: Option<Vec<String>>,
+    },
+    /// Re-detect the proxy (login shell included) and fetch Yerd's release
+    /// manifest through it. Replies [`crate::Response::NetworkTest`].
+    TestNetwork,
 }
 
 #[cfg(test)]
@@ -1045,6 +1070,9 @@ mod variant_name_pinning {
             Request::RemoveProxyRule { .. } => {}
             Request::ListProxies => {}
             Request::SetMcpEnabled { .. } => {}
+            Request::GetNetworkSettings => {}
+            Request::SetNetworkSettings { .. } => {}
+            Request::TestNetwork => {}
             Request::SetLanEnabled { .. } => {}
             Request::MintRemoteSetupCode => {}
             Request::TrustBrowsers { .. } => {}
@@ -1381,6 +1409,14 @@ mod variant_name_pinning {
         });
         pin(Request::ListResponseHeaders);
         pin(Request::SetMcpEnabled { enabled: true });
+        pin(Request::GetNetworkSettings);
+        pin(Request::SetNetworkSettings {
+            mode: yerd_core::network::OutboundProxyMode::Manual,
+            http_proxy: Some("http://proxy:3128".to_owned()),
+            https_proxy: None,
+            no_proxy: Some(vec![".corp.com".to_owned()]),
+        });
+        pin(Request::TestNetwork);
         pin(Request::SetLanEnabled { enabled: true });
         pin(Request::MintRemoteSetupCode);
     }

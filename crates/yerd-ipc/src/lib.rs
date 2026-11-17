@@ -25,6 +25,7 @@ mod dump;
 mod error;
 mod frame;
 mod message;
+mod network;
 mod node;
 mod request;
 mod response;
@@ -46,6 +47,7 @@ pub use dump::{DumpCategory, DumpCounts, DumpEvent, DumpExtStatus};
 pub use error::{FrameError, IpcError, IpcErrorKind};
 pub use frame::{encode_frame, FrameDecoder, DEFAULT_MAX_FRAME};
 pub use message::{decode_message, encode_message};
+pub use network::{EffectiveProxy, NetworkSettings, NetworkTestResult};
 pub use node::{NodePreferenceRef, NodeProjectFile, NodeRelease};
 pub use request::Request;
 pub use response::{

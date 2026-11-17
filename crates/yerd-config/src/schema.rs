@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use yerd_core::network::{OutboundProxyMode, ProxyUrl};
 use yerd_core::{Domain, PhpVersion, ProxyRule, ProxySite, ResponseHeader, RouteRule, Site, Tld};
 
 /// Top-level on-disk config.
@@ -105,6 +106,9 @@ pub struct Config {
     /// Per-site custom response headers (`Access-Control-Allow-Origin: *`),
     /// split by site class. Empty by default.
     pub response_headers: ResponseHeadersSection,
+    /// Outbound proxy for Yerd's own downloads and network subprocesses.
+    /// Default: system detection.
+    pub network: NetworkSection,
 }
 
 impl Default for Config {
@@ -134,6 +138,7 @@ impl Default for Config {
             proxy_rules: ProxyRulesSection::default(),
             route_rules: RouteRulesSection::default(),
             response_headers: ResponseHeadersSection::default(),
+            network: NetworkSection::default(),
         }
     }
 }
@@ -711,6 +716,22 @@ impl Default for MailSection {
             port: DEFAULT_MAIL_PORT,
         }
     }
+}
+
+/// Outbound proxy settings (see [`Config::network`]).
+///
+/// `Debug` stays derived: [`ProxyUrl`] redacts its own password.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NetworkSection {
+    /// How the proxy is chosen.
+    pub mode: OutboundProxyMode,
+    /// Manual proxy for `http://` requests.
+    pub http_proxy: Option<ProxyUrl>,
+    /// Manual proxy for `https://` requests; falls back to
+    /// [`Self::http_proxy`] when unset.
+    pub https_proxy: Option<ProxyUrl>,
+    /// User bypass entries, normalised to `.domain` / IP / CIDR form.
+    pub no_proxy: Vec<String>,
 }
 
 /// Node defaults and project preferences, keyed by canonical project root.

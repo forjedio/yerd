@@ -149,7 +149,7 @@ impl std::fmt::Display for UpstreamTarget {
 /// Splits `host[:port]` (bracketed IPv6 allowed) into an unbracketed host and a
 /// port, defaulting the port. Returns `None` when the port is malformed, or for
 /// an unbracketed multi-colon host (an IPv6 literal that must be bracketed).
-fn split_host_port(rest: &str, default_port: u16) -> Option<(&str, u16)> {
+pub(crate) fn split_host_port(rest: &str, default_port: u16) -> Option<(&str, u16)> {
     if let Some(inner) = rest.strip_prefix('[') {
         let (host, after) = inner.split_once(']')?;
         let port = if after.is_empty() {
@@ -173,7 +173,7 @@ fn split_host_port(rest: &str, default_port: u16) -> Option<(&str, u16)> {
 /// `[a-z0-9._-]`, non-empty, no leading/trailing dot). `_` is allowed for
 /// container/service names (e.g. `my_service` from a docker-compose network),
 /// which aren't strict DNS but resolve fine on a local dev network.
-fn is_valid_host(host: &str) -> bool {
+pub(crate) fn is_valid_host(host: &str) -> bool {
     if host.parse::<IpAddr>().is_ok() {
         return true;
     }
