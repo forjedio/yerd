@@ -609,15 +609,15 @@ async fn available_php_with(
     }
 }
 
-/// Whether a dev tool is installed but Yerd's `{data}/bin` isn't on the `PATH`
-/// of the user's login shell - drives the doctor's
-/// [`yerd_ipc::DiagnosisCode::BinDirNotOnPath`] warning. The shell is probed for
-/// its real `PATH`; if that fails the user's rc files are scanned instead (see
-/// [`yerd_platform::bin_dir_needs_setup`]). `Some(false)` when no tool is
-/// installed or PATH is already wired; `None` when undeterminable (non-Unix, or
-/// `$HOME` unset). Computed on demand from the `Diagnose` handler, not on the
-/// per-poll status path. The cover/pcov shims alone don't count - the gate is an
-/// actual installed dev tool.
+/// Whether a dev tool is installed but Yerd's `{data}/bin` isn't on the user's
+/// PATH yet - drives the doctor's [`yerd_ipc::DiagnosisCode::BinDirNotOnPath`]
+/// warning. Checks the login shell's real PATH (via the cached
+/// [`crate::tools::external::resolve_user_path`]) and the user's rc files; see
+/// [`yerd_platform::pure::shell_profile::bin_dir_needs_setup`]. `Some(false)`
+/// when no tool is installed or PATH is already wired; `None` when
+/// undeterminable (non-Unix, or `$HOME` unset). Computed on demand from the
+/// `Diagnose` handler, not on the per-poll status path. The cover/pcov shims
+/// alone don't count - the gate is an actual installed dev tool.
 async fn path_needs_setup(state: &DaemonState) -> Option<bool> {
     #[cfg(not(unix))]
     {
@@ -626,52 +626,35 @@ async fn path_needs_setup(state: &DaemonState) -> Option<bool> {
     }
     #[cfg(unix)]
     {
+        use yerd_platform::pure::shell_profile::{self, rc_relpaths, HostOs, Shell};
+
         let any_tool = crate::tools::list_status(&state.dirs)
             .iter()
             .any(|t| t.installed);
         if !any_tool {
             return Some(false);
         }
-        let bin_dir = crate::tools::bin_dir(&state.dirs);
-        tokio::task::spawn_blocking(move || path_needs_setup_blocking(&bin_dir))
-            .await
-            .ok()
-            .flatten()
+        let home = std::env::var_os("HOME")
+            .filter(|h| !h.is_empty())
+            .map(std::path::PathBuf::from)?;
+        let os = if cfg!(target_os = "macos") {
+            HostOs::MacOs
+        } else {
+            HostOs::Linux
+        };
+        let rc_contents: Vec<String> = [Shell::Zsh, Shell::Bash, Shell::Fish, Shell::Posix]
+            .into_iter()
+            .flat_map(|s| rc_relpaths(s, os))
+            .filter_map(|rel| std::fs::read_to_string(home.join(rel)).ok())
+            .collect();
+        let login_path = crate::tools::external::resolve_user_path().await;
+        Some(shell_profile::bin_dir_needs_setup(
+            login_path.as_deref(),
+            &crate::tools::bin_dir(&state.dirs),
+            &home,
+            &rc_contents,
+        ))
     }
-}
-
-#[cfg(unix)]
-fn path_needs_setup_blocking(bin_dir: &std::path::Path) -> Option<bool> {
-    use yerd_platform::pure::shell_profile::{detect_shell, rc_relpaths, HostOs, Shell};
-
-    let home = std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
-        .map(std::path::PathBuf::from)?;
-    let os = if cfg!(target_os = "macos") {
-        HostOs::MacOs
-    } else {
-        HostOs::Linux
-    };
-    let rc_contents: Vec<String> = [Shell::Zsh, Shell::Bash, Shell::Fish, Shell::Posix]
-        .into_iter()
-        .flat_map(|s| rc_relpaths(s, os))
-        .filter_map(|rel| std::fs::read_to_string(home.join(rel)).ok())
-        .collect();
-    let shell_bin = std::env::var_os("SHELL")
-        .filter(|s| !s.is_empty())
-        .map(std::path::PathBuf::from);
-    let shell = shell_bin.as_deref().and_then(|bin| {
-        let name = bin.file_name()?.to_str()?;
-        detect_shell(name).map(|sh| (bin, sh))
-    });
-    let probe = yerd_platform::RealLoginShell::new(std::time::Duration::from_secs(3));
-    Some(yerd_platform::bin_dir_needs_setup(
-        &probe,
-        shell,
-        bin_dir,
-        &home,
-        &rc_contents,
-    ))
 }
 
 /// Assemble a read-only [`yerd_ipc::StatusReport`].

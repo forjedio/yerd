@@ -122,25 +122,54 @@ fn between<'a>(s: &'a str, begin: &str, end: &str) -> Option<&'a str> {
 
 // ── shell spawn (Unix) ───────────────────────────────────────────────────────
 
+/// Minimal `PATH` the probe shell starts from, so an entry inherited from the
+/// daemon's own environment (e.g. a daemon launched from a terminal) can't make
+/// the user's rc files look like they add it.
+#[cfg(unix)]
+const PROBE_BASE_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+
 #[cfg(unix)]
 async fn capture_path_string() -> Option<String> {
-    use std::process::Stdio;
-
     let shell = user_shell();
     let args = shell_invocation(&shell);
+    capture_until_end(&shell, &args).await
+}
 
-    let mut cmd = tokio::process::Command::new(&shell);
-    cmd.args(&args)
+/// Run `shell` with `args` and return its stdout up to and including [`END`].
+///
+/// Reading stops at the marker rather than at EOF: a background process started
+/// from an rc file (`ssh-agent`, `gpg-agent`, `emacs --daemon`) inherits stdout
+/// and would otherwise hold the pipe open until the timeout.
+#[cfg(unix)]
+async fn capture_until_end(shell: &str, args: &[String]) -> Option<String> {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt as _;
+
+    let mut cmd = tokio::process::Command::new(shell);
+    cmd.args(args)
+        .env("PATH", PROBE_BASE_PATH)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    let child = cmd.spawn().ok()?;
-    let out = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait_with_output())
+    let mut child = cmd.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let read = async {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let n = stdout.read(&mut chunk).await.ok()?;
+            buf.extend_from_slice(chunk.get(..n)?);
+            let text = String::from_utf8_lossy(&buf);
+            if n == 0 || text.contains(END) {
+                return Some(text.into_owned());
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(3), read)
         .await
-        .ok()?
-        .ok()?;
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+        .ok()
+        .flatten()
 }
 
 #[cfg(not(unix))]
@@ -330,5 +359,39 @@ mod tests {
             Some(v) => std::env::set_var("SHELL", v),
             None => std::env::remove_var("SHELL"),
         }
+    }
+
+    fn sh(script: &str) -> Vec<String> {
+        vec!["-c".to_owned(), script.to_owned()]
+    }
+
+    #[tokio::test]
+    async fn capture_stops_at_end_marker_despite_a_background_stdout_holder() {
+        let script = format!("sleep 10 & printf '{BEGIN}/x{END}'");
+        let started = Instant::now();
+        let out = capture_until_end("/bin/sh", &sh(&script)).await.unwrap();
+        assert_eq!(between(&out, BEGIN, END), Some("/x"));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn capture_starts_from_the_base_path_not_the_daemon_path() {
+        let script = format!("printf '{BEGIN}%s{END}' \"$PATH\"");
+        let out = capture_until_end("/bin/sh", &sh(&script)).await.unwrap();
+        assert_eq!(between(&out, BEGIN, END), Some(PROBE_BASE_PATH));
+    }
+
+    #[tokio::test]
+    async fn capture_without_marker_returns_output_at_eof() {
+        let out = capture_until_end("/bin/sh", &sh("printf hi")).await;
+        assert_eq!(out.as_deref(), Some("hi"));
+    }
+
+    #[tokio::test]
+    async fn capture_of_a_missing_shell_is_none() {
+        assert_eq!(
+            capture_until_end("/nonexistent/sh", &sh("true")).await,
+            None
+        );
     }
 }

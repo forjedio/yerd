@@ -261,6 +261,9 @@ const DIAG_SCHEMA: u32 = 1;
 /// Bound for each diagnostics IPC probe - the daemon may be down/wedged (the
 /// common diagnostic case), and the probe must never hang the command.
 const DIAG_IPC_TIMEOUT: Duration = Duration::from_secs(4);
+/// Bound for the `Diagnose` probe: longer than [`DIAG_IPC_TIMEOUT`] because the
+/// daemon may spend up to 3s asking the user's login shell for its PATH.
+const DIAG_DOCTOR_TIMEOUT: Duration = Duration::from_secs(7);
 
 /// Resolved on-disk locations, for the diagnostics payload.
 #[derive(serde::Serialize)]
@@ -341,7 +344,7 @@ async fn probe_status() -> Option<Box<yerd_ipc::StatusReport>> {
 
 /// The doctor findings via a bounded IPC probe, or empty if unreachable.
 async fn probe_doctor() -> Vec<yerd_ipc::Diagnosis> {
-    match crate::ipc::exchange_timeout(&yerd_ipc::Request::Diagnose, DIAG_IPC_TIMEOUT).await {
+    match crate::ipc::exchange_timeout(&yerd_ipc::Request::Diagnose, DIAG_DOCTOR_TIMEOUT).await {
         Ok(yerd_ipc::Response::Diagnoses { items }) => items,
         _ => Vec::new(),
     }

@@ -247,61 +247,32 @@ fn marker_line_indices(text: &str) -> Option<(usize, usize)> {
     None
 }
 
-/// Sentinel printed before the probed `PATH`, so noise from a user's rc files
-/// (banners, motd) on stdout can't corrupt it.
-const PATH_BEGIN: &str = "__YERD_PATH_BEGIN__";
-/// Sentinel printed after the probed `PATH`.
-const PATH_END: &str = "__YERD_PATH_END__";
-
-/// Argv (after the shell binary) that makes `shell` print its login-shell
-/// `PATH` between [`PATH_BEGIN`] and [`PATH_END`]. zsh/bash/fish run interactive
-/// and login so both `.zshrc`/`.bashrc` and `.zprofile`/`.bash_profile` apply.
+/// Whether Yerd's `bin_dir` still needs wiring onto the user's `PATH`.
+///
+/// `login_path` is the `PATH` the user's login shell builds (when it could be
+/// probed); `rc_contents` are the user's rc files. Either source showing the
+/// directory is enough: the probe catches PATH wired by a dotfiles manager or a
+/// sourced file, while the rc scan covers what a login shell can miss (a bash
+/// login shell never reads `.bashrc` unless `.bash_profile` sources it) and a
+/// `yerd path install` made since the probe's PATH was cached.
 #[must_use]
-pub fn login_path_args(shell: Shell) -> Vec<String> {
-    let (flags, script): (&[&str], String) = match shell {
-        Shell::Fish => (
-            &["-i", "-l", "-c"],
-            format!("printf '%s%s%s' {PATH_BEGIN} (string join : $PATH) {PATH_END}"),
-        ),
-        Shell::Zsh | Shell::Bash => (
-            &["-i", "-l", "-c"],
-            format!("printf '%s%s%s' {PATH_BEGIN} \"$PATH\" {PATH_END}"),
-        ),
-        Shell::Posix => (
-            &["-l", "-c"],
-            format!("printf '%s%s%s' {PATH_BEGIN} \"$PATH\" {PATH_END}"),
-        ),
-    };
-    flags
+pub fn bin_dir_needs_setup(
+    login_path: Option<&[PathBuf]>,
+    bin_dir: &Path,
+    home: &Path,
+    rc_contents: &[String],
+) -> bool {
+    let on_login_path = login_path.is_some_and(|dirs| dirs.iter().any(|d| d == bin_dir));
+    let in_rc = rc_contents
         .iter()
-        .map(|f| (*f).to_owned())
-        .chain(std::iter::once(script))
-        .collect()
+        .any(|c| contains_block(c) || mentions_dir(c, bin_dir, home));
+    !(on_login_path || in_rc)
 }
 
-/// Pull the `PATH` out of a [`login_path_args`] probe's stdout, ignoring any
-/// output before or after the sentinels. `None` if the sentinels are absent.
-#[must_use]
-pub fn extract_login_path(stdout: &str) -> Option<String> {
-    let start = stdout.find(PATH_BEGIN)? + PATH_BEGIN.len();
-    let rest = stdout.get(start..)?;
-    let end = rest.find(PATH_END)?;
-    rest.get(..end).map(str::to_owned)
-}
-
-/// True if the colon-separated `path_var` has `dir` as one of its entries
-/// (trailing slashes ignored).
-#[must_use]
-pub fn path_has_dir(path_var: &str, dir: &Path) -> bool {
-    path_var
-        .split(':')
-        .filter(|e| !e.is_empty())
-        .any(|e| Path::new(e) == dir)
-}
-
-/// True if a non-comment line of `content` spells out `dir`, either absolutely
-/// or as `$HOME/..`, `${HOME}/..`, or `~/..` relative to `home`. A heuristic
-/// fallback for when the login shell can't be probed.
+/// True if a non-comment line of `content` that touches `PATH` spells out `dir`
+/// as a whole path entry, either absolutely or as `$HOME/..`, `${HOME}/..`, or
+/// `~/..` relative to `home`. A heuristic: lines naming a file inside `dir`
+/// (an alias to `{dir}/composer`) or a sibling (`{dir}-old`) don't count.
 #[must_use]
 pub fn mentions_dir(content: &str, dir: &Path, home: &Path) -> bool {
     let mut spellings = vec![dir.display().to_string()];
@@ -313,8 +284,21 @@ pub fn mentions_dir(content: &str, dir: &Path, home: &Path) -> bool {
     }
     content
         .lines()
-        .filter(|l| !l.trim_start().starts_with('#'))
-        .any(|l| spellings.iter().any(|sp| l.contains(sp.as_str())))
+        .map(str::trim_start)
+        .filter(|l| !l.starts_with('#') && l.to_ascii_lowercase().contains("path"))
+        .any(|l| spellings.iter().any(|sp| has_path_entry(l, sp)))
+}
+
+/// True if `needle` occurs in `line` followed by a path-entry boundary (end of
+/// line, `:`, a quote, `)`, whitespace, or a single trailing `/` before one).
+fn has_path_entry(line: &str, needle: &str) -> bool {
+    line.match_indices(needle).any(|(i, _)| {
+        let rest = line.get(i + needle.len()..).unwrap_or("");
+        let rest = rest.strip_prefix('/').unwrap_or(rest);
+        rest.chars().next().map_or(true, |c| {
+            matches!(c, ':' | '"' | '\'' | ')' | ';') || c.is_whitespace()
+        })
+    })
 }
 
 #[cfg(test)]
@@ -456,58 +440,68 @@ mod tests {
         assert_eq!(remove_block(s), s);
     }
 
-    #[test]
-    fn login_path_args_per_shell() {
-        let zsh = login_path_args(Shell::Zsh);
-        assert_eq!(&zsh[..3], ["-i", "-l", "-c"]);
-        assert!(zsh[3].contains("\"$PATH\""));
-        assert_eq!(login_path_args(Shell::Bash), zsh);
-        assert!(login_path_args(Shell::Fish)[3].contains("string join : $PATH"));
-        let posix = login_path_args(Shell::Posix);
-        assert_eq!(&posix[..2], ["-l", "-c"]);
+    fn home() -> PathBuf {
+        PathBuf::from("/Users/x")
     }
 
-    #[test]
-    fn extract_login_path_table() {
-        let ok = format!("welcome\n{PATH_BEGIN}/a:/b{PATH_END}\nbye");
-        assert_eq!(extract_login_path(&ok).as_deref(), Some("/a:/b"));
-        assert_eq!(
-            extract_login_path(&format!("{PATH_BEGIN}{PATH_END}")).as_deref(),
-            Some("")
-        );
-        assert_eq!(extract_login_path("/a:/b"), None);
-        assert_eq!(extract_login_path(&format!("{PATH_BEGIN}/a:/b")), None);
-        assert_eq!(extract_login_path(""), None);
-    }
+    type SetupCase<'a> = (Option<&'a [PathBuf]>, &'a [String], bool);
 
     #[test]
-    fn path_has_dir_table() {
+    fn bin_dir_needs_setup_table() {
         let d = bin();
-        let ds = d.display().to_string();
-        assert!(path_has_dir(&format!("/usr/bin:{ds}:/bin"), &d));
-        assert!(path_has_dir(&format!("{ds}/"), &d));
-        assert!(!path_has_dir("/usr/bin:/bin", &d));
-        assert!(!path_has_dir("", &d));
-        assert!(!path_has_dir(&format!("{ds}/sub"), &d));
-        assert!(!path_has_dir(&format!("{ds}x"), &d));
+        let on_path = vec![PathBuf::from("/usr/bin"), d.clone()];
+        let trailing = vec![PathBuf::from(format!("{}/", d.display()))];
+        let off_path = vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")];
+        let block = vec![upsert_block("", Shell::Zsh, &d)];
+        let literal = vec![format!("export PATH=\"{}:$PATH\"", d.display())];
+        let unrelated = vec!["export PATH=\"/usr/bin\"".to_owned()];
+        let cases: [SetupCase<'_>; 9] = [
+            (Some(&on_path), &[], false),
+            (Some(&trailing), &[], false),
+            (Some(&off_path), &[], true),
+            (Some(&off_path), &block, false),
+            (Some(&off_path), &literal, false),
+            (None, &block, false),
+            (None, &literal, false),
+            (None, &unrelated, true),
+            (None, &[], true),
+        ];
+        for (i, (login, rc, want)) in cases.into_iter().enumerate() {
+            assert_eq!(
+                bin_dir_needs_setup(login, &d, &home(), rc),
+                want,
+                "case {i}"
+            );
+        }
     }
 
     #[test]
     fn mentions_dir_table() {
         let d = bin();
-        let home = PathBuf::from("/Users/x");
-        let abs = format!("export PATH=\"{}:$PATH\"\n", d.display());
-        assert!(mentions_dir(&abs, &d, &home));
+        let ds = d.display().to_string();
         let rel = "Library/Application Support/io.yerd.Yerd/bin";
-        for form in [
-            format!("PATH=\"$HOME/{rel}:$PATH\""),
+        let hits = [
+            format!("export PATH=\"{ds}:$PATH\""),
+            format!("export PATH={ds}"),
+            format!("  PATH=\"$HOME/{rel}/:$PATH\""),
             format!("PATH=\"${{HOME}}/{rel}:$PATH\""),
             format!("path+=(~/{rel})"),
-        ] {
-            assert!(mentions_dir(&form, &d, &home), "{form}");
+            format!("fish_add_path '{ds}'"),
+        ];
+        for line in &hits {
+            assert!(mentions_dir(line, &d, &home()), "{line}");
         }
-        assert!(!mentions_dir(&format!("# {}", d.display()), &d, &home));
-        assert!(!mentions_dir("export PATH=\"/usr/bin\"", &d, &home));
-        assert!(!mentions_dir("", &d, &home));
+        let misses = [
+            format!("# export PATH=\"{ds}:$PATH\""),
+            format!("alias composer=\"{ds}/composer\""),
+            format!("export PATH=\"{ds}-old:$PATH\""),
+            format!("export PATH=\"{ds}/sub:$PATH\""),
+            format!("cd {ds}"),
+            "export PATH=\"/usr/bin\"".to_owned(),
+            String::new(),
+        ];
+        for line in &misses {
+            assert!(!mentions_dir(line, &d, &home()), "{line}");
+        }
     }
 }
