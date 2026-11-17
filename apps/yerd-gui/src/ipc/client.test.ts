@@ -353,6 +353,16 @@ describe("node commands", () => {
     expect(invokeMock).toHaveBeenCalledWith("list_node", undefined);
   });
 
+  it("listNode lists the newest release first", async () => {
+    const older = ["9.11.2", "24.22.3", "26.13.1", "24.3.0"].map((version) => ({
+      ...release,
+      version,
+    }));
+    invokeMock.mockResolvedValue({ type: "node_versions", installed: older });
+    const listed = await listNode();
+    expect(listed.map((r) => r.version)).toEqual(["26.13.1", "24.22.3", "24.3.0", "9.11.2"]);
+  });
+
   it("availableNode unwraps the major lines", async () => {
     const line = { major: 22, latest: "22.12.0", update_available: false };
     invokeMock.mockResolvedValue({ type: "available_node", majors: [line] });

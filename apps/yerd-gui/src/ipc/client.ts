@@ -566,9 +566,25 @@ export async function installToolStreamed(tool: string): Promise<string> {
 
 // ── node versions ────────────────────────────────────────────────────────────
 
+function versionParts(version: string): number[] {
+  return version.split(".").map((p) => Number.parseInt(p, 10) || 0);
+}
+
+/** Newest first by numeric version, so `26.1.0` sorts above `24.22.3` and `9` below `10`. */
+function newestFirst(a: NodeRelease, b: NodeRelease): number {
+  const x = versionParts(a.version);
+  const y = versionParts(b.version);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (y[i] ?? 0) - (x[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+/** Sorted here too, so every view lists newest first whichever daemon answered. */
 function nodeReleasesOf(r: Response, cmd: string): NodeRelease[] {
   if (r.type !== "node_versions") throw new IpcError(`unexpected response to ${cmd}`);
-  return r.installed;
+  return [...r.installed].sort(newestFirst);
 }
 
 /** Installed Node releases, each with its default marker and uninstall effects. */
