@@ -17,14 +17,14 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use yerd_ipc::{
-    types::{PhpVersion, Site},
+    types::{MajorLine, NodeSource, PhpVersion, Site},
     AddableServiceType, CaStatus, Channel, CloudflaredSource, CloudflaredStatus, DatabaseSummary,
     Diagnosis, DiagnosisCode, DumpCategory, DumpCounts, DumpEvent, DumpExtStatus, ErrorCode,
     FixReport, FixResult, MailAttachment, MailDetail, MailHeader, MailStatus, MailSummary,
-    NamedTunnelMeta, PhpPoolStatus, PoolRunState, PortRedirectTargets, PortStatus, ProxyEntry,
-    ProxyRuleEntry, Request, Response, ServiceAvailability, ServiceRunState, ServiceStatus,
-    Severity, SiteCounts, SiteHostname, StagedArtifact, StatusReport, ToolStatus, TunnelInfo,
-    TunnelKind, TunnelRunState, UpdateSource,
+    NamedTunnelMeta, NodePreferenceRef, NodeProjectFile, NodeRelease, PhpPoolStatus, PoolRunState,
+    PortRedirectTargets, PortStatus, ProxyEntry, ProxyRuleEntry, Request, Response,
+    ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts, SiteHostname,
+    StagedArtifact, StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState, UpdateSource,
 };
 
 // ---------- Request ----------
@@ -1123,6 +1123,7 @@ fn response_status_byte_shape() {
             port_redirect_targets: None,
             lan_redirect_targets: None,
             legacy_pf_redirect: None,
+            node_updates: 0,
         }),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -1222,6 +1223,16 @@ fn status_resolver_backup_appears_only_when_some() {
     assert!(!s.contains("resolver_backup"), "{s}");
 }
 
+#[test]
+fn status_node_updates_appears_only_when_nonzero() {
+    let mut report = sample_status_report();
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(!s.contains("node_updates"), "{s}");
+    report.node_updates = 2;
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(s.ends_with(r#","node_updates":2}"#), "{s}");
+}
+
 /// A minimal healthy report for field-presence assertions.
 fn sample_status_report() -> StatusReport {
     StatusReport {
@@ -1271,6 +1282,7 @@ fn sample_status_report() -> StatusReport {
         port_redirect_targets: None,
         lan_redirect_targets: None,
         legacy_pf_redirect: None,
+        node_updates: 0,
     }
 }
 
@@ -2686,6 +2698,7 @@ fn request_create_site_byte_shape() {
                     js: JsRuntime::Npm,
                     git: true,
                     boost: false,
+                    node: None,
                 },
             },
         },
@@ -2694,6 +2707,29 @@ fn request_create_site_byte_shape() {
     let expected = r#"{"type":"create_site","spec":{"name":"blog","parent_dir":"/srv","php":"8.4","secure":true,"framework":{"framework":"laravel","options":{"starter_kit":"react","auth":"laravel","livewire_class_components":false,"teams":false,"testing":"pest","database":"sqlite","js":"npm","git":true,"boost":false}}}}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn laravel_options_node_appears_only_when_set() {
+    use yerd_ipc::{AuthProvider, Database, JsRuntime, LaravelOptions, StarterKit, Testing};
+    let mut options = LaravelOptions {
+        starter_kit: StarterKit::None,
+        auth: AuthProvider::Laravel,
+        livewire_class_components: false,
+        teams: false,
+        testing: Testing::Pest,
+        database: Database::Sqlite,
+        js: JsRuntime::Npm,
+        git: false,
+        boost: false,
+        node: None,
+    };
+    let s = serde_json::to_string(&options).unwrap();
+    assert!(!s.contains("node"), "{s}");
+    options.node = Some("22.12.0".into());
+    let s = serde_json::to_string(&options).unwrap();
+    assert!(s.ends_with(r#""boost":false,"node":"22.12.0"}"#), "{s}");
+    assert_eq!(serde_json::from_str::<LaravelOptions>(&s).unwrap(), options);
 }
 
 #[test]
@@ -2837,6 +2873,200 @@ fn request_install_tool_streamed_byte_shape() {
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(s, r#"{"type":"install_tool_streamed","tool":"laravel"}"#);
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+// ---------- Node ----------
+
+fn assert_request(r: &Request, expected: &str) {
+    let s = serde_json::to_string(r).unwrap();
+    assert_eq!(s, expected);
+    assert_eq!(&serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+fn assert_response(r: &Response, expected: &str) {
+    let s = serde_json::to_string(r).unwrap();
+    assert_eq!(s, expected);
+    assert_eq!(&serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_node_version_byte_shape() {
+    assert_request(
+        &Request::SetNodeVersion {
+            version: "22.9.0".into(),
+            site: Some("blog".into()),
+        },
+        r#"{"type":"set_node_version","version":"22.9.0","site":"blog"}"#,
+    );
+    assert_request(
+        &Request::SetNodeVersion {
+            version: "22.9.0".into(),
+            site: None,
+        },
+        r#"{"type":"set_node_version","version":"22.9.0","site":null}"#,
+    );
+}
+
+#[test]
+fn request_node_unit_variants_byte_shape() {
+    assert_request(&Request::ListNode, r#"{"type":"list_node"}"#);
+    assert_request(&Request::AvailableNode, r#"{"type":"available_node"}"#);
+}
+
+#[test]
+fn request_install_node_streamed_byte_shape() {
+    assert_request(
+        &Request::InstallNodeStreamed {
+            version: "22".into(),
+            update: false,
+        },
+        r#"{"type":"install_node_streamed","version":"22"}"#,
+    );
+    assert_request(
+        &Request::InstallNodeStreamed {
+            version: "22".into(),
+            update: true,
+        },
+        r#"{"type":"install_node_streamed","version":"22","update":true}"#,
+    );
+}
+
+#[test]
+fn request_node_site_scoped_variants_byte_shape() {
+    assert_request(
+        &Request::UninstallNode {
+            version: "22.9.0".into(),
+        },
+        r#"{"type":"uninstall_node","version":"22.9.0"}"#,
+    );
+    assert_request(
+        &Request::ClearNodeVersion {
+            site: "blog".into(),
+        },
+        r#"{"type":"clear_node_version","site":"blog"}"#,
+    );
+    assert_request(
+        &Request::NodeSite {
+            site: "blog".into(),
+        },
+        r#"{"type":"node_site","site":"blog"}"#,
+    );
+}
+
+#[test]
+fn response_node_versions_byte_shape() {
+    assert_response(
+        &Response::NodeVersions {
+            installed: vec![
+                NodeRelease {
+                    version: "22.9.0".into(),
+                    lts: true,
+                    codename: Some("Jod".into()),
+                    default: true,
+                    uninstall_blocked: true,
+                    clears_preferences: vec![
+                        NodePreferenceRef {
+                            root: "/srv/blog".into(),
+                            site: Some("blog".into()),
+                        },
+                        NodePreferenceRef {
+                            root: "/srv/old".into(),
+                            site: None,
+                        },
+                    ],
+                    update: Some("22.12.0".into()),
+                },
+                NodeRelease {
+                    version: "25.0.0".into(),
+                    lts: false,
+                    codename: None,
+                    default: false,
+                    uninstall_blocked: false,
+                    clears_preferences: vec![],
+                    update: None,
+                },
+            ],
+        },
+        r#"{"type":"node_versions","installed":[{"version":"22.9.0","lts":true,"codename":"Jod","default":true,"uninstall_blocked":true,"clears_preferences":[{"root":"/srv/blog","site":"blog"},{"root":"/srv/old"}],"update":"22.12.0"},{"version":"25.0.0","lts":false,"default":false,"uninstall_blocked":false}]}"#,
+    );
+}
+
+#[test]
+fn response_available_node_byte_shape() {
+    assert_response(
+        &Response::AvailableNode {
+            majors: vec![
+                MajorLine {
+                    major: 24,
+                    latest: "24.1.0".into(),
+                    codename: None,
+                    eol: None,
+                    installed_latest: None,
+                    update_available: false,
+                },
+                MajorLine {
+                    major: 22,
+                    latest: "22.12.0".into(),
+                    codename: Some("Jod".into()),
+                    eol: Some(false),
+                    installed_latest: Some("22.9.0".into()),
+                    update_available: true,
+                },
+            ],
+        },
+        r#"{"type":"available_node","majors":[{"major":24,"latest":"24.1.0","update_available":false},{"major":22,"latest":"22.12.0","codename":"Jod","eol":false,"installed_latest":"22.9.0","update_available":true}]}"#,
+    );
+}
+
+#[test]
+fn response_node_site_byte_shape() {
+    assert_response(
+        &Response::NodeSite {
+            preference: None,
+            project_file: None,
+            effective: None,
+            source: None,
+            error: None,
+            missing: None,
+        },
+        r#"{"type":"node_site"}"#,
+    );
+    assert_response(
+        &Response::NodeSite {
+            preference: Some("24.1.0".into()),
+            project_file: Some(Box::new(NodeProjectFile {
+                kind: NodeSource::NodeVersion,
+                selector: "22".into(),
+            })),
+            effective: Some("22.9.0".into()),
+            source: Some(NodeSource::NodeVersion),
+            error: None,
+            missing: None,
+        },
+        r#"{"type":"node_site","preference":"24.1.0","project_file":{"kind":"node-version","selector":"22"},"effective":"22.9.0","source":"node-version"}"#,
+    );
+    assert_response(
+        &Response::NodeSite {
+            preference: None,
+            project_file: None,
+            effective: None,
+            source: None,
+            error: Some("no site named 'ghost'".into()),
+            missing: None,
+        },
+        r#"{"type":"node_site","error":"no site named 'ghost'"}"#,
+    );
+    assert_response(
+        &Response::NodeSite {
+            preference: None,
+            project_file: None,
+            effective: None,
+            source: None,
+            error: Some("Node 18 is not installed".into()),
+            missing: Some("18".into()),
+        },
+        r#"{"type":"node_site","error":"Node 18 is not installed","missing":"18"}"#,
+    );
 }
 
 // ---------- Self-update (Channel / CheckUpdate / SetUpdateChannel / UpdateStatus) ----------

@@ -24,9 +24,9 @@ mod serialize;
 pub use error::{ConfigError, MigrationErrorReason, ValidateErrorReason};
 pub use schema::{
     Config, DomainDelta, DomainsSection, DumpsSection, ExtEntry, GroupsSection, MailSection,
-    ParkedSection, PhpSection, Ports, ResponseHeadersSection, ServiceInstance, ServicesSection,
-    SiteOverride, TunnelSection, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT,
-    RESERVED_GROUP_NAME,
+    NodeSection, ParkedSection, PhpSection, Ports, ResponseHeadersSection, ServiceInstance,
+    ServicesSection, SiteOverride, TunnelSection, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT,
+    DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
 };
 
 /// The on-disk schema version this crate writes. Bumped together with a new
@@ -118,4 +118,4 @@ pub use schema::{
 ///
 /// The per-version detail, including how to hand-edit a file back down for an
 /// older binary, lives in `docs/developer/config-schema-history.md`.
-pub const CURRENT_VERSION: u32 = 26;
+pub const CURRENT_VERSION: u32 = 27;

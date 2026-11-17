@@ -28,6 +28,7 @@ pub mod jobs;
 pub mod lan_setup;
 pub mod laravel_detect;
 pub mod mutate;
+pub mod node_updates;
 pub mod php_install;
 pub mod php_updates;
 pub mod public_url;
@@ -286,12 +287,20 @@ async fn run_until_shutdown(
             loop {
                 tokio::select! {
                     _ = php_tick.tick() => {
-                        crate::php_updates::poll_and_refresh(
-                            &state,
-                            &dl,
-                            yerd_update::PHP_LISTING_PUBLIC_KEY,
-                        )
-                        .await;
+                        let polls = async {
+                            tokio::join!(
+                                crate::php_updates::poll_and_refresh(
+                                    &state,
+                                    &dl,
+                                    yerd_update::PHP_LISTING_PUBLIC_KEY,
+                                ),
+                                crate::node_updates::poll_and_refresh(&state, &dl),
+                            )
+                        };
+                        tokio::select! {
+                            _ = polls => {}
+                            _ = rx.changed() => break,
+                        }
                     }
                     _ = self_tick.tick() => {
                         crate::self_update::poll_if_due(&state, &dl, yerd_update::UPDATE_PUBLIC_KEY)

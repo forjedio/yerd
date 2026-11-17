@@ -31,6 +31,7 @@ pub mod ide;
 pub mod lan_ip;
 pub mod libvips;
 pub mod metrics;
+pub mod node;
 pub mod nss_exec;
 pub mod opener;
 pub mod paths;

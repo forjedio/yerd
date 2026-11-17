@@ -7,6 +7,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod node;
+
 pub mod detect;
 mod domain;
 mod error;

@@ -74,7 +74,11 @@ pub(super) async fn run(
         return Outcome::Failed(msg);
     }
 
-    if let Err(msg) = ensure_js_runtime(id, options.js, &user_dirs, state).await {
+    let node = match chosen_node(dirs, options) {
+        Ok(node) => node,
+        Err(msg) => return Outcome::Failed(msg),
+    };
+    if let Err(msg) = ensure_js_runtime(id, options.js, node.is_some(), &user_dirs, state).await {
         return Outcome::Failed(msg);
     }
 
@@ -90,7 +94,18 @@ pub(super) async fn run(
             return Outcome::Failed(msg);
         }
     }
-    let path_env = super::composed_path(&job_bin, &data_bin, &user_dirs);
+    if let Some(node) = &node {
+        state
+            .jobs
+            .push_log(id, format!("Using Node {}", node.version))
+            .await;
+    }
+    let path_env = super::composed_path(
+        &job_bin,
+        node.as_ref().map(|n| n.bin.as_path()),
+        &data_bin,
+        &user_dirs,
+    );
     let composer_home = tools::laravel::composer_home(dirs);
 
     if needs_git(options) && !git_available(&path_env).await {
@@ -140,10 +155,35 @@ pub(super) async fn run(
     {
         return Outcome::Failed(format!("scaffolded, but registration failed: {msg}"));
     }
+    if let Some(node) = &node {
+        let _mutate = state.tool_mutate.lock().await;
+        if let yerd_ipc::Response::Error { message, .. } =
+            crate::ipc_server::save_node_version(&node.version, Some(name), state).await
+        {
+            return Outcome::Failed(format!(
+                "scaffolded and registered, but saving the site's Node version failed: {message}"
+            ));
+        }
+    }
     let tld = state.config.lock().await.tld.as_str().to_owned();
     let url = crate::public_url::browser_url(state, &format!("{name}.{tld}"), spec.secure).await;
     state.jobs.push_log(id, format!("serving {url}")).await;
     Outcome::Succeeded
+}
+
+/// The installed Node release the job builds with, when one was chosen and the
+/// frontend step runs at all. An unknown version fails preflight rather than
+/// silently falling back to the global default.
+fn chosen_node(
+    dirs: &yerd_platform::PlatformDirs,
+    options: &LaravelOptions,
+) -> Result<Option<yerd_platform::node::InstalledNode>, String> {
+    match options.node.as_deref() {
+        Some(selector) if options.js != JsRuntime::Skip => {
+            yerd_platform::node::resolve(dirs, selector).map(Some)
+        }
+        _ => Ok(None),
+    }
 }
 
 /// Build the `laravel new …` argument vector (after the installer binary).
@@ -232,14 +272,19 @@ fn js_runtime_tools(js: JsRuntime) -> &'static [Tool] {
 /// Install every tool the chosen JS runtime needs that is neither managed nor
 /// available externally on the user's PATH. A thin wrapper over
 /// [`super::ensure_tool`] for each of [`js_runtime_tools`], stopping at the
-/// first failure.
+/// first failure. `node_chosen` means an installed release was already
+/// selected for this job, which satisfies the Node prerequisite on its own.
 async fn ensure_js_runtime(
     id: &str,
     js: JsRuntime,
+    node_chosen: bool,
     user_dirs: &[PathBuf],
     state: &Arc<DaemonState>,
 ) -> Result<(), String> {
     for &tool in js_runtime_tools(js) {
+        if node_chosen && tool == Tool::Node {
+            continue;
+        }
         super::ensure_tool(id, tool, user_dirs, state).await?;
     }
     Ok(())
@@ -254,7 +299,7 @@ fn resolve_pnpm(
     data_bin: &Path,
 ) -> Option<PathBuf> {
     let managed = data_bin.join(Tool::Pnpm.primary_bin());
-    if tools::installed_version(&state.dirs, Tool::Pnpm).is_some() && managed.exists() {
+    if tools::installed_version(&state.dirs, Tool::Pnpm, None).is_some() && managed.exists() {
         return Some(managed);
     }
     tools::external::external_tool(user_dirs, Tool::Pnpm, data_bin, &state.dirs.data)
@@ -284,6 +329,36 @@ mod tests {
     use super::*;
     use yerd_ipc::{AuthProvider, Database, JsRuntime, LaravelOptions, StarterKit, Testing};
 
+    #[test]
+    fn chosen_node_resolves_only_when_the_frontend_step_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = yerd_platform::PlatformDirs {
+            config: tmp.path().join("c"),
+            data: tmp.path().join("d"),
+            state: tmp.path().join("s"),
+            cache: tmp.path().join("ca"),
+            runtime: tmp.path().join("r"),
+        };
+        let root = yerd_platform::node::versions_dir(&dirs).join("22.12.0");
+        let bin = root.join("node-v22.12.0-test/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(root.join(".version"), "22.12.0").unwrap();
+        for tool in ["node", "npm", "npx"] {
+            std::fs::write(bin.join(tool), "fake").unwrap();
+        }
+        let mut o = opts();
+        o.js = JsRuntime::Npm;
+        assert!(chosen_node(&dirs, &o).unwrap().is_none());
+        o.node = Some("22".to_owned());
+        let node = chosen_node(&dirs, &o).unwrap().unwrap();
+        assert_eq!(node.version, "22.12.0");
+        assert_eq!(node.bin, bin);
+        o.node = Some("18".to_owned());
+        assert!(chosen_node(&dirs, &o).is_err());
+        o.js = JsRuntime::Skip;
+        assert!(chosen_node(&dirs, &o).unwrap().is_none());
+    }
+
     fn opts() -> LaravelOptions {
         LaravelOptions {
             starter_kit: StarterKit::None,
@@ -295,6 +370,7 @@ mod tests {
             js: JsRuntime::Skip,
             git: false,
             boost: false,
+            node: None,
         }
     }
 
@@ -353,6 +429,7 @@ mod tests {
             js: JsRuntime::Bun,
             git: false,
             boost: true,
+            node: None,
         };
         let a = build_new_args("crm", &o);
         assert_eq!(

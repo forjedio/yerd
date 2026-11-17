@@ -28,7 +28,23 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v26 (current)
+### v27 (current)
+
+**Added:** the optional `[node]` table (`default`, the global Node selector) and `[node.sites]` (per-project Node preferences keyed by canonical absolute project root). Both default to empty when absent; a legacy single-version Node install stays discoverable and acts as the default until one is saved.
+
+```toml
+[node]
+default = "24.2.0"
+
+[node.sites]
+"/srv/example" = "22.9.0"
+```
+
+**Migration from v26:** bare version bump - the table defaults to empty when absent, so a v26 file needs no other change.
+
+**To downgrade to v26:** change `version = 27` to `version = 26` and delete the `[node]` table if present (a v26 daemon rejects the unknown table under `deny_unknown_fields`). Saved Node defaults and per-project preferences are lost.
+
+### v26
 
 **Added:** the optional `ffi.enable` key in `[php.settings]` and `[php.version_settings."<version>"]` - the "Allow FFI in web requests" switch. It accepts an on/off value (stored as `On`/`Off`) and is never seeded, so a file that has not turned it on omits it. When on, PHP 8.2+ pools get `php_admin_value[ffi.enable] = true`; when absent or `Off`, PHP's own `preload` default applies. It is refused for legacy (7.4 to 8.1) per-version overrides.
 

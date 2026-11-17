@@ -28,6 +28,9 @@ import type {
   JobProgressResponse,
   MailDetail,
   MailSummary,
+  MajorLine,
+  NodeRelease,
+  NodeSiteResponse,
   AddableServiceType,
   PhpExtInfo,
   PhpVersion,
@@ -561,22 +564,123 @@ export async function installToolStreamed(tool: string): Promise<string> {
   return r.job_id;
 }
 
+// ── node versions ────────────────────────────────────────────────────────────
+
+function versionParts(version: string): number[] {
+  return version.split(".").map((p) => Number.parseInt(p, 10) || 0);
+}
+
+/** Newest first by numeric version, so `26.1.0` sorts above `24.22.3` and `9` below `10`. */
+function newestFirst(a: NodeRelease, b: NodeRelease): number {
+  const x = versionParts(a.version);
+  const y = versionParts(b.version);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (y[i] ?? 0) - (x[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+/** Sorted here too, so every view lists newest first whichever daemon answered. */
+function nodeReleasesOf(r: Response, cmd: string): NodeRelease[] {
+  if (r.type !== "node_versions") throw new IpcError(`unexpected response to ${cmd}`);
+  return [...r.installed].sort(newestFirst);
+}
+
+/** Installed Node releases, each with its default marker and uninstall effects. */
+export async function listNode(): Promise<NodeRelease[]> {
+  return nodeReleasesOf(ensureOk(await call<Response>("list_node")), "list_node");
+}
+
+/** The nodejs.org release index grouped by major, newest first. Network-bound. */
+export async function availableNode(): Promise<MajorLine[]> {
+  const r = ensureOk(await call<Response>("available_node"));
+  if (r.type !== "available_node") throw new IpcError("unexpected response to available_node");
+  return r.majors;
+}
+
+/**
+ * Start a streamed Node install of `version` (a major, or an exact version) and
+ * return the job id. `update` moves the global default onto the new patch when
+ * it currently resolves to an older patch of the same major.
+ */
+export async function installNodeStreamed(version: string, update: boolean): Promise<string> {
+  const r = ensureOk(await call<Response>("install_node_streamed", { version, update }));
+  if (r.type !== "job_started") throw new IpcError("unexpected response to install_node_streamed");
+  return r.job_id;
+}
+
+/**
+ * Install Node as a streamed job, delivering progress lines via `onProgress`,
+ * and resolve only when the job ends. Polls to the end regardless of any modal
+ * the caller shows; throws on a failed or cancelled job.
+ */
+export async function installNodeWithProgress(
+  version: string,
+  update: boolean,
+  onProgress?: (lines: string[]) => void,
+): Promise<void> {
+  const jobId = await installNodeStreamed(version, update);
+  const final = await pollJobToEnd(jobId, (lines) => onProgress?.(lines), undefined, 500, 5);
+  if (final.state !== "succeeded") {
+    throw new IpcError(final.error || `Node ${version} install ${final.state}`);
+  }
+}
+
+/** Uninstall one exact Node release; returns the refreshed installed list. */
+export async function uninstallNode(version: string): Promise<NodeRelease[]> {
+  return nodeReleasesOf(
+    ensureOk(await call<Response>("uninstall_node", { version })),
+    "uninstall_node",
+  );
+}
+
+/** Set the global default (`site === null`) or a site's saved Node preference. */
+export async function setNodeVersion(version: string, site: string | null): Promise<void> {
+  ensureOk(await call<Response>("set_node_version", { version, site }));
+}
+
+/** Remove a site's saved Node preference (idempotent). */
+export async function clearNodeVersion(site: string): Promise<void> {
+  ensureOk(await call<Response>("clear_node_version", { site }));
+}
+
+/** A site's effective Node version and where it comes from. */
+export async function nodeSite(site: string): Promise<NodeSiteResponse> {
+  const r = ensureOk(await call<Response>("node_site", { site }));
+  if (r.type !== "node_site") throw new IpcError("unexpected response to node_site");
+  return r;
+}
+
 /**
  * Poll a job to completion, delivering each batch of new log lines via
  * `onLines`. Resolves with the latest {@link JobProgressResponse} - either the
  * terminal one, or the last seen when `shouldContinue()` returns false (e.g. the
  * viewing modal closed). `onLines` is the only log-delivery channel; the
- * returned `.log` is just the final batch.
+ * returned `.log` is just the final batch. `retries` tolerates that many
+ * consecutive failed status reads (e.g. a daemon restart) before giving up, so a
+ * blip doesn't report a still-running job as failed.
  */
 export async function pollJobToEnd(
   jobId: string,
   onLines: (lines: string[]) => void,
   shouldContinue?: () => boolean,
   intervalMs = 500,
+  retries = 0,
 ): Promise<JobProgressResponse> {
   let cursor = 0;
+  let failures = 0;
   for (;;) {
-    const r = await jobStatus(jobId, cursor);
+    let r: JobProgressResponse;
+    try {
+      r = await jobStatus(jobId, cursor);
+      failures = 0;
+    } catch (e) {
+      failures += 1;
+      if (failures > retries) throw e;
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      continue;
+    }
     if (r.log.length) onLines(r.log);
     // Advance unconditionally (the daemon may report a phase change with no new
     // log lines), so this client never re-fetches a window or stalls.

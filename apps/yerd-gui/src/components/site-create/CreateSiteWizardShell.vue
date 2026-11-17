@@ -186,7 +186,9 @@ watch(
         </div>
       </div>
 
-      <slot v-if="step < progressStep" :name="`step-${step}`" />
+      <div v-if="step < progressStep" :key="`step-${step}`" data-testid="wizard-step">
+        <slot :name="`step-${step}`" />
+      </div>
 
       <div v-else class="space-y-4">
         <div

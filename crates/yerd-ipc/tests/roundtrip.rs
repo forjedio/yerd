@@ -283,6 +283,7 @@ fn encode_then_decode_response_roundtrip() {
             port_redirect_targets: None,
             lan_redirect_targets: None,
             legacy_pf_redirect: None,
+            node_updates: 0,
         }),
     });
     assert_response_roundtrips(Response::Diagnoses {

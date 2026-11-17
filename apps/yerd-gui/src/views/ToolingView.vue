@@ -32,10 +32,12 @@ const loading = ref(true);
 // Which tool has a long-running op in flight, e.g. "install:node".
 const busy = ref<string | null>(null);
 
+/** Node has its own page (versions, defaults, updates), so it is not listed here. */
+const NODE_TOOL = "node";
+
 /** Short description per tool, keyed by wire id. */
 const TOOL_HINTS: Record<string, string> = {
   composer: "PHP dependency manager.",
-  node: "Node.js runtime for building frontend assets (npm, npx).",
   bun: "Fast all-in-one JavaScript runtime and package manager.",
   pnpm: "Fast, disk-efficient JavaScript package manager (pnpm, pnpx). Needs Node to run scripts.",
   laravel: "The laravel new installer for scaffolding new Laravel apps. Needs Composer.",
@@ -88,7 +90,7 @@ async function appendLog(lines: string[]): Promise<void> {
 async function load(): Promise<void> {
   loading.value = true;
   try {
-    tools.value = await listTools();
+    tools.value = (await listTools()).filter((t) => t.id !== NODE_TOOL);
   } catch (e) {
     toast.error("Couldn't load tools", (e as IpcError).message);
   } finally {
@@ -161,8 +163,9 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
         <CardHeader>
           <CardTitle>Developer tools</CardTitle>
           <CardDescription>
-            Each tool installs the latest release (LTS for Node) into Yerd's
-            data directory and exposes its commands on your PATH.
+            Each tool installs the latest release into Yerd's data directory
+            and exposes its commands on your PATH. Node.js is managed from the
+            Node page.
           </CardDescription>
         </CardHeader>
 

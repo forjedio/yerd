@@ -29,7 +29,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 
 | Key         | TOML type            | Meaning                                                            | Default        |
 | ----------- | -------------------- | ----------------------------------------------------------------- | -------------- |
-| `version`   | integer              | On-disk schema version. **Mandatory**; written as `26` by this release. | `n/a (required)` |
+| `version`   | integer              | On-disk schema version. **Mandatory**; written as `27` by this release. | `n/a (required)` |
 | `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
 | `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
 | `update_channel` | string          | Self-update channel: `"stable"` or `"edge"`.                      | `"stable"`     |
@@ -61,7 +61,7 @@ The free-form maps are the exception, because their keys *are* the data. `[servi
 
 ### `version`
 
-The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `26`, and Yerd always writes `version = 26`. Older `version = 1` through `version = 25` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `27`, and Yerd always writes `version = 27`. Older `version = 1` through `version = 26` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
 
 ### `tld`
 
@@ -639,14 +639,14 @@ desktop app's site details sidebar.
 
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `26`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `27`.
 
 When the daemon loads a file, it routes on the version it finds:
 
 ```text
-found  > CURRENT (26)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (26)   →  parse directly
-found  < CURRENT (26)   →  walk forward migration steps, then parse
+found  > CURRENT (27)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (27)   →  parse directly
+found  < CURRENT (27)   →  walk forward migration steps, then parse
 ```
 
 A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
@@ -676,6 +676,7 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v23 → v24`** is a bare version bump: v24 only **added** the optional `[tunnel.passwords]` table (per-site share passwords), which defaults to empty when absent.
 - **`v24 → v25`** is a bare version bump: v25 only **added** the optional `[response_headers]` table (per-site custom response headers), which defaults to empty when absent.
 - **`v25 → v26`** is a bare version bump: v26 only **added** the optional `"ffi.enable"` key in `[php.settings]` and `[php.version_settings."<version>"]` (the Allow FFI in web requests switch), which is absent unless set.
+- **`v26 → v27`** is a bare version bump: v27 only **added** the optional `[node]` table (global Node default) and `[node.sites]` (per-project Node preferences), which default to empty when absent.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 
@@ -686,6 +687,35 @@ Because later versions changed shapes the parser checks strictly (keys *inside* 
 ::: tip Forward-compatible by design
 The parser tolerates older shapes: a v1 file written before `web_subpath`/`web_root` existed migrates to v2 and parses fine (the new fields default). New optional fields are added additively, so upgrades don't break your existing config.
 :::
+
+## Node preferences
+
+The optional `[node]` section stores the global default. `[node.sites]` stores
+preferences for linked and parked projects, keyed by their canonical absolute
+project root. The daemon saves exact installed releases when using `yerd node use`.
+
+```toml
+[node]
+default = "24.2.0"
+
+[node.sites]
+"/srv/example" = "22.9.0"
+```
+
+A project `.nvmrc` or `.node-version` overrides its saved preference. Absent
+preferences use the global default; an old single-version Node installation
+remains the default until one is saved. Stored selectors must be numeric and
+project keys absolute. A value may be a partial selector (`"22"` or `"22.9"`),
+resolved to the highest matching installed release when used.
+
+Uninstalling a release (the desktop app's Node page or `yerd node uninstall`)
+clears any preference that resolves only to that release, and, while others
+remain, refuses to remove a release when `default` would then resolve to nothing.
+`yerd node unset --site <name>` removes one site's preference. `yerd uninstall tool
+node` removes every release and clears both `default` and all of `[node.sites]`.
+An Update moves `default` to the new patch only when it named an older patch of
+that major; preferences are never changed. A plain `yerd install tool node` sets
+`default` only when none exists. See [Node resolution](./cli/exec#node-resolution).
 
 ## Atomic saves
 

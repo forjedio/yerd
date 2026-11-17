@@ -97,6 +97,11 @@ pub struct LaravelOptions {
     pub git: bool,
     /// `--boost` - install Laravel Boost (AI assist).
     pub boost: bool,
+    /// Installed Node release (exact or selector) to build frontend assets
+    /// with, also saved as the new site's Node preference. `None` keeps the
+    /// global default, or the first `node` on the user's PATH.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 /// The starter kit to install.

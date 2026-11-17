@@ -215,6 +215,14 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `ListTools` | `{"type":"list_tools"}` |
 | `InstallTool { tool }` | `{"type":"install_tool","tool":"node"}` |
 | `UninstallTool { tool }` | `{"type":"uninstall_tool","tool":"bun"}` |
+| `InstallNode { version }` | `{"type":"install_node","version":"24"}` (blocking; major, minor, exact, `node`, `lts/*`, or `lts/<codename>`; the CLI sends it only with `--json`) |
+| `SetNodeVersion { version, site: Option }` | `{"type":"set_node_version","version":"22.9.0","site":"blog"}` or `…,"site":null` (global default) |
+| `ListNode` | `{"type":"list_node"}` (replies `NodeVersions { installed }`; disk only) |
+| `AvailableNode` | `{"type":"available_node"}` (replies `AvailableNode { majors }`; fetches the nodejs.org index on demand) |
+| `InstallNodeStreamed { version, update }` | `{"type":"install_node_streamed","version":"22"}` (`update` defaults `false` and is skipped; `…,"update":true` may move the global default; replies `JobStarted`) |
+| `UninstallNode { version }` | `{"type":"uninstall_node","version":"22.9.0"}` (one exact release; replies `NodeVersions`) |
+| `ClearNodeVersion { site }` | `{"type":"clear_node_version","site":"blog"}` (removes the saved preference; idempotent; replies `Ok`) |
+| `NodeSite { site }` | `{"type":"node_site","site":"blog"}` (replies `NodeSite`) |
 | `CreateSite { spec }` | `{"type":"create_site","spec":{"name":"blog","parent_dir":"/srv","php":"8.3","secure":false,"framework":{"framework":"wordpress",…}}}` (replies `JobStarted`; poll `JobStatus`) |
 | `AvailableWordpressVersions` | `{"type":"available_wordpress_versions"}` |
 | `MintWordpressLoginToken { site }` | `{"type":"mint_wordpress_login_token","site":"blog"}` |
@@ -241,7 +249,7 @@ version](../guide/php-versions#legacy-php-versions) (7.4 / 8.0 / 8.1) and
 otherwise replies `Response::Error { code: ErrorCode::LegacyRestricted, .. }`.
 :::
 
-`CreateSite { spec: CreateSiteSpec }` is the wizard's entry point (both Laravel and WordPress): `CreateSiteSpec` carries the shared fields (`name`, `parent_dir`, `php`, `secure`) plus a `framework: Framework` enum internally tagged on `"framework"` (`"laravel"` with `LaravelOptions`, `"wordpress"` with `WordPressOptions` - core version, locale, admin credentials, database engine/name/table-prefix). It replies `JobStarted { job_id }` immediately; the caller polls `Request::JobStatus { job_id }` (streamed via `Response::JobProgress`) the same way `InstallPhpStreamed`/`InstallToolStreamed` do. See [`yerdd`'s WordPress support section](./binaries/yerdd#wordpress-support) for what runs behind the job.
+`CreateSite { spec: CreateSiteSpec }` is the wizard's entry point (both Laravel and WordPress): `CreateSiteSpec` carries the shared fields (`name`, `parent_dir`, `php`, `secure`) plus a `framework: Framework` enum internally tagged on `"framework"` (`"laravel"` with `LaravelOptions` - including an optional `node` release to build frontend assets with and save as the site's Node preference, omitted for the default - `"wordpress"` with `WordPressOptions` - core version, locale, admin credentials, database engine/name/table-prefix). It replies `JobStarted { job_id }` immediately; the caller polls `Request::JobStatus { job_id }` (streamed via `Response::JobProgress`) the same way `InstallPhpStreamed`/`InstallToolStreamed` do. See [`yerdd`'s WordPress support section](./binaries/yerdd#wordpress-support) for what runs behind the job.
 
 ### Response (daemon → client)
 
@@ -271,6 +279,9 @@ pub enum Response {
     Mails { mails: Vec<MailSummary> },
     Mail { mail: Box<MailDetail> },               // boxed: large payload
     Tools { tools: Vec<ToolStatus> },             // installable dev tools
+    NodeVersions { installed: Vec<NodeRelease> },  // ListNode / UninstallNode
+    AvailableNode { majors: Vec<MajorLine> },     // newest major first
+    NodeSite { preference, project_file, effective, source, error },
     WordpressVersions { versions: Vec<WordPressVersionInfo> },
     WordpressLoginToken { token: String },
     WordpressAdminUsers { users: Vec<WordPressAdminUser> },
@@ -290,7 +301,7 @@ pub enum Response {
         counts: DumpCounts,
         features: BTreeMap<String, bool>,
     },
-    JobStarted { job_id: JobId },                 // CreateSite / InstallToolStreamed / InstallPhpStreamed
+    JobStarted { job_id: JobId },                 // CreateSite / InstallToolStreamed / InstallPhpStreamed / InstallNodeStreamed
     JobProgress { state: JobState, /* phase label, … */ },  // streamed updates
 }
 ```
@@ -337,6 +348,19 @@ Per-site [routing rules](../reference/cli/routes) add three variants - `AddRoute
 
 All three variants are additive by serde tag, so existing pins are byte-identical and no `PROTOCOL_VERSION` bump was needed.
 
+:::
+
+::: info Node version management
+Alongside `InstallNode { version }` and `SetNodeVersion { version, site }`, six additive requests back the GUI's Node page and site Node row (the CLI also uses `InstallNodeStreamed` for `yerd install tool node <selector>`, `UninstallNode` for `yerd node uninstall`, and `ClearNodeVersion` for `yerd node unset`): `ListNode`, `AvailableNode`, `InstallNodeStreamed { version, update }`, `UninstallNode { version }`, `ClearNodeVersion { site }`, and `NodeSite { site }`.
+
+- `NodeVersions { installed }` carries one `NodeRelease { version, lts, codename, default, uninstall_blocked, clears_preferences, update }` per installed release, newest first. `default` marks the release the effective global default resolves to; `uninstall_blocked` and `clears_preferences` (a list of `NodePreferenceRef { root, site }`, `site` set when a registered site has that root) are the daemon's uninstall plan, so the GUI never reimplements the rule. `update` (omitted when none) is the newer patch of that major from the daemon's cached release-index check, set only on the highest installed patch; the cache is refreshed every 12 hours with the PHP update poll, by every `AvailableNode`, and by every Node install (from the index the installer already fetched). `StatusReport.node_updates` (omitted when `0`) counts those releases for the sidebar badge and the tray.
+- `AvailableNode { majors }` is a list of `yerd_core::node::MajorLine { major, latest, codename, eol, installed_latest, update_available }`, re-exported from `yerd-core` like `PhpVersion`. `eol` is absent when the release schedule couldn't be fetched. Majors below 9 and releases without a build for the host are never listed.
+- `NodeSite { preference, project_file, effective, source, error, missing }` reports a site's saved preference, its `NodeProjectFile { kind, selector }`, and the effective version with its `NodeSource`. A resolution failure (unknown site, invalid project file, release not installed) is the `error` field, not a `Response::Error`; when the chosen selector (project file, preference, or default) simply isn't installed, `missing` names it so the GUI can offer to install it.
+- `NodeSource` serialises kebab-case: `nvmrc`, `node-version`, `site`, `default`, the same strings `yerd which --json` prints. `NodeProjectFile.kind` is only ever `nvmrc` or `node-version`.
+- `InstallNodeStreamed`'s `update` flag (skipped when `false`) only controls whether the global default moves to the new patch: it moves when the default currently resolves to an older patch of that major. Site preferences are never repointed.
+- `UninstallNode` is refused with `ErrorCode::InvalidPath` (the same code `uninstall_php` uses for the default) when other releases remain but the default selector would no longer resolve to any of them - for example an exact default pinned to the release being removed; a partial default such as `22` that still matches another 22.x is fine. An unknown or malformed version is `NotFound`.
+
+Fields marked `skip_serializing_if` are omitted when empty: `NodeRelease.codename`, `.clears_preferences` and `.update`, `NodePreferenceRef.site`, the `MajorLine` options (`codename`, `eol`, `installed_latest`), every `NodeSite` field, `InstallNodeStreamed.update` (when `false`), `LaravelOptions.node`, and `StatusReport.node_updates` (when `0`). Others always serialise: `NodeVersions.installed` is `[]` when nothing is installed, and `SetNodeVersion.site` is `null` for the global default. No `PROTOCOL_VERSION` bump.
 :::
 
 ::: info Response headers mirror routing rules

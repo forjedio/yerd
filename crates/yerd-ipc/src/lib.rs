@@ -25,6 +25,7 @@ mod dump;
 mod error;
 mod frame;
 mod message;
+mod node;
 mod request;
 mod response;
 mod status;
@@ -45,6 +46,7 @@ pub use dump::{DumpCategory, DumpCounts, DumpEvent, DumpExtStatus};
 pub use error::{FrameError, IpcError, IpcErrorKind};
 pub use frame::{encode_frame, FrameDecoder, DEFAULT_MAX_FRAME};
 pub use message::{decode_message, encode_message};
+pub use node::{NodePreferenceRef, NodeProjectFile, NodeRelease};
 pub use request::Request;
 pub use response::{
     ErrorCode, PhpExtInfo, PhpUpdate, ProxyEntry, ProxyRuleEntry, Response, ResponseHeaderEntry,
@@ -64,6 +66,7 @@ pub use update::{Channel, StagedArtifact, UpdateSource};
 /// that need only the IPC surface should `use yerd_ipc::types::*;`
 /// instead of depending on `yerd-core` directly.
 pub mod types {
+    pub use yerd_core::node::{MajorLine, NodeSource};
     pub use yerd_core::{PhpVersion, Site, SiteKind};
 }
 

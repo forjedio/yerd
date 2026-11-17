@@ -108,6 +108,7 @@ The daemon's modules (`src/lib.rs` re-exports each as `pub mod`):
 | `site_domains` | Infallible, collision-resolving router builder (`build`) plus `collisions`, which reports the losing side of each domain clash (surfaced as `StatusReport.shadows`). Resolves domains for whole-host proxies as well as sites - every site is considered before any proxy. |
 | `php_install` | Download + unpack prebuilt PHP builds; `reqwest` downloader. |
 | `php_updates` | PHP update poller + cache (notify-only). |
+| `node_updates` | Node update poller + cache (notify-only): newest patch per major, per-release updates for `ListNode`, and the `Status` count. |
 | `public_url` | Site URLs mirroring the GUI's `siteUrl` (scheme, host, and the bound port on an unredirected rootless fallback): `site_url` for values written into projects, and `browser_url` for job-log links, which switches to the `http://localhost/~{host}` fallback when `.test` names don't resolve. |
 | `self_update` | Yerd self-update poller: fetches the GitHub Releases API, decides via the pure `yerd-update` crate, and persists a snapshot (`checked_at` + decision) both to disk and in `DaemonState` (notify-only). |
 | `dump_server` | Loopback TCP server reading newline-delimited JSON dump frames from the native `yerd-dump` extension into a bounded ring buffer; serves the ring to the GUI over IPC (`ListDumps`/`DumpsStatus`/…). |
@@ -184,6 +185,7 @@ A site is dropped from the watch set once it resolves or is manually overridden 
 | `dirs`, `config_path` | For re-scanning parked roots and persisting on mutation. |
 | `dns_addr`, `ca_path`, `ca_fingerprint` | Reported by `DaemonInfo` / `Status` (the resolver and trust installers consume them). |
 | `php_updates: RwLock<HashMap<PhpVersion, String>>` | Update cache: installed minor → newest known patch. Served (no network) on `ListPhp`. |
+| `node_updates: RwLock<BTreeMap<u32, String>>`, `node_update_count: AtomicU32` | Node update cache: major → newest installable patch, plus the pending-update count served on `Status`. Served (no network) on `ListNode`. |
 | `php_manager: Arc<Mutex<DaemonPhpManager>>` | The FPM supervisor, shared with the proxy backend resolver and update task. |
 | `http`, `https: PortStatus` | Requested-vs-bound ports (drives the rootless-fallback diagnostics). |
 | `redirect_https_port: Arc<AtomicU16>` | Port the HTTP→HTTPS redirect currently advertises. Seeded from `https.bound`; when `https.fell_back`, the redirect-probe task (see [the run loop](#the-run-loop-lib-rs)) flips it to `https.requested` once a privileged-port redirect (macOS port forwarder, `yerd elevate ports`) is live, and back when it isn't - so `yerd-proxy`'s `HttpsBinding::public_port` can change without restarting the proxy. |
@@ -214,7 +216,9 @@ The mutation path is the only place that holds two locks, and always in the orde
    - **IPC** (`ipc_server::run`),
    - the **dump-telemetry server** (`dump_server::run`) - a loopback TCP listener receiving newline-delimited JSON frames from the native PHP `yerd-dump` extension into a ring buffer; it rebinds on a port change and a bind failure is non-fatal (logged, retried on the next rebind),
    - an **update checker** covering two independent cadences in one task: a
-     **PHP checker** (poll once, then every 12h) and a **Yerd self-update
+     **PHP and Node checker** (poll once, then every 12h; the two polls run
+     concurrently and a shutdown interrupts them; Node only while a release is
+     installed) and a **Yerd self-update
      checker** (`self_update::poll_if_due`, woken every 15 minutes but only
      fetching when `yerd_update::is_check_due` says its own 4h wall-clock
      interval has elapsed - robust to the process being suspended, unlike a
@@ -274,6 +278,7 @@ PHP version operations are I/O at the daemon edge:
 - **`install_php`** → `php_install::install`: resolve the latest patch from the distribution's live listing, download the CLI + FPM tarballs, safe-extract the single binary from each (tar-member safety via `yerd_php::is_safe_member`), and atomically swap a staging dir into `data/php/php-<minor>/`. A `.yerd-version` marker records the exact patch so it lands atomically with the binaries. **Integrity is TLS-only** - no checksum sidecars, no hash pinning (a deliberate decision). After install, `refresh_php_binaries` re-discovers and hands the updated map to the live `PhpManager` so the proxy can spawn the new pool **without a daemon restart**.
 - **`update_php`** upgrades a given minor (or all installed) to the latest patch when `yerd_php::is_newer` says so, then refreshes the cache.
 - **`php_updates::poll_and_refresh`** (the periodic task and `CheckPhpUpdates`) repopulates `state.php_updates` and logs notices; it is **failure-tolerant** (network errors log at `debug` and leave the cache untouched). `cached_updates` serves the annotations on `ListPhp` with no network access.
+- **`node_updates::poll_and_refresh`** (the periodic task, alongside the PHP poll) fetches the Node release index and refreshes `state.node_updates`; `AvailableNode` and every Node install refresh it too. Failure-tolerant like the PHP poll. `recount` keeps `node_update_count` (the `Status` field `node_updates`) current without touching the network.
 - **`uninstall_php`** is guarded: blocked if the version is assigned to any site, if it is the last installed version while sites remain, or if it is the current default while others are installed. It stops the pool, removes the version dir, and refreshes the binary map.
 - **`set_php_settings`** validates each ini key/value (`yerd_core::php_settings::validate_value` + `canonical_value`), persists, then under a single `php_manager` lock updates the settings and restarts every started pool so the new directives take effect. An empty-string value removes a key.
 

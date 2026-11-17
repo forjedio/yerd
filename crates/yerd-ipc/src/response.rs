@@ -320,6 +320,40 @@ pub enum Response {
         /// One entry per tool, with install status.
         tools: Vec<ToolStatus>,
     },
+    /// Reply to [`crate::Request::ListNode`] and [`crate::Request::UninstallNode`].
+    NodeVersions {
+        /// Installed releases, newest first.
+        installed: Vec<crate::NodeRelease>,
+    },
+    /// Reply to [`crate::Request::AvailableNode`].
+    AvailableNode {
+        /// Published majors, newest first.
+        majors: Vec<yerd_core::node::MajorLine>,
+    },
+    /// Reply to [`crate::Request::NodeSite`]. A lookup failure is carried in
+    /// `error` rather than as [`Self::Error`], so clients can render it inline.
+    NodeSite {
+        /// The site's saved preference.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preference: Option<String>,
+        /// The project file at or above the site root, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_file: Option<Box<crate::NodeProjectFile>>,
+        /// The exact release that would run.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effective: Option<String>,
+        /// Which source chose `effective`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<yerd_core::node::NodeSource>,
+        /// Why the lookup or resolution failed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        /// The selector that was chosen (project file, preference, or default)
+        /// but matches no installed release, so a client can offer to install
+        /// it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        missing: Option<String>,
+    },
     /// Reply to [`crate::Request::CreateSite`] - the background job was started.
     JobStarted {
         /// The job id to poll with [`crate::Request::JobStatus`].
@@ -713,6 +747,9 @@ mod variant_name_pinning {
             Response::Mails { .. } => {}
             Response::Mail { .. } => {}
             Response::Tools { .. } => {}
+            Response::NodeVersions { .. } => {}
+            Response::AvailableNode { .. } => {}
+            Response::NodeSite { .. } => {}
             Response::JobStarted { .. } => {}
             Response::JobProgress { .. } => {}
             Response::UpdateStatus { .. } => {}
@@ -852,6 +889,7 @@ mod variant_name_pinning {
                 port_redirect_targets: None,
                 lan_redirect_targets: None,
                 legacy_pf_redirect: None,
+                node_updates: 0,
             }),
         });
         pin_response(Response::Diagnoses {
@@ -951,6 +989,41 @@ mod variant_name_pinning {
                 external: false,
                 external_path: None,
             }],
+        });
+        pin_response(Response::NodeVersions {
+            installed: vec![crate::NodeRelease {
+                version: "22.9.0".into(),
+                lts: true,
+                codename: Some("Jod".into()),
+                default: true,
+                uninstall_blocked: false,
+                clears_preferences: vec![crate::NodePreferenceRef {
+                    root: "/srv/blog".into(),
+                    site: Some("blog".into()),
+                }],
+                update: None,
+            }],
+        });
+        pin_response(Response::AvailableNode {
+            majors: vec![yerd_core::node::MajorLine {
+                major: 22,
+                latest: "22.12.0".into(),
+                codename: Some("Jod".into()),
+                eol: Some(false),
+                installed_latest: Some("22.9.0".into()),
+                update_available: true,
+            }],
+        });
+        pin_response(Response::NodeSite {
+            preference: None,
+            project_file: Some(Box::new(crate::NodeProjectFile {
+                kind: yerd_core::node::NodeSource::Nvmrc,
+                selector: "22".into(),
+            })),
+            effective: Some("22.9.0".into()),
+            source: Some(yerd_core::node::NodeSource::Nvmrc),
+            error: None,
+            missing: None,
         });
         pin_response(Response::JobStarted {
             job_id: "j1".into(),

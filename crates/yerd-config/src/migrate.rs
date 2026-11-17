@@ -50,6 +50,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v23_to_v24,
     migrate_v24_to_v25,
     migrate_v25_to_v26,
+    migrate_v26_to_v27,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -270,6 +271,13 @@ fn migrate_v25_to_v26(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 26)
 }
 
+/// `v26 → v27`: bump the version. v27 added the optional `[node]` defaults and
+/// `[node.sites]` per-project preferences, which default to empty when absent,
+/// so an in-place version bump is the entire migration.
+fn migrate_v26_to_v27(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 27)
+}
+
 /// Set the top-level `version` key, erroring if the root is not a table.
 fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
     let table = value.as_table_mut().ok_or(ConfigError::Migration {
@@ -339,7 +347,7 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 26);
+        assert_eq!(crate::CURRENT_VERSION, 27);
     }
 
     #[test]
@@ -414,6 +422,13 @@ mod tests {
         let mut v: Value = toml::from_str("version = 25\n").unwrap();
         migrate_v25_to_v26(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 26);
+    }
+
+    #[test]
+    fn v26_to_v27_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 26\n").unwrap();
+        migrate_v26_to_v27(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 27);
     }
 
     #[test]

@@ -91,7 +91,7 @@ pub(super) async fn run(
         Ok(b) => b,
         Err(msg) => return Outcome::Failed(msg),
     };
-    let path_env = super::composed_path(&job_bin, &data_bin, &user_dirs);
+    let path_env = super::composed_path(&job_bin, None, &data_bin, &user_dirs);
     let composer_home = tools::laravel::composer_home(dirs);
 
     state.jobs.set_phase(id, "Scaffolding").await;

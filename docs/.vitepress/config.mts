@@ -190,6 +190,7 @@ export default withMermaid({
             { text: 'Reverse Proxies', link: '/guide/proxies' },
             { text: 'PHP Versions', link: '/guide/php-versions' },
             { text: 'Code Coverage', link: '/guide/code-coverage' },
+            { text: 'Node.js', link: '/guide/node' },
             { text: 'Tooling', link: '/guide/tooling' },
             { text: 'Services & Databases', link: '/guide/services' },
             { text: 'Mail Capture', link: '/guide/mail' },

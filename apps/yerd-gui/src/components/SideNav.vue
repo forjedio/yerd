@@ -4,6 +4,7 @@ import { computed, onMounted, ref } from "vue";
 import {
   ClipboardList,
   Database,
+  Hexagon,
   Info,
   LayoutDashboard,
   LayoutGrid,
@@ -48,6 +49,7 @@ const { connected, report } = useDaemon();
 const { isMac } = usePlatform();
 const unread = computed(() => report.value?.mail?.unread ?? 0);
 const sharedSites = computed(() => report.value?.shared_sites ?? 0);
+const nodeUpdates = computed(() => report.value?.node_updates ?? 0);
 
 // Same shared "php" cache the PHP view uses, so the badge count matches what
 // that page shows. `updates` is populated on the list_php response.
@@ -84,6 +86,7 @@ const sections = computed<{ title: string; items: Item[] }[]>(() => [
     items: [
       { to: "/sites", label: "Sites", icon: LayoutGrid },
       { to: "/php", label: "PHP", icon: SquareCode, badge: phpUpdates.value },
+      { to: "/node", label: "Node", icon: Hexagon, badge: nodeUpdates.value },
       { to: "/services", label: "Services", icon: Database },
     ],
   },
