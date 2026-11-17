@@ -338,7 +338,7 @@ pub enum Response {
         preference: Option<String>,
         /// The project file at or above the site root, if any.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        project_file: Option<crate::NodeProjectFile>,
+        project_file: Option<Box<crate::NodeProjectFile>>,
         /// The exact release that would run.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effective: Option<String>,
@@ -348,6 +348,11 @@ pub enum Response {
         /// Why the lookup or resolution failed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        /// The selector that was chosen (project file, preference, or default)
+        /// but matches no installed release, so a client can offer to install
+        /// it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        missing: Option<String>,
     },
     /// Reply to [`crate::Request::CreateSite`] - the background job was started.
     JobStarted {
@@ -1011,13 +1016,14 @@ mod variant_name_pinning {
         });
         pin_response(Response::NodeSite {
             preference: None,
-            project_file: Some(crate::NodeProjectFile {
+            project_file: Some(Box::new(crate::NodeProjectFile {
                 kind: yerd_core::node::NodeSource::Nvmrc,
                 selector: "22".into(),
-            }),
+            })),
             effective: Some("22.9.0".into()),
             source: Some(yerd_core::node::NodeSource::Nvmrc),
             error: None,
+            missing: None,
         });
         pin_response(Response::JobStarted {
             job_id: "j1".into(),

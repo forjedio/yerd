@@ -118,9 +118,7 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         } => match version {
             None => Request::InstallTool { tool: id.clone() },
             Some(version) if id == "node" => {
-                if !matches!(version.as_str(), "node" | "lts/*") {
-                    yerd_core::node::numeric_selector(version).map_err(ClientError::Usage)?;
-                }
+                yerd_core::node::validate_selector(version).map_err(ClientError::Usage)?;
                 Request::InstallNode {
                     version: version.clone(),
                 }
@@ -161,13 +159,31 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         Command::Node {
             action: crate::cli::NodeAction::Use { version, site },
         } => {
-            yerd_core::node::numeric_selector(version).map_err(ClientError::Usage)?;
+            yerd_core::node::validate_selector(version).map_err(ClientError::Usage)?;
             if let Some(site) = site {
                 validate_name(site)?;
             }
             Request::SetNodeVersion {
                 version: version.clone(),
                 site: site.clone(),
+            }
+        }
+        Command::Node {
+            action: crate::cli::NodeAction::Unset { site },
+        } => {
+            validate_name(site)?;
+            Request::ClearNodeVersion { site: site.clone() }
+        }
+        Command::Node {
+            action: crate::cli::NodeAction::Uninstall { version },
+        } => {
+            if yerd_core::node::numeric_selector(version).map_or(true, |p| p.len() != 3) {
+                return Err(ClientError::Usage(format!(
+                    "expected an exact installed Node version such as 22.12.0, got {version:?}"
+                )));
+            }
+            Request::UninstallNode {
+                version: version.clone(),
             }
         }
         Command::Node {
@@ -1036,6 +1052,32 @@ impl Rendered {
     }
 }
 
+/// The installed Node releases left after an uninstall, newest first.
+fn format_node_versions(installed: &[yerd_ipc::NodeRelease]) -> String {
+    if installed.is_empty() {
+        return "no Node releases installed".to_owned();
+    }
+    let lines: Vec<String> = installed
+        .iter()
+        .map(|n| format!("{}{}", n.version, if n.default { " (default)" } else { "" }))
+        .collect();
+    format!("installed Node releases:\n{}", lines.join("\n"))
+}
+
+/// Turn a blocking install request into its streamed job equivalent, so the
+/// CLI can print progress. Other requests pass through unchanged.
+#[must_use]
+pub fn streamed_install(req: Request) -> Request {
+    match req {
+        Request::InstallTool { tool } => Request::InstallToolStreamed { tool },
+        Request::InstallNode { version } => Request::InstallNodeStreamed {
+            version,
+            update: false,
+        },
+        other => other,
+    }
+}
+
 /// Render a daemon [`Response`] to stdout/stderr text + an exit code. With
 /// `json`, prints the response as pretty JSON instead of a human table.
 #[must_use]
@@ -1181,6 +1223,7 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
         Response::ResponseHeaders { headers } => {
             Rendered::ok(format_response_headers(headers, None))
         }
+        Response::NodeVersions { installed } => Rendered::ok(format_node_versions(installed)),
         _ => Rendered::err("unexpected response from daemon".to_owned()),
     }
 }
@@ -4999,5 +5042,125 @@ mod tests {
         )
         .stdout
         .contains("(empty message)"));
+    }
+
+    fn node_request(args: &[&str]) -> Result<Request, ClientError> {
+        use clap::Parser as _;
+        let cli = crate::cli::Cli::try_parse_from(args).unwrap();
+        to_request(&cli.command)
+    }
+
+    #[test]
+    fn node_commands_map_to_requests() {
+        for (args, expected) in [
+            (
+                &["yerd", "node", "unset", "--site", "blog"][..],
+                Request::ClearNodeVersion {
+                    site: "blog".into(),
+                },
+            ),
+            (
+                &["yerd", "node", "uninstall", "v22.12.0"][..],
+                Request::UninstallNode {
+                    version: "v22.12.0".into(),
+                },
+            ),
+            (
+                &["yerd", "node", "use", "lts/iron", "--site", "blog"][..],
+                Request::SetNodeVersion {
+                    version: "lts/iron".into(),
+                    site: Some("blog".into()),
+                },
+            ),
+            (
+                &["yerd", "node", "use", "lts/*"][..],
+                Request::SetNodeVersion {
+                    version: "lts/*".into(),
+                    site: None,
+                },
+            ),
+            (
+                &["yerd", "node", "use", "node"][..],
+                Request::SetNodeVersion {
+                    version: "node".into(),
+                    site: None,
+                },
+            ),
+            (
+                &["yerd", "install", "tool", "node", "lts/iron"][..],
+                Request::InstallNode {
+                    version: "lts/iron".into(),
+                },
+            ),
+        ] {
+            assert_eq!(node_request(args).unwrap(), expected, "{args:?}");
+        }
+        for args in [
+            &["yerd", "node", "unset", "--site", "bad name"][..],
+            &["yerd", "node", "uninstall", "22"][..],
+            &["yerd", "node", "uninstall", "lts/iron"][..],
+            &["yerd", "node", "use", "latest"][..],
+            &["yerd", "install", "tool", "node", "lts/"][..],
+            &["yerd", "install", "tool", "bun", "1"][..],
+        ] {
+            assert!(
+                matches!(node_request(args), Err(ClientError::Usage(_))),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn installs_stream_as_jobs() {
+        for (req, expected) in [
+            (
+                Request::InstallTool {
+                    tool: "node".into(),
+                },
+                Request::InstallToolStreamed {
+                    tool: "node".into(),
+                },
+            ),
+            (
+                Request::InstallNode {
+                    version: "lts/iron".into(),
+                },
+                Request::InstallNodeStreamed {
+                    version: "lts/iron".into(),
+                    update: false,
+                },
+            ),
+            (Request::ListNode, Request::ListNode),
+        ] {
+            assert_eq!(streamed_install(req), expected);
+        }
+    }
+
+    #[test]
+    fn node_versions_render_remaining_releases() {
+        let release = |version: &str, default| yerd_ipc::NodeRelease {
+            version: version.into(),
+            lts: true,
+            codename: None,
+            default,
+            uninstall_blocked: false,
+            clears_preferences: vec![],
+            update: None,
+        };
+        let text = render(
+            &Response::NodeVersions {
+                installed: vec![release("24.1.0", false), release("22.12.0", true)],
+            },
+            false,
+        );
+        assert_eq!(text.code, 0);
+        assert_eq!(
+            text.stdout,
+            "installed Node releases:\n24.1.0\n22.12.0 (default)"
+        );
+        assert_eq!(
+            render(&Response::NodeVersions { installed: vec![] }, false).stdout,
+            "no Node releases installed"
+        );
     }
 }

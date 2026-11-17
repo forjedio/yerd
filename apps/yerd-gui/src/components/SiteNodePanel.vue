@@ -9,7 +9,14 @@ import Spinner from "@/components/ui/Spinner.vue";
 import { useOperations } from "@/composables/useOperations";
 import { useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
-import { clearNodeVersion, IpcError, listNode, nodeSite, setNodeVersion } from "@/ipc/client";
+import {
+  clearNodeVersion,
+  installNodeWithProgress,
+  IpcError,
+  listNode,
+  nodeSite,
+  setNodeVersion,
+} from "@/ipc/client";
 import type { NodeSiteResponse, NodeSource, SiteEntry } from "@/ipc/types";
 
 const props = defineProps<{
@@ -21,7 +28,7 @@ const router = useRouter();
 const operations = useOperations();
 
 /** Shares the Node view's cache, so an install there updates these options. */
-const { data: releases } = useResource("node", listNode);
+const { data: releases, refresh: refreshReleases } = useResource("node", listNode);
 
 /** This panel owns its data like the headers panel: Node status is not part of
  *  `SiteEntry`, so it fetches per site and refetches after every change. */
@@ -95,6 +102,37 @@ watch(installing, (now, was) => {
   if (was && !now) void reload();
 });
 
+/** The selector the site resolved to (project file, preference, or the global
+ *  default) when no installed release matches it, as reported by the daemon. */
+const missingSelector = computed(() => status.value?.missing ?? null);
+
+const installProgress = ref("");
+
+/** Install the missing release in place, as the Node page would; the
+ *  `installing` watch reloads this site's status once it ends. */
+async function installMissing(): Promise<void> {
+  const version = missingSelector.value;
+  if (!version || busy.value || installing.value) return;
+  const opId = `node-install:${version}`;
+  operations.begin({ id: opId, kind: "tool-install", label: `Installing Node ${version}` });
+  installProgress.value = "";
+  try {
+    await installNodeWithProgress(version, false, (lines) => {
+      const latest = lines[lines.length - 1];
+      if (!latest) return;
+      installProgress.value = latest;
+      operations.update(opId, { detail: latest });
+    });
+    toast.success(`Installed Node ${version}`);
+  } catch (e) {
+    toast.error(`Install of Node ${version} failed`, (e as IpcError).message);
+  } finally {
+    operations.end(opId);
+    installProgress.value = "";
+    await refreshReleases({ force: true });
+  }
+}
+
 async function change(version: string): Promise<void> {
   if (busy.value || installing.value) return;
   const name = props.site.name;
@@ -147,9 +185,24 @@ async function change(version: string): Promise<void> {
 
       <div v-if="status?.error" class="space-y-1" data-testid="site-node-error">
         <p class="text-sm text-destructive">{{ status.error }}</p>
-        <Button variant="link" size="sm" class="h-auto p-0" @click="router.push('/node')">
-          Manage Node versions
-        </Button>
+        <div class="flex flex-wrap items-center gap-2">
+          <Button
+            v-if="missingSelector"
+            size="sm"
+            :disabled="busy || installing"
+            data-testid="site-node-install"
+            @click="installMissing"
+          >
+            <Spinner v-if="installing" class="size-3.5" />
+            Install Node {{ missingSelector }}
+          </Button>
+          <Button variant="link" size="sm" class="h-auto p-0" @click="router.push('/node')">
+            Manage Node versions
+          </Button>
+        </div>
+        <p v-if="installProgress" class="truncate text-xs text-muted-foreground">
+          {{ installProgress }}
+        </p>
       </div>
 
       <p class="text-xs text-muted-foreground" data-testid="site-node-hint">

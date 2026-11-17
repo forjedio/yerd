@@ -5,7 +5,9 @@ const nodeSite = vi.fn();
 const listNode = vi.fn();
 const setNodeVersion = vi.fn();
 const clearNodeVersion = vi.fn();
+const installNodeWithProgress = vi.fn();
 vi.mock("@/ipc/client", () => ({
+  installNodeWithProgress: (...a: unknown[]) => installNodeWithProgress(...a),
   nodeSite: (...a: unknown[]) => nodeSite(...a),
   listNode: (...a: unknown[]) => listNode(...a),
   setNodeVersion: (...a: unknown[]) => setNodeVersion(...a),
@@ -63,6 +65,7 @@ beforeEach(() => {
   listNode.mockReset().mockResolvedValue([release("22.9.0"), release("20.18.0")]);
   setNodeVersion.mockReset().mockResolvedValue(undefined);
   clearNodeVersion.mockReset().mockResolvedValue(undefined);
+  installNodeWithProgress.mockReset().mockResolvedValue(undefined);
   toastSuccess.mockReset();
   toastError.mockReset();
   push.mockReset();
@@ -181,5 +184,38 @@ describe("SiteNodePanel", () => {
     resolveBlog(reply({ error: "blog: Node 16 is not installed" }));
     await flushPromises();
     expect(wrapper.get('[data-testid="site-node-error"]').text()).toContain("shop:");
+  });
+
+  it("installs the project file's missing version in place", async () => {
+    nodeSite.mockResolvedValue(
+      reply({
+        preference: "20.18.0",
+        project_file: { kind: "nvmrc", selector: "18" },
+        error: "Node 18 is not installed - run `yerd install tool node 18`",
+        missing: "18",
+      }),
+    );
+    const wrapper = await mountPanel();
+    const install = wrapper.get('[data-testid="site-node-install"]');
+    expect(install.text()).toContain("Install Node 18");
+    nodeSite.mockResolvedValue(reply({ effective: "18.20.4", source: "nvmrc" }));
+    await install.trigger("click");
+    await flushPromises();
+    expect(installNodeWithProgress.mock.calls[0]?.slice(0, 2)).toEqual(["18", false]);
+    expect(toastSuccess).toHaveBeenCalledWith("Installed Node 18");
+    expect(wrapper.find('[data-testid="site-node-error"]').exists()).toBe(false);
+  });
+
+  it("offers to install a missing global default", async () => {
+    nodeSite.mockResolvedValue(reply({ error: "Node 99 is not installed", missing: "99" }));
+    const wrapper = await mountPanel();
+    expect(wrapper.get('[data-testid="site-node-install"]').text()).toContain("Install Node 99");
+  });
+
+  it("offers no install for an error that is not a missing release", async () => {
+    nodeSite.mockResolvedValue(reply({ error: "invalid .nvmrc: expected a version" }));
+    const wrapper = await mountPanel();
+    expect(wrapper.find('[data-testid="site-node-install"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain("Manage Node versions");
   });
 });

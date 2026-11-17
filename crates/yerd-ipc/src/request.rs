@@ -574,7 +574,8 @@ pub enum Request {
     ListTools,
     /// Install a Node release selector alongside existing releases.
     InstallNode {
-        /// Major, minor, exact numeric selector, `node`, or `lts/*`.
+        /// Major, minor, exact numeric selector, `node`, `lts/*`, or
+        /// `lts/<codename>`.
         version: String,
     },
     /// Select an installed Node release globally or for a named site.
@@ -593,7 +594,8 @@ pub enum Request {
     /// Install a Node release as a background job. Returns
     /// [`super::Response::JobStarted`]; progress is polled via [`Self::JobStatus`].
     InstallNodeStreamed {
-        /// Major, minor, exact numeric selector, `node`, or `lts/*`.
+        /// Major, minor, exact numeric selector, `node`, `lts/*`, or
+        /// `lts/<codename>`.
         version: String,
         /// An Update: move the global default to the new patch when it is on an
         /// older patch of the same major. A plain install never moves it.

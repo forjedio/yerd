@@ -77,25 +77,40 @@ again instead to update.
 ```sh
 yerd install tool node 24       # latest available 24.x release
 yerd install tool node v22.9.0  # exact release
-yerd node list                 # installed releases and global default
+yerd install tool node lts/iron # newest release of the Iron LTS line
+yerd node list                  # installed releases and global default
 yerd node use 24                # select highest installed 24.x globally
 yerd node use 22 --site blog    # save a preference for blog
-yerd exec npm install          # use the project's selected Node and npm
-yerd which --json node         # show version, path, site, and source
+yerd node unset --site blog     # clear blog's saved preference
+yerd node uninstall 22.9.0      # remove one installed release
+yerd exec npm install           # use the project's selected Node and npm
+yerd which --json node          # show version, path, site, and source
 ```
+
+| Command | Description |
+| --- | --- |
+| `yerd node list` | Installed releases, marking the one the global default resolves to with `(default)` (a partial default such as `22` marks its highest installed 22.x). |
+| `yerd node use <SELECTOR> [--site <NAME>]` | Resolve the selector against installed releases and save the exact version as the global default or the site's preference. |
+| `yerd node unset --site <NAME>` | Clear a site's saved preference, so it follows its project file or the global default. Idempotent. |
+| `yerd node uninstall <VERSION>` | Remove one exact installed release and print the releases left. Refused while the global default resolves only to it; site preferences that would dangle are cleared. |
 
 Numeric selectors accept a major, major.minor, or exact major.minor.patch, with
 an optional `v` prefix. Partial selectors choose the highest matching version.
-Install resolves against Node's upstream release index; `node use`, `exec`, and
-`which` resolve only against complete installed releases. No runtime is downloaded
-when executing a command.
+`node` selects the newest release, `lts/*` the newest LTS release, and
+`lts/<codename>` (for example `lts/iron`, any case) the newest release of that LTS
+line. Quote `'lts/*'` in zsh. Install resolves against Node's upstream release
+index; `node use`, `exec`, and `which` resolve only against complete installed
+releases, matching `lts/<codename>` against the codename recorded at install. No
+runtime is downloaded when executing a command.
 
-A versioned install preserves an existing global default. The first installation
-becomes the default if none exists. `yerd install tool node` installs the newest
-LTS and makes it the default, retaining previously installed releases. Releases
-below major 9 are not installable, including `yerd install tool node 8`. In the
-desktop app, the [Node page](../../guide/node) browses, installs,
-updates, and uninstalls individual releases.
+`yerd install tool node [<SELECTOR>]` streams its progress like other tool
+installs (with `--json` it blocks and prints the result). A versioned install
+preserves an existing global default. The first installation becomes the default
+if none exists. `yerd install tool node` installs the newest LTS, retaining
+previously installed releases; it becomes the default only when there is none, so
+an existing default is kept. Releases below major 9 are not installable, including
+`yerd install tool node 8`. In the desktop app, the [Node page](../../guide/node)
+browses, installs, updates, and uninstalls individual releases.
 
 `yerd exec node`, `npm`, and `npx` select the nearest project `.nvmrc` or
 `.node-version`, then a saved site preference, then the global default. See
@@ -104,8 +119,7 @@ on Yerd's `PATH` continue to use the global default. `yerd tools` shows that
 default's version; the desktop app's Node page stars it.
 
 `yerd uninstall tool node` removes all managed Node releases and their commands,
-and clears the global default. Saved site preferences remain; executing a site
-with a missing preference fails with an installation hint. Existing installations
+and clears the global default and every saved site preference. Existing installations
 in `{data}/tools/node` remain usable without migration. New releases live in
 `{data}/tools/node-versions/<version>`.
 

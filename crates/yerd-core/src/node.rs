@@ -27,42 +27,125 @@ pub fn numeric_selector(value: &str) -> Result<Vec<u32>, String> {
         .collect()
 }
 
+/// A release as selectors see it: an installed release or an index entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Candidate<'a> {
+    /// Version, with or without a leading `v`.
+    pub version: &'a str,
+    /// Whether the release is an LTS release.
+    pub lts: bool,
+    /// LTS codename such as `Iron`, when known.
+    pub codename: Option<&'a str>,
+}
+
+impl<'a> From<(&'a str, bool)> for Candidate<'a> {
+    fn from((version, lts): (&'a str, bool)) -> Self {
+        Self {
+            version,
+            lts,
+            codename: None,
+        }
+    }
+}
+
+impl<'a> From<IndexRelease<'a>> for Candidate<'a> {
+    fn from(release: IndexRelease<'a>) -> Self {
+        Self {
+            version: release.version,
+            lts: release.lts.is_some(),
+            codename: release.lts,
+        }
+    }
+}
+
+enum Selector<'s> {
+    Newest,
+    AnyLts,
+    Codename(&'s str),
+    Numeric(Vec<u32>),
+}
+
+impl Selector<'_> {
+    fn parse(value: &str) -> Result<Selector<'_>, String> {
+        match value {
+            "node" => Ok(Selector::Newest),
+            "lts/*" => Ok(Selector::AnyLts),
+            _ => match value.strip_prefix("lts/") {
+                Some(name) if !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphabetic()) => {
+                    Ok(Selector::Codename(name))
+                }
+                Some(_) => Err(
+                    "expected an LTS codename such as lts/iron, or lts/* for the newest LTS"
+                        .to_owned(),
+                ),
+                None => numeric_selector(value).map(Selector::Numeric),
+            },
+        }
+    }
+
+    fn matches(&self, parts: &[u32], release: &Candidate<'_>) -> bool {
+        match self {
+            Selector::Newest => true,
+            Selector::AnyLts => release.lts,
+            Selector::Codename(name) => release
+                .codename
+                .is_some_and(|c| c.trim().eq_ignore_ascii_case(name)),
+            Selector::Numeric(wanted) => parts.starts_with(wanted),
+        }
+    }
+}
+
+/// Validate a release selector: `node`, `lts/*`, `lts/<codename>`, or a
+/// numeric major, minor, or exact version.
+///
+/// # Errors
+/// Rejects other aliases and malformed versions.
+pub fn validate_selector(selector: &str) -> Result<(), String> {
+    Selector::parse(selector).map(|_| ())
+}
+
+/// The `yerd install tool node` command for `selector`, single-quoted when the
+/// selector holds characters a shell would expand (`lts/*` in zsh).
+#[must_use]
+pub fn install_hint(selector: &str) -> String {
+    let plain = selector
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'/' | b'-' | b'_'));
+    if plain {
+        format!("yerd install tool node {selector}")
+    } else {
+        format!("yerd install tool node '{selector}'")
+    }
+}
+
 /// Select the highest matching exact release, independently of input order.
-/// `node` selects the newest installed release. `lts/*` selects the newest
-/// release whose accompanying LTS flag is true.
+/// `node` selects the newest release, `lts/*` the newest LTS release, and
+/// `lts/<codename>` the newest release whose codename matches, ignoring case.
+/// Plain `(version, lts)` pairs carry no codename.
 ///
 /// # Errors
 /// Rejects unsupported aliases or returns an install hint when no release matches.
-pub fn select_release<'a>(
+pub fn select_release<'a, R: Into<Candidate<'a>>>(
     selector: &str,
-    releases: impl IntoIterator<Item = (&'a str, bool)>,
+    releases: impl IntoIterator<Item = R>,
 ) -> Result<String, String> {
-    let numeric = match selector {
-        "node" | "lts/*" => None,
-        _ => Some(numeric_selector(selector)?),
-    };
+    let parsed = Selector::parse(selector)?;
     releases
         .into_iter()
-        .filter_map(|(version, lts)| {
-            let parts = numeric_selector(version).ok()?;
-            if parts.len() != 3 || (selector == "lts/*" && !lts) {
-                return None;
-            }
-            if numeric
-                .as_ref()
-                .is_some_and(|wanted| !parts.starts_with(wanted))
-            {
-                return None;
-            }
-            Some((
-                parts,
-                version.strip_prefix('v').unwrap_or(version).to_owned(),
-            ))
+        .filter_map(|release| {
+            let release = release.into();
+            let parts = exact_parts(release.version)?;
+            parsed
+                .matches(&parts, &release)
+                .then(|| (parts, strip_v(release.version).to_owned()))
         })
         .max_by(|a, b| a.0.cmp(&b.0))
         .map(|(_, version)| version)
         .ok_or_else(|| {
-            format!("Node {selector} is not installed — run `yerd install tool node {selector}`")
+            format!(
+                "Node {selector} is not installed - run `{}`",
+                install_hint(selector)
+            )
         })
 }
 
@@ -101,13 +184,10 @@ pub const SEARCH_ORDER: [ProjectFileKind; 2] =
 /// Parse a project file's contents into a selector.
 ///
 /// # Errors
-/// Rejects empty contents and anything other than `node`, `lts/*`, or a
-/// numeric selector.
+/// Rejects empty contents and anything [`validate_selector`] rejects.
 pub fn parse_project_selector(contents: &str) -> Result<String, String> {
     let value = contents.trim();
-    if !matches!(value, "node" | "lts/*") {
-        numeric_selector(value)?;
-    }
+    validate_selector(value)?;
     Ok(value.to_owned())
 }
 
@@ -310,9 +390,9 @@ struct Line {
 /// before the update and does not already resolve to `new_exact` now (a
 /// selector like `"22"` follows the newest patch on its own).
 #[must_use]
-pub fn moved_default(
+pub fn moved_default<'a, R: Copy + Into<Candidate<'a>>>(
     default: Option<&str>,
-    installed_after: &[(&str, bool)],
+    installed_after: &[R],
     new_exact: &str,
 ) -> Option<String> {
     let default = default?;
@@ -326,7 +406,7 @@ pub fn moved_default(
         installed_after
             .iter()
             .copied()
-            .filter(|(v, _)| strip_v(v) != new_exact),
+            .filter(|r| strip_v((*r).into().version) != new_exact),
     )
     .ok()?;
     let before_parts = exact_parts(&before)?;
@@ -364,20 +444,21 @@ pub struct UninstallPlan {
 /// # Errors
 /// [`UninstallRefusal::NotInstalled`] when `target` is not in `installed`,
 /// [`UninstallRefusal::IsDefault`] when the default would dangle.
-pub fn plan_uninstall(
+pub fn plan_uninstall<'a, R: Copy + Into<Candidate<'a>>>(
     target: &str,
-    installed: &[(&str, bool)],
+    installed: &[R],
     default: Option<&str>,
     prefs: &BTreeMap<String, String>,
 ) -> Result<UninstallPlan, UninstallRefusal> {
     let target = strip_v(target);
-    if !installed.iter().any(|(v, _)| strip_v(v) == target) {
+    let is_target = |r: &R| strip_v((*r).into().version) == target;
+    if !installed.iter().any(is_target) {
         return Err(UninstallRefusal::NotInstalled);
     }
-    let after: Vec<(&str, bool)> = installed
+    let after: Vec<R> = installed
         .iter()
         .copied()
-        .filter(|(v, _)| strip_v(v) != target)
+        .filter(|r| !is_target(r))
         .collect();
     let dangles = |selector: &str| {
         select_release(selector, installed.iter().copied()).is_ok_and(|v| v == target)
@@ -422,6 +503,8 @@ mod tests {
         for invalid in [
             "",
             "lts/jod",
+            "lts/",
+            "latest",
             "24.x",
             "../24",
             "24.1.0.1",
@@ -432,7 +515,130 @@ mod tests {
         }
         assert!(select_release("23", versions)
             .unwrap_err()
-            .contains("yerd install tool node 23"));
+            .contains("Node 23 is not installed - run `yerd install tool node 23`"));
+    }
+
+    #[test]
+    fn codename_selectors_match_recorded_codenames_ignoring_case() {
+        let versions = [
+            Candidate {
+                version: "20.18.0",
+                lts: true,
+                codename: Some("Iron"),
+            },
+            Candidate {
+                version: "v20.19.0",
+                lts: true,
+                codename: Some("Iron"),
+            },
+            Candidate {
+                version: "22.12.0",
+                lts: true,
+                codename: Some("Jod"),
+            },
+            Candidate {
+                version: "24.1.0",
+                lts: true,
+                codename: None,
+            },
+            Candidate {
+                version: "25.0.0",
+                lts: false,
+                codename: None,
+            },
+        ];
+        for (selector, expected) in [
+            ("lts/iron", Some("20.19.0")),
+            ("lts/IRON", Some("20.19.0")),
+            ("lts/Jod", Some("22.12.0")),
+            ("lts/*", Some("24.1.0")),
+            ("node", Some("25.0.0")),
+            ("lts/hydrogen", None),
+        ] {
+            assert_eq!(
+                select_release(selector, versions).ok().as_deref(),
+                expected,
+                "{selector}"
+            );
+        }
+        assert!(select_release("lts/iron", [("20.19.0", true)]).is_err());
+        assert!(select_release("lts/hydrogen", versions)
+            .unwrap_err()
+            .contains(
+                "Node lts/hydrogen is not installed - run `yerd install tool node lts/hydrogen`"
+            ));
+    }
+
+    #[test]
+    fn codename_defaults_and_preferences_are_resolved_on_uninstall() {
+        let installed = [
+            Candidate {
+                version: "20.19.0",
+                lts: true,
+                codename: Some("Iron"),
+            },
+            Candidate {
+                version: "22.12.0",
+                lts: true,
+                codename: Some("Jod"),
+            },
+        ];
+        let prefs = BTreeMap::from([("/srv/a".to_owned(), "lts/jod".to_owned())]);
+        assert_eq!(
+            plan_uninstall("20.19.0", &installed, Some("lts/iron"), &prefs),
+            Err(UninstallRefusal::IsDefault)
+        );
+        assert_eq!(
+            plan_uninstall("22.12.0", &installed, Some("lts/iron"), &prefs),
+            Ok(UninstallPlan {
+                default: Some("lts/iron".into()),
+                cleared: vec!["/srv/a".into()],
+            })
+        );
+    }
+
+    #[test]
+    fn index_releases_carry_their_codename() {
+        let index = [
+            IndexRelease {
+                version: "v20.19.0",
+                lts: Some("Iron"),
+            },
+            IndexRelease {
+                version: "v25.0.0",
+                lts: None,
+            },
+        ];
+        assert_eq!(select_release("lts/iron", index).unwrap(), "20.19.0");
+        assert_eq!(select_release("lts/*", index).unwrap(), "20.19.0");
+    }
+
+    #[test]
+    fn selectors_validate() {
+        for (selector, ok) in [
+            ("node", true),
+            ("lts/*", true),
+            ("lts/iron", true),
+            ("v24.1", true),
+            ("lts/", false),
+            ("lts/iron2", false),
+            ("latest", false),
+            ("24.x", false),
+        ] {
+            assert_eq!(validate_selector(selector).is_ok(), ok, "{selector}");
+        }
+    }
+
+    #[test]
+    fn install_hint_quotes_shell_globs() {
+        for (selector, expected) in [
+            ("22", "yerd install tool node 22"),
+            ("v22.1.0", "yerd install tool node v22.1.0"),
+            ("lts/iron", "yerd install tool node lts/iron"),
+            ("lts/*", "yerd install tool node 'lts/*'"),
+        ] {
+            assert_eq!(install_hint(selector), expected);
+        }
     }
 
     #[test]
@@ -450,9 +656,14 @@ mod tests {
             ("  v22.9.0 ", Some("v22.9.0")),
             ("node", Some("node")),
             ("lts/*\n", Some("lts/*")),
+            ("lts/jod", Some("lts/jod")),
+            (" LTS/Iron\n", None),
+            ("lts/Iron\n", Some("lts/Iron")),
             ("", None),
             ("   \n", None),
-            ("lts/jod", None),
+            ("lts/", None),
+            ("lts/i-ron", None),
+            ("lts/-1", None),
             ("22.x", None),
         ] {
             assert_eq!(

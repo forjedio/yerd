@@ -1697,25 +1697,61 @@ async fn install_tool(tool: &str, state: &DaemonState) -> Response {
     };
     let dl = crate::php_install::ReqwestDownloader::new();
     let _mutate = state.tool_mutate.lock().await;
-    match crate::tools::install(t, &state.dirs, &dl, None).await {
-        Ok(()) => {
-            if t == crate::tools::Tool::Node {
-                crate::node_updates::poll_and_refresh(state, &dl).await;
-                if let Some(version) = yerd_platform::node::legacy_default(&state.dirs) {
-                    let result = save_node_version(&version, None, state).await;
-                    if !matches!(result, Response::Ok) {
-                        return result;
-                    }
-                }
-            }
-            reconcile_tool_shims_now(state).await;
-            Response::Ok
-        }
+    install_tool_with(t, state, &dl).await
+}
+
+/// Injectable core of [`install_tool`]. The caller holds `tool_mutate`.
+async fn install_tool_with(
+    t: crate::tools::Tool,
+    state: &DaemonState,
+    dl: &dyn yerd_php::Downloader,
+) -> Response {
+    let previous = node_default_before_install(t, state).await;
+    match crate::tools::install(t, &state.dirs, dl, None).await {
+        Ok(()) => finish_tool_install(t, state, dl, previous).await,
         Err(e) => Response::Error {
             code: tool_error_code(&e),
             message: e.to_string(),
         },
     }
+}
+
+/// The effective global Node default before a no-version Node install, which
+/// rewrites the legacy pointer. `None` for other tools.
+async fn node_default_before_install(t: crate::tools::Tool, state: &DaemonState) -> Option<String> {
+    if t != crate::tools::Tool::Node {
+        return None;
+    }
+    effective_node_default(state).await
+}
+
+/// Follow-up after a successful tool install, shared by the blocking and
+/// streamed paths. For Node, a configured default is kept; otherwise the
+/// previous effective default (a legacy pointer) is persisted when it still
+/// resolves, and otherwise the newly installed release becomes it.
+async fn finish_tool_install(
+    t: crate::tools::Tool,
+    state: &DaemonState,
+    dl: &dyn yerd_php::Downloader,
+    previous: Option<String>,
+) -> Response {
+    if t == crate::tools::Tool::Node {
+        crate::node_updates::poll_and_refresh(state, dl).await;
+        let configured = state.config.lock().await.node.default.is_some();
+        if !configured {
+            if let Some(version) = previous
+                .filter(|v| yerd_platform::node::resolve(&state.dirs, v).is_ok())
+                .or_else(|| yerd_platform::node::legacy_default(&state.dirs))
+            {
+                let result = save_node_version(&version, None, state).await;
+                if !matches!(result, Response::Ok) {
+                    return result;
+                }
+            }
+        }
+    }
+    reconcile_tool_shims_now(state).await;
+    Response::Ok
 }
 
 /// `InstallToolStreamed` - install a tool as a background job, streaming its
@@ -1748,6 +1784,7 @@ pub(crate) async fn install_tool_streamed(tool: String, state: Arc<DaemonState>)
             .await;
         let dl = crate::php_install::ReqwestDownloader::new();
         let _guard = state.tool_mutate.lock().await;
+        let previous = node_default_before_install(t, &state).await;
         let result = tokio::select! {
             r = crate::tools::install(t, &state.dirs, &dl, Some(&tx)) => Some(r),
             _ = cancel.changed() => None,
@@ -1757,21 +1794,15 @@ pub(crate) async fn install_tool_streamed(tool: String, state: Arc<DaemonState>)
 
         match result {
             Some(Ok(())) => {
-                if t == crate::tools::Tool::Node {
-                    crate::node_updates::poll_and_refresh(&state, &dl).await;
-                    if let Some(version) = yerd_platform::node::legacy_default(&state.dirs) {
-                        if let Response::Error { message, .. } =
-                            save_node_version(&version, None, &state).await
-                        {
-                            state
-                                .jobs
-                                .finish(&id, yerd_ipc::JobState::Failed, Some(message))
-                                .await;
-                            return;
-                        }
-                    }
+                if let Response::Error { message, .. } =
+                    finish_tool_install(t, &state, &dl, previous).await
+                {
+                    state
+                        .jobs
+                        .finish(&id, yerd_ipc::JobState::Failed, Some(message))
+                        .await;
+                    return;
                 }
-                reconcile_tool_shims_now(&state).await;
                 state
                     .jobs
                     .finish(&id, yerd_ipc::JobState::Succeeded, None)
@@ -1809,6 +1840,7 @@ async fn uninstall_tool(tool: &str, state: &DaemonState) -> Response {
                 let mut guard = state.config.lock().await;
                 let mut new = guard.clone();
                 new.node.default = None;
+                new.node.sites.clear();
                 if let Err(e) = new.save(&state.config_path) {
                     return internal(format!("config save failed: {e}"));
                 }
@@ -3187,8 +3219,13 @@ async fn install_node(version: &str, state: &DaemonState) -> Response {
 
 /// Whether an effective global Node default exists (config value or legacy pointer).
 async fn node_had_default(state: &DaemonState) -> bool {
+    effective_node_default(state).await.is_some()
+}
+
+/// The effective global Node default: the config value, else a legacy pointer.
+async fn effective_node_default(state: &DaemonState) -> Option<String> {
     let configured = state.config.lock().await.node.default.clone();
-    crate::tools::node::default_selector(&state.dirs, configured.as_deref()).is_some()
+    crate::tools::node::default_selector(&state.dirs, configured.as_deref())
 }
 
 /// `InstallNodeStreamed` - install a Node release as a background job with the
@@ -3299,10 +3336,12 @@ async fn after_node_install(
     Response::Ok
 }
 
-fn node_pairs(installed: &[yerd_platform::node::InstalledNode]) -> Vec<(&str, bool)> {
+fn node_pairs(
+    installed: &[yerd_platform::node::InstalledNode],
+) -> Vec<yerd_core::node::Candidate<'_>> {
     installed
         .iter()
-        .map(|n| (n.version.as_str(), n.lts))
+        .map(yerd_platform::node::InstalledNode::candidate)
         .collect()
 }
 
@@ -3569,6 +3608,7 @@ async fn node_site_response(name: &str, state: &DaemonState) -> Response {
         effective: None,
         source: None,
         error: Some(error),
+        missing: None,
     };
     let root = match site_project_root(state, name).await {
         Ok(root) => root,
@@ -3585,11 +3625,18 @@ async fn node_site_response(name: &str, state: &DaemonState) -> Response {
                 effective: None,
                 source: None,
                 error: Some(error),
+                missing: None,
             }
         }
     };
     let default = crate::tools::node::default_selector(&state.dirs, configured.as_deref());
-    let (effective, source, error) = match yerd_platform::node::select_from(
+    let chosen = yerd_core::node::choose(
+        file.as_ref().map(|f| (f.selector.as_str(), f.kind)),
+        preference.as_deref(),
+        default.as_deref(),
+    )
+    .map(|(selector, _)| selector.to_owned());
+    let (effective, source, error, missing) = match yerd_platform::node::select_from(
         &state.dirs,
         file.as_ref(),
         preference.as_deref(),
@@ -3599,12 +3646,15 @@ async fn node_site_response(name: &str, state: &DaemonState) -> Response {
             Some(selected.installed.version),
             Some(selected.source),
             None,
+            None,
         ),
-        Err(error) => (None, None, Some(error)),
+        Err(error) => (None, None, Some(error), chosen),
     };
-    let project_file = file.map(|f| yerd_ipc::NodeProjectFile {
-        kind: yerd_core::node::NodeSource::from(f.kind),
-        selector: f.selector,
+    let project_file = file.map(|f| {
+        Box::new(yerd_ipc::NodeProjectFile {
+            kind: yerd_core::node::NodeSource::from(f.kind),
+            selector: f.selector,
+        })
     });
     Response::NodeSite {
         preference,
@@ -3612,6 +3662,7 @@ async fn node_site_response(name: &str, state: &DaemonState) -> Response {
         effective,
         source,
         error,
+        missing,
     }
 }
 
@@ -6907,7 +6958,8 @@ mod node_tests {
         assert!(matches!(uninstall_tool("node", &state).await, Response::Ok));
         let cfg = yerd_config::Config::load(&state.config_path).unwrap();
         assert!(cfg.node.default.is_none());
-        assert_eq!(cfg.node.sites.len(), 1);
+        assert!(cfg.node.sites.is_empty());
+        assert!(state.config.lock().await.node.sites.is_empty());
         assert!(
             !crate::tools::status(
                 &state.dirs,
@@ -6915,6 +6967,158 @@ mod node_tests {
                 state.config.lock().await.node.default.as_deref()
             )
             .installed
+        );
+    }
+
+    struct NodeDistDl;
+
+    fn node_archive(version: &str) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut tar = tar::Builder::new(encoder);
+        for name in ["node", "npm", "npx"] {
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(0o755);
+            header.set_size(4);
+            header.set_cksum();
+            tar.append_data(
+                &mut header,
+                format!("node-v{version}-test/bin/{name}"),
+                &b"fake"[..],
+            )
+            .unwrap();
+        }
+        tar.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[async_trait::async_trait]
+    impl yerd_php::Downloader for NodeDistDl {
+        async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
+            if url.ends_with("schedule.json") {
+                return Err(yerd_php::DownloadError::Transport {
+                    url: url.to_owned(),
+                    reason: "offline".into(),
+                });
+            }
+            let files = r#"["osx-arm64-tar","osx-x64-tar","linux-x64","linux-arm64"]"#;
+            if url.ends_with("index.json") {
+                return Ok(format!(
+                    r#"[{{"version":"v25.1.0","lts":false,"files":{files}}},{{"version":"v24.2.0","lts":"Krypton","files":{files}}}]"#
+                )
+                .into_bytes());
+            }
+            let sha = crate::ext_install::sha256_hex(&node_archive("24.2.0"));
+            if url.ends_with("SHASUMS256.txt") {
+                return Ok(["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"]
+                    .map(|plat| format!("{sha}  node-v24.2.0-{plat}.tar.gz"))
+                    .join("\n")
+                    .into_bytes());
+            }
+            Ok(node_archive("24.2.0"))
+        }
+    }
+
+    #[tokio::test]
+    async fn save_node_version_resolves_aliases_to_exact_releases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state_in(tmp.path());
+        release(&state, "20.19.0", Some("Iron"));
+        release(&state, "22.12.0", Some("Jod"));
+        release(&state, "25.1.0", None);
+        for (selector, expected) in [
+            ("lts/iron", "20.19.0"),
+            ("lts/*", "22.12.0"),
+            ("node", "25.1.0"),
+        ] {
+            assert!(matches!(
+                save_node_version(selector, None, &state).await,
+                Response::Ok
+            ));
+            assert_eq!(
+                state.config.lock().await.node.default.as_deref(),
+                Some(expected),
+                "{selector}"
+            );
+        }
+        assert_eq!(
+            error_code(&save_node_version("lts/hydrogen", None, &state).await),
+            Some(ErrorCode::NotFound)
+        );
+    }
+
+    #[tokio::test]
+    async fn install_tool_node_keeps_an_existing_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state_in(tmp.path());
+        release(&state, "22.9.0", Some("Jod"));
+        set_node_config(&state, Some("22"), &[("/srv/a", "22.9.0")]).await;
+        assert!(matches!(
+            install_tool_with(crate::tools::Tool::Node, &state, &NodeDistDl).await,
+            Response::Ok
+        ));
+        let cfg = state.config.lock().await;
+        assert_eq!(cfg.node.default.as_deref(), Some("22"));
+        assert_eq!(
+            cfg.node.sites.get("/srv/a").map(String::as_str),
+            Some("22.9.0")
+        );
+        drop(cfg);
+        assert!(yerd_platform::node::resolve(&state.dirs, "24.2.0").is_ok());
+    }
+
+    #[tokio::test]
+    async fn install_tool_node_without_a_default_makes_the_release_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state_in(tmp.path());
+        assert!(matches!(
+            install_tool_with(crate::tools::Tool::Node, &state, &NodeDistDl).await,
+            Response::Ok
+        ));
+        assert_eq!(
+            state.config.lock().await.node.default.as_deref(),
+            Some("24.2.0")
+        );
+        assert_eq!(
+            yerd_config::Config::load(&state.config_path)
+                .unwrap()
+                .node
+                .default
+                .as_deref(),
+            Some("24.2.0")
+        );
+    }
+
+    #[tokio::test]
+    async fn install_tool_node_persists_a_previous_legacy_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state_in(tmp.path());
+        release(&state, "22.9.0", None);
+        let legacy = state.dirs.data.join("tools/node");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join(".default"), "22.9.0").unwrap();
+        assert!(matches!(
+            install_tool_with(crate::tools::Tool::Node, &state, &NodeDistDl).await,
+            Response::Ok
+        ));
+        assert_eq!(
+            state.config.lock().await.node.default.as_deref(),
+            Some("22.9.0")
+        );
+    }
+
+    #[tokio::test]
+    async fn install_tool_node_replaces_a_stale_legacy_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state_in(tmp.path());
+        let legacy = state.dirs.data.join("tools/node");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join(".default"), "18.0.0").unwrap();
+        assert!(matches!(
+            install_tool_with(crate::tools::Tool::Node, &state, &NodeDistDl).await,
+            Response::Ok
+        ));
+        assert_eq!(
+            state.config.lock().await.node.default.as_deref(),
+            Some("24.2.0")
         );
     }
 
@@ -7161,6 +7365,32 @@ mod node_tests {
     }
 
     #[tokio::test]
+    async fn node_site_names_the_missing_selector() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state_in(tmp.path());
+        release(&state, "20.1.0", None);
+        let blog = site(&state, tmp.path(), "blog").await;
+        let missing = |r: Response| match r {
+            Response::NodeSite { missing, .. } => missing,
+            other => panic!("expected NodeSite, got {other:?}"),
+        };
+        set_node_config(&state, Some("20"), &[]).await;
+        assert_eq!(missing(node_site_response("blog", &state).await), None);
+        std::fs::write(PathBuf::from(&blog).join(".nvmrc"), "18\n").unwrap();
+        assert_eq!(
+            missing(node_site_response("blog", &state).await).as_deref(),
+            Some("18")
+        );
+        std::fs::remove_file(PathBuf::from(&blog).join(".nvmrc")).unwrap();
+        set_node_config(&state, Some("99"), &[]).await;
+        assert_eq!(
+            missing(node_site_response("blog", &state).await).as_deref(),
+            Some("99")
+        );
+        assert_eq!(missing(node_site_response("ghost", &state).await), None);
+    }
+
+    #[tokio::test]
     async fn node_site_reports_precedence_and_errors_as_data() {
         let tmp = tempfile::tempdir().unwrap();
         let state = crate::test_support::state_in(tmp.path());
@@ -7176,6 +7406,7 @@ mod node_tests {
                 effective,
                 source,
                 error,
+                ..
             } => (
                 preference,
                 project_file.map(|f| (f.kind, f.selector)),

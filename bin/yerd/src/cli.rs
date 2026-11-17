@@ -979,7 +979,7 @@ pub enum InstallTarget {
     Tool {
         /// Tool id: `composer`, `node`, `bun`, `pnpm`, `laravel`, or `wp-cli`.
         id: String,
-        /// Optional Node release selector, e.g. 24 or v24.1.0.
+        /// Optional Node release selector, e.g. 24, v24.1.0, lts/* or lts/iron.
         version: Option<String>,
     },
 }
@@ -1034,11 +1034,24 @@ pub enum ElevateTarget {
 pub enum NodeAction {
     /// Select an installed version globally, or for a named site.
     Use {
-        /// Numeric major, minor, or exact version (optional v prefix).
+        /// Numeric major, minor, or exact version (optional v prefix), `node`,
+        /// `lts/*`, or `lts/<codename>`.
         version: String,
         /// Save a preference for this site instead of the global default.
         #[arg(long)]
         site: Option<String>,
+    },
+    /// Clear a site's saved preference, so it follows its project file or the
+    /// global default.
+    Unset {
+        /// Site whose preference is cleared.
+        #[arg(long)]
+        site: String,
+    },
+    /// Uninstall one installed release (refused while it is the global default).
+    Uninstall {
+        /// Exact installed version, e.g. 22.12.0.
+        version: String,
     },
     /// List installed versions and the global default.
     List,

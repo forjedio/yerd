@@ -106,8 +106,16 @@ pub async fn run(cli: Cli) -> ExitCode {
         } => return run_header_list(site, cli.json).await,
         Command::Uninstall { target: None, yes } => return uninstall::run(*yes),
         Command::Install {
-            target: crate::cli::InstallTarget::Tool { id, version: None },
-        } if !cli.json => return stream_install_tool(id, cli.json).await,
+            target: crate::cli::InstallTarget::Tool { .. },
+        } if !cli.json => {
+            return match map::to_request(&cli.command) {
+                Ok(req) => stream_install_tool(map::streamed_install(req), cli.json).await,
+                Err(e) => {
+                    eprintln!("yerd: {e}");
+                    ExitCode::from(2)
+                }
+            };
+        }
         Command::Tunnel {
             action: crate::cli::TunnelAction::Install,
         } if !cli.json => {
@@ -691,17 +699,15 @@ async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool
         })
 }
 
-/// Install a dev tool as a streamed job, printing its output line by line until
-/// the job reaches a terminal state. Mirrors the GUI's streamed install.
-async fn stream_install_tool(id: &str, json: bool) -> ExitCode {
+/// Install a dev tool or a Node release as a streamed job (`start` is an
+/// `InstallToolStreamed` or `InstallNodeStreamed` request), printing its output
+/// line by line until the job reaches a terminal state. Mirrors the GUI's
+/// streamed install.
+async fn stream_install_tool(start: yerd_ipc::Request, json: bool) -> ExitCode {
     use std::time::Duration;
     use yerd_ipc::{JobState, Request, Response};
 
-    let job_id = match transport::exchange(&Request::InstallToolStreamed {
-        tool: id.to_owned(),
-    })
-    .await
-    {
+    let job_id = match transport::exchange(&start).await {
         Ok(Response::JobStarted { job_id }) => job_id,
         Ok(Response::Error { message, .. }) => {
             eprintln!("yerd: {message}");

@@ -19,6 +19,19 @@ pub struct InstalledNode {
     pub codename: Option<String>,
 }
 
+impl InstalledNode {
+    /// This release as a selector candidate, codename included, so
+    /// `lts/<codename>` resolves against it.
+    #[must_use]
+    pub fn candidate(&self) -> yerd_core::node::Candidate<'_> {
+        yerd_core::node::Candidate {
+            version: &self.version,
+            lts: self.lts,
+            codename: self.codename.as_deref(),
+        }
+    }
+}
+
 /// Root for side-by-side Node releases.
 #[must_use]
 pub fn versions_dir(dirs: &PlatformDirs) -> PathBuf {
@@ -83,10 +96,8 @@ pub fn installed(dirs: &PlatformDirs) -> Vec<InstalledNode> {
 /// Invalid selectors and unavailable releases are errors with an install hint.
 pub fn resolve(dirs: &PlatformDirs, selector: &str) -> Result<InstalledNode, String> {
     let versions = installed(dirs);
-    let exact = yerd_core::node::select_release(
-        selector,
-        versions.iter().map(|v| (v.version.as_str(), v.lts)),
-    )?;
+    let exact =
+        yerd_core::node::select_release(selector, versions.iter().map(InstalledNode::candidate))?;
     versions
         .into_iter()
         .find(|v| v.version == exact)
@@ -356,5 +367,32 @@ mod tests {
         assert!(pick(Some("24"), Some("20"))
             .unwrap_err()
             .contains("yerd install tool node 18"));
+    }
+
+    #[test]
+    fn codename_selectors_resolve_against_recorded_lts_markers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = temp_dirs(tmp.path());
+        for (version, marker) in [
+            ("20.18.0", "Iron"),
+            ("20.19.0", "Iron\n"),
+            ("22.12.0", "Jod"),
+        ] {
+            let root = versions_dir(&dirs).join(version);
+            fake_release(&root, version);
+            std::fs::write(root.join(".lts"), marker).unwrap();
+        }
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join(".nvmrc"), "lts/iron\n").unwrap();
+        let selected = select(&dirs, &project, Some(&project), None, Some("22")).unwrap();
+        assert_eq!(
+            (selected.installed.version.as_str(), selected.source),
+            ("20.19.0", NodeSource::Nvmrc)
+        );
+        assert_eq!(resolve(&dirs, "lts/JOD").unwrap().version, "22.12.0");
+        assert!(resolve(&dirs, "lts/hydrogen")
+            .unwrap_err()
+            .contains("yerd install tool node lts/hydrogen"));
     }
 }

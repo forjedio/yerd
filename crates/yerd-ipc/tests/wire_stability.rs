@@ -3027,19 +3027,21 @@ fn response_node_site_byte_shape() {
             effective: None,
             source: None,
             error: None,
+            missing: None,
         },
         r#"{"type":"node_site"}"#,
     );
     assert_response(
         &Response::NodeSite {
             preference: Some("24.1.0".into()),
-            project_file: Some(NodeProjectFile {
+            project_file: Some(Box::new(NodeProjectFile {
                 kind: NodeSource::NodeVersion,
                 selector: "22".into(),
-            }),
+            })),
             effective: Some("22.9.0".into()),
             source: Some(NodeSource::NodeVersion),
             error: None,
+            missing: None,
         },
         r#"{"type":"node_site","preference":"24.1.0","project_file":{"kind":"node-version","selector":"22"},"effective":"22.9.0","source":"node-version"}"#,
     );
@@ -3050,8 +3052,20 @@ fn response_node_site_byte_shape() {
             effective: None,
             source: None,
             error: Some("no site named 'ghost'".into()),
+            missing: None,
         },
         r#"{"type":"node_site","error":"no site named 'ghost'"}"#,
+    );
+    assert_response(
+        &Response::NodeSite {
+            preference: None,
+            project_file: None,
+            effective: None,
+            source: None,
+            error: Some("Node 18 is not installed".into()),
+            missing: Some("18".into()),
+        },
+        r#"{"type":"node_site","error":"Node 18 is not installed","missing":"18"}"#,
     );
 }
 

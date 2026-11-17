@@ -708,11 +708,14 @@ remains the default until one is saved. Stored selectors must be numeric and
 project keys absolute. A value may be a partial selector (`"22"` or `"22.9"`),
 resolved to the highest matching installed release when used.
 
-Uninstalling a release from the desktop app's Node page clears any preference
-that resolves only to that release, and, while others remain, refuses to remove a
-release when `default` would then resolve to nothing. An Update moves `default` to the new
-patch only when it named an older patch of that major; preferences are never
-changed. See [Node resolution](./cli/exec#node-resolution).
+Uninstalling a release (the desktop app's Node page or `yerd node uninstall`)
+clears any preference that resolves only to that release, and, while others
+remain, refuses to remove a release when `default` would then resolve to nothing.
+`yerd node unset --site <name>` removes one site's preference. `yerd uninstall tool
+node` removes every release and clears both `default` and all of `[node.sites]`.
+An Update moves `default` to the new patch only when it named an older patch of
+that major; preferences are never changed. A plain `yerd install tool node` sets
+`default` only when none exists. See [Node resolution](./cli/exec#node-resolution).
 
 ## Atomic saves
 

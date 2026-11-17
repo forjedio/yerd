@@ -20,6 +20,38 @@ pub struct NodeSelection {
     pub source: &'static str,
 }
 
+/// Load `yerd.toml`, treating a missing file as the defaults like the daemon's
+/// first-run boot does.
+fn load_config(path: &Path) -> Result<Config, String> {
+    match Config::load(path) {
+        Ok(config) => Ok(config),
+        Err(yerd_config::ConfigError::Io { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(Config::default())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// The global default selector and the exact release among `versions` it
+/// resolves to, so a partial selector such as `22` marks the release that would run.
+fn default_release(
+    dirs: &PlatformDirs,
+    config: &Config,
+    versions: &[node::InstalledNode],
+) -> (Option<String>, Option<String>) {
+    let default = config
+        .node
+        .default
+        .clone()
+        .or_else(|| node::legacy_default(dirs));
+    let exact = default.as_deref().and_then(|d| {
+        yerd_core::node::select_release(d, versions.iter().map(node::InstalledNode::candidate)).ok()
+    });
+    (default, exact)
+}
+
 fn report(message: &str, code: u8) -> ExitCode {
     eprintln!("yerd: {message}");
     ExitCode::from(code)
@@ -60,7 +92,7 @@ async fn resolve(site: Option<&str>) -> Result<NodeSelection, (String, u8)> {
     let dirs = ActivePaths::new()
         .resolve()
         .map_err(|e| (e.to_string(), 74))?;
-    let config = Config::load(&dirs.config.join("yerd.toml")).map_err(|e| (e.to_string(), 74))?;
+    let config = load_config(&dirs.config.join("yerd.toml")).map_err(|e| (e, 74))?;
     let cwd = std::env::current_dir()
         .and_then(std::fs::canonicalize)
         .map_err(|e| (e.to_string(), 74))?;
@@ -182,14 +214,14 @@ pub fn list(json: bool) -> ExitCode {
         Ok(d) => d,
         Err(e) => return report(&e.to_string(), 74),
     };
-    let config = match Config::load(&dirs.config.join("yerd.toml")) {
+    let config = match load_config(&dirs.config.join("yerd.toml")) {
         Ok(c) => c,
-        Err(e) => return report(&e.to_string(), 74),
+        Err(e) => return report(&e, 74),
     };
-    let default = config.node.default.or_else(|| node::legacy_default(&dirs));
     let versions = node::installed(&dirs);
+    let (default, exact) = default_release(&dirs, &config, &versions);
     if json {
-        let values: Vec<_> = versions.iter().map(|v| serde_json::json!({"version": v.version, "default": default.as_deref() == Some(&v.version), "path": v.bin, "lts": v.lts})).collect();
+        let values: Vec<_> = versions.iter().map(|v| serde_json::json!({"version": v.version, "default": exact.as_deref() == Some(&v.version), "path": v.bin, "lts": v.lts})).collect();
         println!(
             "{}",
             serde_json::json!({"versions": values, "default": default})
@@ -199,7 +231,7 @@ pub fn list(json: bool) -> ExitCode {
             println!(
                 "{}{}",
                 v.version,
-                if default.as_deref() == Some(&v.version) {
+                if exact.as_deref() == Some(&v.version) {
                     " (default)"
                 } else {
                     ""
@@ -336,6 +368,39 @@ mod tests {
             .unwrap();
         assert_eq!(String::from_utf8(output.stdout).unwrap(), "24.1.0\n");
     }
+    #[test]
+    fn missing_config_loads_defaults_but_invalid_config_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("yerd.toml");
+        assert_eq!(load_config(&path).unwrap(), Config::default());
+        std::fs::write(&path, "not = [valid").unwrap();
+        assert!(load_config(&path).is_err());
+    }
+
+    #[test]
+    fn list_marks_the_release_a_partial_default_resolves_to() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs(tmp.path());
+        fake(&dirs, "22.9.0");
+        fake(&dirs, "22.12.0");
+        fake(&dirs, "24.1.0");
+        let mut cfg = Config::default();
+        for (default, expected) in [
+            (Some("22"), Some("22.12.0")),
+            (Some("22.9.0"), Some("22.9.0")),
+            (Some("node"), Some("24.1.0")),
+            (Some("99"), None),
+            (None, None),
+        ] {
+            cfg.node.default = default.map(str::to_owned);
+            assert_eq!(
+                default_release(&dirs, &cfg, &node::installed(&dirs)),
+                (default.map(str::to_owned), expected.map(str::to_owned)),
+                "{default:?}"
+            );
+        }
+    }
+
     #[test]
     fn node_version_file_is_honoured_and_nvmrc_wins_in_same_dir() {
         let tmp = tempfile::tempdir().unwrap();

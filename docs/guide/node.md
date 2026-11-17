@@ -53,7 +53,9 @@ Each site's details sidebar has a **Node** row: pick a saved preference, or
 warning shows when a project file takes precedence over the saved preference.
 `node` and `npm` on your PATH still use the global default; run `yerd exec node …`
 or `yerd exec npm …` in the project folder to use the site's version. Nothing installs
-automatically: a missing version shows an error with a link to the Node page.
+automatically: when the project file or saved preference names a version that
+isn't installed, the row shows the error with an **Install Node X** button that
+installs it right there (with live progress), and a link to the Node page.
 
 ## From the command line
 
@@ -61,17 +63,21 @@ Node releases can be installed side by side and selected from the CLI:
 
 ```sh
 yerd install tool node 24
-yerd install tool node 22
+yerd install tool node lts/iron
 yerd node use 24
 yerd node use 22 --site blog
+yerd node unset --site blog
+yerd node uninstall 22.9.0
 yerd exec npm install
 ```
 
-`yerd exec node`, `npm`, and `npx` honor a project's `.nvmrc` or `.node-version`,
-then its saved preference, then the global default. Bare `node`, `npm`, and `npx`
-on your `PATH` always use the global default; run `yerd exec npm …` inside a
-project to use its version. A versioned CLI install preserves the existing
-default. See [Node version commands](../reference/cli/tooling#node-versions)
+`yerd exec node`, `npm`, and `npx` honor a project's `.nvmrc` or `.node-version`
+(including `lts/*` and `lts/<codename>` such as `lts/iron`), then its saved
+preference, then the global default. Bare `node`, `npm`, and `npx` on your `PATH`
+always use the global default; run `yerd exec npm …` inside a project to use its
+version. CLI installs stream their progress and keep an existing default.
+`yerd uninstall tool node` removes every release and clears the default and all
+site preferences. See [Node version commands](../reference/cli/tooling#node-versions)
 and [resolution rules](../reference/cli/exec#node-resolution).
 
 ## Where things live

@@ -125,9 +125,7 @@ pub(crate) async fn install_release(
     progress: Option<&ProgressTx>,
 ) -> Result<NodeInstall, ToolError> {
     if let Some(selector) = selector {
-        if !matches!(selector, "node" | "lts/*") {
-            yerd_core::node::numeric_selector(selector).map_err(ToolError::Download)?;
-        }
+        yerd_core::node::validate_selector(selector).map_err(ToolError::Download)?;
     }
     let plat = host_platform().ok_or(ToolError::UnsupportedHost("Node.js"))?;
     let key = host_index_key().ok_or(ToolError::UnsupportedHost("Node.js"))?;
@@ -143,9 +141,10 @@ pub(crate) async fn install_release(
     let latest = latest_by_major(&lines_of(&releases, &[], None, ""));
     let exact = yerd_core::node::select_release(
         selector.unwrap_or("lts/*"),
-        releases
-            .iter()
-            .map(|r| (r.version.as_str(), r.codename().is_some())),
+        releases.iter().map(|r| IndexRelease {
+            version: &r.version,
+            lts: r.codename(),
+        }),
     )
     .map_err(|_| {
         ToolError::Download(format!(
@@ -552,6 +551,32 @@ mod tests {
         let current = yerd_platform::node::resolve(&dirs, "25").unwrap();
         assert!(!current.lts);
         assert_eq!(current.codename, None);
+    }
+
+    #[tokio::test]
+    async fn codename_selectors_install_the_newest_release_of_that_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs(tmp.path());
+        let dl = fake(false);
+        for (selector, expected) in [("lts/jod", "22.9.0"), ("lts/KRYPTON", "24.2.0")] {
+            assert_eq!(
+                install_version(&dirs, &dl, Some(selector), None)
+                    .await
+                    .unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            yerd_platform::node::resolve(&dirs, "lts/krypton")
+                .unwrap()
+                .version,
+            "24.2.0"
+        );
+        for selector in ["lts/carbon", "lts/hydrogen", "lts/"] {
+            assert!(install_version(&dirs, &dl, Some(selector), None)
+                .await
+                .is_err());
+        }
     }
 
     #[tokio::test]

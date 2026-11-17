@@ -153,7 +153,14 @@ resolves a selector against `index.json` and unpacks into
 - **Progress.** With a progress sink (the streamed `InstallNodeStreamed` job) it
   emits Resolving, Downloading (byte progress via `download_with_progress` and
   `php_install::emit_byte_progress`), Verifying SHA-256, Unpacking, and Installed
-  lines. The blocking `InstallTool` / `InstallNode` paths pass `None`.
+  lines. The blocking `InstallTool` / `InstallNode` paths pass `None`; the CLI
+  uses the streamed requests (`map::streamed_install`) unless `--json` is set.
+- **Selectors.** `yerd_core::node::validate_selector` accepts numeric selectors,
+  `node`, `lts/*` and `lts/<codename>`; `select_release` takes any
+  `Into<Candidate>` (version, LTS flag, codename). The installer matches
+  `lts/<codename>` against each index entry's `lts` string and the installed
+  resolver (`InstalledNode::candidate`) against the `.lts` marker, both ignoring
+  case. A not-installed error carries `install_hint`, which single-quotes `lts/*`.
 - **Codename.** The release's LTS codename is written into the `.lts` marker; an
   empty marker (older installs) still reads as LTS with no codename.
 - **Installability filter.** `yerd_core::node::installable` keeps only releases
@@ -187,6 +194,12 @@ resolves a selector against `index.json` and unpacks into
   as a normal release; it is always LTS (that installer only fetched the latest
   LTS) and, with no `[node] default`, is the effective default via
   `legacy_default`.
+- **Tool-level install and uninstall.** A no-version `install tool node` keeps a
+  configured `[node] default`; without one it persists the previous effective
+  default (a legacy pointer), or the new release when there was none
+  (`finish_tool_install`, shared by `InstallTool` and `InstallToolStreamed`).
+  `uninstall tool node` removes every release and clears `[node] default` and
+  `[node.sites]`.
 
 Project-file discovery (`.nvmrc`, then `.node-version` per directory, nearest
 directory wins) and selection live in `yerd_platform::node::{project_file, select}`,
@@ -296,7 +309,8 @@ moved between runs).
   `ListTools` reply: Node has its own page, `/node` (`NodeView.vue`), which drives
   the [Node requests](./ipc-protocol) instead of `InstallTool` / `UninstallTool`.
 - **CLI**: `yerd tools`, `yerd install tool <id>`, `yerd uninstall tool <id>` -
-  a `Tool` variant on the `InstallTarget`/`UninstallTarget` enums and a `Tools`
+  install streams as a job (`InstallToolStreamed`, or `InstallNodeStreamed` for a
+  Node selector) unless `--json` is set; a `Tool` variant on the `InstallTarget`/`UninstallTarget` enums and a `Tools`
   command, mapped in `map::to_request` (exhaustive, compile-checked) with an
   explicit `Response::Tools` arm in `map::render` (which has a wildcard, so a
   missing arm would silently misrender).

@@ -677,6 +677,8 @@ export type Response =
       source?: NodeSource;
       /** Why no release could be resolved (missing release, unreadable file, unknown site). */
       error?: string;
+      /** The chosen selector that matches no installed release, so it can be installed. */
+      missing?: string;
     }
   | { type: "job_started"; job_id: string }
   | {

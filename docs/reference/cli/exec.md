@@ -91,16 +91,19 @@ most specific root. A subdirectory project file overrides a root file within its
 project, so a nearer `.node-version` beats a farther `.nvmrc`.
 
 `.nvmrc` and `.node-version` accept a single numeric major, minor, or exact release with an optional
-`v` prefix, plus `node` (newest installed release) and `lts/*` (newest installed
-release recorded as LTS). Leading and trailing whitespace is ignored. Named LTS
-aliases, `default`, comments, and other nvm syntax are unsupported and fail
+`v` prefix, plus `node` (newest installed release), `lts/*` (newest installed
+release recorded as LTS), and `lts/<codename>` such as `lts/iron` (newest installed
+release of that LTS line, codename case-insensitive). Leading and trailing whitespace
+is ignored. `default`, comments, and other nvm syntax are unsupported and fail
 clearly. A legacy single-version installation (`{data}/tools/node`) counts as LTS, since
-that installer only ever fetched the latest LTS, so `lts/*` can select it too.
-The two supported aliases also work with `yerd install tool node <alias>`.
+that installer only ever fetched the latest LTS, so `lts/*` can select it too; it has
+no recorded codename, so `lts/<codename>` cannot. The aliases also work with
+`yerd install tool node <alias>` and `yerd node use <alias>`.
 
 An empty, unreadable, unsupported, or unmatched project file is an error (exit `2`);
 it never falls through to a site preference or default. Missing installed
-versions also fail with an installation hint. Config I/O failures exit `74`.
+versions also fail with an installation hint. A missing `yerd.toml` counts as an
+empty config; other config I/O failures exit `74`.
 Node project resolution requires the daemon's live site list: an unreachable
 daemon exits `69`, including outside sites. PHP's existing warning and default
 fallback behavior remains unchanged.
