@@ -74,18 +74,12 @@ afterEach(() => {
 });
 
 describe("SiteNodePanel", () => {
-  it.each([
-    ["nvmrc", "from .nvmrc"],
-    ["node-version", "from .node-version"],
-    ["site", "from site preference"],
-    ["default", "from global default"],
-  ] as const)("labels the %s source", async (source, label) => {
-    nodeSite.mockResolvedValue(reply({ effective: "22.9.0", source }));
+  it("loads the site and explains how to use its version", async () => {
+    nodeSite.mockResolvedValue(reply({ effective: "22.9.0", source: "nvmrc" }));
     const wrapper = await mountPanel();
-    const text = wrapper.get('[data-testid="site-node-effective"]').text();
-    expect(text).toContain("22.9.0");
-    expect(text).toContain(label);
     expect(nodeSite).toHaveBeenCalledWith("blog");
+    expect(wrapper.text()).not.toContain("Effective");
+    expect(wrapper.get('[data-testid="site-node-hint"]').text()).toContain("yerd exec npm");
   });
 
   it("shows the precedence banner only when a project file and a preference both exist", async () => {
@@ -140,7 +134,7 @@ describe("SiteNodePanel", () => {
     const labels = select(wrapper)
       .findAll("option")
       .map((o) => o.text());
-    expect(labels).toEqual(["Use project file or global default", "22.9.0", "20.18.0", "18 (saved)"]);
+    expect(labels).toEqual(["Default", "22.9.0", "20.18.0", "18 (saved)"]);
   });
 
   it("renders the error with a link to the Node view", async () => {
@@ -151,7 +145,6 @@ describe("SiteNodePanel", () => {
     const link = err.findAll("button").find((b) => b.text() === "Manage Node versions");
     await link?.trigger("click");
     expect(push).toHaveBeenCalledWith("/node");
-    expect(wrapper.find('[data-testid="site-node-effective"]').exists()).toBe(false);
   });
 
   it("hides the error link when the site resolves", async () => {
@@ -180,15 +173,13 @@ describe("SiteNodePanel", () => {
         ? new Promise<NodeSiteResponse>((resolve) => {
             resolveBlog = resolve;
           })
-        : Promise.resolve(reply({ effective: "20.18.0", source: "site" })),
+        : Promise.resolve(reply({ error: "shop: Node 18 is not installed" })),
     );
     const wrapper = mount(SiteNodePanel, { props: { site: site("blog") } });
     await wrapper.setProps({ site: site("shop") });
     await flushPromises();
-    resolveBlog(reply({ effective: "22.9.0", source: "nvmrc" }));
+    resolveBlog(reply({ error: "blog: Node 16 is not installed" }));
     await flushPromises();
-    const text = wrapper.get('[data-testid="site-node-effective"]').text();
-    expect(text).toContain("20.18.0");
-    expect(text).toContain("from site preference");
+    expect(wrapper.get('[data-testid="site-node-error"]').text()).toContain("shop:");
   });
 });

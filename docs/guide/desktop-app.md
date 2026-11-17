@@ -57,10 +57,10 @@ Manages your installed [PHP versions](./php-versions):
 
 ### Node
 
-Manages your installed [Node versions](./tooling#node-versions):
+Manages your installed [Node.js versions](./node):
 
 - An Installed versions card lists each release with its LTS codename and a star on the global default. Each row's `⋯` menu offers Update (when a newer patch of that major exists), Set default, and Uninstall. Pending updates show as a count on the sidebar's Node item and as an **Update Node** item in the tray menu. Uninstall is disabled for the default while other releases exist; its confirmation lists any site preferences it would clear.
-- Install opens a dialog with a dropdown of the release lines not yet installed, newest first, with LTS codenames and EOL badges; it installs the chosen line's newest patch, or switch to typing an exact version. Installs stream a live log you can close while they keep running.
+- Install opens a dialog with a dropdown of the release lines not yet installed, newest first, with LTS codenames and EOL badges (end-of-life majors only when **Show end-of-life versions** is on); it installs the chosen line's newest patch, or switch to typing an exact version. Installs stream a live log you can close while they keep running.
 - Update installs the newest patch alongside and moves the global default to it only when the default was on an older patch of that major. Site preferences are never changed.
 - A banner notes that bare `node`, `npm`, and `npx` always use the global default; run `yerd exec npm …` inside a project to use its version.
 
@@ -84,7 +84,7 @@ Sites can also be organized into named, reorderable groups shown as collapsible 
 
 Five tabs, covering everything Yerd knows about one site:
 
-- **General.** An **Open site** button, then a row of actions - **Terminal** (opens your terminal in the project directory), the **editor** button (macOS and Linux), **Dumps** or **WP Admin** depending on the site, and **Share publicly…** (a [Cloudflare Quick Tunnel](#share)). Below them: PHP version, **Node** (a saved preference you can set or clear, the effective version and whether it comes from `.nvmrc`, `.node-version`, the site preference, or the global default, and a warning when a project file overrides the saved preference), the **Editor** used for this site, the path (with reveal), the served web root (blank means auto-detect), the URL, the **HTTPS** toggle, **WordPress Auto Admin Login** with an admin picker on WordPress sites, its [group](./sites#site-groups), and - for a linked site only - **Unlink**. Parked sites have no destructive action here; remove them by un-parking their folder, or they'd reappear.
+- **General.** An **Open site** button, then a row of actions - **Terminal** (opens your terminal in the project directory), the **editor** button (macOS and Linux), **Dumps** or **WP Admin** depending on the site, and **Share publicly…** (a [Cloudflare Quick Tunnel](#share)). Below them: PHP version, **Node** (a saved preference you can set, or **Default** to clear it, a warning when a project file overrides the saved preference, and a reminder to run `yerd exec node …` / `yerd exec npm …` in the project for the site's version), the **Editor** used for this site, the path (with reveal), the served web root (blank means auto-detect), the URL, the **HTTPS** toggle, **WordPress Auto Admin Login** with an admin picker on WordPress sites, its [group](./sites#site-groups), and - for a linked site only - **Unlink**. Parked sites have no destructive action here; remove them by un-parking their folder, or they'd reappear.
 - **Domains.** Set the primary domain and add or remove aliases, subdomains, and wildcards. See [Domains](../reference/cli/domains).
 - **Routing.** The **Route through front controller** switch (on: everything funnels through `index.php`, as Laravel and Symfony want; off: named `.php` files execute directly), and beneath it the per-prefix [routing rules](../reference/cli/routes) that carve exceptions out of that default - a nested `api/index.php`, or `index.html` for an SPA.
 - **Headers.** Custom [response headers](../reference/cli/headers) added to every response the site serves, such as `Access-Control-Allow-Origin` for CORS. Set a name and value, or remove one with its trash button.

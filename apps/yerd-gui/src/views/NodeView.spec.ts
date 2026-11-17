@@ -209,15 +209,25 @@ describe("NodeView", () => {
       .map((o) => o.text());
   }
 
-  it("offers only release lines that are not installed, with badges", async () => {
+  it("offers only supported lines that are not installed, EOL behind a toggle", async () => {
     stubIpc();
     const wrapper = await mountView();
     await openInstall(wrapper);
+    expect(optionLabels(wrapper)).toEqual(["Node 24 (24.2.0)"]);
+    expect(wrapper.find('[data-testid="node-eol-unknown"]').exists()).toBe(false);
+    await wrapper.get('[data-testid="node-eol-toggle"]').trigger("click");
+    await flushPromises();
     expect(optionLabels(wrapper)).toEqual([
       "Node 24 (24.2.0)",
       "Node 16 (16.20.2) - LTS Gallium - EOL",
     ]);
-    expect(wrapper.find('[data-testid="node-eol-unknown"]').exists()).toBe(false);
+  });
+
+  it("hides the EOL toggle when no end-of-life line is on offer", async () => {
+    stubIpc({ majors: lines.filter((l) => l.eol !== true) });
+    const wrapper = await mountView();
+    await openInstall(wrapper);
+    expect(wrapper.find('[data-testid="node-eol-toggle"]').exists()).toBe(false);
   });
 
   it("preselects the newest supported LTS line not yet installed", async () => {
@@ -238,6 +248,8 @@ describe("NodeView", () => {
     stubIpc();
     const wrapper = await mountView();
     await openInstall(wrapper);
+    await wrapper.get('[data-testid="node-eol-toggle"]').trigger("click");
+    await flushPromises();
     await wrapper.get('[aria-label="Node release to install"]').setValue("16");
     await wrapper.get('[data-testid="node-install-submit"]').trigger("click");
     await flushPromises();
@@ -329,7 +341,11 @@ describe("NodeView", () => {
   });
 
   it("keeps a line picked while the release list is still refreshing", async () => {
-    stubIpc();
+    const two: MajorLine[] = [
+      { major: 25, latest: "25.1.0", eol: false, update_available: false },
+      { major: 24, latest: "24.2.0", codename: "Krypton", eol: false, update_available: false },
+    ];
+    stubIpc({ majors: two });
     const wrapper = await mountView();
     await openInstall(wrapper);
     let finish: (v: unknown) => void = () => {};
@@ -340,16 +356,16 @@ describe("NodeView", () => {
     );
     await wrapper.get('[data-testid="node-install-open"]').trigger("click");
     await flushPromises();
-    await wrapper.get('[aria-label="Node release to install"]').setValue("16");
-    finish({ type: "available_node", majors: lines });
+    await wrapper.get('[aria-label="Node release to install"]').setValue("25");
+    finish({ type: "available_node", majors: two });
     await flushPromises();
     const select = wrapper.get('[aria-label="Node release to install"]')
       .element as HTMLSelectElement;
-    expect(select.value).toBe("16");
-    stubIpc();
+    expect(select.value).toBe("25");
+    stubIpc({ majors: two });
     await wrapper.get('[data-testid="node-install-submit"]').trigger("click");
     await flushPromises();
-    expect(callsOf("install_node_streamed")[0]?.[1]).toEqual({ version: "16", update: false });
+    expect(callsOf("install_node_streamed")[0]?.[1]).toEqual({ version: "25", update: false });
   });
 
   it("selects a line once Retry loads the list after a failed first load", async () => {

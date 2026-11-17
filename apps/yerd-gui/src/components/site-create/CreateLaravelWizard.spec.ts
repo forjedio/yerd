@@ -2,11 +2,13 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import CreateLaravelWizard from "./CreateLaravelWizard.vue";
-import type { ToolStatus } from "@/ipc/types";
+import { resetResourceCache } from "@/composables/useResource";
+import type { NodeRelease, ToolStatus } from "@/ipc/types";
 
 const createSite = vi.hoisted(() => vi.fn());
 const jobStatus = vi.hoisted(() => vi.fn());
 const listTools = vi.hoisted(() => vi.fn());
+const listNode = vi.hoisted(() => vi.fn());
 const availablePhp = vi.hoisted(() => vi.fn());
 const installPhpWithProgress = vi.hoisted(() => vi.fn());
 const installToolStreamed = vi.hoisted(() => vi.fn());
@@ -23,6 +25,7 @@ vi.mock("@/ipc/client", () => ({
   jobCancel: vi.fn().mockResolvedValue(undefined),
   jobStatus,
   listTools,
+  listNode,
   openInBrowser: vi.fn(),
   openPath: vi.fn(),
   pickDirectory: vi.fn(),
@@ -87,6 +90,8 @@ describe("CreateLaravelWizard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     listTools.mockResolvedValue(ALL_TOOLS);
+    listNode.mockResolvedValue([]);
+    resetResourceCache();
     createSite.mockResolvedValue("job-1");
     jobStatus.mockResolvedValue(status("succeeded"));
   });
@@ -94,6 +99,20 @@ describe("CreateLaravelWizard", () => {
   it("is titled for Laravel", async () => {
     const w = await openWizard();
     expect(w.text()).toContain("Create a new Laravel site");
+  });
+
+  it("renders exactly one step while moving back and forth", async () => {
+    const w = await openWizard();
+    await w.find("#cs-name").setValue("blog");
+    await next(w);
+    await next(w);
+    await byText(w, "Back")!.trigger("click");
+    await next(w);
+    await byText(w, "Back")!.trigger("click");
+    expect(w.findAll('[data-testid="wizard-step"]')).toHaveLength(1);
+    expect(w.text().split("Starter kit")).toHaveLength(2);
+    await next(w);
+    expect(w.text()).not.toContain("Starter kit");
   });
 
   it("submits the default spec on the default PHP", async () => {
@@ -116,7 +135,7 @@ describe("CreateLaravelWizard", () => {
           teams: false,
           testing: "pest",
           database: "sqlite",
-          js: "skip",
+          js: "npm",
           git: true,
           boost: false,
         },
@@ -151,7 +170,7 @@ describe("CreateLaravelWizard", () => {
     expect(byText(w, "Next")!.attributes("disabled")).toBeUndefined();
   });
 
-  it("sends the chosen JS runtime for an Inertia kit and skip for Livewire", async () => {
+  it("sends the chosen JS runtime for any kit, including Livewire", async () => {
     const w = await openWizard();
     await w.find("#cs-name").setValue("blog");
     await next(w);
@@ -170,11 +189,12 @@ describe("CreateLaravelWizard", () => {
     await w.find("#cs-name").setValue("blog");
     await next(w);
     await byText(w, "Livewire")!.trigger("click");
+    await w.find("#cs-js").setValue("pnpm");
     await next(w);
     await next(w);
     await byText(w, "Create site")!.trigger("click");
     await flushPromises();
-    expect(submittedOptions()).toMatchObject({ starter_kit: "livewire", js: "skip" });
+    expect(submittedOptions()).toMatchObject({ starter_kit: "livewire", js: "pnpm" });
   });
 
   it("requires a community package before leaving the Stack step", async () => {
@@ -203,15 +223,72 @@ describe("CreateLaravelWizard", () => {
     expect(w.text()).toContain("Node will be installed automatically during creation.");
   });
 
-  it("omits the auto-install note when the kit installs no frontend dependencies", async () => {
+  it("omits the auto-install note when frontend dependencies are skipped", async () => {
     listTools.mockResolvedValue([tool("composer"), tool("laravel")]);
     const w = await openWizard();
     await w.find("#cs-name").setValue("blog");
     await next(w);
-    await byText(w, "Livewire")!.trigger("click");
+    await w.find("#cs-js").setValue("skip");
     await next(w);
     await next(w);
     expect(w.text()).not.toContain("will be installed automatically");
+  });
+
+  function release(version: string, isDefault = false): NodeRelease {
+    return { version, lts: true, default: isDefault, uninstall_blocked: false };
+  }
+
+  it("offers frontend dependencies for the plain skeleton", async () => {
+    const w = await openWizard();
+    await w.find("#cs-name").setValue("blog");
+    await next(w);
+    expect((w.find("#cs-js").element as HTMLSelectElement).value).toBe("npm");
+  });
+
+  it("hides the Node picker with fewer than two Yerd releases", async () => {
+    for (const installed of [[], [release("22.12.0", true)]]) {
+      listNode.mockResolvedValue(installed);
+      resetResourceCache();
+      const w = await openWizard();
+      await w.find("#cs-name").setValue("blog");
+      await next(w);
+      expect(w.find("#cs-node").exists()).toBe(false);
+      await next(w);
+      await next(w);
+      await byText(w, "Create site")!.trigger("click");
+      await flushPromises();
+      expect(submittedOptions().node).toBeUndefined();
+      createSite.mockClear();
+      w.unmount();
+    }
+  });
+
+  it("sends the picked Node release and omits it for Default", async () => {
+    listNode.mockResolvedValue([release("24.2.0", true), release("22.12.0")]);
+    const w = await openWizard();
+    await w.find("#cs-name").setValue("blog");
+    await next(w);
+    const labels = w
+      .find("#cs-node")
+      .findAll("option")
+      .map((o) => o.text());
+    expect(labels).toEqual(["Default (Node 24.2.0)", "Node 24.2.0", "Node 22.12.0"]);
+    await w.find("#cs-node").setValue("22.12.0");
+    await next(w);
+    await next(w);
+    expect(w.text()).toContain("Node 22.12.0");
+    await byText(w, "Create site")!.trigger("click");
+    await flushPromises();
+    expect(submittedOptions().node).toBe("22.12.0");
+  });
+
+  it("hides the Node picker when frontend dependencies are skipped", async () => {
+    listNode.mockResolvedValue([release("24.2.0", true), release("22.12.0")]);
+    const w = await openWizard();
+    await w.find("#cs-name").setValue("blog");
+    await next(w);
+    await w.find("#cs-js").setValue("skip");
+    expect(w.find("#cs-node").exists()).toBe(false);
   });
 
   it("sends pnpm as the JS runtime", async () => {

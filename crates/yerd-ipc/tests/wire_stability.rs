@@ -2698,6 +2698,7 @@ fn request_create_site_byte_shape() {
                     js: JsRuntime::Npm,
                     git: true,
                     boost: false,
+                    node: None,
                 },
             },
         },
@@ -2706,6 +2707,29 @@ fn request_create_site_byte_shape() {
     let expected = r#"{"type":"create_site","spec":{"name":"blog","parent_dir":"/srv","php":"8.4","secure":true,"framework":{"framework":"laravel","options":{"starter_kit":"react","auth":"laravel","livewire_class_components":false,"teams":false,"testing":"pest","database":"sqlite","js":"npm","git":true,"boost":false}}}}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn laravel_options_node_appears_only_when_set() {
+    use yerd_ipc::{AuthProvider, Database, JsRuntime, LaravelOptions, StarterKit, Testing};
+    let mut options = LaravelOptions {
+        starter_kit: StarterKit::None,
+        auth: AuthProvider::Laravel,
+        livewire_class_components: false,
+        teams: false,
+        testing: Testing::Pest,
+        database: Database::Sqlite,
+        js: JsRuntime::Npm,
+        git: false,
+        boost: false,
+        node: None,
+    };
+    let s = serde_json::to_string(&options).unwrap();
+    assert!(!s.contains("node"), "{s}");
+    options.node = Some("22.12.0".into());
+    let s = serde_json::to_string(&options).unwrap();
+    assert!(s.ends_with(r#""boost":false,"node":"22.12.0"}"#), "{s}");
+    assert_eq!(serde_json::from_str::<LaravelOptions>(&s).unwrap(), options);
 }
 
 #[test]

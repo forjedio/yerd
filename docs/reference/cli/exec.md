@@ -111,8 +111,8 @@ The selected release's bin directory is prepended to `PATH`, so spawned `node`,
 or npm/npx entry point and, with `--json`, an exact version and `source` of
 `nvmrc`, `node-version`, `site`, or `default`.
 
-The desktop app's site details sidebar shows the same effective version and
-source for each site.
+The desktop app's site details sidebar sets the same saved preference and warns
+when a project file overrides it.
 
 ## Passthrough behaviour
 

@@ -94,7 +94,7 @@ A versioned install preserves an existing global default. The first installation
 becomes the default if none exists. `yerd install tool node` installs the newest
 LTS and makes it the default, retaining previously installed releases. Releases
 below major 9 are not installable, including `yerd install tool node 8`. In the
-desktop app, the [Node page](../../guide/tooling#node-versions) browses, installs,
+desktop app, the [Node page](../../guide/node) browses, installs,
 updates, and uninstalls individual releases.
 
 `yerd exec node`, `npm`, and `npx` select the nearest project `.nvmrc` or

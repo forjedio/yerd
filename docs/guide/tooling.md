@@ -1,8 +1,7 @@
 # Tooling
 
 Yerd can install the **developer tools** a typical PHP/Laravel/WordPress project
-reaches for - [Composer](https://getcomposer.org), [Node.js](https://nodejs.org)
-(with `npm`/`npx`), [Bun](https://bun.sh), [pnpm](https://pnpm.io), the **Laravel installer**, and
+reaches for - [Composer](https://getcomposer.org), [Bun](https://bun.sh), [pnpm](https://pnpm.io), the **Laravel installer**, and
 **WP-CLI** - the same way it installs [PHP versions](./php-versions):
 self-contained binaries fetched on demand (the Laravel installer and WP-CLI are
 built via Composer) and dropped onto your `PATH`. No system package manager, no
@@ -10,10 +9,12 @@ global install, nothing to uninstall by hand. Already have one installed
 elsewhere? Yerd [detects it](#external-tools) and, for most tools, uses it
 instead.
 
+Node.js has its own page with side-by-side versions, a global default and
+per-site preferences: see [Node.js](./node).
+
 | Tool | `id` | Provides | Source |
 |---|---|---|---|
 | Composer | `composer` | `composer` | getcomposer.org (phar) |
-| Node.js | `node` | `node`, `npm`, `npx` | nodejs.org (latest LTS) |
 | Bun | `bun` | `bun`, `bunx` | github.com/oven-sh/bun |
 | pnpm | `pnpm` | `pnpm`, `pnpx` | github.com/pnpm/pnpm |
 | Laravel installer | `laravel` | `laravel` | Composer (`laravel/installer`) |
@@ -33,13 +34,10 @@ lists the developer tools Yerd manages and their install status:
 
 <ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="The Tooling page in the Yerd desktop app" />
 
-- **Composer**, **Node**, **Bun**, **pnpm**, the **Laravel installer**, and **WP-CLI**,
+- **Composer**, **Bun**, **pnpm**, the **Laravel installer**, and **WP-CLI**,
   each showing the commands it provides.
 - Click **Install** to fetch the latest release; once installed you get
   **Update** (re-fetch the current latest) and **Uninstall**.
-- Node is the exception: once installed, its row shows **Manage versions**, which
-  opens the **Node** page (under **Environment**) where releases are installed,
-  updated, uninstalled, and set as the default. See [Node versions](#node-versions).
 - A tool you've installed yourself shows an **External** badge and a *Managed by
   you* note. **Install** is still offered, so you can take Yerd's own copy as
   well - see [External tools](#external-tools) below.
@@ -52,7 +50,6 @@ lists the developer tools Yerd manages and their install status:
 
 ```sh
 yerd tools                      # list the tools and their install status
-yerd install tool node          # download + install the latest Node LTS
 yerd install tool bun
 yerd install tool composer
 yerd install tool laravel       # build the Laravel installer (needs Composer)
@@ -119,12 +116,11 @@ mistaken for an external install.
 
 The model mirrors [PHP versions](./php-versions) and [services](./services):
 
-- **Self-contained binaries.** Each tool is a relocatable build - Node's tarball
-  bundles `node` + `npm` + `npx`, Bun is a single binary, pnpm is a native
+- **Self-contained binaries.** Each tool is a relocatable build - Bun is a single binary, pnpm is a native
   binary with its bundled `dist/`, Composer is a phar run
   by Yerd's managed PHP. Nothing is compiled and nothing touches system paths.
 - **Verified downloads.** Every artifact is checked against the publisher's
-  `SHASUMS256.txt` (Node, Bun), the GitHub release `digest` (pnpm), or
+  `SHASUMS256.txt` (Bun), the GitHub release `digest` (pnpm), or
   `composer.phar.sha256sum` (Composer) before it
   is installed.
 - **Installed under Yerd's data dir.** Tools live in `{data}/tools/<id>/`
@@ -134,64 +130,6 @@ The model mirrors [PHP versions](./php-versions) and [services](./services):
   directory that holds the `php`/`php<ver>` shims. Put that directory on your
   `PATH` once (see below) and `composer`, `node`, `npm`, `bun`, … just work.
 - **Rootless.** Everything runs as your user, no elevation.
-
-### Node versions
-
-Node releases can be installed side by side and selected from the CLI:
-
-```sh
-yerd install tool node 24
-yerd install tool node 22
-yerd node use 24
-yerd node use 22 --site blog
-yerd exec npm install
-```
-
-`yerd exec node`, `npm`, and `npx` honor a project's `.nvmrc` or `.node-version`,
-then its saved preference, then the global default. Bare `node`, `npm`, and `npx`
-on your `PATH` always use the global default; run `yerd exec npm …` inside a
-project to use its version. A versioned CLI install preserves the existing
-default. See [Node version commands](../reference/cli/tooling#node-versions)
-and [resolution rules](../reference/cli/exec#node-resolution).
-
-In the desktop app, the **Node** page (sidebar, under **Environment**) manages
-releases:
-
-- **Installed versions** lists each release with its LTS codename and a star on
-  the global default. Each row offers **Set default**, **Uninstall**, and
-  **Update** when a newer patch of that major exists. The daemon checks for
-  newer patches every 12 hours alongside the PHP update check (only while a
-  Node release is installed; notify-only, nothing is downloaded but the
-  release index). Pending updates show as a count on the sidebar's **Node**
-  item, a red dot on the tray icon, and an **Update Node** tray item that
-  opens this page. **Refresh** checks immediately.
-- **Install** opens a dialog with a dropdown of the release lines you don't
-  have yet, newest first, each showing its newest patch, LTS codename, and an
-  **EOL** badge for end-of-life majors; the newest supported LTS is preselected.
-  A switch in the dialog lets you type an exact version instead. Majors below 9
-  aren't offered. If the release schedule can't be fetched the list still
-  loads, without EOL badges.
-- Installs run in the background with a live log you can close; the operations
-  indicator keeps tracking them. Other version actions are disabled until the
-  install finishes. The first install becomes the global default.
-- **Update** installs the newest patch of that major alongside the old one. The
-  global default moves to it only when the default currently resolves to an
-  older patch of that major. Saved site preferences are never changed, and the
-  old patch stays installed.
-- **Uninstall** removes a single release. While other releases are installed, a
-  release can't be removed if the global default would then resolve to nothing
-  (for example an exact default naming it) - set another default first. Removing the last release is allowed and clears the default. Saved site
-  preferences that resolve only to the removed release are cleared; the
-  confirmation lists them first, and those sites fall back to their project file
-  or the global default.
-
-Each site's details sidebar also has a **Node** row: pick a saved preference (or
-clear it), and see the effective version and where it comes from (`.nvmrc`,
-`.node-version`, site preference, or global default). A warning shows when a
-project file takes precedence over the saved preference. Nothing installs
-automatically: a missing version shows an error with a link to the Node page.
-
-Other tools install the latest stable release, replacing their previous files.
 
 ## Put Yerd's bin directory on your PATH
 
@@ -249,13 +187,11 @@ extension list.
 | Path | Contents |
 |---|---|
 | `{data}/tools/composer/composer.phar` | The Composer phar. |
-| `{data}/tools/node-versions/<version>/` | One unpacked Node release (side by side). |
-| `{data}/tools/node/node-<ver>-<os>-<arch>/` | A legacy single-version Node install, still usable. |
 | `{data}/tools/bun/bun-<os>-<arch>/bun` | The Bun binary. |
 | `{data}/tools/pnpm/pnpm-<os>-<arch>/pnpm` | The pnpm binary (`pnpx` beside it). |
 | `{data}/tools/laravel/bin/laravel` | The Laravel installer (built via Composer). |
 | `{data}/tools/wp-cli/vendor/wp-cli/wp-cli/php/boot-fs.php` | WP-CLI (built via Composer). |
-| `{data}/bin/{composer,node,npm,npx,bun,bunx,pnpm,pnpx,laravel,wp}` | The `PATH` shims. |
+| `{data}/bin/{composer,bun,bunx,pnpm,pnpx,laravel,wp}` | The `PATH` shims (Node's are on the [Node.js](./node#where-things-live) page). |
 | `{data}/bin/{mysql,mysqldump,mariadb,mariadb-dump,psql,pg_dump,pg_dumpall,pg_restore,createdb,valkey-cli,cloudflared}` | Service client and `cloudflared` commands, present while the engine (or `cloudflared`) is installed. See [Services & Databases](./services#client-commands-on-your-path). |
 
 `{data}` is Yerd's per-user data directory (`yerd status` and
@@ -264,6 +200,7 @@ extension list.
 ## See also
 
 - [Tooling CLI reference](../reference/cli/tooling) - every command and flag.
+- [Node.js](./node) - Node versions, defaults and per-site preferences.
 - [PHP Versions](./php-versions) - the version model these tools follow.
 - [Services & Databases](./services) - the same install-on-demand approach for
   databases and caches.

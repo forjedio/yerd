@@ -37,7 +37,7 @@ const installing = computed(() =>
 
 const noneInstalled = computed(() => releases.value !== null && releases.value.length === 0);
 
-const DEFAULT_OPTION = { value: "", label: "Use project file or global default" };
+const DEFAULT_OPTION = { value: "", label: "Default" };
 
 /** Installed releases, plus the saved preference when it is not one of them
  *  (a partial selector such as `22`, or a release since removed). */
@@ -47,13 +47,6 @@ const options = computed(() => {
   const saved = pref && !installed.includes(pref) ? [{ value: pref, label: `${pref} (saved)` }] : [];
   return [DEFAULT_OPTION, ...installed.map((v) => ({ value: v, label: v })), ...saved];
 });
-
-const SOURCE_LABELS: Record<NodeSource, string> = {
-  nvmrc: "from .nvmrc",
-  "node-version": "from .node-version",
-  site: "from site preference",
-  default: "from global default",
-};
 
 const FILE_NAMES: Partial<Record<NodeSource, string>> = {
   nvmrc: ".nvmrc",
@@ -147,15 +140,6 @@ async function change(version: string): Promise<void> {
         No Node release is installed yet.
       </p>
 
-      <p
-        v-if="status?.effective && status.source"
-        class="text-sm text-muted-foreground"
-        data-testid="site-node-effective"
-      >
-        Effective: <span class="font-mono text-foreground">{{ status.effective }}</span> -
-        {{ SOURCE_LABELS[status.source] }}
-      </p>
-
       <InfoBanner v-if="shadowed" variant="warning" data-testid="site-node-precedence">
         This project's <code>{{ projectFileName }}</code> ({{ status?.project_file?.selector }})
         takes precedence over the saved preference ({{ status?.preference }}).
@@ -168,9 +152,10 @@ async function change(version: string): Promise<void> {
         </Button>
       </div>
 
-      <p class="text-xs text-muted-foreground">
-        Bare <code>npm</code> uses the global default; run <code>yerd exec npm …</code> here to use
-        this version.
+      <p class="text-xs text-muted-foreground" data-testid="site-node-hint">
+        <code>node</code> and <code>npm</code> use the global default; run
+        <code>yerd exec node …</code> or <code>yerd exec npm …</code> in the project folder to use
+        this site's version.
       </p>
     </dd>
   </div>

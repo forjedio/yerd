@@ -439,6 +439,8 @@ export interface LaravelOptions {
   js: JsRuntime;
   git: boolean;
   boost: boolean;
+  /** Installed Node release to build with and save as the site's preference. Omitted for the default. */
+  node?: string;
 }
 
 export type WordPressDbEngine = "mysql" | "mariadb";

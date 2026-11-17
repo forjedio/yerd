@@ -342,6 +342,7 @@ fn create_site_spec(args: &Value) -> Result<yerd_ipc::CreateSiteSpec, ArgError> 
                 js: opt_mapped(args, "js", JS_RUNTIMES, yerd_ipc::JsRuntime::Npm)?,
                 git: opt_bool(args, "git", false)?,
                 boost: false,
+                node: None,
             },
         },
     })

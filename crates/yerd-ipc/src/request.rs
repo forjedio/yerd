@@ -1394,6 +1394,7 @@ mod variant_name_pinning {
             js: crate::JsRuntime::Npm,
             git: true,
             boost: false,
+            node: None,
         }
     }
 }

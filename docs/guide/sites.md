@@ -42,7 +42,7 @@ Group names are unique case-insensitively (like site names) and can't be `Unallo
 Beyond registering folders you already have, the app can **scaffold a brand-new Laravel project** for you. Open the **Create** menu in the Sites header and choose **New Laravel site** to launch a short, four-step wizard - **Basics → Stack → Testing → Review** - that runs `laravel new` under the PHP version you pick and registers the result as a `.test` site automatically.
 
 ::: tip Prerequisites
-Creating a Laravel site needs a PHP version, **Composer**, and the **Laravel installer**. If any are missing, the wizard offers to install them first; it can also use ones you already have [installed externally](./tooling#external-tools) (e.g. a global Composer). Starter kits that need Node, Bun, or pnpm pull the runtime in during the build. pnpm also needs Node, so choosing it installs whichever of the two is missing (a Node already on your `PATH` counts).
+Creating a Laravel site needs a PHP version, **Composer**, and the **Laravel installer**. If any are missing, the wizard offers to install them first; it can also use ones you already have [installed externally](./tooling#external-tools) (e.g. a global Composer). The frontend build pulls in Node, Bun, or pnpm when it's missing. pnpm also needs Node, so choosing it installs whichever of the two is missing (a Node already on your `PATH` counts).
 :::
 
 ### Basics
@@ -60,7 +60,9 @@ Creating a Laravel site needs a PHP version, **Composer**, and the **Laravel ins
 
 Choose a **starter kit**: **None** (a plain skeleton, no auth scaffolding), the official **React**, **Vue**, or **Svelte** kits (Inertia + TypeScript), **Livewire** (Blade + PHP), or **Community…** to scaffold from any `--using <package>`.
 
-For the React, Vue, Svelte and Community kits, **Frontend dependencies** picks how the frontend is installed and built: **npm**, **Bun**, **pnpm** (runs `laravel new --pnpm`), or **Skip** to install them later. The wizard notes which tools it will install automatically when they're missing.
+**Frontend dependencies** picks how the frontend is installed and built, for every kit including **None** and **Livewire** (each ships a Vite build): **npm** (the default), **Bun**, **pnpm** (runs `laravel new --pnpm`), or **Skip** to install them later. The wizard notes which tools it will install automatically when they're missing.
+
+When two or more Yerd [Node releases](./node) are installed and the frontend isn't skipped, a **Node version** picker appears beside it: **Default** (the global default) or a specific release. A specific release is used for the install and build, and is saved as the new site's [Node version](./node#per-site-versions). With one Yerd release (or none, so a Node on your `PATH` is used) there's nothing to choose and the build uses that.
 
 ### Testing
 

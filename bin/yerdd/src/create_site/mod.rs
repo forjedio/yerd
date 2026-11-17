@@ -466,12 +466,19 @@ fn resolve_composer(
         .map(Composer::External)
 }
 
-/// Compose `PATH` = `<per-job bin> : <{data}/bin> : <user PATH> : <inherited>`.
+/// Compose `PATH` = `<per-job bin> : [<node bin>] : <{data}/bin> : <user PATH> : <inherited>`.
 /// The user's resolved PATH is appended so externally-installed
 /// composer/node/bun/git/laravel are findable, while the per-job bin (managed
-/// `php`) and Yerd shims keep precedence.
-fn composed_path(job_bin: &Path, data_bin: &Path, user_dirs: &[PathBuf]) -> std::ffi::OsString {
-    let mut entries = vec![job_bin.to_path_buf(), data_bin.to_path_buf()];
+/// `php`), a chosen Node release's `bin`, and Yerd shims keep precedence.
+fn composed_path(
+    job_bin: &Path,
+    node_bin: Option<&Path>,
+    data_bin: &Path,
+    user_dirs: &[PathBuf],
+) -> std::ffi::OsString {
+    let mut entries = vec![job_bin.to_path_buf()];
+    entries.extend(node_bin.map(Path::to_path_buf));
+    entries.push(data_bin.to_path_buf());
     entries.extend(user_dirs.iter().cloned());
     if let Some(existing) = std::env::var_os("PATH") {
         entries.extend(std::env::split_paths(&existing));
@@ -590,6 +597,7 @@ mod tests {
             js: JsRuntime::Skip,
             git: false,
             boost: false,
+            node: None,
         }
     }
 
@@ -776,11 +784,24 @@ mod tests {
         let job_bin = Path::new("/jobs/abc/bin");
         let data_bin = Path::new("/data/bin");
         let user = vec![PathBuf::from("/opt/homebrew/bin")];
-        let composed = composed_path(job_bin, data_bin, &user);
+        let composed = composed_path(job_bin, None, data_bin, &user);
         let entries: Vec<PathBuf> = std::env::split_paths(&composed).collect();
         assert_eq!(entries.first().unwrap(), job_bin);
         assert_eq!(entries.get(1).unwrap(), data_bin);
         assert!(entries.iter().any(|p| p == Path::new("/opt/homebrew/bin")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn composed_path_puts_a_chosen_node_ahead_of_the_shims() {
+        let job_bin = Path::new("/jobs/abc/bin");
+        let node_bin = Path::new("/data/tools/node-versions/22.12.0/node-v22.12.0/bin");
+        let data_bin = Path::new("/data/bin");
+        let composed = composed_path(job_bin, Some(node_bin), data_bin, &[]);
+        let entries: Vec<PathBuf> = std::env::split_paths(&composed).collect();
+        assert_eq!(entries.first().unwrap(), job_bin);
+        assert_eq!(entries.get(1).unwrap(), node_bin);
+        assert_eq!(entries.get(2).unwrap(), data_bin);
     }
 
     #[cfg(unix)]

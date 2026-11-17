@@ -87,9 +87,15 @@ function lineLabel(l: MajorLine): string {
 }
 
 /** Release lines with nothing installed yet, newest major first, as the daemon orders them. */
+const uninstalledLines = computed(() => majors.value.filter((l) => !l.installed_latest));
+
+/** End-of-life lines are hidden from the picker unless asked for. */
+const showEol = ref(false);
+const hasEolLines = computed(() => uninstalledLines.value.some((l) => l.eol === true));
+
 const installOptions = computed(() =>
-  majors.value
-    .filter((l) => !l.installed_latest)
+  uninstalledLines.value
+    .filter((l) => showEol.value || l.eol !== true)
     .map((l) => ({ value: String(l.major), label: lineLabel(l) })),
 );
 
@@ -125,10 +131,11 @@ async function openInstall(): Promise<void> {
   if (locked.value) return;
   exactMode.value = false;
   exactVersion.value = "";
+  showEol.value = false;
   selectedMajor.value = preferredMajor();
   installOpen.value = true;
   await reloadMajors({ force: true });
-  if (!installOptions.value.length && !majorsError.value) exactMode.value = true;
+  if (!uninstalledLines.value.length && !majorsError.value) exactMode.value = true;
 }
 
 function confirmInstall(): void {
@@ -248,7 +255,7 @@ onUnmounted(
     <PageHeader
       title="Node"
       subtitle="Installed Node.js versions, updates, and the global default"
-      docs="/guide/tooling#node-versions"
+      docs="/guide/node"
     />
 
     <div class="flex-1 space-y-8 overflow-y-auto p-6">
@@ -260,15 +267,15 @@ onUnmounted(
       </InfoBanner>
 
       <Card>
-        <CardHeader class="flex-row items-center justify-between space-y-0">
-          <div class="space-y-1.5">
+        <CardHeader class="flex-row items-center justify-between gap-4 space-y-0">
+          <div class="min-w-0 flex-1 space-y-1.5">
             <CardTitle>Installed versions</CardTitle>
             <CardDescription>
               Releases install side by side. The default is what new shells and sites without a
               project file or saved preference use.
             </CardDescription>
           </div>
-          <div class="flex min-w-0 items-center gap-2">
+          <div class="flex shrink-0 items-center gap-2">
             <Button
               variant="outline"
               size="sm"
@@ -403,6 +410,17 @@ onUnmounted(
           </span>
         </div>
 
+        <div v-if="!exactMode && hasEolLines" class="flex items-center gap-2 text-sm">
+          <Switch
+            v-model="showEol"
+            aria-labelledby="node-eol-mode-label"
+            data-testid="node-eol-toggle"
+          />
+          <span id="node-eol-mode-label" class="cursor-pointer" @click="showEol = !showEol">
+            Show end-of-life versions
+          </span>
+        </div>
+
         <div class="border-t pt-4">
           <span class="text-sm font-medium">Version</span>
           <div class="mt-2">
@@ -425,8 +443,14 @@ onUnmounted(
               aria-label="Node release to install"
             />
             <p v-else class="text-sm text-muted-foreground" data-testid="node-install-none">
-              Every listed release line is already installed. Use an exact version to add an
-              older patch.
+              <template v-if="hasEolLines">
+                Every supported release line is already installed. Show end-of-life versions, or
+                use an exact version to add an older patch.
+              </template>
+              <template v-else>
+                Every listed release line is already installed. Use an exact version to add an
+                older patch.
+              </template>
             </p>
           </div>
           <p class="mt-2 text-xs text-muted-foreground">

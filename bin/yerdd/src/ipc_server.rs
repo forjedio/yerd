@@ -3315,7 +3315,11 @@ async fn set_node_version(version: &str, site: Option<&str>, state: &DaemonState
     result
 }
 
-async fn save_node_version(version: &str, site: Option<&str>, state: &DaemonState) -> Response {
+pub(crate) async fn save_node_version(
+    version: &str,
+    site: Option<&str>,
+    state: &DaemonState,
+) -> Response {
     let selected = match yerd_platform::node::resolve(&state.dirs, version) {
         Ok(v) => v,
         Err(message) => {
@@ -3404,6 +3408,7 @@ async fn node_versions_response(state: &DaemonState) -> Response {
     let updates = crate::node_updates::cached_updates(state, &versions).await;
     let releases = installed
         .iter()
+        .rev()
         .map(|n| {
             let plan =
                 yerd_core::node::plan_uninstall(&n.version, &pairs, default.as_deref(), &prefs);
@@ -7006,11 +7011,14 @@ mod node_tests {
             summary,
             vec![
                 (
-                    "22.11.0".to_owned(),
-                    Some("Jod".to_owned()),
+                    "24.1.0".to_owned(),
+                    None,
                     false,
                     false,
-                    vec![]
+                    vec![yerd_ipc::NodePreferenceRef {
+                        root: "/srv/old".to_owned(),
+                        site: None,
+                    }]
                 ),
                 (
                     "22.12.0".to_owned(),
@@ -7023,14 +7031,11 @@ mod node_tests {
                     }]
                 ),
                 (
-                    "24.1.0".to_owned(),
-                    None,
+                    "22.11.0".to_owned(),
+                    Some("Jod".to_owned()),
                     false,
                     false,
-                    vec![yerd_ipc::NodePreferenceRef {
-                        root: "/srv/old".to_owned(),
-                        site: None,
-                    }]
+                    vec![]
                 ),
             ]
         );
@@ -7039,7 +7044,7 @@ mod node_tests {
             .into_iter()
             .map(|r| (r.default, r.uninstall_blocked))
             .collect();
-        assert_eq!(blocked, [(false, false), (false, false), (true, true)]);
+        assert_eq!(blocked, [(true, true), (false, false), (false, false)]);
     }
 
     #[tokio::test]
@@ -7090,6 +7095,32 @@ mod node_tests {
         assert_eq!(cfg.node.default, None);
         assert!(cfg.node.sites.is_empty());
         assert!(yerd_platform::node::installed(&state.dirs).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_node_shows_a_node_installed_by_an_older_yerd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state_in(tmp.path());
+        let legacy = state.dirs.data.join("tools/node");
+        let dist = legacy.join("node-v24.17.0-darwin-arm64");
+        let bin = dist.join("bin");
+        let npm_cli = dist.join("lib/node_modules/npm/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&npm_cli).unwrap();
+        std::fs::write(legacy.join(".version"), "v24.17.0").unwrap();
+        std::fs::write(bin.join("node"), "fake").unwrap();
+        std::fs::write(npm_cli.join("npm-cli.js"), "fake").unwrap();
+        std::fs::write(npm_cli.join("npx-cli.js"), "fake").unwrap();
+        std::os::unix::fs::symlink("../lib/node_modules/npm/bin/npm-cli.js", bin.join("npm"))
+            .unwrap();
+        std::os::unix::fs::symlink("../lib/node_modules/npm/bin/npx-cli.js", bin.join("npx"))
+            .unwrap();
+        let listed: Vec<_> = versions(node_versions_response(&state).await)
+            .into_iter()
+            .map(|r| (r.version, r.lts, r.default, r.uninstall_blocked))
+            .collect();
+        assert_eq!(listed, [("24.17.0".to_owned(), true, true, false)]);
     }
 
     #[tokio::test]
@@ -7309,8 +7340,8 @@ mod node_tests {
         assert_eq!(
             listed_updates(node_versions_response(&state).await),
             [
-                ("22.9.0".to_owned(), Some("22.12.0".to_owned())),
-                ("24.1.0".to_owned(), None)
+                ("24.1.0".to_owned(), None),
+                ("22.9.0".to_owned(), Some("22.12.0".to_owned()))
             ]
         );
         let offline = NodeIndexDl {

@@ -6,11 +6,6 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 
-const push = vi.fn();
-vi.mock("vue-router", () => ({
-  useRouter: () => ({ push }),
-}));
-
 import ToolingView from "./ToolingView.vue";
 import type { ToolStatus } from "@/ipc/types";
 
@@ -37,16 +32,9 @@ async function mountView(tools: ToolStatus[]) {
   return wrapper;
 }
 
-function rowFor(wrapper: VueWrapper, name: string) {
-  const row = wrapper.findAll("tbody tr").find((r) => r.text().includes(name));
-  if (!row) throw new Error(`${name} row not rendered`);
-  return row;
-}
-
 describe("ToolingView", () => {
   beforeEach(() => {
     invokeMock.mockReset();
-    push.mockReset();
   });
 
   afterEach(() => {
@@ -54,29 +42,20 @@ describe("ToolingView", () => {
     mounted.length = 0;
   });
 
-  it("links an installed Node to the Node page instead of Update and Uninstall", async () => {
-    const wrapper = await mountView([tool("node", true), tool("composer", true)]);
-    const node = rowFor(wrapper, "Node.js");
-    expect(node.text()).toContain("Manage versions");
-    expect(node.text()).not.toContain("Update");
-    expect(node.find('[aria-label="Uninstall Node.js"]').exists()).toBe(false);
-    const manage = node.findAll("button").find((b) => b.text().includes("Manage versions"));
-    await manage?.trigger("click");
-    expect(push).toHaveBeenCalledWith("/node");
+  it("leaves Node to the Node page", async () => {
+    for (const installed of [true, false]) {
+      const wrapper = await mountView([tool("node", installed), tool("composer", true)]);
+      const rows = wrapper.findAll("tbody tr").map((r) => r.text());
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toContain("composer");
+      expect(wrapper.text()).not.toContain("Node.js runtime");
+    }
   });
 
   it("keeps Update and Uninstall for other installed tools", async () => {
     const wrapper = await mountView([tool("node", true), tool("composer", true)]);
-    const composer = rowFor(wrapper, "composer");
+    const composer = wrapper.get("tbody tr");
     expect(composer.text()).toContain("Update");
-    expect(composer.text()).not.toContain("Manage versions");
     expect(composer.find('[aria-label="Uninstall composer"]').exists()).toBe(true);
-  });
-
-  it("offers Install for Node when it is not installed", async () => {
-    const wrapper = await mountView([tool("node", false)]);
-    const node = rowFor(wrapper, "Node.js");
-    expect(node.text()).toContain("Install");
-    expect(node.text()).not.toContain("Manage versions");
   });
 });

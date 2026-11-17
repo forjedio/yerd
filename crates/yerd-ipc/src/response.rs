@@ -322,7 +322,7 @@ pub enum Response {
     },
     /// Reply to [`crate::Request::ListNode`] and [`crate::Request::UninstallNode`].
     NodeVersions {
-        /// Installed releases, oldest first.
+        /// Installed releases, newest first.
         installed: Vec<crate::NodeRelease>,
     },
     /// Reply to [`crate::Request::AvailableNode`].

@@ -6,9 +6,11 @@ import SiteBasicsStep from "@/components/site-create/SiteBasicsStep.vue";
 import Input from "@/components/ui/Input.vue";
 import Select from "@/components/ui/Select.vue";
 import Switch from "@/components/ui/Switch.vue";
+import { useResource } from "@/composables/useResource";
 import { useSiteBasics } from "@/composables/useSiteBasics";
 import { type PrereqRow, useToolPrereqs } from "@/composables/useToolPrereqs";
 import { useToast } from "@/composables/useToast";
+import { listNode } from "@/ipc/client";
 import { phpVersionInRange } from "@/lib/phpVersion";
 import type {
   AuthProvider,
@@ -55,6 +57,7 @@ const form = reactive({
   database: "sqlite" as Database,
   git: true,
   boost: false,
+  node: "",
 });
 const { nameValid, projectPath, domain, openUrl, basicsValid } = useSiteBasics(form, props);
 
@@ -73,6 +76,40 @@ const isJsKit = computed(
 );
 const isLivewire = computed(() => kitChoice.value === "livewire");
 const hasAuthKit = computed(() => kitChoice.value !== "none");
+/** Yerd's Node releases, newest first; shares the Node page's cache. */
+const { data: nodeData, refresh: reloadNode } = useResource("node", listNode, {
+  immediate: false,
+});
+const nodeReleases = computed(() => nodeData.value ?? []);
+
+/** npm and pnpm run on Node, and Bun builds often call Node tools too. */
+const usesNode = computed(() => form.js !== "skip");
+
+/** Only worth asking with two or more Yerd releases: otherwise the job uses the
+ *  only release, or the system Node, exactly as it would by default. */
+const showNodePicker = computed(() => usesNode.value && nodeReleases.value.length > 1);
+
+const nodeOptions = computed(() => {
+  const current = nodeReleases.value.find((r) => r.default);
+  return [
+    { value: "", label: current ? `Default (Node ${current.version})` : "Default" },
+    ...nodeReleases.value.map((r) => ({ value: r.version, label: `Node ${r.version}` })),
+  ];
+});
+
+const nodeSummary = computed(() => {
+  if (!usesNode.value) return null;
+  if (showNodePicker.value && form.node) return `Node ${form.node}`;
+  return nodeOptions.value[0]?.label ?? "Default";
+});
+
+const JS_LABELS: Record<JsRuntime, string> = {
+  npm: "npm",
+  bun: "Bun",
+  pnpm: "pnpm",
+  skip: "Skipped",
+};
+
 const stackValid = computed(
   () => kitChoice.value !== "community" || form.communityPackage.trim() !== "",
 );
@@ -118,7 +155,6 @@ const JS_RUNTIME_TOOLS: Record<JsRuntime, { id: string; name: string }[]> = {
 };
 /** The daemon installs these during the job when missing, so they never block the wizard. */
 const autoInstallLabel = computed(() => {
-  if (!isJsKit.value) return null;
   const missing = JS_RUNTIME_TOOLS[form.js].filter((t) => !prereqs.available(t.id));
   return missing.length ? missing.map((t) => t.name).join(" and ") : null;
 });
@@ -182,8 +218,7 @@ function installAll(): Promise<void> {
   });
 }
 
-/** The JS runtime picker only shows for Inertia kits, so None and Livewire never
- *  trigger an npm or Node install the user didn't ask for. */
+/** Every kit ships a Vite build, so the frontend choice applies to all of them. */
 function buildSpec(): CreateSiteSpec {
   const kit: StarterKit =
     kitChoice.value === "community"
@@ -196,9 +231,10 @@ function buildSpec(): CreateSiteSpec {
     teams: hasAuthKit.value && form.teams,
     testing: form.testing,
     database: form.database,
-    js: isJsKit.value ? form.js : "skip",
+    js: form.js,
     git: form.git,
     boost: form.boost,
+    ...(showNodePicker.value && form.node ? { node: form.node } : {}),
   };
   return {
     name: form.name.trim(),
@@ -224,6 +260,8 @@ function reset(): void {
   form.database = "sqlite";
   form.git = true;
   form.boost = false;
+  form.node = "";
+  void reloadNode();
   prereqs.reset();
   void prereqs.refresh();
 }
@@ -314,43 +352,45 @@ watch(
           />
         </div>
 
-        <div v-if="isJsKit" class="flex gap-4">
-          <div class="flex-1">
+        <div class="flex items-center justify-between gap-4">
+          <div>
             <label class="text-sm font-medium" for="cs-js">Frontend dependencies</label>
-            <Select
-              id="cs-js"
-              :model-value="form.js"
-              :options="[
-                { value: 'npm', label: 'Install & build with npm' },
-                { value: 'bun', label: 'Install & build with Bun' },
-                { value: 'pnpm', label: 'Install & build with pnpm' },
-                { value: 'skip', label: 'Skip (install later)' },
-              ]"
-              class="mt-2 w-full"
-              aria-label="Frontend dependencies"
-              @update:model-value="(v: string) => (form.js = v as JsRuntime)"
-            />
-            <p v-if="autoInstallLabel" class="mt-1 text-xs text-muted-foreground">
+            <p v-if="autoInstallLabel" class="text-xs text-muted-foreground">
               {{ autoInstallLabel }} will be installed automatically.
             </p>
           </div>
-          <div class="flex-1">
-            <label class="text-sm font-medium" for="cs-auth">Authentication</label>
-            <Select
-              id="cs-auth"
-              :model-value="form.auth"
-              :options="[
-                { value: 'laravel', label: 'Built-in (Laravel)' },
-                { value: 'work_os', label: 'WorkOS AuthKit' },
-              ]"
-              class="mt-2 w-full"
-              aria-label="Authentication provider"
-              @update:model-value="(v: string) => (form.auth = v as AuthProvider)"
-            />
-          </div>
+          <Select
+            id="cs-js"
+            :model-value="form.js"
+            :options="[
+              { value: 'npm', label: 'Install & build with npm' },
+              { value: 'bun', label: 'Install & build with Bun' },
+              { value: 'pnpm', label: 'Install & build with pnpm' },
+              { value: 'skip', label: 'Skip (install later)' },
+            ]"
+            class="w-56"
+            aria-label="Frontend dependencies"
+            @update:model-value="(v: string) => (form.js = v as JsRuntime)"
+          />
         </div>
 
-        <div v-if="isLivewire" class="flex items-center justify-between gap-4">
+        <div v-if="showNodePicker" class="flex items-center justify-between gap-4">
+          <div>
+            <label class="text-sm font-medium" for="cs-node">Node version</label>
+            <p class="text-xs text-muted-foreground">
+              Builds with this version and saves it as the site's Node version.
+            </p>
+          </div>
+          <Select
+            id="cs-node"
+            v-model="form.node"
+            :options="nodeOptions"
+            class="w-56"
+            aria-label="Node version"
+          />
+        </div>
+
+        <div v-if="isJsKit || isLivewire" class="flex items-center justify-between gap-4">
           <div>
             <p class="text-sm font-medium">Authentication</p>
           </div>
@@ -360,7 +400,7 @@ watch(
               { value: 'laravel', label: 'Built-in (Laravel)' },
               { value: 'work_os', label: 'WorkOS AuthKit' },
             ]"
-            class="w-48"
+            class="w-56"
             aria-label="Authentication provider"
             @update:model-value="(v: string) => (form.auth = v as AuthProvider)"
           />
@@ -377,9 +417,6 @@ watch(
           </div>
         </div>
 
-        <p v-if="kitChoice === 'none'" class="text-xs text-muted-foreground">
-          No starter kit - a plain Laravel application with no auth scaffolding.
-        </p>
       </div>
     </template>
 
@@ -454,6 +491,12 @@ watch(
             <dd class="truncate font-mono">{{ projectPath }}</dd>
             <dt class="text-muted-foreground">PHP</dt>
             <dd>{{ form.php }}{{ form.secure ? " · HTTPS" : "" }}</dd>
+            <dt class="text-muted-foreground">Frontend</dt>
+            <dd>{{ JS_LABELS[form.js] }}</dd>
+            <template v-if="nodeSummary">
+              <dt class="text-muted-foreground">Node</dt>
+              <dd>{{ nodeSummary }}</dd>
+            </template>
           </dl>
         </div>
 

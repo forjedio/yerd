@@ -25,7 +25,9 @@ pub fn versions_dir(dirs: &PlatformDirs) -> PathBuf {
     dirs.data.join("tools/node-versions")
 }
 
-fn discover(root: &Path) -> Option<InstalledNode> {
+/// `legacy` marks the pre-side-by-side `{data}/tools/node` root, whose installer
+/// only ever fetched the latest LTS and wrote no `.lts` marker.
+fn discover(root: &Path, legacy: bool) -> Option<InstalledNode> {
     let version = std::fs::read_to_string(root.join(".version")).ok()?;
     let version = version
         .trim()
@@ -50,7 +52,7 @@ fn discover(root: &Path) -> Option<InstalledNode> {
     Some(InstalledNode {
         version,
         bin,
-        lts: lts_file.is_file(),
+        lts: legacy || lts_file.is_file(),
         root: root.to_path_buf(),
         codename,
     })
@@ -64,9 +66,9 @@ pub fn installed(dirs: &PlatformDirs) -> Vec<InstalledNode> {
         .flatten()
         .flatten()
         .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
-        .filter_map(|entry| discover(&entry.path()))
+        .filter_map(|entry| discover(&entry.path(), false))
         .collect();
-    if let Some(legacy) = discover(&dirs.data.join("tools/node")) {
+    if let Some(legacy) = discover(&dirs.data.join("tools/node"), true) {
         if !versions.iter().any(|v| v.version == legacy.version) {
             versions.push(legacy);
         }
