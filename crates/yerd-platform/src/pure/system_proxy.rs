@@ -27,6 +27,15 @@ fn proxy_url(host: &str, port: Option<i64>) -> Option<ProxyUrl> {
     ProxyUrl::parse(&raw).ok()
 }
 
+/// A GNOME endpoint is enabled only when it has a host and a port above zero
+/// (GNOME stores a disabled endpoint as `''` / `0`).
+fn gnome_endpoint(host: &str, port: Option<i64>) -> Option<ProxyUrl> {
+    if host.trim().is_empty() || !port.is_some_and(|p| p > 0) {
+        return None;
+    }
+    proxy_url(host, port)
+}
+
 fn gvariant_string(value: &str) -> String {
     let v = value.trim();
     v.strip_prefix('\'')
@@ -51,7 +60,9 @@ fn gvariant_string_list(value: &str) -> Vec<String> {
 
 /// Parses `gsettings list-recursively org.gnome.system.proxy` output.
 ///
-/// Mode `manual` yields the HTTP/HTTPS host and port; `auto` flags PAC; `none`
+/// Mode `manual` yields the HTTP/HTTPS endpoints (each needs a host and a port
+/// above zero; a disabled HTTPS endpoint falls back to the HTTP one, as GNOME
+/// applications do); `auto` flags PAC; `none`
 /// yields an empty reading. `None` when the output has no `mode` line (schema
 /// missing or garbage).
 #[must_use]
@@ -86,12 +97,16 @@ pub fn parse_gsettings(output: &str) -> Option<SystemProxy> {
             .collect()
     };
     match mode.as_str() {
-        "manual" => Some(SystemProxy {
-            http: proxy_url(&plain_host, plain_port),
-            https: proxy_url(&secure_host, secure_port),
-            bypass: bypass(),
-            pac_detected: false,
-        }),
+        "manual" => {
+            let http = gnome_endpoint(&plain_host, plain_port);
+            let https = gnome_endpoint(&secure_host, secure_port).or_else(|| http.clone());
+            Some(SystemProxy {
+                http,
+                https,
+                bypass: bypass(),
+                pac_detected: false,
+            })
+        }
         "auto" => Some(SystemProxy {
             pac_detected: true,
             bypass: bypass(),
@@ -165,44 +180,64 @@ impl MacProxySettings {
 /// }
 /// ```
 ///
-/// `None` when the output is not a dictionary.
+/// Only the outer dictionary is read: proxy keys at its top level and the
+/// entries of its top-level `ExceptionsList`. Nested dictionaries such as the
+/// per-interface `__SCOPED__` settings are skipped. `None` when the output is
+/// not a dictionary.
 #[must_use]
 pub fn parse_scutil_proxy(output: &str) -> Option<MacProxySettings> {
     if !output.trim_start().starts_with("<dictionary>") {
         return None;
     }
     let mut s = MacProxySettings::default();
+    let mut depth = 0usize;
     let mut in_exceptions = false;
     for line in output.lines() {
         let line = line.trim();
-        if in_exceptions {
-            if line == "}" {
+        if line == "}" {
+            depth = depth.saturating_sub(1);
+            if depth < 2 {
                 in_exceptions = false;
-            } else if let Some((_, value)) = line.split_once(" : ") {
-                s.exceptions.push(value.trim().to_owned());
             }
             continue;
         }
-        let Some((key, value)) = line.split_once(" : ") else {
+        let opens = line.ends_with('{');
+        if depth == 0 {
+            if opens {
+                depth = 1;
+            }
             continue;
-        };
-        let value = value.trim();
-        let flag = value == "1";
-        let number = value.parse::<i64>().ok();
-        match key.trim() {
-            "ExceptionsList" => in_exceptions = value.starts_with("<array>"),
-            "HTTPEnable" => s.http_enable = flag,
-            "HTTPProxy" => s.http_host = Some(value.to_owned()),
-            "HTTPPort" => s.http_port = number,
-            "HTTPSEnable" => s.https_enable = flag,
-            "HTTPSProxy" => s.https_host = Some(value.to_owned()),
-            "HTTPSPort" => s.https_port = number,
-            "ProxyAutoConfigEnable" => s.pac_enable = flag,
-            "ProxyAutoDiscoveryEnable" => s.auto_discovery_enable = flag,
-            _ => {}
+        }
+        if let Some((key, value)) = line.split_once(" : ") {
+            let value = value.trim();
+            if depth == 1 {
+                apply_scutil_key(&mut s, key.trim(), value, &mut in_exceptions);
+            } else if depth == 2 && in_exceptions {
+                s.exceptions.push(value.to_owned());
+            }
+        }
+        if opens {
+            depth += 1;
         }
     }
     Some(s)
+}
+
+fn apply_scutil_key(s: &mut MacProxySettings, key: &str, value: &str, in_exceptions: &mut bool) {
+    let flag = value == "1";
+    let number = value.parse::<i64>().ok();
+    match key {
+        "ExceptionsList" => *in_exceptions = value.starts_with("<array>"),
+        "HTTPEnable" => s.http_enable = flag,
+        "HTTPProxy" => s.http_host = Some(value.to_owned()),
+        "HTTPPort" => s.http_port = number,
+        "HTTPSEnable" => s.https_enable = flag,
+        "HTTPSProxy" => s.https_host = Some(value.to_owned()),
+        "HTTPSPort" => s.https_port = number,
+        "ProxyAutoConfigEnable" => s.pac_enable = flag,
+        "ProxyAutoDiscoveryEnable" => s.auto_discovery_enable = flag,
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -259,6 +294,54 @@ mod tests {
 
         assert!(parse_gsettings("No such schema “org.gnome.system.proxy”\n").is_none());
         assert!(parse_gsettings("").is_none());
+    }
+
+    #[test]
+    fn gsettings_endpoint_needs_host_and_port() {
+        let port_zero = "org.gnome.system.proxy mode 'manual'\n\
+                         org.gnome.system.proxy.http host 'proxy.corp'\n\
+                         org.gnome.system.proxy.http port 0\n\
+                         org.gnome.system.proxy.https host 'proxy.corp'\n\
+                         org.gnome.system.proxy.https port 0\n";
+        assert!(parse_gsettings(port_zero).unwrap().is_empty());
+
+        let http_only = "org.gnome.system.proxy mode 'manual'\n\
+                         org.gnome.system.proxy.http host 'proxy.corp'\n\
+                         org.gnome.system.proxy.http port 3128\n\
+                         org.gnome.system.proxy.https host ''\n\
+                         org.gnome.system.proxy.https port 0\n";
+        let r = parse_gsettings(http_only).unwrap();
+        assert_eq!(
+            r.http.as_ref().map(ProxyUrl::as_str),
+            Some("http://proxy.corp:3128")
+        );
+        assert_eq!(
+            r.https.as_ref().map(ProxyUrl::as_str),
+            Some("http://proxy.corp:3128")
+        );
+
+        let explicit = "org.gnome.system.proxy mode 'manual'\n\
+                        org.gnome.system.proxy.http host 'a'\n\
+                        org.gnome.system.proxy.http port 1\n\
+                        org.gnome.system.proxy.https host 'b'\n\
+                        org.gnome.system.proxy.https port 2\n";
+        let r = parse_gsettings(explicit).unwrap();
+        assert_eq!(r.https.as_ref().map(ProxyUrl::as_str), Some("http://b:2"));
+
+        let no_port = "org.gnome.system.proxy mode 'manual'\n\
+                       org.gnome.system.proxy.http host 'a'\n";
+        assert!(parse_gsettings(no_port).unwrap().is_empty());
+    }
+
+    #[test]
+    fn scutil_ignores_scoped_dictionaries() {
+        let text = "<dictionary> {\n  ExceptionsList : <array> {\n    0 : *.local\n  }\n  HTTPEnable : 1\n  HTTPPort : 8080\n  HTTPProxy : global.corp\n  __SCOPED__ : <dictionary> {\n    en0 : <dictionary> {\n      ExceptionsList : <array> {\n        0 : scoped.example\n      }\n      HTTPEnable : 1\n      HTTPPort : 9999\n      HTTPProxy : scoped.corp\n      HTTPSEnable : 1\n      HTTPSProxy : scoped.corp\n      HTTPSPort : 9998\n    }\n  }\n  ProxyAutoConfigEnable : 0\n}\n";
+        let s = parse_scutil_proxy(text).unwrap();
+        assert_eq!(s.http_host.as_deref(), Some("global.corp"));
+        assert_eq!(s.http_port, Some(8080));
+        assert!(!s.https_enable);
+        assert_eq!(s.https_host, None);
+        assert_eq!(s.exceptions, vec!["*.local".to_owned()]);
     }
 
     #[test]

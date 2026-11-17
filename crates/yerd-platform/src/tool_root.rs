@@ -33,14 +33,18 @@ pub enum RootDirError {
 /// `.version` marker) are ignored.
 ///
 /// # Errors
-/// [`RootDirError`] unless exactly one child directory exists.
+/// [`RootDirError`] unless exactly one child directory exists; a directory or
+/// entry that can't be read is [`RootDirError::Unreadable`] rather than being
+/// skipped, so a partial listing never picks the wrong root.
 pub fn single_top_level_dir(dir: &Path) -> Result<PathBuf, RootDirError> {
-    let entries = std::fs::read_dir(dir).map_err(|source| RootDirError::Unreadable {
+    let unreadable = |source| RootDirError::Unreadable {
         dir: dir.to_path_buf(),
         source,
-    })?;
+    };
+    let entries = std::fs::read_dir(dir).map_err(unreadable)?;
     let mut found: Option<PathBuf> = None;
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry.map_err(unreadable)?;
         if entry.path().is_dir() {
             if found.is_some() {
                 return Err(RootDirError::Multiple(dir.to_path_buf()));

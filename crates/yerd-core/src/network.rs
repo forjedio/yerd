@@ -47,20 +47,17 @@ impl OutboundProxyMode {
     }
 }
 
-/// [`OutboundProxyMode::from_str`] rejected its input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("proxy mode must be system, manual, or off")]
-pub struct ParseProxyModeError;
-
 impl FromStr for OutboundProxyMode {
-    type Err = ParseProxyModeError;
+    type Err = CoreError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "system" => Ok(Self::System),
             "manual" => Ok(Self::Manual),
             "off" => Ok(Self::Off),
-            _ => Err(ParseProxyModeError),
+            _ => Err(CoreError::InvalidProxyMode {
+                input: s.to_owned(),
+            }),
         }
     }
 }
@@ -481,6 +478,58 @@ pub fn bypass_list(tld: &str, user: &[String], system: &[String]) -> Vec<String>
     normalize_bypass_entries(&all)
 }
 
+/// Whether a request to `host` skips the proxy under `bypass`, matching the
+/// rules reqwest's `NoProxy` applies (the daemon's client uses that matcher
+/// with the same list).
+///
+/// `*` bypasses everything; an IP or CIDR entry matches IP hosts; `.corp.com`
+/// and `corp.com` both match `corp.com` and every subdomain. Comparison ignores
+/// case, a trailing dot, and IPv6 brackets.
+#[must_use]
+pub fn bypasses(host: &str, bypass: &[String]) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(&host);
+    let ip = host.parse::<IpAddr>().ok();
+    bypass.iter().any(|entry| {
+        let entry = entry.trim().to_ascii_lowercase();
+        if entry == "*" {
+            return true;
+        }
+        if let Some(ip) = ip {
+            return ip_matches(ip, &entry);
+        }
+        let domain = entry.strip_prefix('.').unwrap_or(&entry);
+        !domain.is_empty()
+            && (host == domain
+                || host
+                    .strip_suffix(domain)
+                    .is_some_and(|prefix| prefix.ends_with('.')))
+    })
+}
+
+fn ip_matches(ip: IpAddr, entry: &str) -> bool {
+    let Some((addr, bits)) = entry.split_once('/') else {
+        return entry.parse::<IpAddr>().is_ok_and(|e| e == ip);
+    };
+    let (Ok(net), Ok(bits)) = (addr.parse::<IpAddr>(), bits.parse::<u32>()) else {
+        return false;
+    };
+    match (ip, net) {
+        (IpAddr::V4(ip), IpAddr::V4(net)) if bits <= 32 => {
+            let mask = u32::MAX.checked_shl(32 - bits).unwrap_or(0);
+            u32::from(ip) & mask == u32::from(net) & mask
+        }
+        (IpAddr::V6(ip), IpAddr::V6(net)) if bits <= 128 => {
+            let mask = u128::MAX.checked_shl(128 - bits).unwrap_or(0);
+            u128::from(ip) & mask == u128::from(net) & mask
+        }
+        _ => false,
+    }
+}
+
 /// Everything [`resolve`] decides from.
 #[derive(Debug, Clone, Copy)]
 pub struct ResolveInput<'a> {
@@ -625,16 +674,28 @@ pub fn scrub(text: &str, urls: &[&ProxyUrl]) -> String {
         if pw.is_empty() {
             continue;
         }
-        let redacted = format!("{user}:{REDACTED}@");
-        let mut forms = vec![pw.to_owned(), percent_encode_userinfo(pw)];
-        if let Some(decoded) = percent_decode(pw) {
-            forms.push(decoded);
-        }
-        for form in forms {
-            out = out.replace(&format!("{user}:{form}@"), &redacted);
+        for user_form in encoding_forms(user) {
+            let redacted = format!("{user_form}:{REDACTED}@");
+            for pw_form in encoding_forms(pw) {
+                out = out.replace(&format!("{user_form}:{pw_form}@"), &redacted);
+            }
         }
     }
     out
+}
+
+/// `raw` as stored, percent-encoded, and percent-decoded, without duplicates.
+fn encoding_forms(raw: &str) -> Vec<String> {
+    let mut forms = vec![raw.to_owned()];
+    for form in [Some(percent_encode_userinfo(raw)), percent_decode(raw)]
+        .into_iter()
+        .flatten()
+    {
+        if !forms.contains(&form) {
+            forms.push(form);
+        }
+    }
+    forms
 }
 
 fn percent_encode_userinfo(raw: &str) -> String {
@@ -711,7 +772,8 @@ pub struct ChildEnvPlan {
 /// Plans a child's proxy environment.
 ///
 /// With a proxy, both cases of each proxied scheme, the bypass list, and
-/// [`NODE_USE_ENV_PROXY`] are set. Off removes every [`PROXY_ENV_NAMES`]
+/// [`NODE_USE_ENV_PROXY`] are set, and both cases of a scheme with no proxy are
+/// removed so an inherited value can't route it elsewhere. Off removes every [`PROXY_ENV_NAMES`]
 /// entry so an inherited proxy cannot leak in. Otherwise the plan is empty.
 #[must_use]
 pub fn child_env_plan(resolved: &ResolvedProxy) -> ChildEnvPlan {
@@ -729,18 +791,19 @@ pub fn child_env_plan(resolved: &ResolvedProxy) -> ChildEnvPlan {
         set.push((lower.to_owned(), value.to_owned()));
         set.push((upper.to_owned(), value.to_owned()));
     };
-    if let Some(u) = &resolved.http {
-        pair("http_proxy", "HTTP_PROXY", u.as_str());
-    }
-    if let Some(u) = &resolved.https {
-        pair("https_proxy", "HTTPS_PROXY", u.as_str());
+    let mut remove = Vec::new();
+    for (url, lower, upper) in [
+        (&resolved.http, "http_proxy", "HTTP_PROXY"),
+        (&resolved.https, "https_proxy", "HTTPS_PROXY"),
+    ] {
+        match url {
+            Some(u) => pair(lower, upper, u.as_str()),
+            None => remove.extend([lower.to_owned(), upper.to_owned()]),
+        }
     }
     pair("no_proxy", "NO_PROXY", &resolved.bypass.join(","));
     set.push((NODE_USE_ENV_PROXY.to_owned(), "1".to_owned()));
-    ChildEnvPlan {
-        set,
-        remove: Vec::new(),
-    }
+    ChildEnvPlan { set, remove }
 }
 
 /// Renders the plan's `set` entries as `KEY=VALUE` lines for `network.env`.
@@ -930,7 +993,9 @@ mod tests {
         }
         assert_eq!(
             "auto".parse::<OutboundProxyMode>(),
-            Err(ParseProxyModeError)
+            Err(CoreError::InvalidProxyMode {
+                input: "auto".to_owned()
+            })
         );
         assert_eq!(OutboundProxyMode::default(), OutboundProxyMode::System);
     }
@@ -1052,6 +1117,46 @@ mod tests {
                 "10.0.0.0/8"
             ]
         );
+    }
+
+    #[test]
+    fn bypasses_table() {
+        let list: Vec<String> = [
+            "localhost",
+            "127.0.0.0/8",
+            "::1",
+            ".test",
+            "corp.com",
+            "10.1.2.3",
+            "fd00::/8",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+        for (host, expected) in [
+            ("localhost", true),
+            ("LOCALHOST.", true),
+            ("127.4.5.6", true),
+            ("128.0.0.1", false),
+            ("[::1]", true),
+            ("::2", false),
+            ("foo.test", true),
+            ("test", true),
+            ("footest", false),
+            ("corp.com", true),
+            ("registry.corp.com", true),
+            ("notcorp.com", false),
+            ("10.1.2.3", true),
+            ("10.1.2.4", false),
+            ("fd12::1", true),
+            ("files.yerd.app", false),
+        ] {
+            assert_eq!(bypasses(host, &list), expected, "{host}");
+        }
+        assert!(bypasses("anything.example", &["*".to_owned()]));
+        assert!(!bypasses("x", &[]));
+        assert!(!bypasses("10.0.0.1", &["10.0.0.0/99".to_owned()]));
+        assert!(bypasses("1.2.3.4", &["0.0.0.0/0".to_owned()]));
     }
 
     #[test]
@@ -1213,6 +1318,18 @@ mod tests {
         let s = scrub("proxy http://u:p%40ss@p:1 failed", &[&plain]);
         assert!(s.contains("u:***@"), "{s}");
 
+        let encoded_user = url("http://a%40corp:pw1@p:1");
+        for text in [
+            "proxy http://a%40corp:pw1@p:1 failed",
+            "proxy a@corp:pw1@p:1 failed",
+        ] {
+            let s = scrub(text, &[&encoded_user]);
+            assert!(!s.contains("pw1"), "{s}");
+        }
+        let raw_user = url("http://a.b@corp:pw2@p:1");
+        let s = scrub("proxy http://a.b%40corp:pw2@p:1 failed", &[&raw_user]);
+        assert!(!s.contains("pw2"), "{s}");
+
         let none = url("http://p:1");
         assert_eq!(scrub("x", &[&none]), "x");
     }
@@ -1297,6 +1414,13 @@ mod tests {
             .iter()
             .all(|(k, _)| !k.eq_ignore_ascii_case("https_proxy")));
         assert_eq!(plan.set.len(), 5);
+        assert_eq!(plan.remove, vec!["https_proxy", "HTTPS_PROXY"]);
+        let mut https_only = resolved_manual("http://m:1");
+        https_only.http = None;
+        assert_eq!(
+            child_env_plan(&https_only).remove,
+            vec!["http_proxy", "HTTP_PROXY"]
+        );
     }
 
     #[test]

@@ -344,7 +344,9 @@ list. A builder failure does not panic or fall back: the downloader holds the
 - **Subprocesses.** `run_streamed` (site creation) calls
   `network::apply_child_env`; the Laravel installer and WP-CLI builds get a plan
   from `network::child_env_plan` and apply it with `network::apply_plan`. Off
-  mode removes every inherited proxy variable.
+  mode removes every inherited proxy variable; otherwise a scheme with no
+  resolved proxy has both cases of its variable removed, so an inherited value
+  can't route it elsewhere.
 - **Long-lived work.** The update poller builds a fresh downloader on each tick,
   so a settings change applies without a restart.
 - **Doctor.** Diagnose and DoctorFix run a 3 s TCP connect to the proxy

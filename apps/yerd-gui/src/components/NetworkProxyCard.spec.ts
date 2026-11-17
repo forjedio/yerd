@@ -106,6 +106,20 @@ describe("NetworkProxyCard", () => {
     }
   });
 
+  it("disables Save after a failed load and retries on demand", async () => {
+    getNetworkSettings.mockRejectedValueOnce(new Error("daemon unreachable"));
+    const wrapper = await mountCard();
+    expect(wrapper.get('[data-testid="network-save"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.get('[data-testid="network-error"]').text()).toContain("daemon unreachable");
+    await wrapper.get('[data-testid="network-save"]').trigger("click");
+    expect(setNetworkSettings).not.toHaveBeenCalled();
+    await wrapper.get('[data-testid="network-retry"]').trigger("click");
+    await flushPromises();
+    expect(getNetworkSettings).toHaveBeenCalledTimes(2);
+    expect(wrapper.find('[data-testid="network-retry"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="network-save"]').attributes("disabled")).toBeUndefined();
+  });
+
   it("shows a save error inline", async () => {
     setNetworkSettings.mockRejectedValue(new Error("HTTP proxy: invalid proxy URL: re-enter the proxy password"));
     const wrapper = await mountCard();

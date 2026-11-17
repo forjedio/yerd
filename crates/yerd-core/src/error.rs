@@ -123,6 +123,14 @@ pub enum CoreError {
         reason: ResponseHeaderErrorReason,
     },
 
+    /// A string was not an
+    /// [`OutboundProxyMode`](crate::network::OutboundProxyMode).
+    #[error("invalid proxy mode {input:?}: expected system, manual, or off")]
+    InvalidProxyMode {
+        /// The raw input.
+        input: String,
+    },
+
     /// A string failed to parse as an outbound
     /// [`ProxyUrl`](crate::network::ProxyUrl). Carries no input, so the message
     /// can never echo a proxy password.
@@ -604,6 +612,7 @@ mod tests {
             let _debug = format!("{r:?}");
         }
 
+        let _ = CoreError::InvalidProxyMode { input: "x".into() };
         let _ = CoreError::InvalidProxyUrl {
             reason: ProxyUrlErrorReason::Empty,
         };

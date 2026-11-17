@@ -175,17 +175,19 @@ impl NetworkRuntime {
         resolved
     }
 
+    /// Skips the write when the rendering is unchanged and the file is still in
+    /// place; a file deleted behind the daemon's back is restored.
     fn sync_env_file(&self, state: &DaemonState, resolved: &ResolvedProxy) {
         let rendered = render_env_file(&plan_for(resolved));
+        let path = env_file_path(state);
         let unchanged = self
             .env_file_written
             .lock()
             .ok()
             .is_some_and(|w| w.as_deref() == Some(rendered.as_str()));
-        if unchanged {
+        if unchanged && (rendered.is_empty() || path.exists()) {
             return;
         }
-        let path = env_file_path(state);
         let outcome = if rendered.is_empty() {
             match std::fs::remove_file(&path) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
@@ -596,7 +598,13 @@ async fn test_network_with(state: &DaemonState, url: &str) -> yerd_ipc::Response
     let resolved = state.network.refresh(state, LoginShell::Probe).await;
     let urls = proxy_urls(&resolved);
     let refs: Vec<&ProxyUrl> = urls.iter().collect();
-    let route = if url.starts_with("https://") {
+    let host = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned))
+        .unwrap_or_default();
+    let route = if yerd_core::network::bypasses(&host, &resolved.bypass) {
+        None
+    } else if url.starts_with("https://") {
         resolved.https.as_ref()
     } else {
         resolved.http.as_ref()
@@ -718,11 +726,24 @@ mod tests {
             assert_eq!(mode, 0o600);
         }
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            let before = std::fs::metadata(&path).unwrap().ino();
+            state.network.refresh(&state, LoginShell::UseCached).await;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().ino(),
+                before,
+                "an unchanged refresh must not rewrite the file"
+            );
+        }
+
         std::fs::remove_file(&path).unwrap();
         state.network.refresh(&state, LoginShell::UseCached).await;
-        assert!(
-            !path.exists(),
-            "an unchanged refresh must not rewrite the file"
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            text,
+            "a deleted network.env is restored on the next refresh"
         );
 
         state.config.lock().await.network.mode = OutboundProxyMode::Off;
@@ -1122,6 +1143,30 @@ mod tests {
             vec!["GET http://example.invalid/latest.json HTTP/1.1".to_owned()]
         );
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn test_network_reports_a_bypassed_endpoint_as_direct() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (capture, _) = counting_capture(None);
+        let state = state_with(
+            tmp.path(),
+            Arc::new(yerd_platform::FakeSystemProxySource::default()),
+            capture,
+        );
+        let (port, seen, proxy_task) = recording_proxy().await;
+        let (origin_port, origin_task) = origin().await;
+        set_manual(&state, &format!("http://127.0.0.1:{port}")).await;
+        let resp = test_network_with(&state, &format!("http://127.0.0.1:{origin_port}/x")).await;
+        let yerd_ipc::Response::NetworkTest { result } = resp else {
+            panic!("expected NetworkTest");
+        };
+        assert!(result.ok);
+        assert_eq!(result.via, None);
+        assert_eq!(result.source, ProxySource::None);
+        assert!(seen.lock().unwrap().is_empty());
+        proxy_task.abort();
+        origin_task.abort();
     }
 
     #[test]

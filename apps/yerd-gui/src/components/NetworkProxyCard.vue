@@ -149,6 +149,9 @@ onMounted(load);
           <p class="text-sm font-medium">Proxy</p>
           <p class="text-xs text-muted-foreground" data-testid="network-detected">
             <template v-if="detected">In use: {{ detected }}</template>
+            <template v-else-if="settings === null && busy === null">
+              Couldn't load the network settings.
+            </template>
             <template v-else>Loading…</template>
           </p>
         </div>
@@ -220,7 +223,21 @@ onMounted(load);
           <Spinner v-if="busy === 'test'" class="size-4" />
           Test connection
         </Button>
-        <Button size="sm" :disabled="busy !== null" data-testid="network-save" @click="save">
+        <Button
+          v-if="settings === null && busy === null"
+          size="sm"
+          variant="outline"
+          data-testid="network-retry"
+          @click="load"
+        >
+          Retry
+        </Button>
+        <Button
+          size="sm"
+          :disabled="busy !== null || settings === null"
+          data-testid="network-save"
+          @click="save"
+        >
           <Spinner v-if="busy === 'save'" class="size-4" />
           Save
         </Button>

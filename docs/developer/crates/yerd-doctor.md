@@ -55,6 +55,7 @@ pub fn diagnose(
     report: &StatusReport,
     path_needs_setup: Option<bool>,
     local_override_files: &[(String, String, String)],
+    outbound_proxy: Option<&OutboundProxyProbe>, // None when not probing
 ) -> Vec<Diagnosis>;
 ```
 
