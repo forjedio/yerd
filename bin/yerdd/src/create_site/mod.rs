@@ -191,7 +191,8 @@ async fn ensure_tool(
     user_dirs: &[PathBuf],
     state: &Arc<DaemonState>,
 ) -> Result<(), String> {
-    if tools::installed_version(&state.dirs, tool).is_some() {
+    let node_default = state.config.lock().await.node.default.clone();
+    if tools::installed_version(&state.dirs, tool, node_default.as_deref()).is_some() {
         return Ok(());
     }
     let data_bin = tools::bin_dir(&state.dirs);
@@ -209,7 +210,8 @@ async fn ensure_tool(
 /// PATH-resolved `wp`, so accepting an external install would let the job
 /// proceed and then fail spawning a path that doesn't exist.
 async fn ensure_managed_tool(id: &str, tool: Tool, state: &Arc<DaemonState>) -> Result<(), String> {
-    if tools::installed_version(&state.dirs, tool).is_some() {
+    let node_default = state.config.lock().await.node.default.clone();
+    if tools::installed_version(&state.dirs, tool, node_default.as_deref()).is_some() {
         return Ok(());
     }
     install_tool_inline(id, tool, state).await

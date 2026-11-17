@@ -120,14 +120,19 @@ pub async fn install_version(
     Ok(exact)
 }
 
+/// The global Node selector: the configured `[node] default`, else a legacy
+/// single-version install.
+pub(crate) fn default_selector(dirs: &PlatformDirs, configured: Option<&str>) -> Option<String> {
+    configured
+        .map(str::to_owned)
+        .or_else(|| yerd_platform::node::legacy_default(dirs))
+}
+
 /// `(name_in_bin, target)` links for an installed Node: `node`/`npm`/`npx` →
 /// the dist `bin/`. Empty if the install root can't be resolved.
 #[cfg(unix)]
-pub(crate) fn shim_links(dirs: &PlatformDirs) -> Vec<(String, PathBuf)> {
-    let configured = yerd_config::Config::load(&dirs.config.join("yerd.toml"))
-        .ok()
-        .and_then(|c| c.node.default);
-    let Some(version) = configured.or_else(|| yerd_platform::node::legacy_default(dirs)) else {
+pub(crate) fn shim_links(dirs: &PlatformDirs, configured: Option<&str>) -> Vec<(String, PathBuf)> {
+    let Some(version) = default_selector(dirs, configured) else {
         return Vec::new();
     };
     let Ok(selected) = yerd_platform::node::resolve(dirs, &version) else {

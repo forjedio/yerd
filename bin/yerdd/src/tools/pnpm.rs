@@ -401,7 +401,7 @@ mod tests {
         install(&dirs, &fake_release(Some(&digest))).await.unwrap();
 
         assert_eq!(
-            super::super::installed_version(&dirs, Tool::Pnpm).as_deref(),
+            super::super::installed_version(&dirs, Tool::Pnpm, None).as_deref(),
             Some("v12.21.0")
         );
         let root = tool_dir(&dirs, Tool::Pnpm).join(format!("pnpm-{}", host_platform().unwrap()));
@@ -414,7 +414,7 @@ mod tests {
             let yerd_bin = tmp.path().join("yerd");
             std::fs::write(&yerd_bin, b"#!fake").unwrap();
             let bin = super::super::bin_dir(&dirs);
-            super::super::reconcile_tool_shims(&dirs, &yerd_bin).unwrap();
+            super::super::reconcile_tool_shims(&dirs, &yerd_bin, None).unwrap();
             assert_eq!(
                 std::fs::read_link(bin.join("pnpm")).unwrap(),
                 root.join("pnpm")
@@ -425,7 +425,7 @@ mod tests {
             );
 
             super::super::uninstall(&dirs, Tool::Pnpm).unwrap();
-            super::super::reconcile_tool_shims(&dirs, &yerd_bin).unwrap();
+            super::super::reconcile_tool_shims(&dirs, &yerd_bin, None).unwrap();
             assert!(std::fs::symlink_metadata(bin.join("pnpm")).is_err());
             assert!(std::fs::symlink_metadata(bin.join("pnpx")).is_err());
         }

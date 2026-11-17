@@ -1,8 +1,10 @@
 # Exec and Which
 
 `yerd exec` runs PHP tools under the PHP version a **site** uses, rather than
-the [global default](../../guide/php-versions#the-global-default). `yerd which`
-reports which binary that would be, without running anything.
+the [global default](../../guide/php-versions#the-global-default), and Node tools
+(`node`, `npm`, `npx`) under the project's selected Node release (see
+[Node resolution](#node-resolution)). `yerd which` reports which binary that
+would be, without running anything.
 
 A site's version governs how it is **served**, but the bare `php` and `composer`
 shims always resolve to the global default. Inside a site on 8.3 while your

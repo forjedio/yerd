@@ -370,6 +370,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v8_to_v9,
     migrate_v9_to_v10,
     migrate_v10_to_v11,
+    // ... one bare-bump step per later version, through migrate_v26_to_v27
 ];
 ```
 

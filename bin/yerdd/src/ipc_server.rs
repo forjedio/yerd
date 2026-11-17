@@ -632,7 +632,8 @@ async fn path_needs_setup(state: &DaemonState) -> Option<bool> {
     {
         use yerd_platform::pure::shell_profile::{self, rc_relpaths, HostOs, Shell};
 
-        let any_tool = crate::tools::list_status(&state.dirs)
+        let node_default = state.config.lock().await.node.default.clone();
+        let any_tool = crate::tools::list_status(&state.dirs, node_default.as_deref())
             .iter()
             .any(|t| t.installed);
         if !any_tool {
@@ -1608,8 +1609,11 @@ pub(crate) async fn reconcile_tool_shims_now(state: &DaemonState) {
         tracing::warn!("cannot locate the `yerd` binary; skipping tool-shim reconcile");
         return;
     };
+    let node_default = state.config.lock().await.node.default.clone();
     let _guard = state.shim_reconcile.lock().await;
-    if let Err(e) = crate::tools::reconcile_tool_shims(&state.dirs, &yerd_bin) {
+    if let Err(e) =
+        crate::tools::reconcile_tool_shims(&state.dirs, &yerd_bin, node_default.as_deref())
+    {
         tracing::warn!(error = %e, "tool-shim reconcile failed");
     }
 }
@@ -1642,7 +1646,8 @@ pub(crate) async fn reconcile_client_shims_now(state: &DaemonState) {
 /// installed. Skips the (login-shell) PATH resolution entirely when no remaining
 /// tool could be tagged.
 async fn list_tools_with_external(state: &DaemonState) -> Vec<yerd_ipc::ToolStatus> {
-    let mut tools = crate::tools::list_status(&state.dirs);
+    let node_default = state.config.lock().await.node.default.clone();
+    let mut tools = crate::tools::list_status(&state.dirs, node_default.as_deref());
     let taggable = |t: &yerd_ipc::ToolStatus| {
         !t.installed
             && crate::tools::Tool::parse(&t.id).is_some_and(crate::tools::Tool::accepts_external)
@@ -6485,9 +6490,13 @@ mod node_tests {
             Some("24.2.0")
         );
         assert_eq!(
-            crate::tools::status(&state.dirs, crate::tools::Tool::Node)
-                .version
-                .as_deref(),
+            crate::tools::status(
+                &state.dirs,
+                crate::tools::Tool::Node,
+                state.config.lock().await.node.default.as_deref()
+            )
+            .version
+            .as_deref(),
             Some("v22.9.0")
         );
         assert!(matches!(
@@ -6500,15 +6509,26 @@ mod node_tests {
             Response::Ok
         ));
         assert_eq!(
-            crate::tools::status(&state.dirs, crate::tools::Tool::Node)
-                .version
-                .as_deref(),
+            crate::tools::status(
+                &state.dirs,
+                crate::tools::Tool::Node,
+                state.config.lock().await.node.default.as_deref()
+            )
+            .version
+            .as_deref(),
             Some("v24.2.0")
         );
         assert!(matches!(uninstall_tool("node", &state).await, Response::Ok));
         let cfg = yerd_config::Config::load(&state.config_path).unwrap();
         assert!(cfg.node.default.is_none());
         assert_eq!(cfg.node.sites.len(), 1);
-        assert!(!crate::tools::status(&state.dirs, crate::tools::Tool::Node).installed);
+        assert!(
+            !crate::tools::status(
+                &state.dirs,
+                crate::tools::Tool::Node,
+                state.config.lock().await.node.default.as_deref()
+            )
+            .installed
+        );
     }
 }

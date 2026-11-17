@@ -254,7 +254,7 @@ fn resolve_pnpm(
     data_bin: &Path,
 ) -> Option<PathBuf> {
     let managed = data_bin.join(Tool::Pnpm.primary_bin());
-    if tools::installed_version(&state.dirs, Tool::Pnpm).is_some() && managed.exists() {
+    if tools::installed_version(&state.dirs, Tool::Pnpm, None).is_some() && managed.exists() {
         return Some(managed);
     }
     tools::external::external_tool(user_dirs, Tool::Pnpm, data_bin, &state.dirs.data)
