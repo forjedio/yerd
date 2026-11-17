@@ -949,36 +949,43 @@ pub async fn install_tool_streamed(tool: String) -> Result<Response, GuiError> {
 
 // ── Node versions ────────────────────────────────────────────────────────────
 
+/// Installed Node releases with their default marker, update, and uninstall effects.
 #[tauri::command]
 pub async fn list_node() -> Result<Response, GuiError> {
     finish(exchange(&Request::ListNode).await?)
 }
 
+/// The nodejs.org release index grouped by major (fetched on demand).
 #[tauri::command]
 pub async fn available_node() -> Result<Response, GuiError> {
     finish(exchange(&Request::AvailableNode).await?)
 }
 
+/// Install a Node release as a background job; `update` may move the global default.
 #[tauri::command]
 pub async fn install_node_streamed(version: String, update: bool) -> Result<Response, GuiError> {
     finish(exchange(&Request::InstallNodeStreamed { version, update }).await?)
 }
 
+/// Uninstall one exact Node release and return the remaining releases.
 #[tauri::command]
 pub async fn uninstall_node(version: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::UninstallNode { version }).await?)
 }
 
+/// Set the global Node default (`site` is `None`) or a site's saved preference.
 #[tauri::command]
 pub async fn set_node_version(version: String, site: Option<String>) -> Result<Response, GuiError> {
     finish(exchange(&Request::SetNodeVersion { version, site }).await?)
 }
 
+/// Clear a site's saved Node preference.
 #[tauri::command]
 pub async fn clear_node_version(site: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::ClearNodeVersion { site }).await?)
 }
 
+/// A site's Node preference, project file, and the release it resolves to.
 #[tauri::command]
 pub async fn node_site(site: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::NodeSite { site }).await?)

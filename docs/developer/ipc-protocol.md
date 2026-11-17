@@ -358,9 +358,9 @@ Alongside `InstallNode { version }` and `SetNodeVersion { version, site }`, six 
 - `NodeSite { preference, project_file, effective, source, error, missing }` reports a site's saved preference, its `NodeProjectFile { kind, selector }`, and the effective version with its `NodeSource`. A resolution failure (unknown site, invalid project file, release not installed) is the `error` field, not a `Response::Error`; when the chosen selector (project file, preference, or default) simply isn't installed, `missing` names it so the GUI can offer to install it.
 - `NodeSource` serialises kebab-case: `nvmrc`, `node-version`, `site`, `default`, the same strings `yerd which --json` prints. `NodeProjectFile.kind` is only ever `nvmrc` or `node-version`.
 - `InstallNodeStreamed`'s `update` flag (skipped when `false`) only controls whether the global default moves to the new patch: it moves when the default currently resolves to an older patch of that major. Site preferences are never repointed.
-- `UninstallNode` refuses the release the default resolves to while others remain with `ErrorCode::InvalidPath` (the same code `uninstall_php` uses for the default), and an unknown or malformed version with `NotFound`.
+- `UninstallNode` is refused with `ErrorCode::InvalidPath` (the same code `uninstall_php` uses for the default) when other releases remain but the default selector would no longer resolve to any of them - for example an exact default pinned to the release being removed; a partial default such as `22` that still matches another 22.x is fine. An unknown or malformed version is `NotFound`.
 
-All `Option` fields are skipped when `None` and `Vec` fields when empty. No `PROTOCOL_VERSION` bump.
+Fields marked `skip_serializing_if` are omitted when empty: `NodeRelease.codename`, `.clears_preferences` and `.update`, `NodePreferenceRef.site`, the `MajorLine` options (`codename`, `eol`, `installed_latest`), every `NodeSite` field, `InstallNodeStreamed.update` (when `false`), `LaravelOptions.node`, and `StatusReport.node_updates` (when `0`). Others always serialise: `NodeVersions.installed` is `[]` when nothing is installed, and `SetNodeVersion.site` is `null` for the global default. No `PROTOCOL_VERSION` bump.
 :::
 
 ::: info Response headers mirror routing rules

@@ -218,4 +218,19 @@ describe("SiteNodePanel", () => {
     expect(wrapper.find('[data-testid="site-node-install"]').exists()).toBe(false);
     expect(wrapper.text()).toContain("Manage Node versions");
   });
+
+  it("ignores a reply that lands after the panel closes", async () => {
+    let fail: (e: unknown) => void = () => {};
+    nodeSite.mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          fail = reject;
+        }),
+    );
+    const wrapper = mount(SiteNodePanel, { props: { site: site() } });
+    wrapper.unmount();
+    fail(new Error("daemon went away"));
+    await flushPromises();
+    expect(toastError).not.toHaveBeenCalled();
+  });
 });

@@ -74,7 +74,11 @@ pub(super) async fn run(
         return Outcome::Failed(msg);
     }
 
-    if let Err(msg) = ensure_js_runtime(id, options.js, &user_dirs, state).await {
+    let node = match chosen_node(dirs, options) {
+        Ok(node) => node,
+        Err(msg) => return Outcome::Failed(msg),
+    };
+    if let Err(msg) = ensure_js_runtime(id, options.js, node.is_some(), &user_dirs, state).await {
         return Outcome::Failed(msg);
     }
 
@@ -90,10 +94,6 @@ pub(super) async fn run(
             return Outcome::Failed(msg);
         }
     }
-    let node = match chosen_node(dirs, options) {
-        Ok(node) => node,
-        Err(msg) => return Outcome::Failed(msg),
-    };
     if let Some(node) = &node {
         state
             .jobs
@@ -160,13 +160,9 @@ pub(super) async fn run(
         if let yerd_ipc::Response::Error { message, .. } =
             crate::ipc_server::save_node_version(&node.version, Some(name), state).await
         {
-            state
-                .jobs
-                .push_log(
-                    id,
-                    format!("couldn't save the site's Node version: {message}"),
-                )
-                .await;
+            return Outcome::Failed(format!(
+                "scaffolded and registered, but saving the site's Node version failed: {message}"
+            ));
         }
     }
     let tld = state.config.lock().await.tld.as_str().to_owned();
@@ -276,14 +272,19 @@ fn js_runtime_tools(js: JsRuntime) -> &'static [Tool] {
 /// Install every tool the chosen JS runtime needs that is neither managed nor
 /// available externally on the user's PATH. A thin wrapper over
 /// [`super::ensure_tool`] for each of [`js_runtime_tools`], stopping at the
-/// first failure.
+/// first failure. `node_chosen` means an installed release was already
+/// selected for this job, which satisfies the Node prerequisite on its own.
 async fn ensure_js_runtime(
     id: &str,
     js: JsRuntime,
+    node_chosen: bool,
     user_dirs: &[PathBuf],
     state: &Arc<DaemonState>,
 ) -> Result<(), String> {
     for &tool in js_runtime_tools(js) {
+        if node_chosen && tool == Tool::Node {
+            continue;
+        }
         super::ensure_tool(id, tool, user_dirs, state).await?;
     }
     Ok(())

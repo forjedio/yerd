@@ -353,6 +353,30 @@ describe("node commands", () => {
     expect(invokeMock).toHaveBeenCalledWith("list_node", undefined);
   });
 
+  it("installNodeWithProgress keeps polling through a failed status read", async () => {
+    vi.useFakeTimers();
+    try {
+      invokeMock
+        .mockResolvedValueOnce({ type: "job_started", job_id: "j1" })
+        .mockRejectedValueOnce({ code: "unreachable", message: "daemon unreachable" })
+        .mockResolvedValueOnce({
+          type: "job_progress",
+          state: "succeeded",
+          phase: "",
+          log: ["Installed Node 22.12.0"],
+          next_cursor: 1,
+          error: null,
+        });
+      const lines: string[] = [];
+      const done = installNodeWithProgress("22", false, (l) => lines.push(...l));
+      await vi.runAllTimersAsync();
+      await expect(done).resolves.toBeUndefined();
+      expect(lines).toEqual(["Installed Node 22.12.0"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("listNode lists the newest release first", async () => {
     const older = ["9.11.2", "24.22.3", "26.13.1", "24.3.0"].map((version) => ({
       ...release,

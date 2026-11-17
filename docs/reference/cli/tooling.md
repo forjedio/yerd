@@ -42,7 +42,7 @@ Add `--json` for machine-readable output.
 
 | Command | Description | Example |
 | --- | --- | --- |
-| `yerd install tool <ID>` | Install the tool's latest version, then expose its commands on `PATH` - a **verified release download** for `node` / `bun` / `pnpm` / `composer`, or a **Composer build** (`create-project`) for `laravel` / `wp-cli`. **Idempotent** - run again to update to the current latest. | `yerd install tool node` |
+| `yerd install tool <ID>` | Install the tool's latest version, then expose its commands on `PATH` - a **verified release download** for `node` / `bun` / `pnpm` / `composer`, or a **Composer build** (`create-project`) for `laravel` / `wp-cli`. **Idempotent** - run again to update to the current latest. For `node` the new release is installed beside the old one and an existing default is kept, so select it with `yerd node use <version>` to move the `node`/`npm`/`npx` shims. | `yerd install tool node` |
 | `yerd uninstall tool <ID>` | Remove the tool's files and its `PATH` commands. | `yerd uninstall tool bun` |
 
 ```sh
@@ -52,7 +52,8 @@ yerd install tool bun         # bun + bunx
 yerd install tool pnpm        # pnpm + pnpx
 yerd install tool laravel     # the laravel new installer (needs Composer)
 yerd install tool wp-cli      # the wp command for WordPress (needs Composer)
-yerd install tool node        # run again to update to the newest LTS
+yerd install tool node        # run again to add the newest LTS beside the old one
+yerd node use 24              # then select it; the default isn't moved for you
 yerd uninstall tool bun       # remove bun and prune its shims
 ```
 

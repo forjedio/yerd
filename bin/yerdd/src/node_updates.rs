@@ -30,8 +30,10 @@ pub async fn poll_and_refresh(state: &DaemonState, dl: &dyn Downloader) {
 
 /// Replace the cache with `latest` and recount pending updates.
 pub async fn store(state: &DaemonState, latest: BTreeMap<u32, String>) {
-    *state.node_updates.write().await = latest;
-    let pending = recount(state).await;
+    let mut cache = state.node_updates.write().await;
+    *cache = latest;
+    let pending = publish(state, &cache);
+    drop(cache);
     for (from, to) in pending {
         tracing::info!(from = %from, to = %to, "Node update available");
     }
@@ -40,9 +42,17 @@ pub async fn store(state: &DaemonState, latest: BTreeMap<u32, String>) {
 /// Recompute the pending-update count from disk and the cache (no network),
 /// returning the pending updates.
 pub async fn recount(state: &DaemonState) -> BTreeMap<String, String> {
+    let cache = state.node_updates.write().await;
+    publish(state, &cache)
+}
+
+/// Scan the installed releases and publish their count while the caller holds
+/// the cache's write lock, so concurrent recounts publish in lock order and a
+/// stale scan can never overwrite a newer one.
+fn publish(state: &DaemonState, cache: &BTreeMap<u32, String>) -> BTreeMap<String, String> {
     let installed = yerd_platform::node::installed(&state.dirs);
     let versions: Vec<&str> = installed.iter().map(|n| n.version.as_str()).collect();
-    let pending = cached_updates(state, &versions).await;
+    let pending = yerd_core::node::release_updates(&versions, cache);
     state.node_update_count.store(
         u32::try_from(pending.len()).unwrap_or(u32::MAX),
         Ordering::Relaxed,

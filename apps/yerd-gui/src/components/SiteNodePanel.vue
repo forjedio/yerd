@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
 import Button from "@/components/ui/Button.vue";
@@ -68,10 +68,18 @@ const projectFileName = computed(() => {
 const shadowed = computed(() => !!status.value?.project_file && !!status.value?.preference);
 
 /** Monotonic id of the latest `reload`, so a slow response for a previous site
- *  cannot overwrite the current one after a quick switch. */
+ *  cannot overwrite the current one after a quick switch. Unmounting bumps it
+ *  too, so a late reply or rejection from a closed panel is ignored. */
 let reloadId = 0;
+let disposed = false;
+
+onUnmounted(() => {
+  disposed = true;
+  reloadId += 1;
+});
 
 async function reload(): Promise<void> {
+  if (disposed) return;
   const id = ++reloadId;
   const name = props.site.name;
   loading.value = true;

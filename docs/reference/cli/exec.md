@@ -153,9 +153,11 @@ Both commands fail rather than quietly running the wrong PHP:
 - **`--site` never falls back.** An unknown name is a usage error (exit `2`);
   a daemon that isn't running to resolve it exits `69`. Naming a site is an
   instruction, not a hint.
-- **Without `--site`, an unreachable daemon just means "not inside a site"** and
-  the global default is used - but with a warning on stderr, since inside a site
-  that would otherwise silently resolve to the wrong version.
+- **Without `--site`, an unreachable daemon just means "not inside a site"** for
+  PHP (`php`, `composer`): the global default is used, with a warning on stderr,
+  since inside a site that would otherwise silently resolve to the wrong version.
+  Node commands (`yerd exec node|npm|npx`, `yerd which node|npm|npx`) need the
+  daemon's site list and exit `69` instead, even outside a site.
 - **Unix only.** Both commands are available on macOS and Linux.
 
 See [Exit codes](./#exit-codes) for the full table.

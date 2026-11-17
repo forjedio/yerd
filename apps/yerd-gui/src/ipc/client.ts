@@ -621,7 +621,7 @@ export async function installNodeWithProgress(
   onProgress?: (lines: string[]) => void,
 ): Promise<void> {
   const jobId = await installNodeStreamed(version, update);
-  const final = await pollJobToEnd(jobId, (lines) => onProgress?.(lines));
+  const final = await pollJobToEnd(jobId, (lines) => onProgress?.(lines), undefined, 500, 5);
   if (final.state !== "succeeded") {
     throw new IpcError(final.error || `Node ${version} install ${final.state}`);
   }
@@ -657,17 +657,30 @@ export async function nodeSite(site: string): Promise<NodeSiteResponse> {
  * `onLines`. Resolves with the latest {@link JobProgressResponse} - either the
  * terminal one, or the last seen when `shouldContinue()` returns false (e.g. the
  * viewing modal closed). `onLines` is the only log-delivery channel; the
- * returned `.log` is just the final batch.
+ * returned `.log` is just the final batch. `retries` tolerates that many
+ * consecutive failed status reads (e.g. a daemon restart) before giving up, so a
+ * blip doesn't report a still-running job as failed.
  */
 export async function pollJobToEnd(
   jobId: string,
   onLines: (lines: string[]) => void,
   shouldContinue?: () => boolean,
   intervalMs = 500,
+  retries = 0,
 ): Promise<JobProgressResponse> {
   let cursor = 0;
+  let failures = 0;
   for (;;) {
-    const r = await jobStatus(jobId, cursor);
+    let r: JobProgressResponse;
+    try {
+      r = await jobStatus(jobId, cursor);
+      failures = 0;
+    } catch (e) {
+      failures += 1;
+      if (failures > retries) throw e;
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      continue;
+    }
     if (r.log.length) onLines(r.log);
     // Advance unconditionally (the daemon may report a phase change with no new
     // log lines), so this client never re-fetches a window or stalls.
