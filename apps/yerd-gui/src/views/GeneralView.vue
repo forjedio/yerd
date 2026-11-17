@@ -308,7 +308,7 @@ watch(
   },
 );
 
-// macOS pf redirect is pinned to the current HTTP/HTTPS ports, so block edits to
+// macOS port forwarder is pinned to the current HTTP/HTTPS ports, so block edits to
 // those until the user un-elevates. Only fires on macOS (Linux reports null).
 // DNS/mail/dumps are unaffected and stay editable.
 const portsElevated = computed(() => report.value?.port_redirect === true);

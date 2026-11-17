@@ -35,6 +35,7 @@ import type {
   ProxyEntry,
   ProxyRuleEntry,
   Response,
+  ResponseHeaderEntry,
   RouteRuleEntry,
   ServiceAvailability,
   ServiceStatus,
@@ -289,6 +290,24 @@ export async function removeRouteRule(site: string, prefix: string): Promise<voi
   ensureOk(await call<Response>("remove_route_rule", { site, prefix }));
 }
 
+// ── response headers ─────────────────────────────────────────────────────────
+
+/** Every site's custom response headers, in each site's configured order. */
+export async function listResponseHeaders(): Promise<ResponseHeaderEntry[]> {
+  const r = ensureOk(await call<Response>("list_response_headers"));
+  return r.type === "response_headers" ? r.headers : [];
+}
+
+/** Set a custom response header on a site, replacing any entry with the same
+ *  name. The daemon validates the name and value. */
+export async function setResponseHeader(site: string, name: string, value: string): Promise<void> {
+  ensureOk(await call<Response>("set_response_header", { site, name, value }));
+}
+
+export async function removeResponseHeader(site: string, name: string): Promise<void> {
+  ensureOk(await call<Response>("remove_response_header", { site, name }));
+}
+
 // ── php versions ───────────────────────────────────────────────────────────
 
 export async function listPhp(): Promise<PhpVersionsResponse> {
@@ -518,7 +537,7 @@ export async function listServices(): Promise<ServiceStatus[]> {
   return r.type === "services" ? r.services : [];
 }
 
-// ── dev tools (composer / node / bun) ────────────────────────────────────────
+// ── dev tools (composer / node / bun / pnpm) ─────────────────────────────────
 
 export async function listTools(): Promise<ToolStatus[]> {
   const r = ensureOk(await call<Response>("list_tools"));
@@ -625,7 +644,12 @@ export async function setSiteTunnel(site: string, hostname: string | null): Prom
   ensureOk(await call<Response>("set_site_tunnel", { site, hostname }));
 }
 
-/** (Re)start the consolidated Named Tunnel serving all enabled sites. */
+/** Set (or clear, with `null`) a site's share password. */
+export async function setTunnelPassword(site: string, password: string | null): Promise<void> {
+  ensureOk(await call<Response>("set_tunnel_password", { site, password }));
+}
+
+/** Start the consolidated Named Tunnel if it is not running (idempotent). */
 export async function startNamedTunnel(): Promise<TunnelsResponse> {
   return ensureOk(await call<Response>("start_named_tunnel")) as TunnelsResponse;
 }

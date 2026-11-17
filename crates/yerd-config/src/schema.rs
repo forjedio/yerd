@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use yerd_core::{Domain, PhpVersion, ProxyRule, ProxySite, RouteRule, Site, Tld};
+use yerd_core::{Domain, PhpVersion, ProxyRule, ProxySite, ResponseHeader, RouteRule, Site, Tld};
 
 /// Top-level on-disk config.
 ///
@@ -102,6 +102,9 @@ pub struct Config {
     /// Per-site path-prefix routing rules (`app.test/api` → `api/index.php`),
     /// split by site class. Empty by default.
     pub route_rules: RouteRulesSection,
+    /// Per-site custom response headers (`Access-Control-Allow-Origin: *`),
+    /// split by site class. Empty by default.
+    pub response_headers: ResponseHeadersSection,
 }
 
 impl Default for Config {
@@ -130,6 +133,7 @@ impl Default for Config {
             proxies: Vec::new(),
             proxy_rules: ProxyRulesSection::default(),
             route_rules: RouteRulesSection::default(),
+            response_headers: ResponseHeadersSection::default(),
         }
     }
 }
@@ -194,6 +198,22 @@ impl RouteRulesSection {
             .chain(self.parked.values())
             .all(Vec::is_empty)
     }
+}
+
+/// Per-site custom response headers (see [`Config::response_headers`]).
+///
+/// Keyed exactly like [`RouteRulesSection`]: **linked** headers by site name,
+/// **parked** headers by document-root string (byte-exact, never canonicalised -
+/// see [`SiteOverride`]). A site with no headers has no entry, so an
+/// uncustomised config omits the whole section. The daemon applies these onto
+/// [`yerd_core::SiteRouter`] at build time.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResponseHeadersSection {
+    /// Linked-site headers, keyed by site name. `BTreeMap` for stable order.
+    pub linked: BTreeMap<String, Vec<ResponseHeader>>,
+    /// Parked-site headers, keyed by document-root string. `BTreeMap` for
+    /// stable order.
+    pub parked: BTreeMap<String, Vec<ResponseHeader>>,
 }
 
 /// Per-site routable-domain customisations (see [`Config::domains`]).
@@ -304,6 +324,9 @@ pub struct TunnelSection {
     pub named: BTreeMap<String, String>,
     /// Per-site public hostname mapping, by site name → hostname.
     pub sites: BTreeMap<String, String>,
+    /// Per-site share passwords (HTTP basic auth on tunnelled requests), by site
+    /// name → password. One password protects every tunnel kind for that site.
+    pub passwords: BTreeMap<String, String>,
 }
 
 /// Default loopback port for the dump server (see [`DumpsSection::port`]).

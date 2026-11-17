@@ -100,18 +100,23 @@ impl SupervisorPolicy {
     }
 
     /// Policy for a `cloudflared` tunnel: a single outbound-only child whose
-    /// readiness is the appearance of its public URL / edge-registration line in
-    /// the logfile, which can take several seconds over a cold network. A
-    /// generous readiness window avoids restart-looping a healthy-but-slow
-    /// connect; `cloudflared` drains gracefully on SIGTERM so a short stop grace
-    /// is enough.
+    /// readiness is a healthy edge connection, which can take several seconds
+    /// over a cold network. A generous readiness window avoids restart-looping a
+    /// healthy-but-slow connect; `cloudflared` drains gracefully on SIGTERM so a
+    /// short stop grace is enough.
+    ///
+    /// A tunnel never gives up: an outage of hours (laptop asleep, Wi-Fi off,
+    /// Cloudflare unreachable) must recover on its own once the network is back,
+    /// so `max_restart_attempts` is `u32::MAX` and the backoff is capped at 30s.
+    /// That bounds a deterministic failure (say, a missing credentials file) to
+    /// one cheap respawn per readiness window plus 30s until the user stops it.
     #[must_use]
     pub const fn tunnel() -> Self {
         Self {
             health_check_window: Duration::from_secs(60),
-            backoff_initial: Duration::from_millis(250),
-            backoff_max: Duration::from_secs(10),
-            max_restart_attempts: 3,
+            backoff_initial: Duration::from_secs(1),
+            backoff_max: Duration::from_secs(30),
+            max_restart_attempts: u32::MAX,
             stop_grace: Duration::from_secs(5),
         }
     }
@@ -443,7 +448,9 @@ mod tests {
         assert_eq!(t.health_check_window, Duration::from_secs(60));
         assert!(t.health_check_window > fpm.health_check_window);
         assert_eq!(t.stop_grace, Duration::from_secs(5));
-        assert_eq!(t.max_restart_attempts, 3);
+        assert_eq!(t.max_restart_attempts, u32::MAX);
+        assert_eq!(t.backoff_initial, Duration::from_secs(1));
+        assert_eq!(t.backoff_max, Duration::from_secs(30));
         assert_eq!(
             transition(
                 starting(1, Some(42)),
@@ -454,6 +461,25 @@ mod tests {
             ),
             (starting(1, Some(42)), Action::HealthCheck)
         );
+    }
+
+    #[test]
+    fn tunnel_policy_never_gives_up_and_caps_backoff() {
+        let t = SupervisorPolicy::tunnel();
+        assert_eq!(
+            transition(
+                PoolState::Failed {
+                    last_exit: ExitReason::Code(1),
+                    attempts: 10_000,
+                },
+                Event::BackoffElapsed,
+                &t
+            ),
+            (starting(10_001, None), Action::Spawn)
+        );
+        assert_eq!(backoff_for(10_000, &t), Duration::from_secs(30));
+        assert_eq!(backoff_for(1, &t), Duration::from_secs(1));
+        assert_eq!(backoff_for(6, &t), Duration::from_secs(30));
     }
 
     fn elapsed(secs: u64) -> Elapsed {

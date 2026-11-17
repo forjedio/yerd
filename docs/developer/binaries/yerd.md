@@ -16,7 +16,8 @@ single IPC round-trip: they orchestrate the privileged helper locally (under
 Source: [`bin/yerd`](https://github.com/forjedio/yerd/tree/main/bin/yerd) ·
 binary `yerd` (`src/main.rs`), library `yerd` (`src/lib.rs`). Depends on
 [`yerd-core`](../crates/yerd-core), [`yerd-ipc`](../crates/yerd-ipc) (with the
-`transport` feature) and [`yerd-platform`](../crates/yerd-platform). The user-
+`transport` feature), [`yerd-platform`](../crates/yerd-platform) and
+[`yerd-services`](../crates/yerd-services). The user-
 facing command catalogue lives in the [CLI Reference](../../reference/cli/).
 :::
 
@@ -43,6 +44,7 @@ the `tests/cli_e2e.rs` integration test can drive the same code paths.
 | `src/composer_shim.rs` | Multi-call dispatch: when `argv[0]` is `composer`, exec the default PHP against `{data}/tools/composer/composer.phar` (Unix-only). Runs before clap. See [Dev-tool installers](../dev-tools). |
 | `src/wp_shim.rs` | Multi-call dispatch: when `argv[0]` is `wp`, exec WP-CLI - site-aware if cwd is inside a registered site (pins that site's PHP, scopes via `--path=`) (Unix-only). Runs before clap. |
 | `src/laravel_shim.rs` | Multi-call dispatch: when `argv[0]` is `laravel`, exec the Laravel installer under the resolved PHP (Unix-only). Runs before clap. |
+| `src/service_client_shim.rs` | Multi-call dispatch: when `argv[0]` is an allowlisted service client (`mysql`, `mysqldump`, `mariadb`, `mariadb-dump`, `psql`, `pg_dump`, `pg_dumpall`, `pg_restore`, `createdb`, `valkey-cli`), exec it from the version Yerd runs, with connection defaults from `yerd_services::client` (`MYSQL_UNIX_PORT`, `PGHOST`/`PGPORT`, Valkey `-p`) applied only when the user has not set them (Unix-only). Runs before clap. |
 | `src/shim.rs` | Shared PHP-resolution helpers for the cover, composer, `wp`, and `laravel` multi-call shims (default-version resolution, highest-installed fallback). |
 | `src/cli_shim.rs` | Multi-call dispatch: when `argv[0]` is `php` or `php<major>.<minor>`, exec that version's PHP CLI with `PHPRC` pointed at its generated ini (Unix-only). Runs before clap. If the environment carries exactly `YERD_COVER=1` it instead derives *its own* resolved version's pcov-enabled `cover.ini` (via `cover_shim::prepare_cover_ini`), falling back to the clean ini with a stderr notice when pcov isn't available. |
 | `src/site_scope.rs` | Resolve the site owning a directory (or a `--site` name) to its pinned PHP version - the shared lookup behind `exec`, `which`, and the site-aware `wp` shim. |
@@ -178,12 +180,12 @@ loads the pcov build matching its own PHP version rather than reusing the
 parent's ABI-specific `pcov.so`. When that derivation fails (no `pcov.so` for
 the resolved version, including every legacy minor) `cli_shim` prints one
 `yerd:` notice on stderr and execs with the clean per-version ini, so an
-inherited `YERD_COVER` can never break an unrelated `php` invocation. The `wp`
-shim and `yerd exec` do not participate: they still point `PHPRC` at
-`cli_phprc`'s clean per-version ini. `composer_shim` and `laravel_shim` set no
-`PHPRC` at all, so they inherit the caller's - which means a `composer` nested
-inside a cover shim keeps the parent's cover ini while resolving the *default*
-PHP version, and loads a mismatched `pcov.so` when those versions differ.
+inherited `YERD_COVER` can never break an unrelated `php` invocation. The `wp`,
+`composer` and `laravel` shims and `yerd exec` do not participate: they point
+`PHPRC` at `cli_phprc`'s clean per-version ini (the default version's for
+`composer_shim` and `laravel_shim`), overriding any inherited cover ini, so a
+`composer` nested inside a cover shim runs without pcov rather than loading a
+mismatched `pcov.so`.
 
 The same logic also backs the `yerd coverage <args…>` **subcommand**, which
 reaches it from the other direction. Rather than being keyed on `argv[0]`,
@@ -204,7 +206,9 @@ both report the genuine interpreter, not the shim name.
 
 `composer` works the same way (`composer_shim.rs`): when `argv[0]` is `composer`,
 `yerd` resolves the default PHP (sharing the helpers in `shim.rs`) and `exec`s it
-against `{data}/tools/composer/composer.phar`. Its `dispatch()` runs in `main.rs`
+against `{data}/tools/composer/composer.phar`, with `PHPRC` set to that version's
+CLI ini (`cli_phprc`) so extensions registered with `yerd php ext` are visible to
+Composer's platform check and to the PHP processes it spawns. Its `dispatch()` runs in `main.rs`
 just before the cover dispatch. See [Dev-tool installers](../dev-tools) for how
 the daemon installs the phar and creates the `composer` symlink.
 
@@ -298,7 +302,7 @@ The formatters render tab-separated tables (`sites`), annotated version lists
 (marking the default and any available updates), and a multi-line `status`
 block. `status` carries small but real semantics - for example `fmt_port`
 distinguishes a plain rootless fallback (`80 → 8080 (fallback)`) from a macOS
-`pf` redirect that makes the privileged port reachable (`80 → 8080
+port forwarder that makes the privileged port reachable (`80 → 8080
 (redirected)`), and empty `daemon_version` (an older daemon, `#[serde(default)]`)
 renders as `unknown` rather than blank.
 
@@ -400,7 +404,7 @@ single IPC request. Its design follows a strict trust model (see
 | --- | --- | --- |
 | `trust` | `InstallCa` / `UninstallCa` | same |
 | `resolver` | `InstallResolver` / `UninstallResolver` | same |
-| `ports` | `InstallPortRedirect` / `UninstallPortRedirect` (a `pf` redirect 80→http, 443→https; reversible) | `Setcap` (grants `cap_net_bind_service` to `yerdd`); **no clean reverse**, so `unelevate ports` prints `setcap -r` guidance |
+| `ports` | `InstallPortRedirect` / `UninstallPortRedirect` (launchd port-forwarder jobs 80→http, 443→https run as the invoking user via `--uid`; reversible; also removes any legacy pf redirect) | `Setcap` (grants `cap_net_bind_service` to `yerdd`); **no clean reverse**, so `unelevate ports` prints `setcap -r` guidance |
 
 Helper exit codes are classified: `0` is success, `78` (`EX_CONFIG`) is treated
 as a *skip* ("unsupported on this host", e.g. resolver without

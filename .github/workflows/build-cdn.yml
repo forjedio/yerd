@@ -78,7 +78,7 @@ jobs:
           targets='[]'
           add() { targets=$(printf '%s' "$targets" | jq -c --argjson o "$1" '. + [$o]'); }
           if [ "$IN_MACOS" = "true" ]; then
-            add '{"id":"macos","runner":"macos-14","container":"","kind":"gui"}'
+            add '{"id":"macos","runner":"macos-latest","container":"","kind":"gui"}'
           fi
           if [ "$IN_LINUX_X64" = "true" ]; then
             add '{"id":"linux-x86_64","runner":"ubuntu-22.04","container":"","kind":"gui"}'

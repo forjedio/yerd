@@ -16,8 +16,8 @@ use yerd_ipc::{
     decode_message, encode_message,
     types::{PhpVersion, Site},
     CaStatus, Diagnosis, DiagnosisCode, ErrorCode, FixReport, FixResult, IpcError, PhpPoolStatus,
-    PoolRunState, PortStatus, Request, Response, RouteRuleEntry, Severity, SiteCounts,
-    StatusReport,
+    PoolRunState, PortStatus, Request, Response, ResponseHeaderEntry, RouteRuleEntry, Severity,
+    SiteCounts, StatusReport,
 };
 
 fn assert_request_roundtrips(r: Request) {
@@ -114,6 +114,16 @@ fn encode_then_decode_request_roundtrip() {
         prefix: "/api".into(),
     });
     assert_request_roundtrips(Request::ListRoutes);
+    assert_request_roundtrips(Request::SetResponseHeader {
+        site: "api".into(),
+        name: "Access-Control-Allow-Origin".into(),
+        value: "https://app.test".into(),
+    });
+    assert_request_roundtrips(Request::RemoveResponseHeader {
+        site: "api".into(),
+        name: "Access-Control-Allow-Origin".into(),
+    });
+    assert_request_roundtrips(Request::ListResponseHeaders);
 }
 
 #[test]
@@ -140,6 +150,8 @@ fn encode_then_decode_response_roundtrip() {
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
+        ffi_versions: Box::new(vec![]),
+        libvips_found: None,
         pool: Box::new(BTreeMap::new()),
     });
     assert_response_roundtrips(Response::PhpVersions {
@@ -159,6 +171,8 @@ fn encode_then_decode_response_roundtrip() {
             PhpVersion::new(8, 5),
             BTreeMap::from([("xdebug.mode".to_string(), "debug".to_string())]),
         )])),
+        ffi_versions: Box::new(vec![]),
+        libvips_found: None,
         pool: Box::new(BTreeMap::from([(
             PhpVersion::new(8, 5),
             BTreeMap::from([("max_children".to_string(), "32".to_string())]),
@@ -268,6 +282,7 @@ fn encode_then_decode_response_roundtrip() {
             lan_setup_bound: Some(true),
             port_redirect_targets: None,
             lan_redirect_targets: None,
+            legacy_pf_redirect: None,
         }),
     });
     assert_response_roundtrips(Response::Diagnoses {
@@ -315,6 +330,13 @@ fn encode_then_decode_response_roundtrip() {
             site: "portal".into(),
             prefix: "/api".into(),
             target: "api/index.php".into(),
+        }],
+    });
+    assert_response_roundtrips(Response::ResponseHeaders {
+        headers: vec![ResponseHeaderEntry {
+            site: "api".into(),
+            name: "Access-Control-Allow-Origin".into(),
+            value: "https://app.test".into(),
         }],
     });
 }

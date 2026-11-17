@@ -20,6 +20,7 @@ pub mod php_extensions;
 pub mod php_pool;
 pub mod php_settings;
 mod proxy;
+mod response_header;
 mod route_rule;
 mod router;
 pub mod service_directives;
@@ -29,7 +30,7 @@ mod tld;
 /// `Server` header value the proxy stamps on its own (synthetic, non-forwarded)
 /// responses. It doubles as the signature the macOS privileged-port redirect
 /// probe looks for: confirming a connection to `127.0.0.1:80` reaches *this*
-/// daemon's proxy - rather than some other process or a stale `pf` rule holding
+/// daemon's proxy - rather than some other process or an undelivering forwarder holding
 /// the port - instead of merely confirming *something* answers.
 ///
 /// It is a cross-crate contract: `yerd-proxy` sets it (`server.rs`) and
@@ -50,8 +51,8 @@ pub use detect::{detect, Detection, ProjectSignals};
 pub use domain::{choose_primary, effective_domains, Domain};
 pub use error::{
     CoreError, DomainErrorReason, PhpVersionErrorReason, ProxyNameErrorReason,
-    ProxyRuleErrorReason, RouteRuleErrorReason, SiteNameErrorReason, TldErrorReason,
-    UpstreamTargetErrorReason,
+    ProxyRuleErrorReason, ResponseHeaderErrorReason, RouteRuleErrorReason, SiteNameErrorReason,
+    TldErrorReason, UpstreamTargetErrorReason,
 };
 pub use net::is_lan_source;
 pub use php::{PhpVersion, FIRST_SUPPORTED_MINOR};
@@ -60,6 +61,7 @@ pub use php_extensions::{ExtError, NameErrorReason, PathErrorReason};
 pub use php_pool::{PoolNameErrorReason, PoolSettingError, PoolValueErrorReason};
 pub use php_settings::{PhpSettingError, ValueErrorReason};
 pub use proxy::{match_rule, validate_proxy_name, ProxyRule, ProxySite, UpstreamTarget};
+pub use response_header::ResponseHeader;
 pub use route_rule::RouteRule;
 pub use router::{Route, RouterConfig, SiteRouter};
 pub use site::{normalize_site_name, slugify_site_name, Site, SiteKind};

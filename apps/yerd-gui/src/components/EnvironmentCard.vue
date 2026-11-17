@@ -113,7 +113,7 @@ const envItems = computed<EnvItem[]>(() => {
       key: "ports",
       label: "Privileged ports (80/443)",
       // Degraded: the daemon bound no web ports. On macOS elevation can't help
-      // yet (the pf redirect would point at the unbound ports, and the CLI
+      // yet (the port forwarder would point at the unbound ports, and the CLI
       // refuses), so withhold the fix until working ports are set. On Linux the
       // ports fix is `setcap`, which binds 80/443 DIRECTLY and doesn't depend on
       // the fallback ports - it's the correct degraded recovery, so keep it

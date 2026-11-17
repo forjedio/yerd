@@ -32,8 +32,6 @@ pub const PHP_LISTING_PUBLIC_KEY: &str = "RWRtVdsOqEEQ4/LBPGjnS97agmhMj0k/X18GXF
 pub enum Platform {
     /// Apple Silicon macOS - the `.app.tar.gz` bundle.
     MacOsAarch64,
-    /// Intel macOS - no artifact is published (Apple-Silicon-only for MVP).
-    MacOsX86_64,
     /// `x86_64` Linux - the `.deb` package.
     LinuxX86_64,
     /// `aarch64` Linux - the arm64 `.deb` package.
@@ -51,10 +49,6 @@ impl Platform {
         {
             Self::MacOsAarch64
         }
-        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-        {
-            Self::MacOsX86_64
-        }
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
             Self::LinuxX86_64
@@ -65,7 +59,6 @@ impl Platform {
         }
         #[cfg(not(any(
             all(target_os = "macos", target_arch = "aarch64"),
-            all(target_os = "macos", target_arch = "x86_64"),
             all(target_os = "linux", target_arch = "x86_64"),
             all(target_os = "linux", target_arch = "aarch64"),
         )))]
@@ -210,7 +203,7 @@ pub fn select_asset(
         }
         (Platform::LinuxX86_64, PkgFormat::Rpm) => (ArtifactKind::Rpm, is_linux_x86_64_rpm),
         (Platform::LinuxAarch64, PkgFormat::Rpm) => (ArtifactKind::Rpm, is_linux_aarch64_rpm),
-        (p @ (Platform::MacOsX86_64 | Platform::Unsupported), _) => {
+        (p @ Platform::Unsupported, _) => {
             return Err(AssetError::NoArtifactForPlatform(p));
         }
     };
@@ -605,11 +598,11 @@ mod tests {
     }
 
     #[test]
-    fn intel_macos_has_no_artifact() {
+    fn unsupported_platform_has_no_artifact() {
         let r = release_with(&["Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz", "SHA256SUMS"]);
         assert_eq!(
-            select_asset(&r, Platform::MacOsX86_64, PkgFormat::Deb),
-            Err(AssetError::NoArtifactForPlatform(Platform::MacOsX86_64))
+            select_asset(&r, Platform::Unsupported, PkgFormat::Deb),
+            Err(AssetError::NoArtifactForPlatform(Platform::Unsupported))
         );
     }
 

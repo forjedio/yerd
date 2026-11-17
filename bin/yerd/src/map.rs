@@ -222,6 +222,7 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         Command::Domain { action } => domain_request(action)?,
         Command::Proxy { action } => proxy_request(action)?,
         Command::Route { action } => route_request(action)?,
+        Command::Header { action } => header_request(action)?,
         Command::Tunnel { action } => tunnel_request(action),
         Command::Db { action } => db_request(action),
         Command::Mail { action } => match action {
@@ -559,6 +560,32 @@ fn route_request(action: &crate::cli::RouteAction) -> Result<Request, ClientErro
     })
 }
 
+/// Map a `yerd header <action>` to its wire request. Only the site name is
+/// checked client-side; the header name and value are validated by the daemon
+/// (authoritative, via `yerd_core::ResponseHeader`). `List` carries no filter
+/// on the wire, exactly like `yerd route list`.
+fn header_request(action: &crate::cli::HeaderAction) -> Result<Request, ClientError> {
+    use crate::cli::HeaderAction;
+    Ok(match action {
+        HeaderAction::List { .. } => Request::ListResponseHeaders,
+        HeaderAction::Set { site, name, value } => {
+            validate_name(site)?;
+            Request::SetResponseHeader {
+                site: site.clone(),
+                name: name.clone(),
+                value: value.clone(),
+            }
+        }
+        HeaderAction::Remove { site, name } => {
+            validate_name(site)?;
+            Request::RemoveResponseHeader {
+                site: site.clone(),
+                name: name.clone(),
+            }
+        }
+    })
+}
+
 /// Client-side check that a proxy rule prefix is an absolute path, for a clean
 /// exit-2 error before connecting. The daemon is authoritative.
 fn validate_prefix(prefix: &str) -> Result<(), ClientError> {
@@ -630,6 +657,14 @@ fn tunnel_request(action: &TunnelAction) -> Request {
         } => Request::SetSiteTunnel {
             site: site.clone(),
             hostname: if *clear { None } else { hostname.clone() },
+        },
+        TunnelAction::Password {
+            site,
+            password,
+            clear,
+        } => Request::SetTunnelPassword {
+            site: site.clone(),
+            password: if *clear { None } else { password.clone() },
         },
         TunnelAction::Publish => Request::StartNamedTunnel,
         TunnelAction::Unpublish => Request::StopNamedTunnel,
@@ -1029,6 +1064,7 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             version_settings,
             directives,
             pool,
+            ..
         } => Rendered::ok(format_php_versions(
             installed,
             *default,
@@ -1142,6 +1178,9 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
         )),
         Response::Proxies { proxies, rules } => Rendered::ok(format_proxies(proxies, rules)),
         Response::Routes { rules } => Rendered::ok(format_routes(rules, None)),
+        Response::ResponseHeaders { headers } => {
+            Rendered::ok(format_response_headers(headers, None))
+        }
         _ => Rendered::err("unexpected response from daemon".to_owned()),
     }
 }
@@ -1224,6 +1263,59 @@ fn format_proxy_domains(proxy: &yerd_ipc::ProxyEntry) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Render `yerd header list [site]`. With `filter`, shows only that site's
+/// headers; the filter is applied client-side, as for [`render_routes`]. The
+/// JSON form keeps the `response_headers` envelope, so filtered and unfiltered
+/// output share one shape.
+#[must_use]
+pub fn render_response_headers(
+    headers: &[yerd_ipc::ResponseHeaderEntry],
+    filter: Option<&str>,
+    json: bool,
+) -> Rendered {
+    if json {
+        let selected = select_response_headers(headers, filter)
+            .into_iter()
+            .cloned()
+            .collect();
+        return render(&Response::ResponseHeaders { headers: selected }, true);
+    }
+    Rendered::ok(format_response_headers(headers, filter))
+}
+
+fn select_response_headers<'a>(
+    headers: &'a [yerd_ipc::ResponseHeaderEntry],
+    filter: Option<&str>,
+) -> Vec<&'a yerd_ipc::ResponseHeaderEntry> {
+    match filter {
+        Some(f) => {
+            let f = f.to_ascii_lowercase();
+            headers.iter().filter(|h| h.site == f).collect()
+        }
+        None => headers.iter().collect(),
+    }
+}
+
+/// Render `yerd header list`: one row per header, `site Name: value`.
+fn format_response_headers(
+    headers: &[yerd_ipc::ResponseHeaderEntry],
+    filter: Option<&str>,
+) -> String {
+    use std::fmt::Write as _;
+    let selected = select_response_headers(headers, filter);
+    if selected.is_empty() {
+        return match filter {
+            Some(site) => format!("no response headers configured for {site}"),
+            None => "no response headers configured".to_owned(),
+        };
+    }
+    let mut out = String::from("Response headers:\n");
+    for h in selected {
+        let _ = writeln!(out, "  {} {}: {}", h.site, h.name, h.value);
+    }
+    out.trim_end().to_owned()
 }
 
 /// Render `yerd route list`: one row per rule, `site prefix -> target`.
@@ -1475,15 +1567,37 @@ fn format_tunnels(tunnels: &[TunnelInfo], cloudflared: &CloudflaredStatus) -> St
     }
     let mut out = format!("{cf}\n\nSITE\tSTATE\tURL");
     for t in tunnels {
-        let state = match t.state {
-            TunnelRunState::Running => "running",
-            TunnelRunState::Failed => "failed",
-            _ => "unknown",
-        };
         let target = t.url.as_deref().or(t.hostname.as_deref()).unwrap_or("-");
-        let _ = write!(out, "\n{}\t{}\t{}", t.site, state, target);
+        let protected = if t.protected { "\t(password)" } else { "" };
+        let _ = write!(
+            out,
+            "\n{}\t{}\t{}{}",
+            t.site,
+            tunnel_state_label(t),
+            target,
+            protected
+        );
+        if let Some(err) = &t.last_error {
+            let _ = write!(out, "\n  error: {err}");
+        }
+        for warning in &t.warnings {
+            let _ = write!(out, "\n  warning: {warning}");
+        }
     }
     out
+}
+
+/// The human state label. Every reported failure is being retried: the daemon
+/// removes a quick share whose first start fails rather than reporting it, so a
+/// failed tunnel of either kind reads as retrying.
+fn tunnel_state_label(t: &TunnelInfo) -> &'static str {
+    match t.state {
+        TunnelRunState::Running => "online",
+        TunnelRunState::Failed => "failed, retrying",
+        TunnelRunState::Connecting => "connecting",
+        TunnelRunState::Reconnecting => "reconnecting",
+        _ => "unknown",
+    }
 }
 
 fn format_named_tunnels(
@@ -1506,7 +1620,8 @@ fn format_named_tunnels(
     if !sites.is_empty() {
         out.push_str("\n\nEXPOSED SITE\tHOSTNAME");
         for s in sites {
-            let _ = write!(out, "\n{}\t{}", s.site, s.hostname);
+            let protected = if s.protected { "\t(password)" } else { "" };
+            let _ = write!(out, "\n{}\t{}{}", s.site, s.hostname, protected);
         }
     }
     out
@@ -1870,7 +1985,7 @@ fn fmt_tristate(b: Option<bool>) -> &'static str {
     }
 }
 
-/// A `ports` status line when an installed macOS pf redirect targets a port the
+/// A `ports` status line when an installed macOS port forwarder targets a port the
 /// daemon is no longer serving. The host (loopback) case takes precedence and
 /// names both elevate commands; a LAN-only mismatch (host fine) names the LAN
 /// step. `None` when nothing is stale. Mirrors the doctor's stale findings.
@@ -1879,7 +1994,7 @@ fn redirect_stale_line(r: &StatusReport) -> Option<String> {
         |t: yerd_ipc::PortRedirectTargets| t.http != r.http.bound || t.https != r.https.bound;
     if r.port_redirect_targets.is_some_and(mismatched) {
         return Some(
-            "ports     stale redirect: pf targets a dead port (run `sudo yerd elevate ports`, \
+            "ports     stale redirect: forwarder targets a dead port (run `sudo yerd elevate ports`, \
              then `sudo yerd elevate lan` if LAN is on; see `yerd doctor`)"
                 .to_owned(),
         );
@@ -1936,6 +2051,172 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use yerd_ipc::ErrorCode;
+
+    #[test]
+    fn format_tunnels_renders_each_run_state() {
+        let cf = CloudflaredStatus {
+            installed: true,
+            version: None,
+            source: None,
+            logged_in: false,
+        };
+        for (state, label) in [
+            (TunnelRunState::Running, "online"),
+            (TunnelRunState::Failed, "failed, retrying"),
+            (TunnelRunState::Connecting, "connecting"),
+            (TunnelRunState::Reconnecting, "reconnecting"),
+        ] {
+            let tunnel = TunnelInfo {
+                site: "app".into(),
+                kind: yerd_ipc::TunnelKind::Quick,
+                state,
+                url: Some("https://x.trycloudflare.com".into()),
+                hostname: None,
+                last_error: None,
+                protected: false,
+                warnings: Vec::new(),
+            };
+            let out = format_tunnels(&[tunnel], &cf);
+            assert!(
+                out.contains(&format!("\napp\t{label}\thttps://x.trycloudflare.com")),
+                "{out}"
+            );
+        }
+    }
+
+    fn tunnel_info(kind: yerd_ipc::TunnelKind, state: TunnelRunState) -> TunnelInfo {
+        TunnelInfo {
+            site: "app".into(),
+            kind,
+            state,
+            url: None,
+            hostname: Some("app.example.com".into()),
+            last_error: None,
+            protected: false,
+            warnings: Vec::new(),
+        }
+    }
+
+    fn installed_cloudflared() -> CloudflaredStatus {
+        CloudflaredStatus {
+            installed: true,
+            version: None,
+            source: None,
+            logged_in: true,
+        }
+    }
+
+    #[test]
+    fn failed_tunnels_of_either_kind_render_as_retrying() {
+        let cf = installed_cloudflared();
+        for (kind, label) in [
+            (yerd_ipc::TunnelKind::Named, "failed, retrying"),
+            (yerd_ipc::TunnelKind::Quick, "failed, retrying"),
+        ] {
+            let out = format_tunnels(&[tunnel_info(kind, TunnelRunState::Failed)], &cf);
+            assert!(
+                out.contains(&format!("\napp\t{label}\tapp.example.com")),
+                "{out}"
+            );
+        }
+    }
+
+    #[test]
+    fn format_tunnels_renders_last_error_warnings_and_protected() {
+        let mut tunnel = tunnel_info(yerd_ipc::TunnelKind::Quick, TunnelRunState::Reconnecting);
+        tunnel.last_error = Some("connection refused".into());
+        tunnel.protected = true;
+        tunnel.warnings = vec!["Vite dev server is running".into(), "SESSION_DOMAIN".into()];
+        let out = format_tunnels(&[tunnel], &installed_cloudflared());
+        assert!(
+            out.contains("\napp\treconnecting\tapp.example.com\t(password)"),
+            "{out}"
+        );
+        assert!(out.contains("\n  error: connection refused"), "{out}");
+        assert!(
+            out.contains("\n  warning: Vite dev server is running\n  warning: SESSION_DOMAIN"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn format_tunnels_omits_extras_when_absent() {
+        let tunnel = tunnel_info(yerd_ipc::TunnelKind::Named, TunnelRunState::Running);
+        let out = format_tunnels(&[tunnel], &installed_cloudflared());
+        assert!(out.ends_with("\napp\tonline\tapp.example.com"), "{out}");
+        assert!(!out.contains("error:"), "{out}");
+        assert!(!out.contains("warning:"), "{out}");
+        assert!(!out.contains("(password)"), "{out}");
+    }
+
+    #[test]
+    fn format_named_tunnels_marks_protected_sites() {
+        let sites = [
+            yerd_ipc::SiteHostname {
+                site: "a".into(),
+                hostname: "a.example.com".into(),
+                protected: true,
+            },
+            yerd_ipc::SiteHostname {
+                site: "b".into(),
+                hostname: "b.example.com".into(),
+                protected: false,
+            },
+        ];
+        let out = format_named_tunnels(&[], &sites, None);
+        assert!(out.contains("\na\ta.example.com\t(password)"), "{out}");
+        assert!(out.ends_with("\nb\tb.example.com"), "{out}");
+    }
+
+    #[test]
+    fn maps_tunnel_password_set_and_clear() {
+        assert_eq!(
+            to_request(&Command::Tunnel {
+                action: TunnelAction::Password {
+                    site: "app".into(),
+                    password: Some("hunter2".into()),
+                    clear: false,
+                }
+            })
+            .unwrap(),
+            Request::SetTunnelPassword {
+                site: "app".into(),
+                password: Some("hunter2".into()),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Tunnel {
+                action: TunnelAction::Password {
+                    site: "app".into(),
+                    password: None,
+                    clear: true,
+                }
+            })
+            .unwrap(),
+            Request::SetTunnelPassword {
+                site: "app".into(),
+                password: None,
+            }
+        );
+    }
+
+    #[test]
+    fn maps_publish_and_unpublish_to_named_start_and_stop() {
+        assert_eq!(
+            to_request(&Command::Tunnel {
+                action: TunnelAction::Publish
+            })
+            .unwrap(),
+            Request::StartNamedTunnel
+        );
+        assert_eq!(
+            to_request(&Command::Tunnel {
+                action: TunnelAction::Unpublish
+            })
+            .unwrap(),
+            Request::StopNamedTunnel
+        );
+    }
 
     #[test]
     fn maps_lan_and_remote_setup_commands() {
@@ -2763,6 +3044,8 @@ mod tests {
                 settings: std::collections::BTreeMap::new(),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
                 directives: Box::new(std::collections::BTreeMap::new()),
+                ffi_versions: Box::new(vec![]),
+                libvips_found: None,
                 pool: Box::new(std::collections::BTreeMap::new()),
             },
             false,
@@ -2782,6 +3065,8 @@ mod tests {
                 settings: std::collections::BTreeMap::new(),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
                 directives: Box::new(std::collections::BTreeMap::new()),
+                ffi_versions: Box::new(vec![]),
+                libvips_found: None,
                 pool: Box::new(std::collections::BTreeMap::new()),
             },
             false,
@@ -2815,6 +3100,8 @@ mod tests {
                         "debug".to_string(),
                     )]),
                 )])),
+                ffi_versions: Box::new(vec![]),
+                libvips_found: None,
                 pool: Box::new(std::collections::BTreeMap::from([(
                     v83,
                     std::collections::BTreeMap::from([(
@@ -2981,6 +3268,8 @@ mod tests {
                 ]),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
                 directives: Box::new(std::collections::BTreeMap::new()),
+                ffi_versions: Box::new(vec![]),
+                libvips_found: None,
                 pool: Box::new(std::collections::BTreeMap::new()),
             },
             false,
@@ -3151,6 +3440,7 @@ mod tests {
             lan_setup_bound: None,
             port_redirect_targets: None,
             lan_redirect_targets: None,
+            legacy_pf_redirect: None,
         }
     }
 
@@ -3640,6 +3930,124 @@ mod tests {
 
         let empty = render_routes(&[], None, false);
         assert_eq!(empty.stdout, "no routing rules configured");
+    }
+
+    #[test]
+    fn maps_header_command() {
+        use crate::cli::HeaderAction;
+        assert_eq!(
+            to_request(&Command::Header {
+                action: HeaderAction::Set {
+                    site: "api".into(),
+                    name: "Access-Control-Allow-Origin".into(),
+                    value: "https://app.test".into(),
+                },
+            })
+            .unwrap(),
+            Request::SetResponseHeader {
+                site: "api".into(),
+                name: "Access-Control-Allow-Origin".into(),
+                value: "https://app.test".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Header {
+                action: HeaderAction::Remove {
+                    site: "api".into(),
+                    name: "access-control-allow-origin".into(),
+                },
+            })
+            .unwrap(),
+            Request::RemoveResponseHeader {
+                site: "api".into(),
+                name: "access-control-allow-origin".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Header {
+                action: HeaderAction::List { site: None },
+            })
+            .unwrap(),
+            Request::ListResponseHeaders
+        );
+        assert_eq!(
+            to_request(&Command::Header {
+                action: HeaderAction::List {
+                    site: Some("api".into())
+                },
+            })
+            .unwrap(),
+            Request::ListResponseHeaders,
+            "the site filter is applied client-side, not on the wire"
+        );
+    }
+
+    #[test]
+    fn renders_header_list_with_and_without_a_filter() {
+        let headers = vec![
+            yerd_ipc::ResponseHeaderEntry {
+                site: "api".into(),
+                name: "Access-Control-Allow-Origin".into(),
+                value: "https://app.test".into(),
+            },
+            yerd_ipc::ResponseHeaderEntry {
+                site: "app".into(),
+                name: "X-Frame-Options".into(),
+                value: "DENY".into(),
+            },
+        ];
+
+        let all = render_response_headers(&headers, None, false);
+        assert_eq!(all.code, 0);
+        assert!(all
+            .stdout
+            .contains("api Access-Control-Allow-Origin: https://app.test"));
+        assert!(all.stdout.contains("app X-Frame-Options: DENY"));
+
+        let one = render_response_headers(&headers, Some("API"), false);
+        assert!(one.stdout.contains("api Access-Control-Allow-Origin"));
+        assert!(
+            !one.stdout.contains("X-Frame-Options"),
+            "the filter must be case-insensitive and exclusive"
+        );
+
+        let json = render_response_headers(&headers, Some("api"), true);
+        let parsed: serde_json::Value = serde_json::from_str(&json.stdout).unwrap();
+        assert_eq!(
+            parsed,
+            serde_json::json!({
+                "type": "response_headers",
+                "headers": [{
+                    "site": "api",
+                    "name": "Access-Control-Allow-Origin",
+                    "value": "https://app.test"
+                }]
+            })
+        );
+
+        let none = render_response_headers(&headers, Some("ghost"), false);
+        assert_eq!(none.stdout, "no response headers configured for ghost");
+
+        let empty = render_response_headers(&[], None, false);
+        assert_eq!(empty.stdout, "no response headers configured");
+    }
+
+    #[test]
+    fn filtered_header_json_matches_the_unfiltered_shape() {
+        let headers = vec![yerd_ipc::ResponseHeaderEntry {
+            site: "api".into(),
+            name: "X-Frame-Options".into(),
+            value: "DENY".into(),
+        }];
+        let unfiltered = render(
+            &Response::ResponseHeaders {
+                headers: headers.clone(),
+            },
+            true,
+        );
+        let filtered = render_response_headers(&headers, Some("api"), true);
+        assert_eq!(filtered.stdout, unfiltered.stdout);
+        assert_eq!(filtered.code, unfiltered.code);
     }
 
     #[test]
@@ -4210,6 +4618,37 @@ mod tests {
         match to_request(&Command::Unset {
             target: crate::cli::UnsetTarget::Php {
                 setting: "not_a_setting".into(),
+                only: None,
+            },
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_php_ffi_enable_maps_and_rejects_preload() {
+        assert_eq!(
+            to_request(&Command::Set {
+                target: crate::cli::SetTarget::Php {
+                    setting: "ffi.enable".into(),
+                    value: "on".into(),
+                    only: Some("8.4".into())
+                }
+            })
+            .unwrap(),
+            Request::SetPhpVersionSettings {
+                version: PhpVersion::new(8, 4),
+                settings: std::collections::BTreeMap::from([(
+                    "ffi.enable".to_string(),
+                    "on".to_string()
+                )])
+            }
+        );
+        match to_request(&Command::Set {
+            target: crate::cli::SetTarget::Php {
+                setting: "ffi.enable".into(),
+                value: "preload".into(),
                 only: None,
             },
         }) {

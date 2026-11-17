@@ -60,10 +60,25 @@ export const DISPLAY_ERRORS_OPTIONS = [
   { value: "Off", label: "Off" },
 ] as const;
 
-/** Every allowlisted setting name, including the select-backed display_errors. */
+/** The allowlisted setting that allows FFI in web requests (FPM only). */
+export const FFI_KEY = "ffi.enable";
+
+export const FFI_LABEL = "Allow FFI in web requests (needed for php-vips)";
+
+export const FFI_HINT =
+  "Lets site code call native C libraries through PHP's FFI extension. Fine for local development, which is why it's off by default. The CLI already allows FFI.";
+
+export const LIBVIPS_HINT =
+  "libvips wasn't found. macOS: brew install vips. Debian/Ubuntu: libvips42 (or libvips42t64). Fedora: vips. Arch: libvips.";
+
+export const NO_FFI_VERSIONS_HINT =
+  "None of the installed PHP versions include the FFI extension.";
+
+/** Every allowlisted setting name, including the select-backed display_errors and ffi.enable. */
 export const SETTING_KEYS: readonly string[] = [
   ...TEXT_SETTINGS.map((s) => s.key),
   "display_errors",
+  FFI_KEY,
 ];
 
 /**
@@ -107,6 +122,7 @@ const RESERVED_DIRECTIVES = new Map<string, string>([
  */
 export function directiveNameProblem(name: string): string | null {
   if (name === "") return "enter a directive name";
+  if (name === FFI_KEY) return "use the Allow FFI in web requests toggle above";
   if (SETTING_KEYS.includes(name)) {
     return "this setting has its own field in the settings form above";
   }

@@ -85,7 +85,7 @@ pub const PRIVILEGED_PORT_CEILING: u16 = 1024;
 /// Replace a privileged desired pair with the rootless fallback pair.
 ///
 /// On macOS the daemon must never hold a privileged port directly: the
-/// invariant is that it binds its rootless pair and a privileged `pf rdr`
+/// invariant is that it binds its rootless pair and the launchd port forwarder
 /// (installed by `yerd elevate ports` / `yerd elevate lan`) carries 80/443 to
 /// it. A privileged desired bind normally fails with `PermissionDenied`, which
 /// [`is_retry_kind`] already routes to the fallback, so for most daemons this

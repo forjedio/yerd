@@ -4,6 +4,12 @@
 //! that name (detected from `argv[0]` before clap), yerd runs the bundled
 //! `composer.phar` under the default managed PHP - `php composer.phar <args…>` -
 //! then `exec`s, so Composer sees a normal `php` process. Unix-only.
+//!
+//! Like the `php` shim, it points `PHPRC` at the default version's CLI ini
+//! (`php-cli-<minor>.ini`, else the base `php-cli.ini`), overriding the base ini
+//! the shell profile exports. Without that, extensions registered for the
+//! default version are missing from Composer's platform check and from the PHP
+//! processes it spawns.
 
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -11,7 +17,7 @@ use std::process::{Command, ExitCode};
 
 use yerd_platform::{ActivePaths, Paths};
 
-use crate::shim::{fail, resolve_default_php};
+use crate::shim::{cli_phprc, fail, resolve_default_php};
 
 /// If `argv[0]` is `composer`, run the bundled phar under the default PHP and
 /// return its exit code (on success `exec` replaces the process and never
@@ -32,7 +38,7 @@ fn run() -> ExitCode {
         Err(e) => return fail(format!("cannot resolve yerd directories: {e}")),
     };
 
-    let Some((php_bin, _minor)) = resolve_default_php(&dirs) else {
+    let Some((php_bin, minor)) = resolve_default_php(&dirs) else {
         return fail(crate::shim::no_default_php_message(&dirs));
     };
 
@@ -41,10 +47,12 @@ fn run() -> ExitCode {
         return fail(crate::shim::composer_missing_message());
     }
 
-    let err = Command::new(&php_bin)
-        .arg(&phar)
-        .args(std::env::args_os().skip(1))
-        .exec();
+    let mut cmd = Command::new(&php_bin);
+    cmd.arg(&phar).args(std::env::args_os().skip(1));
+    if let Some(phprc) = cli_phprc(&dirs, &minor) {
+        cmd.env("PHPRC", phprc);
+    }
+    let err = cmd.exec();
     if err.kind() == std::io::ErrorKind::NotFound {
         return fail(format!(
             "PHP binary not found at {} ({err}) — reinstall with `yerd install php`",

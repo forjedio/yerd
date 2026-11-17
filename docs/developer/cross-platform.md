@@ -37,7 +37,7 @@ Every OS difference is funnelled through six small traits, each defined in its o
 | `TrustStore` | `trust_store.rs` | Install / uninstall / probe a root CA in the **system** store, plus a per-user Firefox/NSS install. |
 | `ResolverInstaller` | `resolver.rs` | Install / uninstall / probe the per-TLD OS resolver redirect. |
 | `PortBinder` | `port_binder.rs` | Bind a single TCP listener, plus an atomic 80+443 (or rootless 8080+8443) pair. |
-| `PortRedirector` | `port_redirect.rs` | Probe whether the privileged-port redirect is live (macOS pf), and whether a non-Yerd process is squatting 80/443 (cross-platform). |
+| `PortRedirector` | `port_redirect.rs` | Probe whether the privileged-port redirect is live (macOS launchd port forwarder), read its forward targets, and whether a non-Yerd process is squatting 80/443 (cross-platform). |
 | `SystemMetrics` | `metrics.rs` | Best-effort per-process RSS and system load average. |
 
 `SystemMetrics` is the odd one out: it returns `Option` rather than `Result`, because metrics are best-effort and an unsupported OS is indistinguishable (to callers) from a transient read failure - both collapse to "show nothing".
@@ -137,7 +137,8 @@ The OS impls read a file or attempt a bind, then hand the bytes/outcome to a pur
 | `networkmanager_dnsmasq` | Compose and match NetworkManager dnsmasq plugin and per-TLD rules. | Linux `ResolverInstaller` |
 | `dns_probe` | Compose the loopback A probe and validate a `127.0.0.1` answer. | Linux resolver post-condition (helper) |
 | `pem_match` | Match a SHA-256 fingerprint against a list of PEM blobs. | Linux `TrustStore` |
-| `pf_anchor` | Compose the macOS pf `rdr` ruleset, anchor refs, and LaunchDaemon plist. | macOS pf redirect (helper) |
+| `launchd_ports` | Compose/parse the macOS port-forwarder LaunchDaemon plists; labels and paths. | macOS port forwarder (helper), `MacosPortRedirector` |
+| `pf_anchor` | Legacy only: detect and remove pre-launchd pf redirects, and the fail-closed gate for releasing pf enable references. | legacy pf removal (helper), stale detection |
 | `firefox` | Parse `profiles.ini` to discover NSS databases. | NSS install (planned) |
 | `proc_metrics` | Parse `/proc/<pid>/status` `VmRSS` and `/proc/loadavg`. | Linux `SystemMetrics` |
 | `ps_metrics` | Parse headerless `ps -o rss=` output. | macOS `SystemMetrics` |
@@ -221,7 +222,7 @@ The macOS probe is deliberately strict about the port: a bare `nameserver 127.0.
 
 | Aspect | Linux | macOS | Windows (stub) |
 | --- | --- | --- | --- |
-| Privileged 80/443 | bind **directly** after `setcap cap_net_bind_service` | cannot bind 80/443 unprivileged → pf redirect | `Unsupported` |
+| Privileged 80/443 | bind **directly** after `setcap cap_net_bind_service` | cannot bind 80/443 unprivileged → launchd binds them and spawns `yerd-forward` as the user | `Unsupported` |
 | `bind` / `bind_pair` | `127.0.0.1` loopback via `TcpListener` | `127.0.0.1` loopback via `TcpListener` | `Unsupported` |
 | Fallback decision | `pure::port_plan` (shared) | `pure::port_plan` (shared) | - |
 | Retry triggers | `PermissionDenied`, `AddrInUse`, `AddrNotAvailable` | same | - |
@@ -249,20 +250,20 @@ The fingerprint is a `CaFingerprint` newtype wrapping a 32-byte SHA-256 digest, 
 
 ### Autostart
 
-Yerd does not yet expose a general cross-platform autostart abstraction - an `Autostart` trait is explicitly deferred to a later phase. The only boot persistence in the codebase today is for the macOS pf redirect:
+Yerd does not yet expose a general cross-platform autostart abstraction - an `Autostart` trait is explicitly deferred to a later phase. The only boot persistence in the codebase today is for the macOS port forwarder:
 
 | Aspect | Linux | macOS | Windows (stub) |
 | --- | --- | --- | --- |
 | Generic daemon autostart trait | not implemented (roadmap) | not implemented (roadmap) | not implemented |
-| pf-redirect boot persistence | n/a (binds 80/443 directly via `setcap`) | `LaunchDaemon` plist `dev.yerd.pf` at `/Library/LaunchDaemons/dev.yerd.pf.plist` | n/a |
-| Re-applied at boot by | n/a | `/sbin/pfctl -E -f /etc/pf.conf`, one-shot `RunAtLoad`, no `KeepAlive` | n/a |
+| Port-forwarder boot persistence | n/a (binds 80/443 directly via `setcap`) | `LaunchDaemon` plists `dev.yerd.ports.http` / `dev.yerd.ports.https` (and `dev.yerd.lan.ports.*` for LAN) in `/Library/LaunchDaemons` | n/a |
+| Active at boot by | n/a | launchd loads the plists and binds their `Sockets`; `yerd-forward` is spawned on the first connection (`inetdCompatibility` `Wait`, no `RunAtLoad` / `KeepAlive`) | n/a |
 | Installed by | n/a | `yerd-helper` via `launchctl bootstrap system` | n/a |
 
-The plist is composed by `pure::pf_anchor::compose_launchdaemon_plist` and installed by the helper's `install-port-redirect` operation. It is one-shot (`RunAtLoad` without `KeepAlive`) so launchd does not respawn a process that exits 0 in a tight loop. Because Linux binds the privileged ports directly after `setcap`, it needs no equivalent.
+The plists are composed by `pure::launchd_ports::compose_forwarder_plist` and installed by the helper's `install-port-redirect` / `install-lan-port-redirect` operations. launchd holds the socket itself, so there is no process to respawn and nothing runs until a request arrives. Because Linux binds the privileged ports directly after `setcap`, it needs no equivalent. See [yerd-forward](./binaries/yerd-forward).
 
 ## Probing vs. doing: the `PortRedirector` nuance
 
-On macOS the daemon still *binds* its high rootless ports even after the pf redirect makes 80/443 reachable, so the status field `http.fell_back` stays `true`. The doctor needs a separate signal that 80/443 are genuinely reachable, which is what `PortRedirector::is_active` provides. It is an **active, unprivileged** probe that confirms the redirect reaches *Yerd's own proxy* (not merely that something answers):
+On macOS the daemon still *binds* its high rootless ports even after the port forwarder makes 80/443 reachable, so the status field `http.fell_back` stays `true`. The doctor needs a separate signal that 80/443 are genuinely reachable, which is what `PortRedirector::is_active` provides. It is an **active, unprivileged** probe that confirms the redirect reaches *Yerd's own proxy* (not merely that something answers):
 
 ```rust
 impl PortRedirector for MacosPortRedirector {
@@ -273,7 +274,7 @@ impl PortRedirector for MacosPortRedirector {
 }
 ```
 
-`loopback_redirect_reaches_proxy` speaks HTTP to loopback and checks for `yerd_core::PROXY_SERVER_ID` on the reply, rather than checking whether the pf anchor file exists (a file-existence check is a false-green - the file can exist while the rule isn't redirecting) or merely that a socket accepts (a foreign web server or stale `pf` rule would read as a live Yerd redirect). Linux returns `None` for `is_active` ("not applicable") because it binds the privileged ports directly.
+`loopback_redirect_reaches_proxy` speaks HTTP to loopback and checks for `yerd_core::PROXY_SERVER_ID` on the reply, rather than checking whether the forwarder plists exist (a file-existence check is a false-green - the plist can exist while nothing reaches Yerd) or merely that a socket accepts (a foreign web server would read as a live Yerd redirect). The forward *targets* do come from files: `redirect_targets` / `lan_redirect_targets` parse the forwarder plists, falling back to the legacy pf anchor files on machines that haven't re-elevated since upgrading, which is how the doctor spots a stale redirect. Linux returns `None` for `is_active` ("not applicable") because it binds the privileged ports directly.
 
 The trait also has a **cross-platform** default method, `foreign_web_listener() -> Option<bool>`: `Some(true)` when a privileged web port answers but the proxy marker is absent - a non-Yerd process squatting 80/443. The daemon reports it as `StatusReport.foreign_web_listener` and `yerd-doctor` turns it into the `ForeignWebListener` warning (which supersedes `PortFallback`). The `unsupported` stub overrides it back to `None`.
 

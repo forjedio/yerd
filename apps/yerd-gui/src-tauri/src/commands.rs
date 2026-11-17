@@ -204,6 +204,31 @@ pub async fn remove_route_rule(site: String, prefix: String) -> Result<Response,
     finish(exchange(&Request::RemoveRouteRule { site, prefix }).await?)
 }
 
+// ── response headers ───────────────────────────────────────────────────────
+
+/// List every site's custom response headers.
+#[tauri::command]
+pub async fn list_response_headers() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListResponseHeaders).await?)
+}
+
+/// Set the custom response header `name` on `site`, replacing any existing
+/// entry with that name.
+#[tauri::command]
+pub async fn set_response_header(
+    site: String,
+    name: String,
+    value: String,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetResponseHeader { site, name, value }).await?)
+}
+
+/// Remove the custom response header `name` from `site`.
+#[tauri::command]
+pub async fn remove_response_header(site: String, name: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::RemoveResponseHeader { site, name }).await?)
+}
+
 // ── site groups ────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -984,7 +1009,17 @@ pub async fn set_site_tunnel(site: String, hostname: Option<String>) -> Result<R
     finish(exchange(&Request::SetSiteTunnel { site, hostname }).await?)
 }
 
-/// (Re)start the consolidated named tunnel serving every enabled site.
+/// Set (or clear, with `None`) a site's share password.
+#[tauri::command]
+pub async fn set_tunnel_password(
+    site: String,
+    password: Option<String>,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetTunnelPassword { site, password }).await?)
+}
+
+/// Start the consolidated named tunnel if it is not running. Idempotent: a live
+/// connector is never restarted.
 #[tauri::command]
 pub async fn start_named_tunnel() -> Result<Response, GuiError> {
     finish(exchange(&Request::StartNamedTunnel).await?)

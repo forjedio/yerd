@@ -124,23 +124,45 @@ fn between<'a>(s: &'a str, begin: &str, end: &str) -> Option<&'a str> {
 
 #[cfg(unix)]
 async fn capture_path_string() -> Option<String> {
-    use std::process::Stdio;
-
     let shell = user_shell();
     let args = shell_invocation(&shell);
+    capture_until_end(&shell, &args).await
+}
 
-    let mut cmd = tokio::process::Command::new(&shell);
-    cmd.args(&args)
+/// Run `shell` with `args` and return its stdout up to and including [`END`].
+///
+/// Reading stops at the marker rather than at EOF: a background process started
+/// from an rc file (`ssh-agent`, `gpg-agent`, `emacs --daemon`) inherits stdout
+/// and would otherwise hold the pipe open until the timeout.
+#[cfg(unix)]
+async fn capture_until_end(shell: &str, args: &[String]) -> Option<String> {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt as _;
+
+    let mut cmd = tokio::process::Command::new(shell);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    let child = cmd.spawn().ok()?;
-    let out = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait_with_output())
+    let mut child = cmd.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let read = async {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let n = stdout.read(&mut chunk).await.ok()?;
+            buf.extend_from_slice(chunk.get(..n)?);
+            let text = String::from_utf8_lossy(&buf);
+            if n == 0 || text.contains(END) {
+                return Some(text.into_owned());
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(3), read)
         .await
-        .ok()?
-        .ok()?;
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+        .ok()
+        .flatten()
 }
 
 #[cfg(not(unix))]
@@ -295,6 +317,18 @@ mod tests {
     }
 
     #[test]
+    fn external_tool_resolves_pnpm() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("data");
+        let dir = tmp.path().join("opt");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let pnpm = touch_exec(&dir, "pnpm");
+        let found = external_tool(&[dir], Tool::Pnpm, &data.join("bin"), &data).unwrap();
+        assert_eq!(found, pnpm);
+    }
+
+    #[test]
     fn shell_invocation_picks_interactive_login_flags() {
         assert_eq!(shell_invocation("/bin/zsh")[0], "-ilc");
         assert_eq!(shell_invocation("/usr/bin/bash")[0], "-ilc");
@@ -318,5 +352,32 @@ mod tests {
             Some(v) => std::env::set_var("SHELL", v),
             None => std::env::remove_var("SHELL"),
         }
+    }
+
+    fn sh(script: &str) -> Vec<String> {
+        vec!["-c".to_owned(), script.to_owned()]
+    }
+
+    #[tokio::test]
+    async fn capture_stops_at_end_marker_despite_a_background_stdout_holder() {
+        let script = format!("sleep 10 & printf '{BEGIN}/x{END}'");
+        let started = Instant::now();
+        let out = capture_until_end("/bin/sh", &sh(&script)).await.unwrap();
+        assert_eq!(between(&out, BEGIN, END), Some("/x"));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn capture_without_marker_returns_output_at_eof() {
+        let out = capture_until_end("/bin/sh", &sh("printf hi")).await;
+        assert_eq!(out.as_deref(), Some("hi"));
+    }
+
+    #[tokio::test]
+    async fn capture_of_a_missing_shell_is_none() {
+        assert_eq!(
+            capture_until_end("/nonexistent/sh", &sh("true")).await,
+            None
+        );
     }
 }

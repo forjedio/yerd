@@ -26,7 +26,7 @@ Everything in the codebase is a consequence of this rule:
    logic depends on the trait; tests inject a fake; the real implementation
    lives in `yerd-platform` (or a crate's own `os`/`io` module) selected by
    `#[cfg(target_os = ...)]`.
-3. **Binaries are thin.** `bin/yerdd`, `bin/yerd`, `bin/yerd-helper`, and the
+3. **Binaries are thin.** `bin/yerdd`, `bin/yerd`, `bin/yerd-helper`, `bin/yerd-forward`, and the
    Tauri `src-tauri` layer wire crates together and own transports. They contain
    orchestration, not behaviour. Interesting logic belongs in a crate with
    tests.
@@ -67,7 +67,8 @@ yerd/
 ├── bin/                 thin binaries - orchestration + transports only
 │   ├── yerdd            the unprivileged per-user daemon (source of truth)
 │   ├── yerd             the CLI (a yerd-ipc client)
-│   └── yerd-helper      the privileged one-shot (the security boundary)
+│   ├── yerd-helper      the privileged one-shot (the security boundary)
+│   └── yerd-forward     macOS-only unprivileged relay launchd spawns for ports 80/443
 ├── apps/
 │   └── yerd-gui         Tauri v2 + Vue 3 desktop app (another yerd-ipc client)
 └── xtask/               build automation (cargo xtask bump / version-check)
@@ -121,6 +122,11 @@ per-user socket or named pipe.
   `yerd-platform`, which returns a typed `HelperInvocation`, and a privileged
   caller (the daemon, or `yerd elevate` under `sudo`) owns the actual
   `Command::new(...)` that spawns the helper.
+- **`yerd-forward`** (macOS only) is not a client or a service Yerd starts.
+  `yerd-helper` installs root-owned LaunchDaemons that make launchd bind 80/443
+  and spawn it **as the user** on demand; it relays bytes to the daemon's
+  rootless ports and never runs as root. See
+  [yerd-forward](./binaries/yerd-forward).
 
 ::: warning Privilege boundary
 `yerd-platform`'s OS implementations never spawn the helper themselves - they
@@ -196,6 +202,7 @@ flowchart TD
     PHP["yerd-php"]
     PROXY["yerd-proxy"]
     BINS["yerdd, yerd, yerd-helper, yerd-gui (binaries/app)"]
+    FWD["yerd-forward (macOS relay binary)"]
 
     IPC --> CORE
     TLS --> CORE
@@ -209,6 +216,7 @@ flowchart TD
     BINS --> CONFIG
     BINS --> DOCTOR
     BINS --> PLATFORM
+    FWD --> CORE
 ```
 
 Arrows point from a crate to what it depends on, so everything below points up
@@ -372,5 +380,6 @@ and `cargo test --workspace` all pass on **both** Linux and macOS. See
 - [Cross-Platform Model](./cross-platform) - the `#[cfg(target_os)]` strategy and
   per-OS adapters.
 - Binaries: [yerdd (daemon)](./binaries/yerdd),
-  [yerd (CLI)](./binaries/yerd), [yerd-helper (privileged)](./binaries/yerd-helper).
+  [yerd (CLI)](./binaries/yerd), [yerd-helper (privileged)](./binaries/yerd-helper),
+  [yerd-forward (macOS ports)](./binaries/yerd-forward).
 - [Desktop App Internals](./gui) and [Build Automation (xtask)](./xtask).

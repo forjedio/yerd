@@ -2032,6 +2032,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rustls",
+ "rustls-native-certs",
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
@@ -3034,6 +3035,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "openssl-probe"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
+
+[[package]]
 name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3603,6 +3610,7 @@ dependencies = [
  "pin-project-lite",
  "quinn",
  "rustls",
+ "rustls-native-certs",
  "rustls-pemfile",
  "rustls-pki-types",
  "serde",
@@ -3780,6 +3788,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustls-native-certs"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dab5152771c58876a2146916e53e35057e1a4dfa2b9df0f0305b07f611fdea4d"
+dependencies = [
+ "openssl-probe",
+ "rustls-pki-types",
+ "schannel",
+ "security-framework 3.6.0",
+]
+
+[[package]]
 name = "rustls-pemfile"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3837,6 +3857,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "schannel"
+version = "0.1.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3915,6 +3944,19 @@ checksum = "897b2245f0b511c87893af39b033e5ca9cce68824c4d7e7630b5a1d339658d02"
 dependencies = [
  "bitflags 2.11.1",
  "core-foundation 0.9.4",
+ "core-foundation-sys",
+ "libc",
+ "security-framework-sys",
+]
+
+[[package]]
+name = "security-framework"
+version = "3.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d17b898a6d6948c3a8ee4372c17cb384f90d2e6e912ef00895b14fd7ab54ec38"
+dependencies = [
+ "bitflags 2.11.1",
+ "core-foundation 0.10.1",
  "core-foundation-sys",
  "libc",
  "security-framework-sys",
@@ -6263,7 +6305,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -6284,7 +6326,7 @@ dependencies = [
 
 [[package]]
 name = "yerd"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "clap",
  "interprocess",
@@ -6300,13 +6342,14 @@ dependencies = [
  "yerd-mcp",
  "yerd-platform",
  "yerd-service-ctl",
+ "yerd-services",
  "yerd-update",
  "yerdd",
 ]
 
 [[package]]
 name = "yerd-config"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "serde",
  "tempfile",
@@ -6317,7 +6360,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-core"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -6328,14 +6371,14 @@ dependencies = [
 
 [[package]]
 name = "yerd-depcheck"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "yerd-dns"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "async-trait",
  "hickory-client",
@@ -6349,15 +6392,26 @@ dependencies = [
 
 [[package]]
 name = "yerd-doctor"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "yerd-core",
  "yerd-ipc",
 ]
 
 [[package]]
+name = "yerd-forward"
+version = "2.1.0-rc.2"
+dependencies = [
+ "nix",
+ "thiserror 1.0.69",
+ "yerd-core",
+ "yerd-depcheck",
+ "yerd-platform",
+]
+
+[[package]]
 name = "yerd-gui"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "block2 0.6.2",
  "core-foundation 0.9.4",
@@ -6371,7 +6425,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation 0.3.2",
  "pem",
- "security-framework",
+ "security-framework 2.11.1",
  "security-framework-sys",
  "semver",
  "serde",
@@ -6397,10 +6451,11 @@ dependencies = [
 
 [[package]]
 name = "yerd-helper"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "clap",
  "hex",
+ "nix",
  "pem",
  "tempfile",
  "thiserror 1.0.69",
@@ -6413,7 +6468,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-ipc"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -6424,7 +6479,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-mail"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "mail-parser",
  "serde",
@@ -6438,7 +6493,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-mcp"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -6449,7 +6504,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-php"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "async-trait",
  "nix",
@@ -6467,12 +6522,13 @@ dependencies = [
 
 [[package]]
 name = "yerd-platform"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "directories",
  "hex",
+ "nix",
  "pem",
- "security-framework",
+ "security-framework 2.11.1",
  "serde_json",
  "sha2",
  "tempfile",
@@ -6486,7 +6542,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-proxy"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "async-trait",
  "bytes",
@@ -6497,6 +6553,7 @@ dependencies = [
  "hyper-util",
  "rustls",
  "rustls-pki-types",
+ "subtle",
  "tempfile",
  "thiserror 1.0.69",
  "time",
@@ -6510,7 +6567,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-release-manifest"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "semver",
  "serde",
@@ -6520,7 +6577,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-service-ctl"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "nix",
  "thiserror 1.0.69",
@@ -6528,7 +6585,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-services"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "async-trait",
  "serde",
@@ -6543,7 +6600,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-supervise"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "async-trait",
  "nix",
@@ -6553,7 +6610,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-tls"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "pem",
  "rcgen",
@@ -6567,7 +6624,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-tunnel"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "async-trait",
  "tempfile",
@@ -6578,7 +6635,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-update"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "hex",
  "minisign-verify",
@@ -6588,7 +6645,7 @@ dependencies = [
 
 [[package]]
 name = "yerdd"
-version = "2.1.0-rc.1"
+version = "2.1.0-rc.2"
 dependencies = [
  "async-trait",
  "clap",

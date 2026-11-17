@@ -59,6 +59,12 @@ Captured events are grouped into categories, one per tab in the viewer:
 Events are grouped **by request**, so you can see everything a single page load
 or job did together.
 
+A log entry's context array is printed as indented JSON under its message, and
+entries with no context show just the level and message. Every context value is
+shown, including ones that aren't strings: numbers, booleans and `null` appear
+as text (`"1"`, `"true"`, `"null"`), and arrays and objects as their dump-style
+rendering.
+
 ## Enabling it
 
 Turn capture on from the **Dumps** view in the desktop app (in the side
@@ -81,7 +87,9 @@ until a matching `.so` ships. The Dumps view shows, per installed PHP version,
 whether a matching extension is present.
 
 The download is **best-effort**: a network or verification failure is logged and
-leaves your sites running normally, just without capture.
+leaves your sites running normally, just without capture. While capture is on,
+the daemon also checks for a newer `yerd-dump` release each time it starts and
+replaces any `.so` that no longer matches the published build.
 :::
 
 ::: warning No dumps on legacy PHP

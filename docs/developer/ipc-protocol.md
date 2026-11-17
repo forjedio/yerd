@@ -185,6 +185,9 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `AddRouteRule { site, prefix, target }` | `{"type":"add_route_rule","site":"portal","prefix":"/api","target":"api/index.php"}` (target is relative to the served root; never absolute, never containing `..`) |
 | `RemoveRouteRule { site, prefix }` | `{"type":"remove_route_rule","site":"portal","prefix":"/api"}` |
 | `ListRoutes` | `{"type":"list_routes"}` (replies `Routes { rules }`) |
+| `SetResponseHeader { site, name, value }` | `{"type":"set_response_header","site":"api","name":"Access-Control-Allow-Origin","value":"https://app.test"}` (replaces the site's existing entry with that name, ignoring case; validated by the daemon) |
+| `RemoveResponseHeader { site, name }` | `{"type":"remove_response_header","site":"api","name":"Access-Control-Allow-Origin"}` (name matched ignoring case) |
+| `ListResponseHeaders` | `{"type":"list_response_headers"}` (replies `ResponseHeaders { headers }`) |
 | `ServiceLogs { service, lines }` | `{"type":"service_logs","service":"redis","lines":100}` |
 | `ListDatabases { service }` | `{"type":"list_databases","service":"mysql"}` |
 | `CreateDatabase` / `DropDatabase` | `{"type":"create_database","service":"mysql","name":"app"}` (and `drop_database`) |
@@ -252,7 +255,7 @@ pub enum Response {
     Error { code: ErrorCode, message: String },
     Parked { paths: Vec<String> },
     Info { dns_addr, tld, ca_path, ca_fingerprint, http_port, https_port },
-    PhpVersions { installed, default, updates, settings, version_settings, directives, pool },
+    PhpVersions { installed, default, updates, settings, version_settings, directives, pool, ffi_versions, libvips_found },
     AvailablePhp { available, installed, legacy },
     PhpExtensions { by_version },                  // version → [PhpExtInfo{name,path,zend,present}]
     Status { report: Box<StatusReport> },         // boxed: large payload
@@ -262,6 +265,7 @@ pub enum Response {
     AvailableServices { services: Vec<ServiceAvailability> },
     ServiceOverrides { overrides: BTreeMap<String, String> },  // name → value, in name order
     Routes { rules: Vec<RouteRuleEntry> },        // every site's path-prefix routing rules
+    ResponseHeaders { headers: Vec<ResponseHeaderEntry> }, // every site's custom response headers
     ServiceLogs { lines: Vec<String> },
     Databases { databases: Vec<DatabaseSummary> },
     Mails { mails: Vec<MailSummary> },
@@ -332,6 +336,11 @@ Per-site [routing rules](../reference/cli/routes) add three variants - `AddRoute
 `RouteRuleEntry { site, prefix, target }` is field-identical to `ProxyRuleEntry` and is deliberately **not** the same struct: `yerd-ipc` is a byte-pinned contract, so coupling two features' wire evolution to one type would make either one hard to change. The semantic difference is what the `target` is - a proxy rule's target is an HTTP upstream URL, a routing rule's target is a path relative to the site's *served root* (a nested `api/index.php`, or `index.html` for an SPA). The daemon validates it as a safe relative path; an absolute path or one containing `..` is refused.
 
 All three variants are additive by serde tag, so existing pins are byte-identical and no `PROTOCOL_VERSION` bump was needed.
+
+:::
+
+::: info Response headers mirror routing rules
+Per-site [response headers](../reference/cli/headers) follow the same pattern: `SetResponseHeader { site, name, value }` and `RemoveResponseHeader { site, name }` (both reply with the generic `Ok`) plus the `ListResponseHeaders` query, answered by `Response::ResponseHeaders { headers: Vec<ResponseHeaderEntry> }` where `ResponseHeaderEntry` is `{ site, name, value }`. The daemon validates the name and value with `yerd_core::ResponseHeader` and replies `Error` for a malformed or reserved header. These are additive too, with no `PROTOCOL_VERSION` bump.
 :::
 
 ### ErrorCode
@@ -424,7 +433,7 @@ The JSON shapes are the **published contract**, pinned three ways so a rename or
    }).unwrap(), r#"{"type":"set_php","name":"foo","version":"8.3"}"#);
    ```
 
-   It also pins additive back-compat: `Response::Info` decodes legacy daemons that omit `http_port`/`https_port` (they default to 0), and `Response::PhpVersions` skips an empty `updates`/`settings`/`version_settings`/`directives`/`pool` on the wire so the bytes match the pre-field shape.
+   It also pins additive back-compat: `Response::Info` decodes legacy daemons that omit `http_port`/`https_port` (they default to 0), and `Response::PhpVersions` skips an empty `updates`/`settings`/`version_settings`/`directives`/`pool`/`ffi_versions` and an absent `libvips_found` on the wire so the bytes match the pre-field shape.
 
 2. **Inline `variant_name_pinning` modules** in `request.rs` and `response.rs` contain exhaustive `match` arms over the (in-crate, so matchable despite `#[non_exhaustive]`) enums. A renamed Rust variant fails to compile there - integration tests can't catch this across the crate boundary.
 

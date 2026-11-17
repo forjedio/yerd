@@ -19,6 +19,22 @@ use yerd_platform::PlatformDirs;
 
 use crate::state::DaemonState;
 
+/// A [`yerd_php::CommandRunner`] that never spawns anything and reports a
+/// module list without FFI, so daemon unit tests never exec a fake install's
+/// `bin/php`.
+pub struct NoFfiRunner;
+
+#[async_trait::async_trait]
+impl yerd_php::CommandRunner for NoFfiRunner {
+    async fn run(&self, _cmd: std::process::Command) -> std::io::Result<yerd_php::ProbeOutput> {
+        Ok(yerd_php::ProbeOutput {
+            status_ok: true,
+            stdout: "[PHP Modules]\nCore\n".to_owned(),
+            stderr: String::new(),
+        })
+    }
+}
+
 /// A tempdir-rooted [`PlatformDirs`] for a daemon unit test - five short,
 /// disjoint subdirectories, none of which need to exist on disk beforehand.
 #[must_use]
@@ -88,11 +104,19 @@ pub fn state_in(tmp: &Path) -> DaemonState {
         shutdown_tx: tokio::sync::watch::channel(false).0,
         restart_requested: std::sync::atomic::AtomicBool::new(false),
         detect_cache: Arc::new(crate::detect_cache::DetectCache::new()),
+        ffi_cache: Arc::new(crate::ffi_cache::FfiCache::new(Arc::new(NoFfiRunner))),
+        libvips_probe: Arc::new(yerd_platform::FakeLibvipsProbe { found: None }),
         watch_dirty: tokio::sync::Notify::new(),
         dumps: Arc::new(crate::dump_server::DumpStore::new()),
         shim_reconcile: Mutex::new(()),
         tunnel_manager: Arc::new(Mutex::new(crate::tunnel::new_manager())),
         cloudflared_resolution: RwLock::new(None),
+        tunnel_origin_port: None,
+        tunnel_routes: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        tunnel_routes_rebuild: Mutex::new(()),
+        share_warnings: Mutex::new(std::collections::HashMap::new()),
+        named_stop_epoch: std::sync::atomic::AtomicU64::new(0),
+        tunnel_metrics_addr: Arc::new(crate::tunnel::pick_metrics_addr),
         tool_mutate: Mutex::new(()),
         tunnel_mutate: Mutex::new(()),
         php_mutate: Mutex::new(()),

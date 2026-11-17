@@ -15,6 +15,7 @@ import {
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 
 import SiteDomainsPanel from "@/components/SiteDomainsPanel.vue";
+import SiteHeadersPanel from "@/components/SiteHeadersPanel.vue";
 import SiteRoutesPanel from "@/components/SiteRoutesPanel.vue";
 import Button from "@/components/ui/Button.vue";
 import InfoBanner from "@/components/ui/InfoBanner.vue";
@@ -83,7 +84,7 @@ const emit = defineEmits<{
 const toast = useToast();
 const { installedIdes } = useIdes();
 const { supportsPathInstall } = usePlatform();
-const activeTab = ref<"general" | "domains" | "routing" | "information">("general");
+const activeTab = ref<"general" | "domains" | "routing" | "headers" | "information">("general");
 const webRoot = ref("");
 const globalIde = ref<string | null>(null);
 const siteIdeOverride = ref<string | null>(null);
@@ -496,6 +497,18 @@ onUnmounted(() => {
               Routing
             </button>
             <button
+              id="site-details-tab-headers"
+              type="button"
+              class="border-b-2 px-3 py-2.5 text-xs font-medium transition-colors"
+              :class="activeTab === 'headers' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'"
+              :aria-selected="activeTab === 'headers'"
+              aria-controls="site-details-panel-headers"
+              role="tab"
+              @click="activeTab = 'headers'"
+            >
+              Headers
+            </button>
+            <button
               id="site-details-tab-information"
               type="button"
               class="border-b-2 px-3 py-2.5 text-xs font-medium transition-colors"
@@ -785,6 +798,10 @@ onUnmounted(() => {
               </template>
 
               <SiteRoutesPanel :site="site" />
+            </template>
+
+            <template v-else-if="activeTab === 'headers'">
+              <SiteHeadersPanel :site="site" />
             </template>
 
             <template v-else>

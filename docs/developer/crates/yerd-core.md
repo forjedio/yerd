@@ -61,6 +61,7 @@ pub mod php_extensions;
 pub mod php_pool;
 pub mod php_settings;
 mod proxy;
+mod response_header;
 mod route_rule;
 mod router;
 pub mod service_directives;
@@ -77,6 +78,7 @@ pub use php_extensions::{ExtError, NameErrorReason, PathErrorReason};
 pub use php_pool::{PoolNameErrorReason, PoolSettingError, PoolValueErrorReason};
 pub use php_settings::{PhpSettingError, ValueErrorReason};
 pub use proxy::{match_rule, validate_proxy_name, ProxyRule, ProxySite, UpstreamTarget};
+pub use response_header::ResponseHeader;
 pub use route_rule::RouteRule;
 pub use router::{Route, RouterConfig, SiteRouter};
 pub use site::{normalize_site_name, slugify_site_name, Site, SiteKind};
@@ -91,6 +93,7 @@ pub use tld::Tld;
 | `tld`                | re-exported   | `Tld` validated DNS-suffix newtype                        |
 | `domain`             | re-exported   | `Domain` sub-part + `effective_domains` / `choose_primary` algebra |
 | `proxy`              | re-exported   | whole-host proxies + path-prefix rules (`match_rule`)     |
+| `response_header`    | re-exported   | `ResponseHeader` - a validated per-site custom response header |
 | `route_rule`         | re-exported   | `RouteRule` - a path prefix resolved to a file inside the site |
 | `router`             | re-exported   | `RouterConfig` + `SiteRouter` (the resolve algorithm)     |
 | `net`                | re-exported   | `is_lan_source` - whether a peer address is LAN, not loopback |
@@ -320,15 +323,18 @@ The allowlist (extend here to support more directives):
 | `post_max_size`       | byte size                     | `php_value` |
 | `display_errors`      | flag (boolean)                | `php_flag`  |
 | `error_reporting`     | int or constant expression    | `php_value` |
+| `ffi.enable`          | admin switch (on/off, unseeded) | `php_admin_value` (`true` when on, omitted when off or for legacy versions) |
 
 Public surface:
 
 ```rust
 pub fn is_supported(name: &str) -> bool;
 pub fn supported_names() -> Vec<&'static str>;       // declaration order
-pub fn directive(name: &str) -> Option<&'static str>; // "php_flag" | "php_value"
+pub fn directive(name: &str) -> Option<&'static str>; // "php_flag" | "php_admin_value" | "php_value"
 pub fn validate_value(name: &str, value: &str) -> Result<(), PhpSettingError>;
 pub fn canonical_value(name: &str, value: &str) -> String;
+pub fn fpm_value(name: &str, value: &str) -> Option<String>; // None = emit no line
+pub fn applies_to_version(name: &str, version: PhpVersion) -> bool;
 ```
 
 `validate_value` enforces a global invariant *before* the per-kind shape:
@@ -415,6 +421,38 @@ rather than sharing a helper: both are shipped types, and a shared helper would
 mean either one's rules could not move without the other's. Each keeps its own
 table tests, which is what catches drift.
 :::
+
+## `response_header` - per-site custom response headers {#response-header}
+
+A `ResponseHeader` is a name and value the proxy sets on every response for a
+PHP site, replacing any same-named header. Like `RouteRule` it carries no serde
+impls; `yerd-config` and `yerd-ipc` own the wire structs.
+
+```rust
+pub struct ResponseHeader { /* private: name + value */ }
+
+impl ResponseHeader {
+    pub fn new(name: &str, value: &str) -> Result<Self, CoreError>;
+    #[must_use] pub fn name(&self) -> &str;
+    #[must_use] pub fn value(&self) -> &str;
+    #[must_use] pub fn has_name(&self, other: &str) -> bool;
+}
+```
+
+`new` requires the name to be a non-empty RFC 9110 token and refuses the
+headers Yerd manages itself (`Connection`, `Keep-Alive`, `Transfer-Encoding`,
+`Upgrade`, `TE`, `Trailer`, `Content-Length`, `Host`, and any `Proxy-*`) plus
+those whose replacement breaks the response (`Set-Cookie`, `Content-Encoding`,
+`Content-Range`, `Location`), compared ignoring case. The value is trimmed of surrounding spaces and tabs,
+must be non-empty, and may hold no control character other than a tab: exactly
+the set `http::HeaderValue` accepts, so a validated header always converts in
+the proxy. The name keeps the user's casing for display; `has_name` is the
+case-insensitive comparison the daemon and config use for "the same header".
+Validation is hand-rolled over bytes so this crate needs no `http` dependency.
+
+`SiteRouter` stores the lists per site name (`response_headers_for` /
+`set_response_headers`), like routing rules, but behind an `Arc` so the proxy
+takes a per-request handle with `shared_response_headers` instead of copying.
 
 ## `service_directives` - free-form service config overrides {#service-directives}
 

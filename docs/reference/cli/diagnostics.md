@@ -14,7 +14,7 @@ yerd doctor          # report problems and remedies
 yerd doctor fix      # apply safe automatic fixes, then list what still needs you
 ```
 
-`yerd status` reports the daemon PID, uptime and RSS, version, TLD, the bound HTTP/HTTPS ports (flagging rootless fallback or an active macOS pf redirect), the DNS responder address, CA trust state and path, resolver install state, load average, site counts, and a per-version PHP pool listing (state, PID, listen socket, RSS, available update).
+`yerd status` reports the daemon PID, uptime and RSS, version, TLD, the bound HTTP/HTTPS ports (flagging rootless fallback or an active macOS port forwarder), the DNS responder address, CA trust state and path, resolver install state, load average, site counts, and a per-version PHP pool listing (state, PID, listen socket, RSS, available update).
 
 `yerd doctor` prints each finding with a severity mark (`✓` ok, `⚠` warn, `✗` fail), a detail line, and a `→` remedy where one exists. `yerd doctor fix` first lists what it applied, then what still needs manual attention.
 

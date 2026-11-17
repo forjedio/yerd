@@ -103,9 +103,25 @@ const managedComposer = computed(() => prereqs.managed("composer"));
 const needsComposer = computed(() => !prereqs.available("composer"));
 const needsInstaller = computed(() => !prereqs.available("laravel"));
 const noSupportedPhp = computed(() => supportedPhpVersions.value.length === 0);
-/** Node and Bun are installed by the daemon during the job when needed, so they never block the wizard. */
-const needsNode = computed(() => form.js === "npm" && !prereqs.available("node"));
-const needsBun = computed(() => form.js === "bun" && !prereqs.available("bun"));
+/**
+ * Tools each frontend choice needs, mirroring the daemon's js_runtime_tools. pnpm
+ * also needs Node because its build runs Vite with node.
+ */
+const JS_RUNTIME_TOOLS: Record<JsRuntime, { id: string; name: string }[]> = {
+  npm: [{ id: "node", name: "Node" }],
+  bun: [{ id: "bun", name: "Bun" }],
+  pnpm: [
+    { id: "node", name: "Node" },
+    { id: "pnpm", name: "pnpm" },
+  ],
+  skip: [],
+};
+/** The daemon installs these during the job when missing, so they never block the wizard. */
+const autoInstallLabel = computed(() => {
+  if (!isJsKit.value) return null;
+  const missing = JS_RUNTIME_TOOLS[form.js].filter((t) => !prereqs.available(t.id));
+  return missing.length ? missing.map((t) => t.name).join(" and ") : null;
+});
 const ready = computed(
   () => !noSupportedPhp.value && !needsComposer.value && !needsInstaller.value,
 );
@@ -307,14 +323,15 @@ watch(
               :options="[
                 { value: 'npm', label: 'Install & build with npm' },
                 { value: 'bun', label: 'Install & build with Bun' },
+                { value: 'pnpm', label: 'Install & build with pnpm' },
                 { value: 'skip', label: 'Skip (install later)' },
               ]"
               class="mt-2 w-full"
               aria-label="Frontend dependencies"
               @update:model-value="(v: string) => (form.js = v as JsRuntime)"
             />
-            <p v-if="needsNode || needsBun" class="mt-1 text-xs text-muted-foreground">
-              {{ needsNode ? "Node" : "Bun" }} will be installed automatically.
+            <p v-if="autoInstallLabel" class="mt-1 text-xs text-muted-foreground">
+              {{ autoInstallLabel }} will be installed automatically.
             </p>
           </div>
           <div class="flex-1">
@@ -440,8 +457,8 @@ watch(
           </dl>
         </div>
 
-        <p v-if="needsNode || needsBun" class="text-xs text-muted-foreground">
-          {{ needsNode ? "Node" : "Bun" }} will be installed automatically during creation.
+        <p v-if="autoInstallLabel" class="text-xs text-muted-foreground">
+          {{ autoInstallLabel }} will be installed automatically during creation.
         </p>
       </div>
     </template>

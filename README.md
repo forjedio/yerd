@@ -48,7 +48,7 @@ everything the app does.
 - 🗄️ **Native MySQL · MariaDB · PostgreSQL · Redis** - no Docker.
 - 📬 **Mail capture** and a live **Laravel dump / query inspector**, built in.
 - 🌍 **Share any site publicly** in one click via Cloudflare Tunnel - no ngrok account, no open ports.
-- 🧰 **Composer, Node, and Bun** installed on demand as standalone binaries - no system package manager.
+- 🧰 **Composer, Node, Bun, and pnpm** installed on demand as standalone binaries - no system package manager.
 - 🪶 **One ~8 MB daemon** - no containers, no VM, no Electron.
 - 🛡️ **Rootless** - setup elevates once; daily use never does.
 - 🔌 **Works without admin** - can't route `.test`? Reach any site at `http://localhost:8080/~<name>.test`.
@@ -96,9 +96,9 @@ its own Rust proxy + DNS. No Valet, no Homebrew.</sub>
 
 ## Installation
 
-Yerd is a **single desktop app** - the daemon (`yerdd`), the `yerd` CLI, and the
-privileged `yerd-helper` are all embedded inside it (nothing is downloaded at
-runtime). Grab the latest **stable release** from the
+Yerd is a **single desktop app** - the daemon (`yerdd`), the `yerd` CLI, the
+privileged `yerd-helper`, and on macOS the `yerd-forward` port forwarder are all
+embedded inside it (nothing is downloaded at runtime). Grab the latest **stable release** from the
 [releases page](https://github.com/forjedio/yerd/releases):
 
 | Platform | Download | Install |
@@ -254,7 +254,8 @@ maintainable.
 
 ### 🛡️ Rootless, with a tight privilege boundary
 
-Yerd runs as **three** pieces, and the GUI/daemon **never** run as root:
+Yerd runs as **three** pieces (plus a tiny port forwarder on macOS), and the
+GUI/daemon **never** run as root:
 
 - **`yerdd`** - the unprivileged per-user daemon. It owns all runtime state and
   serves the proxy, DNS, and PHP-FPM pools.
@@ -262,8 +263,12 @@ Yerd runs as **three** pieces, and the GUI/daemon **never** run as root:
   per-user socket.
 - **`yerd-helper`** - a strict, auditable one-shot binary for the handful of
   operations that genuinely need root (trust the CA, configure the DNS resolver,
-  grant the port capability). It takes typed arguments, never shells out, never
-  touches the network, does exactly one thing, and exits.
+  grant the port capability on Linux or install the port forwarder on macOS). It
+  takes typed arguments, never shells out, never touches the network, does
+  exactly one thing, and exits.
+- **`yerd-forward`** (macOS only) - a small relay that launchd starts **as your
+  user** to carry ports 80/443 to the daemon's rootless ports. It never runs as
+  root.
 
 Setup may elevate **once**; daily use never does. And if you **can't** elevate at
 all - a locked-down machine where `.test` can't be routed - sites stay reachable

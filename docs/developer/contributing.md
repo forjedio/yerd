@@ -45,8 +45,8 @@ HealthProbe      Paths       PortBinder    PortRedirector ProcessSpawner
 ResolverInstaller  SystemMetrics  TrustStore
 ```
 
-Binaries (`bin/yerdd`, `bin/yerd`, `bin/yerd-helper`, and the Tauri
-`src-tauri` layer) are **thin**. They wire crates together and own transports.
+Binaries (`bin/yerdd`, `bin/yerd`, `bin/yerd-helper`, `bin/yerd-forward`, and
+the Tauri `src-tauri` layer) are **thin**. They wire crates together and own transports.
 They contain orchestration, not behaviour - interesting logic belongs in a crate
 with tests.
 

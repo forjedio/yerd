@@ -8,6 +8,7 @@ import type { PhpExtInfo } from "@/ipc/types";
 const setPhpDirectives = vi.hoisted(() => vi.fn());
 const setPhpPoolSettings = vi.hoisted(() => vi.fn());
 const removePhpExtension = vi.hoisted(() => vi.fn());
+const setPhpVersionSettings = vi.hoisted(() => vi.fn());
 
 // Vitest module mocks are total, so every client symbol the panel imports has
 // to appear here or it arrives as undefined.
@@ -16,7 +17,7 @@ vi.mock("@/ipc/client", () => ({
   removePhpExtension,
   setPhpDirectives,
   setPhpPoolSettings,
-  setPhpVersionSettings: vi.fn(),
+  setPhpVersionSettings,
 }));
 
 // The row actions live in a reka-ui dropdown, which needs a real pointer stack
@@ -59,6 +60,8 @@ function mountPanel(
       extensions: [],
       installedVersion: true,
       extensionsLoading: false,
+      ffiAvailable: false,
+      libvipsFound: null,
       ...props,
     },
     global: { stubs: dropdownStubs },
@@ -354,5 +357,57 @@ describe("PhpVersionPanel for an uninstalled version", () => {
         .findAll(".dropdown-item-stub")
         .find((i) => i.text().includes("Add ini directive")),
     ).toBeUndefined();
+  });
+});
+
+describe("PhpVersionPanel FFI override", () => {
+  beforeEach(() => {
+    setPhpVersionSettings.mockReset();
+    setPhpVersionSettings.mockResolvedValue({ installed: ["8.3"], default: "8.3" });
+  });
+
+  const ffiSelect = 'select[aria-label="ffi.enable for PHP 8.3"]';
+
+  it("hides the FFI select and leaves ffi.enable out of the save when the build lacks FFI", async () => {
+    const w = mountPanel({ ffiAvailable: false, overrides: { "ffi.enable": "On" } });
+    expect(w.find(ffiSelect).exists()).toBe(false);
+    await w.find('input[id="set-8.3-memory_limit"]').setValue("1G");
+    await byText(w, "Save changes")!.trigger("click");
+    await nextTick();
+    expect(setPhpVersionSettings).toHaveBeenCalledTimes(1);
+    const payload = setPhpVersionSettings.mock.calls[0][1] as Record<string, string>;
+    expect(payload.memory_limit).toBe("1G");
+    expect("ffi.enable" in payload).toBe(false);
+  });
+
+  it("offers the FFI select when the build has FFI and sends the chosen override", async () => {
+    const w = mountPanel({ ffiAvailable: true });
+    const select = w.find(ffiSelect);
+    expect(select.exists()).toBe(true);
+    expect(select.text()).toContain("inherit (Off)");
+    await select.setValue("On");
+    await byText(w, "Save changes")!.trigger("click");
+    await nextTick();
+    const payload = setPhpVersionSettings.mock.calls[0][1] as Record<string, string>;
+    expect(payload["ffi.enable"]).toBe("On");
+  });
+
+  it("shows the libvips hint only while FFI is effectively on and libvips is missing", async () => {
+    const off = mountPanel({ ffiAvailable: true, libvipsFound: false });
+    expect(off.find('[data-testid="libvips-hint"]').exists()).toBe(false);
+
+    const inherited = mountPanel({
+      ffiAvailable: true,
+      libvipsFound: false,
+      globalSettings: { "ffi.enable": "On" },
+    });
+    expect(inherited.find('[data-testid="libvips-hint"]').exists()).toBe(true);
+
+    const found = mountPanel({
+      ffiAvailable: true,
+      libvipsFound: true,
+      globalSettings: { "ffi.enable": "On" },
+    });
+    expect(found.find('[data-testid="libvips-hint"]').exists()).toBe(false);
   });
 });

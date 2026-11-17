@@ -42,7 +42,7 @@ Group names are unique case-insensitively (like site names) and can't be `Unallo
 Beyond registering folders you already have, the app can **scaffold a brand-new Laravel project** for you. Open the **Create** menu in the Sites header and choose **New Laravel site** to launch a short, four-step wizard - **Basics → Stack → Testing → Review** - that runs `laravel new` under the PHP version you pick and registers the result as a `.test` site automatically.
 
 ::: tip Prerequisites
-Creating a Laravel site needs a PHP version, **Composer**, and the **Laravel installer**. If any are missing, the wizard offers to install them first; it can also use ones you already have [installed externally](./tooling#external-tools) (e.g. a global Composer). Starter kits that need Node or Bun pull the runtime in during the build.
+Creating a Laravel site needs a PHP version, **Composer**, and the **Laravel installer**. If any are missing, the wizard offers to install them first; it can also use ones you already have [installed externally](./tooling#external-tools) (e.g. a global Composer). Starter kits that need Node, Bun, or pnpm pull the runtime in during the build. pnpm also needs Node, so choosing it installs whichever of the two is missing (a Node already on your `PATH` counts).
 :::
 
 ### Basics
@@ -59,6 +59,8 @@ Creating a Laravel site needs a PHP version, **Composer**, and the **Laravel ins
 <ThemedImage light="/images/create-laravel-2-light.png" dark="/images/create-laravel-2-dark.png" alt="The Create-a-new-Laravel-site wizard, Stack step (starter kit)" />
 
 Choose a **starter kit**: **None** (a plain skeleton, no auth scaffolding), the official **React**, **Vue**, or **Svelte** kits (Inertia + TypeScript), **Livewire** (Blade + PHP), or **Community…** to scaffold from any `--using <package>`.
+
+For the React, Vue, Svelte and Community kits, **Frontend dependencies** picks how the frontend is installed and built: **npm**, **Bun**, **pnpm** (runs `laravel new --pnpm`), or **Skip** to install them later. The wizard notes which tools it will install automatically when they're missing.
 
 ### Testing
 
@@ -421,6 +423,17 @@ A rule only applies when the request matched no real file, so assets and real di
 
 See [Routing rules](../reference/cli/routes) for the full semantics, and note this is different from a [reverse proxy path rule](./proxies), which forwards to a separate running service rather than to a file inside the site.
 
+## Response headers
+
+A site can send extra HTTP headers on every response. The common case is CORS between two local sites, a frontend on `app.test` calling a backend on `api.test`:
+
+```sh
+yerd header set api Access-Control-Allow-Origin https://app.test
+# every api.test response now carries Access-Control-Allow-Origin: https://app.test
+```
+
+A configured header replaces any same-named header the app sends, and applies to PHP responses, static files, Yerd's own error pages and redirects alike. Set headers from the **Headers** tab of the site details sidebar in the desktop app, or see [Response headers](../reference/cli/headers) for the full semantics.
+
 ## Streaming responses (SSE / Livewire `wire:stream`)
 
 Streamed responses pass straight through as PHP flushes them - server-sent events, `response()->stream()`, Livewire's `wire:stream`, and token-by-token AI output all reach the browser incrementally. There is no setting to turn on and no header to send: `X-Accel-Buffering: no` is unnecessary (Yerd consumes it rather than forwarding it), and a response that sets no `Content-Length` is sent chunked.
@@ -440,6 +453,7 @@ flush();
 
 - [PHP Versions](./php-versions) - set the global default and pin a site to a version.
 - [Routing rules](../reference/cli/routes) - nested front controllers and SPA deep links.
+- [Response headers](../reference/cli/headers) - custom headers on every response, such as CORS.
 - [HTTPS &amp; Certificates](./https) - the local CA and the `secure` flag.
 - [DNS &amp; .test Domains](./dns) - how `*.test` requests reach the daemon.
 - [Configuration Reference](../reference/configuration) - where sites and the TLD are stored.

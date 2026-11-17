@@ -44,14 +44,17 @@ impl BackendResolver for DaemonBackendResolver {
     }
 
     async fn allows_direct_script_execution(&self, site: &yerd_core::Site) -> bool {
-        let is_wordpress = self
-            .wordpress_sites
+        let is_wordpress = self.is_wordpress(site).await;
+        !site.uses_front_controller(is_wordpress)
+    }
+
+    async fn is_wordpress(&self, site: &yerd_core::Site) -> bool {
+        self.wordpress_sites
             .read()
             .await
             .get(site.name())
             .copied()
-            .unwrap_or(false);
-        !site.uses_front_controller(is_wordpress)
+            .unwrap_or(false)
     }
 }
 
@@ -97,6 +100,17 @@ mod tests {
             wp.allows_direct_script_execution(&site("blog", "web", None))
                 .await
         );
+    }
+
+    #[tokio::test]
+    async fn is_wordpress_reflects_the_cached_detection() {
+        let r = resolver(HashMap::from([
+            ("blog".to_owned(), true),
+            ("shop".to_owned(), false),
+        ]));
+        assert!(r.is_wordpress(&site("blog", "", None)).await);
+        assert!(!r.is_wordpress(&site("shop", "", None)).await);
+        assert!(!r.is_wordpress(&site("other", "", None)).await);
     }
 
     #[tokio::test]

@@ -131,6 +131,7 @@ app:
     - Composer
     - Node
     - Bun
+    - pnpm
     - Laravel dumps
     - LAN sharing
 

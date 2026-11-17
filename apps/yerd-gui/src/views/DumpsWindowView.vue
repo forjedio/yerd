@@ -5,6 +5,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 
 import TitleBar from "@/components/TitleBar.vue";
 import Input from "@/components/ui/Input.vue";
+import { logRowBody } from "@/lib/dumpLog";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useToast } from "@/composables/useToast";
 import { usePoll } from "@/composables/usePoll";
@@ -209,7 +210,7 @@ function rowBody(e: DumpEvent): string {
     case "dump":
       return str(p.value_text) || str(p.value_html);
     case "log":
-      return `${str(p.level)} ${str(p.message)}`.trim();
+      return logRowBody(p);
     case "job":
     case "view":
       return str(p.name);

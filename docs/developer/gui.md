@@ -50,7 +50,7 @@ apps/yerd-gui/
     │   └── client.test.ts  command-mapping + error-categorisation tests
     ├── composables/        useDaemon (singleton poller), usePoll, useToast, useIdes
     ├── components/         AppShell, SideNav, NavLink, TitleBar, StatusPill, ComingSoon, EnvironmentCard,
-    │                       SiteCard, SiteDetailsSidebar (+ SiteDomainsPanel / SiteRoutesPanel),
+    │                       SiteCard, SiteDetailsSidebar (+ SiteDomainsPanel / SiteRoutesPanel / SiteHeadersPanel),
     │                       PhpVersionPanel, ServiceOverridesModal, ui/ (incl. AsyncState, EmptyState, InfoBanner)
     ├── views/              OverviewView, GeneralView, PhpView, SitesView, ProxiesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView, AboutView
     └── lib/                utils (cn, humanisers), theme, desktop chrome, domainValidation,
@@ -275,7 +275,14 @@ are the only categories the frontend's `IpcError` needs to distinguish.
 - On **Linux**, before GTK initialises, `glib::set_prgname("yerd-gui")` pins the
   Wayland `app_id` so the dock matches `yerd-gui.desktop`, and a `with_webview`
   block clamps WebKitGTK's zoom level (the only place that can intercept
-  Ctrl+wheel / pinch zoom, which WebKit handles below the DOM).
+  Ctrl+wheel / pinch zoom, which WebKit handles below the DOM). Even earlier,
+  as the first line of `main()` (before logging or any thread starts),
+  `linux_gfx::apply` sets `__NV_DISABLE_EXPLICIT_SYNC=1` when the session is
+  Wayland and the `nvidia_drm` module is loaded, unless the user already set it.
+  Without it, WebKitGTK's dmabuf renderer on the NVIDIA driver makes the
+  compositor drop the connection (`Error 71 (Protocol error) dispatching to
+  Wayland display`) and the window flashes and exits. macOS needs no
+  equivalent, so the module is Linux-only.
 
 The window itself (`tauri.conf.json`) is **decorationless and transparent**
 (`"decorations": false`, `"transparent": true`, `macOSPrivateApi: true`), which
@@ -432,7 +439,9 @@ export type Response =
 `Response` for callers - including the domain mutators
 `addDomain` / `removeDomain` / `setPrimaryDomain` / `resetDomains` that back
 `SiteDomainsPanel.vue`, the routing mutators `addRouteRule` / `removeRouteRule` /
-`listRoutes` behind `SiteRoutesPanel.vue`, `setPhpPoolSettings` behind
+`listRoutes` behind `SiteRoutesPanel.vue`, the header mutators
+`setResponseHeader` / `removeResponseHeader` / `listResponseHeaders` behind
+`SiteHeadersPanel.vue`, `setPhpPoolSettings` behind
 `PhpVersionPanel.vue`, and `serviceOverrides` / `setServiceOverride` behind
 `ServiceOverridesModal.vue`. A low-level `call` normalises every rejection into an
 `IpcError`, and `ensureOk` defensively throws if a `type:"error"` ever slips

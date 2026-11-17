@@ -48,10 +48,16 @@ pub fn render_fpm_conf(cfg: &PoolConfig) -> String {
     }
 
     for (key, value) in &cfg.ini {
-        if let Some(directive) = yerd_core::php_settings::directive(key) {
-            if yerd_core::php_settings::validate_value(key, value).is_ok() {
-                let _ = writeln!(out, "{directive}[{key}] = {value}");
-            }
+        let Some(directive) = yerd_core::php_settings::directive(key) else {
+            continue;
+        };
+        if yerd_core::php_settings::validate_value(key, value).is_err()
+            || !yerd_core::php_settings::applies_to_version(key, cfg.version)
+        {
+            continue;
+        }
+        if let Some(rendered) = yerd_core::php_settings::fpm_value(key, value) {
+            let _ = writeln!(out, "{directive}[{key}] = {rendered}");
         }
     }
 

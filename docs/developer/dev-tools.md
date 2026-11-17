@@ -1,7 +1,7 @@
 # Dev-tool installer subsystem
 
 The **Tooling** feature lets a user install Composer, Node (`node`/`npm`/`npx`),
-Bun (`bun`/`bunx`), the Laravel installer, and WP-CLI as self-contained
+Bun (`bun`/`bunx`), pnpm (`pnpm`/`pnpx`), the Laravel installer, and WP-CLI as self-contained
 binaries on their `PATH`, from the [desktop app](./gui) or the
 [`yerd` CLI](./binaries/yerd). This page documents its implementation
 end-to-end: the daemon subsystem that downloads/verifies/lays down the
@@ -32,7 +32,7 @@ flowchart TD
     INST --> DL["download + sha256 verify"]
     DL --> SWAP["stage_and_swap → {data}/tools/<id>/"]
     SWAP --> REC["reconcile_tool_shims_now\n(under shim_reconcile mutex)"]
-    REC --> BIN["{data}/bin symlinks\ncomposer/node/npm/npx/bun/bunx"]
+    REC --> BIN["{data}/bin symlinks\ncomposer/node/npm/npx/bun/bunx/pnpm/pnpx"]
     BIN -.->|on PATH via `yerd path`| SHELL["user's shell"]
 ```
 
@@ -43,11 +43,11 @@ differ enough (phar vs multi-file tarball vs single-binary zip) that a `match`
 into per-tool modules is clearer than an abstraction.
 
 ```rust
-pub enum Tool { Composer, Node, Bun, Laravel, WpCli }
+pub enum Tool { Composer, Node, Bun, Pnpm, Laravel, WpCli }
 
 impl Tool {
     pub const ALL: [Tool; 5];
-    pub const fn id(self) -> &'static str;            // "composer" | "node" | "bun" | "laravel" | "wp-cli"
+    pub const fn id(self) -> &'static str;            // "composer" | "node" | "bun" | "pnpm" | "laravel" | "wp-cli"
     pub const fn display_name(self) -> &'static str;  // for the UI
     pub const fn primary_bin(self) -> &'static str;   // the command external detection looks for
     pub const fn exposed_bins(self) -> &'static [&'static str]; // commands on PATH
@@ -57,7 +57,7 @@ impl Tool {
 ```
 
 `exposed_bins` is the single source of truth for which `{data}/bin` names a tool
-owns: `composer`; `node`/`npm`/`npx`; `bun`/`bunx`; `laravel`; `wp`. It drives
+owns: `composer`; `node`/`npm`/`npx`; `bun`/`bunx`; `pnpm`/`pnpx`; `laravel`; `wp`. It drives
 both shim creation and pruning.
 
 `accepts_external` is the source of truth for whether a copy already on the
@@ -133,6 +133,7 @@ a `User-Agent` (the GitHub API used for Bun rejects requests without one).
 | `composer.rs` | `getcomposer.org/versions` → newest stable the installed PHP can run (honours each entry's `min-php` `PHP_VERSION_ID`) | `…/download/<ver>/composer.phar` | `composer.phar.sha256sum` (single line) | `{data}/tools/composer/composer.phar` |
 | `node.rs` | `nodejs.org/dist/index.json` → first entry with a string `lts` (newest LTS) | `node-<ver>-<os>-<arch>.tar.gz` | per-release `SHASUMS256.txt` | unpacked tree under a versioned dir |
 | `bun.rs` | GitHub `releases/latest` → `tag_name` (`bun-v…`) | `bun-<os>-<arch>.zip` (plain, non-baseline) | per-release `SHASUMS256.txt` | `bun-<os>-<arch>/bun` |
+| `pnpm.rs` | GitHub `releases/latest` → `tag_name` (`v…`) | `pnpm-<os>-<arch>.tar.gz` (glibc, non-musl; unpacked with `unpack_in` for its hard-link members) | the release API's per-asset `digest` | `pnpm-<os>-<arch>/{pnpm,pnpx,dist}` |
 
 Each module has a pure host→asset mapper (`current_os_arch()` → `darwin-arm64` /
 `linux-x64` / `bun-darwin-aarch64` / …) that returns a typed
@@ -167,7 +168,7 @@ WP-CLI's bundled dependencies emit PHP deprecation notices on newer PHP that wou
 The commands a tool provides are symlinks in `{data}/bin` - the same directory as
 the PHP `php`/`php<ver>`/`phpcover` shims. The two reconcilers partition the
 namespace cleanly: the PHP reconcile only prunes `php<X.Y>*` names, and
-`reconcile_tool_shims` owns `composer`/`node`/`npm`/`npx`/`bun`/`bunx`.
+`reconcile_tool_shims` owns `composer`/`node`/`npm`/`npx`/`bun`/`bunx`/`pnpm`/`pnpx`.
 
 For each installed tool it creates `(name → target)` links via the shared
 `php_install::place_symlink` (atomic temp+rename); for each **uninstalled** tool
@@ -180,6 +181,7 @@ dangling by an uninstall is still removed. Per-tool targets:
 | Composer | `composer` → the `yerd` binary (a multi-call shim, like `phpcover`) |
 | Node | `node`/`npm`/`npx` → **absolute** `node_root/bin/{…}` |
 | Bun | `bun` → `bun_root/bun`; `bunx` → `{data}/bin/bun` (sibling; Bun dispatches on argv0) |
+| pnpm | `pnpm` → `pnpm_root/pnpm`; `pnpx` → `pnpm_root/pnpx`, a hard link of `pnpm` (pnpm dispatches on `current_exe`, which resolves symlinks on Linux) |
 
 ::: tip Why npm points at an absolute path
 Node's `bin/npm` and `bin/npx` are themselves *relative* symlinks into
@@ -205,8 +207,11 @@ Composer is a phar, so its `composer` command can't be a direct symlink - it
 needs a PHP interpreter. Like the [cover shims](./binaries/yerd#cover-shims-yerd-as-a-multi-call-binary-cover_shim-rs),
 `{data}/bin/composer` symlinks to the `yerd` binary, which detects `argv[0] ==
 "composer"` *before clap* (in `main.rs`, ahead of `cover_shim::dispatch`) and
-`exec`s the default managed PHP against `{data}/tools/composer/composer.phar`. If
-no PHP is installed it prints a clear "install a PHP version" message; if the
+`exec`s the default managed PHP against `{data}/tools/composer/composer.phar`,
+pointing `PHPRC` at that version's CLI ini (`php-cli-<minor>.ini`, else the base
+`php-cli.ini`) so per-version extensions and settings apply. Without it Composer
+would inherit the base `php-cli.ini` exported by the shell profile, which has no
+extension lines. If no PHP is installed it prints a clear "install a PHP version" message; if the
 phar is absent it points the user at the Tooling page.
 
 ## IPC contract

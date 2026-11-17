@@ -157,6 +157,17 @@ pub enum Response {
         /// decodable. Boxed like `version_settings`.
         #[serde(default, skip_serializing_if = "boxed_version_map_is_empty")]
         pool: Box<BTreeMap<PhpVersion, BTreeMap<String, String>>>,
+        /// Installed versions whose PHP build includes the FFI extension, so
+        /// clients only offer the FFI toggle where it can work. Empty when none
+        /// do; `#[serde(default)]` keeps older daemons (which omit it) decodable.
+        /// Boxed like `version_settings` to keep `Response` small.
+        #[serde(default, skip_serializing_if = "boxed_versions_is_empty")]
+        ffi_versions: Box<Vec<PhpVersion>>,
+        /// Whether the libvips shared library (needed by php-vips) was found on
+        /// the host. `None` when the daemon does not check on this OS, or is
+        /// older and omits it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        libvips_found: Option<bool>,
     },
     /// Reply to [`crate::Request::AvailablePhp`].
     AvailablePhp {
@@ -418,6 +429,12 @@ pub enum Response {
         /// Per-site routing rules.
         rules: Vec<RouteRuleEntry>,
     },
+    /// Reply to [`crate::Request::ListResponseHeaders`] - every site's custom
+    /// response headers.
+    ResponseHeaders {
+        /// Per-site custom response headers, in each site's configured order.
+        headers: Vec<ResponseHeaderEntry>,
+    },
 }
 
 /// One registered custom PHP extension (see [`Response::PhpExtensions`]).
@@ -548,6 +565,19 @@ pub struct RouteRuleEntry {
     pub target: String,
 }
 
+/// One per-site custom response header (reply element of
+/// [`Response::ResponseHeaders`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResponseHeaderEntry {
+    /// The site the header attaches to (a linked site name or a parked
+    /// document-root display label).
+    pub site: String,
+    /// The header name, in the casing it was set with.
+    pub name: String,
+    /// The header value.
+    pub value: String,
+}
+
 /// One `WordPress` administrator account, for the auto-login user picker -
 /// see [`Response::WordpressAdminUsers`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -563,6 +593,12 @@ pub struct WordPressAdminUser {
 /// per-version maps (the `&Box<_>` field reference deref-coerces here).
 fn boxed_version_map_is_empty(m: &BTreeMap<PhpVersion, BTreeMap<String, String>>) -> bool {
     m.is_empty()
+}
+
+/// `skip_serializing_if` predicate for [`Response::PhpVersions`]'s boxed
+/// `ffi_versions` list.
+fn boxed_versions_is_empty(v: &[PhpVersion]) -> bool {
+    v.is_empty()
 }
 
 /// An available newer patch for an installed PHP minor.
@@ -687,6 +723,7 @@ mod variant_name_pinning {
             Response::BrowserTrust { .. } => {}
             Response::Proxies { .. } => {}
             Response::Routes { .. } => {}
+            Response::ResponseHeaders { .. } => {}
         }
     }
 
@@ -747,6 +784,8 @@ mod variant_name_pinning {
             settings: BTreeMap::new(),
             version_settings: Box::new(BTreeMap::new()),
             directives: Box::new(BTreeMap::new()),
+            ffi_versions: Box::new(vec![]),
+            libvips_found: None,
             pool: Box::new(BTreeMap::new()),
         });
         pin_response(Response::AvailablePhp {
@@ -812,6 +851,7 @@ mod variant_name_pinning {
                 lan_setup_bound: None,
                 port_redirect_targets: None,
                 lan_redirect_targets: None,
+                legacy_pf_redirect: None,
             }),
         });
         pin_response(Response::Diagnoses {
@@ -945,6 +985,9 @@ mod variant_name_pinning {
                 state: crate::status::TunnelRunState::Running,
                 url: Some("https://calm-river-1234.trycloudflare.com".into()),
                 hostname: None,
+                last_error: None,
+                protected: false,
+                warnings: Vec::new(),
             }],
             cloudflared: crate::status::CloudflaredStatus {
                 installed: true,
@@ -961,6 +1004,7 @@ mod variant_name_pinning {
             sites: vec![crate::status::SiteHostname {
                 site: "app".into(),
                 hostname: "app.example.com".into(),
+                protected: false,
             }],
             zone: None,
         });
@@ -987,6 +1031,13 @@ mod variant_name_pinning {
                 site: "portal".into(),
                 prefix: "/api".into(),
                 target: "api/index.php".into(),
+            }],
+        });
+        pin_response(Response::ResponseHeaders {
+            headers: vec![ResponseHeaderEntry {
+                site: "api".into(),
+                name: "Access-Control-Allow-Origin".into(),
+                value: "https://app.test".into(),
             }],
         });
         for c in [

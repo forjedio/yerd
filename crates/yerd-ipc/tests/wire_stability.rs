@@ -753,6 +753,8 @@ fn response_php_versions_byte_shape() {
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
+        ffi_versions: Box::new(vec![]),
+        libvips_found: None,
         pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -761,6 +763,40 @@ fn response_php_versions_byte_shape() {
         r#"{"type":"php_versions","installed":["8.3","8.5"],"default":"8.5"}"#
     );
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_php_versions_ffi_and_libvips_byte_shape() {
+    let r = Response::PhpVersions {
+        installed: vec![PhpVersion::new(8, 5)],
+        default: PhpVersion::new(8, 5),
+        updates: vec![],
+        settings: BTreeMap::new(),
+        version_settings: Box::new(BTreeMap::new()),
+        directives: Box::new(BTreeMap::new()),
+        pool: Box::new(BTreeMap::new()),
+        ffi_versions: Box::new(vec![PhpVersion::new(8, 5)]),
+        libvips_found: Some(false),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"php_versions","installed":["8.5"],"default":"8.5","ffi_versions":["8.5"],"libvips_found":false}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+
+    let old = r#"{"type":"php_versions","installed":["8.5"],"default":"8.5"}"#;
+    match serde_json::from_str::<Response>(old).unwrap() {
+        Response::PhpVersions {
+            ffi_versions,
+            libvips_found,
+            ..
+        } => {
+            assert!(ffi_versions.is_empty());
+            assert_eq!(libvips_found, None);
+        }
+        other => panic!("expected PhpVersions, got {other:?}"),
+    }
 }
 
 #[test]
@@ -797,6 +833,8 @@ fn response_php_versions_with_updates_byte_shape() {
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
+        ffi_versions: Box::new(vec![]),
+        libvips_found: None,
         pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -819,6 +857,8 @@ fn response_php_versions_with_settings_byte_shape() {
         ]),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
+        ffi_versions: Box::new(vec![]),
+        libvips_found: None,
         pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -844,6 +884,8 @@ fn response_php_versions_with_version_settings_and_directives_byte_shape() {
             PhpVersion::new(8, 3),
             BTreeMap::from([("xdebug.mode".to_string(), "debug".to_string())]),
         )])),
+        ffi_versions: Box::new(vec![]),
+        libvips_found: None,
         pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -875,6 +917,8 @@ fn response_php_versions_with_pool_byte_shape() {
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
+        ffi_versions: Box::new(vec![]),
+        libvips_found: None,
         pool: Box::new(BTreeMap::from([(
             PhpVersion::new(8, 4),
             BTreeMap::from([("max_children".to_string(), "32".to_string())]),
@@ -1078,6 +1122,7 @@ fn response_status_byte_shape() {
             lan_setup_bound: None,
             port_redirect_targets: None,
             lan_redirect_targets: None,
+            legacy_pf_redirect: None,
         }),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -1130,6 +1175,18 @@ fn status_redirect_targets_appear_only_when_some() {
     report.lan_redirect_targets = None;
     let s = serde_json::to_string(&report).unwrap();
     assert!(!s.contains("redirect_targets"), "{s}");
+}
+
+#[test]
+fn status_legacy_pf_redirect_appears_only_when_some() {
+    let mut report = sample_status_report();
+    report.legacy_pf_redirect = Some(true);
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(s.contains(r#""legacy_pf_redirect":true"#), "{s}");
+
+    report.legacy_pf_redirect = None;
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(!s.contains("legacy_pf_redirect"), "{s}");
 }
 
 #[test]
@@ -1213,6 +1270,7 @@ fn sample_status_report() -> StatusReport {
         lan_setup_bound: None,
         port_redirect_targets: None,
         lan_redirect_targets: None,
+        legacy_pf_redirect: None,
     }
 }
 
@@ -1360,6 +1418,10 @@ fn diagnosis_code_each_variant_byte_shape() {
         (DiagnosisCode::DomainShadowed, r#""domain_shadowed""#),
         (DiagnosisCode::PortRedirectStale, r#""port_redirect_stale""#),
         (DiagnosisCode::LanRedirectStale, r#""lan_redirect_stale""#),
+        (
+            DiagnosisCode::LegacyPortRedirect,
+            r#""legacy_port_redirect""#,
+        ),
         (
             DiagnosisCode::ServiceOverrideInvalid,
             r#""service_override_invalid""#,
@@ -2635,6 +2697,21 @@ fn request_create_site_byte_shape() {
 }
 
 #[test]
+fn js_runtime_byte_shapes() {
+    use yerd_ipc::JsRuntime;
+    let cases = [
+        (JsRuntime::Npm, r#""npm""#),
+        (JsRuntime::Bun, r#""bun""#),
+        (JsRuntime::Pnpm, r#""pnpm""#),
+        (JsRuntime::Skip, r#""skip""#),
+    ];
+    for (js, expected) in cases {
+        assert_eq!(serde_json::to_string(&js).unwrap(), expected);
+        assert_eq!(serde_json::from_str::<JsRuntime>(expected).unwrap(), js);
+    }
+}
+
+#[test]
 fn request_create_site_community_kit_byte_shape() {
     use yerd_ipc::StarterKit;
     let s = serde_json::to_string(&StarterKit::Community("acme/kit".into())).unwrap();
@@ -2968,6 +3045,9 @@ fn response_tunnels_byte_shape() {
             state: TunnelRunState::Running,
             url: Some("https://calm-river-1234.trycloudflare.com".into()),
             hostname: None,
+            last_error: None,
+            protected: false,
+            warnings: Vec::new(),
         }],
         cloudflared: CloudflaredStatus {
             installed: true,
@@ -2993,6 +3073,9 @@ fn response_tunnels_named_and_empty_byte_shape() {
             state: TunnelRunState::Running,
             url: None,
             hostname: Some("shop.example.com".into()),
+            last_error: None,
+            protected: false,
+            warnings: Vec::new(),
         }],
         cloudflared: CloudflaredStatus {
             installed: true,
@@ -3030,9 +3113,87 @@ fn tunnel_run_state_each_variant_byte_shape() {
     for (st, expected) in [
         (TunnelRunState::Running, r#""running""#),
         (TunnelRunState::Failed, r#""failed""#),
+        (TunnelRunState::Connecting, r#""connecting""#),
+        (TunnelRunState::Reconnecting, r#""reconnecting""#),
     ] {
         assert_eq!(serde_json::to_string(&st).unwrap(), expected);
+        assert_eq!(
+            serde_json::from_str::<TunnelRunState>(expected).unwrap(),
+            st
+        );
     }
+}
+
+/// A tunnel carrying the additive health, protection, and preflight fields
+/// emits them after `hostname`; their defaults are omitted (pinned above).
+#[test]
+fn response_tunnels_with_error_protected_and_warnings_byte_shape() {
+    let r = Response::Tunnels {
+        tunnels: vec![TunnelInfo {
+            site: "app".into(),
+            kind: TunnelKind::Quick,
+            state: TunnelRunState::Reconnecting,
+            url: Some("https://calm-river-1234.trycloudflare.com".into()),
+            hostname: None,
+            last_error: Some("process exited: exit status: 1".into()),
+            protected: true,
+            warnings: vec!["Vite dev server is running".into()],
+        }],
+        cloudflared: CloudflaredStatus {
+            installed: true,
+            version: None,
+            source: None,
+            logged_in: false,
+        },
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"tunnels","tunnels":[{"site":"app","kind":"quick","state":"reconnecting","url":"https://calm-river-1234.trycloudflare.com","last_error":"process exited: exit status: 1","protected":true,"warnings":["Vite dev server is running"]}],"cloudflared":{"installed":true,"logged_in":false}}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn site_hostname_protected_byte_shape() {
+    let protected = SiteHostname {
+        site: "app".into(),
+        hostname: "app.example.com".into(),
+        protected: true,
+    };
+    let s = serde_json::to_string(&protected).unwrap();
+    assert_eq!(
+        s,
+        r#"{"site":"app","hostname":"app.example.com","protected":true}"#
+    );
+    assert_eq!(serde_json::from_str::<SiteHostname>(&s).unwrap(), protected);
+
+    let legacy: SiteHostname =
+        serde_json::from_str(r#"{"site":"app","hostname":"app.example.com"}"#).unwrap();
+    assert!(!legacy.protected);
+}
+
+#[test]
+fn request_set_tunnel_password_byte_shape() {
+    let set = Request::SetTunnelPassword {
+        site: "app".into(),
+        password: Some("secret".into()),
+    };
+    let s = serde_json::to_string(&set).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_tunnel_password","site":"app","password":"secret"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), set);
+
+    let clear = Request::SetTunnelPassword {
+        site: "app".into(),
+        password: None,
+    };
+    let s = serde_json::to_string(&clear).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_tunnel_password","site":"app","password":null}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), clear);
 }
 
 #[test]
@@ -3166,6 +3327,7 @@ fn response_named_tunnels_with_none_zone_skips_field() {
         sites: vec![SiteHostname {
             site: "app".into(),
             hostname: "app.example.com".into(),
+            protected: false,
         }],
         zone: None,
     };
@@ -3333,5 +3495,59 @@ fn response_proxies_customized_domains_byte_shape() {
     let s = serde_json::to_string(&r).unwrap();
     let expected = r#"{"type":"proxies","proxies":[{"name":"reverb","target":"http://127.0.0.1:8080","secure":false,"primary_domain":"corp.test","domains":["corp.test","*.reverb.test"]}],"rules":[]}"#;
     assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_response_header_byte_shape() {
+    let r = Request::SetResponseHeader {
+        site: "api".into(),
+        name: "Access-Control-Allow-Origin".into(),
+        value: "https://app.test".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_response_header","site":"api","name":"Access-Control-Allow-Origin","value":"https://app.test"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_remove_response_header_byte_shape() {
+    let r = Request::RemoveResponseHeader {
+        site: "api".into(),
+        name: "Access-Control-Allow-Origin".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"remove_response_header","site":"api","name":"Access-Control-Allow-Origin"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_list_response_headers_byte_shape() {
+    let r = Request::ListResponseHeaders;
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"list_response_headers"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_response_headers_byte_shape() {
+    let r = Response::ResponseHeaders {
+        headers: vec![yerd_ipc::ResponseHeaderEntry {
+            site: "api".into(),
+            name: "Access-Control-Allow-Origin".into(),
+            value: "https://app.test".into(),
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"response_headers","headers":[{"site":"api","name":"Access-Control-Allow-Origin","value":"https://app.test"}]}"#
+    );
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
