@@ -1123,6 +1123,7 @@ fn response_status_byte_shape() {
             port_redirect_targets: None,
             lan_redirect_targets: None,
             legacy_pf_redirect: None,
+            node_updates: 0,
         }),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -1222,6 +1223,16 @@ fn status_resolver_backup_appears_only_when_some() {
     assert!(!s.contains("resolver_backup"), "{s}");
 }
 
+#[test]
+fn status_node_updates_appears_only_when_nonzero() {
+    let mut report = sample_status_report();
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(!s.contains("node_updates"), "{s}");
+    report.node_updates = 2;
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(s.ends_with(r#","node_updates":2}"#), "{s}");
+}
+
 /// A minimal healthy report for field-presence assertions.
 fn sample_status_report() -> StatusReport {
     StatusReport {
@@ -1271,6 +1282,7 @@ fn sample_status_report() -> StatusReport {
         port_redirect_targets: None,
         lan_redirect_targets: None,
         legacy_pf_redirect: None,
+        node_updates: 0,
     }
 }
 
@@ -2938,6 +2950,7 @@ fn response_node_versions_byte_shape() {
                             site: None,
                         },
                     ],
+                    update: Some("22.12.0".into()),
                 },
                 NodeRelease {
                     version: "25.0.0".into(),
@@ -2946,10 +2959,11 @@ fn response_node_versions_byte_shape() {
                     default: false,
                     uninstall_blocked: false,
                     clears_preferences: vec![],
+                    update: None,
                 },
             ],
         },
-        r#"{"type":"node_versions","installed":[{"version":"22.9.0","lts":true,"codename":"Jod","default":true,"uninstall_blocked":true,"clears_preferences":[{"root":"/srv/blog","site":"blog"},{"root":"/srv/old"}]},{"version":"25.0.0","lts":false,"default":false,"uninstall_blocked":false}]}"#,
+        r#"{"type":"node_versions","installed":[{"version":"22.9.0","lts":true,"codename":"Jod","default":true,"uninstall_blocked":true,"clears_preferences":[{"root":"/srv/blog","site":"blog"},{"root":"/srv/old"}],"update":"22.12.0"},{"version":"25.0.0","lts":false,"default":false,"uninstall_blocked":false}]}"#,
     );
 }
 

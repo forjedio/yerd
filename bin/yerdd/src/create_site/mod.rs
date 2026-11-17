@@ -250,6 +250,9 @@ async fn install_tool_inline(id: &str, tool: Tool, state: &Arc<DaemonState>) -> 
     let _ = drain.await;
 
     result.map_err(|e| format!("failed to install {}: {e}", tool.display_name()))?;
+    if tool == Tool::Node {
+        crate::node_updates::poll_and_refresh(state, &dl).await;
+    }
     crate::ipc_server::reconcile_tool_shims_now(state).await;
     Ok(())
 }

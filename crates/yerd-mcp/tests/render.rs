@@ -145,6 +145,7 @@ fn sample_report() -> yerd_ipc::StatusReport {
             https: 8443,
         }),
         legacy_pf_redirect: Some(true),
+        node_updates: 0,
     }
 }
 

@@ -159,12 +159,18 @@ releases:
 
 - **Installed versions** lists each release with its LTS codename and a star on
   the global default. Each row offers **Set default**, **Uninstall**, and
-  **Update** when a newer patch of that major exists.
-- **Available releases** lists Node's upstream releases grouped by major, newest
-  first, with the newest patch, the LTS codename, and an **EOL** badge for
-  end-of-life majors. One click installs a major's newest patch; a field below
-  installs an exact version. Majors below 9 aren't offered. If the release
-  schedule can't be fetched the list still loads, without EOL badges.
+  **Update** when a newer patch of that major exists. The daemon checks for
+  newer patches every 12 hours alongside the PHP update check (only while a
+  Node release is installed; notify-only, nothing is downloaded but the
+  release index). Pending updates show as a count on the sidebar's **Node**
+  item, a red dot on the tray icon, and an **Update Node** tray item that
+  opens this page. **Refresh** checks immediately.
+- **Install** opens a dialog with a dropdown of the release lines you don't
+  have yet, newest first, each showing its newest patch, LTS codename, and an
+  **EOL** badge for end-of-life majors; the newest supported LTS is preselected.
+  A switch in the dialog lets you type an exact version instead. Majors below 9
+  aren't offered. If the release schedule can't be fetched the list still
+  loads, without EOL badges.
 - Installs run in the background with a live log you can close; the operations
   indicator keeps tracking them. Other version actions are disabled until the
   install finishes. The first install becomes the global default.

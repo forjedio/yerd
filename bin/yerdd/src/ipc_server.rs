@@ -924,6 +924,9 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         port_redirect_targets,
         lan_redirect_targets,
         legacy_pf_redirect,
+        node_updates: state
+            .node_update_count
+            .load(std::sync::atomic::Ordering::Relaxed),
         resolver_backup,
         default_php,
         php,
@@ -1611,8 +1614,10 @@ async fn reconcile_shims_now(state: &DaemonState) {
 
 /// Reconcile the dev-tool shims (`composer`/`node`/`npm`/`npx`/`bun`/`bunx`/`pnpm`/`pnpx`) under
 /// the **shared** `shim_reconcile` mutex (same dir as the PHP reconcile).
-/// Best-effort: failures are logged. Used at startup and after install/uninstall.
+/// Best-effort: failures are logged. Used at startup and after install/uninstall,
+/// so it also recounts pending Node updates against the installed set.
 pub(crate) async fn reconcile_tool_shims_now(state: &DaemonState) {
+    crate::node_updates::recount(state).await;
     let Some(yerd_bin) = yerd_sibling() else {
         tracing::warn!("cannot locate the `yerd` binary; skipping tool-shim reconcile");
         return;
@@ -1695,6 +1700,7 @@ async fn install_tool(tool: &str, state: &DaemonState) -> Response {
     match crate::tools::install(t, &state.dirs, &dl, None).await {
         Ok(()) => {
             if t == crate::tools::Tool::Node {
+                crate::node_updates::poll_and_refresh(state, &dl).await;
                 if let Some(version) = yerd_platform::node::legacy_default(&state.dirs) {
                     let result = save_node_version(&version, None, state).await;
                     if !matches!(result, Response::Ok) {
@@ -1752,6 +1758,7 @@ pub(crate) async fn install_tool_streamed(tool: String, state: Arc<DaemonState>)
         match result {
             Some(Ok(())) => {
                 if t == crate::tools::Tool::Node {
+                    crate::node_updates::poll_and_refresh(&state, &dl).await;
                     if let Some(version) = yerd_platform::node::legacy_default(&state.dirs) {
                         if let Response::Error { message, .. } =
                             save_node_version(&version, None, &state).await
@@ -3166,8 +3173,11 @@ async fn install_node(version: &str, state: &DaemonState) -> Response {
     let _mutate = state.tool_mutate.lock().await;
     let had_default = node_had_default(state).await;
     let dl = crate::php_install::ReqwestDownloader::new();
-    match crate::tools::node::install_version(&state.dirs, &dl, Some(version), None).await {
-        Ok(exact) => after_node_install(state, &exact, had_default, false).await,
+    match crate::tools::node::install_release(&state.dirs, &dl, Some(version), None).await {
+        Ok(installed) => {
+            crate::node_updates::store(state, installed.latest).await;
+            after_node_install(state, &installed.exact, had_default, false).await
+        }
         Err(e) => Response::Error {
             code: tool_error_code(&e),
             message: e.to_string(),
@@ -3210,15 +3220,16 @@ pub(crate) async fn install_node_streamed(
         let _guard = state.tool_mutate.lock().await;
         let had_default = node_had_default(&state).await;
         let result = tokio::select! {
-            r = crate::tools::node::install_version(&state.dirs, &dl, Some(&version), Some(&tx)) => Some(r),
+            r = crate::tools::node::install_release(&state.dirs, &dl, Some(&version), Some(&tx)) => Some(r),
             _ = cancel.changed() => None,
         };
         drop(tx);
         let _ = drain.await;
 
         match result {
-            Some(Ok(exact)) => {
-                match after_node_install(&state, &exact, had_default, update).await {
+            Some(Ok(installed)) => {
+                crate::node_updates::store(&state, installed.latest).await;
+                match after_node_install(&state, &installed.exact, had_default, update).await {
                     Response::Error { message, .. } => {
                         state
                             .jobs
@@ -3389,6 +3400,8 @@ async fn node_versions_response(state: &DaemonState) -> Response {
     let default_exact = default
         .as_deref()
         .and_then(|d| yerd_core::node::select_release(d, pairs.iter().copied()).ok());
+    let versions: Vec<&str> = installed.iter().map(|n| n.version.as_str()).collect();
+    let updates = crate::node_updates::cached_updates(state, &versions).await;
     let releases = installed
         .iter()
         .map(|n| {
@@ -3411,6 +3424,7 @@ async fn node_versions_response(state: &DaemonState) -> Response {
                         root,
                     })
                     .collect(),
+                update: updates.get(&n.version).cloned(),
             }
         })
         .collect();
@@ -3436,7 +3450,10 @@ async fn available_node_with(
     let installed = yerd_platform::node::installed(&state.dirs);
     let versions: Vec<&str> = installed.iter().map(|n| n.version.as_str()).collect();
     match crate::tools::node::available(dl, &versions, today).await {
-        Ok(majors) => Response::AvailableNode { majors },
+        Ok(majors) => {
+            crate::node_updates::store(state, crate::tools::node::latest_by_major(&majors)).await;
+            Response::AvailableNode { majors }
+        }
         Err(e) => internal(format!("couldn't load the Node release index: {e}")),
     }
 }
@@ -7262,6 +7279,70 @@ mod node_tests {
         assert_eq!(
             error_code(&available_node_with(&state, &dl, "2026-11-17").await),
             Some(ErrorCode::Internal)
+        );
+    }
+
+    fn listed_updates(r: Response) -> Vec<(String, Option<String>)> {
+        match r {
+            Response::NodeVersions { installed } => installed
+                .into_iter()
+                .map(|n| (n.version, n.update))
+                .collect(),
+            other => panic!("expected NodeVersions, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn node_update_poll_feeds_list_node_and_skips_without_installs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state_in(tmp.path());
+        let dl = NodeIndexDl {
+            schedule: None,
+            index: true,
+        };
+        crate::node_updates::poll_and_refresh(&state, &dl).await;
+        assert!(state.node_updates.read().await.is_empty());
+        release(&state, "22.9.0", None);
+        release(&state, "24.1.0", None);
+        crate::node_updates::poll_and_refresh(&state, &dl).await;
+        assert_eq!(build_status_report(&state).await.node_updates, 1);
+        assert_eq!(
+            listed_updates(node_versions_response(&state).await),
+            [
+                ("22.9.0".to_owned(), Some("22.12.0".to_owned())),
+                ("24.1.0".to_owned(), None)
+            ]
+        );
+        let offline = NodeIndexDl {
+            schedule: None,
+            index: false,
+        };
+        crate::node_updates::poll_and_refresh(&state, &offline).await;
+        assert_eq!(
+            state.node_updates.read().await.get(&22).map(String::as_str),
+            Some("22.12.0")
+        );
+        release(&state, "22.12.0", None);
+        reconcile_tool_shims_now(&state).await;
+        assert_eq!(build_status_report(&state).await.node_updates, 0);
+    }
+
+    #[tokio::test]
+    async fn available_node_refreshes_the_update_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state_in(tmp.path());
+        release(&state, "22.9.0", None);
+        let dl = NodeIndexDl {
+            schedule: None,
+            index: true,
+        };
+        assert!(matches!(
+            available_node_with(&state, &dl, "2026-11-17").await,
+            Response::AvailableNode { .. }
+        ));
+        assert_eq!(
+            listed_updates(node_versions_response(&state).await),
+            [("22.9.0".to_owned(), Some("22.12.0".to_owned()))]
         );
     }
 

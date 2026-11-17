@@ -79,6 +79,8 @@ pub fn state_in(tmp: &Path) -> DaemonState {
         ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
         php_ca_bundle: None,
         php_updates: RwLock::new(std::collections::HashMap::new()),
+        node_updates: RwLock::new(std::collections::BTreeMap::new()),
+        node_update_count: std::sync::atomic::AtomicU32::new(0),
         yerd_update: RwLock::new(Vec::new()),
         update_snapshot: RwLock::new(None),
         php_manager,

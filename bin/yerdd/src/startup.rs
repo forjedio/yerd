@@ -386,6 +386,8 @@ pub async fn bring_up_with_dirs(
         ca_fingerprint,
         php_ca_bundle,
         php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+        node_updates: tokio::sync::RwLock::new(std::collections::BTreeMap::new()),
+        node_update_count: std::sync::atomic::AtomicU32::new(0),
         yerd_update: tokio::sync::RwLock::new(Vec::new()),
         update_snapshot: tokio::sync::RwLock::new(crate::self_update::load_snapshot(&dirs)),
         php_manager: php_manager.clone(),

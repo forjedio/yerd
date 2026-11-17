@@ -22,6 +22,11 @@ pub struct NodeRelease {
     /// Saved site preferences that uninstalling this release would clear.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub clears_preferences: Vec<NodePreferenceRef>,
+    /// The newer published patch of this release's major, from the daemon's
+    /// last release-index check. Only set on the highest installed patch of a
+    /// major.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<String>,
 }
 
 /// A saved per-project Node preference, keyed by project root.

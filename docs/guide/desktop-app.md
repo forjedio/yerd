@@ -59,8 +59,8 @@ Manages your installed [PHP versions](./php-versions):
 
 Manages your installed [Node versions](./tooling#node-versions):
 
-- An Installed versions card lists each release with its LTS codename and a star on the global default. Each row's `⋯` menu offers Update (when a newer patch of that major exists), Set default, and Uninstall. Uninstall is disabled for the default while other releases exist; its confirmation lists any site preferences it would clear.
-- An Available releases card lists upstream releases grouped by major, newest first, with LTS codenames and EOL badges. Install fetches a major's newest patch; a field below installs an exact version. Installs stream a live log you can close while they keep running.
+- An Installed versions card lists each release with its LTS codename and a star on the global default. Each row's `⋯` menu offers Update (when a newer patch of that major exists), Set default, and Uninstall. Pending updates show as a count on the sidebar's Node item and as an **Update Node** item in the tray menu. Uninstall is disabled for the default while other releases exist; its confirmation lists any site preferences it would clear.
+- Install opens a dialog with a dropdown of the release lines not yet installed, newest first, with LTS codenames and EOL badges; it installs the chosen line's newest patch, or switch to typing an exact version. Installs stream a live log you can close while they keep running.
 - Update installs the newest patch alongside and moves the global default to it only when the default was on an older patch of that major. Site preferences are never changed.
 - A banner notes that bare `node`, `npm`, and `npx` always use the global default; run `yerd exec npm …` inside a project to use its version.
 

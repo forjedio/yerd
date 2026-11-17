@@ -514,7 +514,7 @@ the daemon when the window is hidden to the tray - a real cost, since each
 The hash router (`createWebHashHistory`, because the webview loads from a
 file/asset origin) maps the in-shell routes - **OverviewView** (`/overview`, the
 default landing dashboard), **GeneralView** (`/general`, the **Settings** page),
-**PhpView**, **NodeView** (`/node`, installed releases, the upstream releases list,
+**PhpView**, **NodeView** (`/node`, installed releases, an Install dialog picking from the upstream releases list,
 streamed installs, Update, uninstall, and the global default; in the command
 palette without a digit), **SitesView**, **ToolingView** (`/tooling`, whose
 installed Node row links to `/node`), **ServicesView**,

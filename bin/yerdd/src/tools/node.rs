@@ -103,6 +103,27 @@ pub async fn install_version(
     selector: Option<&str>,
     progress: Option<&ProgressTx>,
 ) -> Result<String, ToolError> {
+    install_release(dirs, dl, selector, progress)
+        .await
+        .map(|installed| installed.exact)
+}
+
+/// A finished install plus what the index it resolved against says is newest.
+pub(crate) struct NodeInstall {
+    /// The exact version installed, without a leading `v`.
+    pub exact: String,
+    /// Major → newest installable patch, for `DaemonState::node_updates`.
+    pub latest: BTreeMap<u32, String>,
+}
+
+/// [`install_version`], also returning the index's newest patch per major so
+/// the daemon can refresh its update cache without a second fetch.
+pub(crate) async fn install_release(
+    dirs: &PlatformDirs,
+    dl: &dyn Downloader,
+    selector: Option<&str>,
+    progress: Option<&ProgressTx>,
+) -> Result<NodeInstall, ToolError> {
     if let Some(selector) = selector {
         if !matches!(selector, "node" | "lts/*") {
             yerd_core::node::numeric_selector(selector).map_err(ToolError::Download)?;
@@ -119,6 +140,7 @@ pub async fn install_version(
         .into_iter()
         .filter(|r| r.installable(key))
         .collect();
+    let latest = latest_by_major(&lines_of(&releases, &[], None, ""));
     let exact = yerd_core::node::select_release(
         selector.unwrap_or("lts/*"),
         releases
@@ -187,7 +209,7 @@ pub async fn install_version(
     )?;
     tracing::info!(version = %version, "installed Node.js");
     note(progress, format!("Installed Node {exact}"));
-    Ok(exact)
+    Ok(NodeInstall { exact, latest })
 }
 
 /// The installable published releases grouped by major, newest first. The
@@ -200,7 +222,7 @@ pub(crate) async fn available(
 ) -> Result<Vec<MajorLine>, ToolError> {
     let key = host_index_key().ok_or(ToolError::UnsupportedHost("Node.js"))?;
     let (releases, schedule) = tokio::join!(fetch_index(dl), dl.download(RELEASE_SCHEDULE));
-    let releases = releases?;
+    let releases = installable_only(releases?, key);
     let schedule = match schedule {
         Ok(bytes) => parse_schedule(&bytes),
         Err(e) => {
@@ -208,18 +230,48 @@ pub(crate) async fn available(
             None
         }
     };
-    Ok(yerd_core::node::major_lines(
-        releases
-            .iter()
-            .filter(|r| r.installable(key))
-            .map(|r| IndexRelease {
-                version: &r.version,
-                lts: r.codename(),
-            }),
+    Ok(lines_of(&releases, installed, schedule.as_ref(), today))
+}
+
+/// The newest installable patch of every published major, for update checks.
+/// Only the release index is fetched; EOL status is not needed here.
+pub(crate) async fn latest_patches(
+    dl: &dyn Downloader,
+) -> Result<BTreeMap<u32, String>, ToolError> {
+    let key = host_index_key().ok_or(ToolError::UnsupportedHost("Node.js"))?;
+    let releases = installable_only(fetch_index(dl).await?, key);
+    Ok(latest_by_major(&lines_of(&releases, &[], None, "")))
+}
+
+fn installable_only(releases: Vec<Release>, key: &str) -> Vec<Release> {
+    releases
+        .into_iter()
+        .filter(|r| r.installable(key))
+        .collect()
+}
+
+/// Group already-filtered releases into major lines; the one place the
+/// listing, the update check and the installer agree on what "newest" means.
+fn lines_of(
+    releases: &[Release],
+    installed: &[&str],
+    schedule: Option<&BTreeMap<u32, String>>,
+    today: &str,
+) -> Vec<MajorLine> {
+    yerd_core::node::major_lines(
+        releases.iter().map(|r| IndexRelease {
+            version: &r.version,
+            lts: r.codename(),
+        }),
         installed,
-        schedule.as_ref(),
+        schedule,
         today,
-    ))
+    )
+}
+
+/// Major → newest patch, as cached in `DaemonState::node_updates`.
+pub(crate) fn latest_by_major(lines: &[MajorLine]) -> BTreeMap<u32, String> {
+    lines.iter().map(|l| (l.major, l.latest.clone())).collect()
 }
 
 fn parse_schedule(bytes: &[u8]) -> Option<BTreeMap<u32, String>> {
@@ -528,6 +580,18 @@ mod tests {
         dl.schedule = Some("not json");
         let lines = available(&dl, &[], "2026-11-17").await.unwrap();
         assert!(lines.iter().all(|l| l.eol.is_none()));
+    }
+
+    #[tokio::test]
+    async fn install_release_and_latest_patches_agree_with_the_listing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs(tmp.path());
+        let dl = fake(false);
+        let listed = latest_by_major(&available(&dl, &[], "2026-11-17").await.unwrap());
+        let installed = install_release(&dirs, &dl, Some("22"), None).await.unwrap();
+        assert_eq!(installed.exact, "22.9.0");
+        assert_eq!(installed.latest, listed);
+        assert_eq!(latest_patches(&dl).await.unwrap(), listed);
     }
 
     fn release_at(root: &Path, version: &str, marker: &str) -> InstalledNode {

@@ -275,6 +275,30 @@ pub fn major_lines<'a>(
         .collect()
 }
 
+/// Installed releases with a newer published patch, keyed by installed version.
+///
+/// `latest` maps each major to its newest known patch (from the last index
+/// fetch). Only the highest installed patch of a major is reported, so an older
+/// patch kept beside a newer one never counts as a second update.
+#[must_use]
+pub fn release_updates(
+    installed: &[&str],
+    latest: &BTreeMap<u32, String>,
+) -> BTreeMap<String, String> {
+    major_lines(
+        latest
+            .values()
+            .map(|version| IndexRelease { version, lts: None }),
+        installed,
+        None,
+        "",
+    )
+    .into_iter()
+    .filter(|line| line.update_available)
+    .filter_map(|line| Some((line.installed_latest?, line.latest)))
+    .collect()
+}
+
 struct Line {
     latest: (Vec<u32>, String),
     codename: Option<(Vec<u32>, String)>,
@@ -561,6 +585,36 @@ mod tests {
         let lines = major_lines([release("v22.1.0", None)], &[], None, "2026-11-17");
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].eol, None);
+    }
+
+    #[test]
+    fn release_updates_report_only_the_newest_installed_patch_per_major() {
+        let latest: BTreeMap<u32, String> = [
+            (22, "22.12.0".to_owned()),
+            (20, "20.18.0".to_owned()),
+            (24, "v24.3.0".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        for (installed, expected) in [
+            (vec!["22.9.0"], vec![("22.9.0", "22.12.0")]),
+            (vec!["22.9.0", "22.11.0"], vec![("22.11.0", "22.12.0")]),
+            (vec!["22.12.0", "22.9.0"], vec![]),
+            (vec!["20.18.0"], vec![]),
+            (vec!["v24.1.0", "18.0.0"], vec![("24.1.0", "24.3.0")]),
+            (vec!["not-a-version"], vec![]),
+            (vec![], vec![]),
+        ] {
+            let expected: BTreeMap<String, String> = expected
+                .into_iter()
+                .map(|(a, b)| (a.to_owned(), b.to_owned()))
+                .collect();
+            assert_eq!(
+                release_updates(&installed, &latest),
+                expected,
+                "{installed:?}"
+            );
+        }
     }
 
     #[test]

@@ -307,6 +307,8 @@ export interface StatusReport {
    *  80/443 still go through pf instead of the launchd port forwarder. Omitted
    *  when not macOS or undeterminable. */
   legacy_pf_redirect?: boolean | null;
+  /** Installed Node releases with a newer patch (cached check). Absent when 0. */
+  node_updates?: number;
 }
 
 /** One apex-shadow relationship: `site`'s apex is claimed by `shadowed_by`. */
@@ -782,6 +784,8 @@ export interface NodeRelease {
   uninstall_blocked: boolean;
   /** Saved preferences an uninstall of this release would clear. Omitted when empty. */
   clears_preferences?: NodePreferenceRef[];
+  /** Newer patch of this release's major from the daemon's last check; only on the highest installed patch. */
+  update?: string;
 }
 
 /** crates/yerd-core/src/node.rs - MajorLine. One major from the nodejs.org index. */

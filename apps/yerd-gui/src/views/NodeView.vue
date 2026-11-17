@@ -21,7 +21,9 @@ import EmptyState from "@/components/ui/EmptyState.vue";
 import InfoBanner from "@/components/ui/InfoBanner.vue";
 import Input from "@/components/ui/Input.vue";
 import Modal from "@/components/ui/Modal.vue";
+import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import Switch from "@/components/ui/Switch.vue";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
 import { useOperations } from "@/composables/useOperations";
@@ -45,9 +47,10 @@ const { data, loading, error, refresh: reloadNode, mutate } = useResource("node"
 const {
   data: majorsData,
   loading: majorsLoading,
+  refreshing: majorsRefreshing,
   error: majorsError,
   refresh: reloadMajors,
-} = useResource("node-available", availableNode);
+} = useResource("node-available", availableNode, { immediate: false });
 
 const installed = computed<NodeRelease[]>(() => data.value ?? []);
 const majors = computed<MajorLine[]>(() => majorsData.value ?? []);
@@ -66,15 +69,73 @@ const installing = computed(() =>
 /** Every mutating action waits for a running install and for any other mutation. */
 const locked = computed(() => installing.value || busy.value !== null);
 
-/** The release line whose installed patch is `version` and has a newer patch available. */
-function updateFor(version: string): MajorLine | undefined {
-  return majors.value.find((l) => l.installed_latest === version && l.update_available);
+function majorOf(version: string): string {
+  return version.split(".")[0] ?? "";
 }
 
 const eolKnown = computed(() => majors.value.some((l) => typeof l.eol === "boolean"));
 
 function ltsLabel(codename: string | undefined): string {
   return codename ? `LTS ${codename}` : "LTS";
+}
+
+function lineLabel(l: MajorLine): string {
+  const parts = [`Node ${l.major} (${l.latest})`];
+  if (l.codename) parts.push(ltsLabel(l.codename));
+  if (l.eol === true) parts.push("EOL");
+  return parts.join(" - ");
+}
+
+/** Release lines with nothing installed yet, newest major first, as the daemon orders them. */
+const installOptions = computed(() =>
+  majors.value
+    .filter((l) => !l.installed_latest)
+    .map((l) => ({ value: String(l.major), label: lineLabel(l) })),
+);
+
+/** The newest supported LTS line not yet installed, else the newest line on offer. */
+function preferredMajor(): string {
+  const lts = majors.value.find((l) => !l.installed_latest && l.codename && l.eol !== true);
+  return lts ? String(lts.major) : (installOptions.value[0]?.value ?? "");
+}
+
+const installOpen = ref(false);
+const selectedMajor = ref("");
+const exactMode = ref(false);
+const exactVersion = ref("");
+
+const canInstall = computed(() =>
+  exactMode.value ? exactVersion.value.trim() !== "" : selectedMajor.value !== "",
+);
+
+/** Keep the pick valid as the list loads or changes, without overriding a still-offered choice. */
+watch(installOptions, (options) => {
+  if (!options.some((o) => o.value === selectedMajor.value)) {
+    selectedMajor.value = preferredMajor();
+  }
+});
+
+/**
+ * Open the install modal and refetch the release index (fetched only here and
+ * on Refresh) so the picker offers the current newest patch of every line not
+ * yet installed. The exact-version switch starts off unless there is no line
+ * left to pick.
+ */
+async function openInstall(): Promise<void> {
+  if (locked.value) return;
+  exactMode.value = false;
+  exactVersion.value = "";
+  selectedMajor.value = preferredMajor();
+  installOpen.value = true;
+  await reloadMajors({ force: true });
+  if (!installOptions.value.length && !majorsError.value) exactMode.value = true;
+}
+
+function confirmInstall(): void {
+  const v = exactMode.value ? exactVersion.value.trim() : selectedMajor.value;
+  if (!v || locked.value) return;
+  installOpen.value = false;
+  void install(v, false);
 }
 
 const logOpen = ref(false);
@@ -117,21 +178,14 @@ async function install(version: string, update: boolean): Promise<void> {
     toast.error(`Install of Node ${version} failed`, (e as IpcError).message);
   } finally {
     operations.end(opId);
-    await Promise.all([
-      reloadNode({ force: true }),
-      reloadMajors({ force: true }),
-      refreshDaemon(),
-    ]);
+    await Promise.all([reloadNode({ force: true }), refreshDaemon()]);
   }
 }
 
-const exactVersion = ref("");
-
-function installExact(): void {
-  const v = exactVersion.value.trim();
-  if (!v) return;
-  exactVersion.value = "";
-  void install(v, false);
+/** Refetch the release index first: that refreshes the daemon's update cache the installed list reads. Only the Refresh button pays for this; installs refresh the cache in the daemon. */
+async function refreshAll(): Promise<void> {
+  await reloadMajors({ force: true });
+  await Promise.all([reloadNode({ force: true }), refreshDaemon()]);
 }
 
 async function makeDefault(r: NodeRelease): Promise<void> {
@@ -172,7 +226,7 @@ async function confirmUninstall(close: () => void): Promise<void> {
     const next = await uninstallNode(r.version);
     mutate(() => next);
     toast.success(`Uninstalled Node ${r.version}`);
-    await Promise.all([reloadMajors({ force: true }), refreshDaemon()]);
+    await refreshDaemon();
   } catch (e) {
     toast.error(`Couldn't uninstall Node ${r.version}`, (e as IpcError).message);
   } finally {
@@ -183,10 +237,8 @@ async function confirmUninstall(close: () => void): Promise<void> {
 
 onUnmounted(
   registerViewActions({
-    refresh: () => {
-      void reloadNode();
-      void reloadMajors();
-    },
+    create: () => void openInstall(),
+    refresh: () => void refreshAll(),
   }),
 );
 </script>
@@ -208,12 +260,31 @@ onUnmounted(
       </InfoBanner>
 
       <Card>
-        <CardHeader>
-          <CardTitle>Installed versions</CardTitle>
-          <CardDescription>
-            Releases install side by side. The default is what new shells and sites without a
-            project file or saved preference use.
-          </CardDescription>
+        <CardHeader class="flex-row items-center justify-between space-y-0">
+          <div class="space-y-1.5">
+            <CardTitle>Installed versions</CardTitle>
+            <CardDescription>
+              Releases install side by side. The default is what new shells and sites without a
+              project file or saved preference use.
+            </CardDescription>
+          </div>
+          <div class="flex min-w-0 items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              :disabled="majorsRefreshing || majorsLoading"
+              @click="refreshAll"
+            >
+              <Spinner v-if="majorsRefreshing" class="size-4" />
+              <RefreshCw v-else class="size-4" />
+              Refresh
+            </Button>
+            <Button size="sm" :disabled="locked" data-testid="node-install-open" @click="openInstall">
+              <Spinner v-if="installing" class="size-4" />
+              <Download v-else class="size-4" />
+              Install
+            </Button>
+          </div>
         </CardHeader>
 
         <CardContent>
@@ -223,7 +294,7 @@ onUnmounted(
             v-else-if="installed.length === 0"
             :icon="Hexagon"
             title="No Node versions installed yet"
-            description="Install a release from the list below to get node, npm and npx."
+            description="Use Install to add a release and get node, npm and npx."
           />
 
           <table v-else class="w-full text-sm">
@@ -251,8 +322,8 @@ onUnmounted(
                   </div>
                 </td>
                 <td class="py-3 pr-4">
-                  <Badge v-if="updateFor(r.version)" variant="warning">
-                    {{ r.version }} → {{ updateFor(r.version)?.latest }}
+                  <Badge v-if="r.update" variant="warning">
+                    {{ r.version }} → {{ r.update }}
                   </Badge>
                   <span v-else class="text-xs text-muted-foreground">-</span>
                 </td>
@@ -271,8 +342,8 @@ onUnmounted(
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem
-                          :disabled="locked || !updateFor(r.version)"
-                          @select="install(String(updateFor(r.version)?.major ?? ''), true)"
+                          :disabled="locked || !r.update"
+                          @select="install(majorOf(r.version), true)"
                         >
                           <Download class="size-4" /> Update
                         </DropdownMenuItem>
@@ -304,120 +375,88 @@ onUnmounted(
           </table>
         </CardContent>
       </Card>
-
-      <Card>
-        <CardHeader class="flex-row items-center justify-between space-y-0">
-          <div class="space-y-1.5">
-            <CardTitle>Available releases</CardTitle>
-            <CardDescription>
-              The newest patch of each major line from nodejs.org. Update installs the newest
-              patch beside the one you have.
-            </CardDescription>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            :disabled="majorsLoading"
-            @click="reloadMajors({ force: true })"
-          >
-            <RefreshCw class="size-4" /> Refresh
-          </Button>
-        </CardHeader>
-
-        <CardContent class="space-y-4">
-          <InfoBanner v-if="majorsError" variant="destructive" data-testid="node-releases-error">
-            <div class="flex flex-wrap items-center gap-2">
-              <span>Couldn't load the Node release list: {{ majorsError.message }}</span>
-              <Button variant="outline" size="sm" @click="reloadMajors({ force: true })">
-                Retry
-              </Button>
-            </div>
-          </InfoBanner>
-
-          <div v-if="majorsLoading" class="flex justify-center py-8">
-            <Spinner class="size-6" />
-          </div>
-
-          <template v-else-if="majors.length">
-            <table class="w-full text-sm">
-              <thead>
-                <tr class="border-b text-left text-xs uppercase text-muted-foreground">
-                  <th class="py-2 pr-4 font-medium">Release</th>
-                  <th class="py-2 pr-4 font-medium">Latest</th>
-                  <th class="py-2 pl-4 text-right font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="l in majors"
-                  :key="l.major"
-                  class="border-b last:border-0"
-                  :data-testid="`node-major-${l.major}`"
-                >
-                  <td class="py-3 pr-4">
-                    <div class="flex items-center gap-2">
-                      <span class="font-medium">Node {{ l.major }}</span>
-                      <Badge v-if="l.codename" variant="outline">{{ ltsLabel(l.codename) }}</Badge>
-                      <Badge v-if="l.eol === true" variant="warning">EOL</Badge>
-                    </div>
-                  </td>
-                  <td class="py-3 pr-4 font-mono text-xs text-muted-foreground">{{ l.latest }}</td>
-                  <td class="py-3 pl-4">
-                    <div class="flex items-center justify-end">
-                      <Button
-                        v-if="!l.installed_latest"
-                        size="sm"
-                        :disabled="locked"
-                        @click="install(String(l.major), false)"
-                      >
-                        <Download class="size-3.5" /> Install
-                      </Button>
-                      <Button
-                        v-else-if="l.update_available"
-                        variant="outline"
-                        size="sm"
-                        :disabled="locked"
-                        @click="install(String(l.major), true)"
-                      >
-                        <Download class="size-3.5" /> Update
-                      </Button>
-                      <span v-else class="text-xs text-muted-foreground">Installed</span>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-            <p v-if="!eolKnown" class="text-xs text-muted-foreground" data-testid="node-eol-unknown">
-              End-of-life status unavailable.
-            </p>
-          </template>
-
-          <div class="border-t pt-4">
-            <label for="node-exact-version" class="text-sm font-medium">
-              Install an exact version
-            </label>
-            <div class="mt-2 flex gap-2">
-              <Input
-                id="node-exact-version"
-                v-model="exactVersion"
-                placeholder="22.9.0"
-                aria-label="Exact Node version"
-                class="max-w-48 font-mono"
-                @keydown.enter="installExact"
-              />
-              <Button
-                size="sm"
-                :disabled="locked || exactVersion.trim() === ''"
-                data-testid="node-exact-install"
-                @click="installExact"
-              >
-                <Download class="size-3.5" /> Install
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
     </div>
+
+    <Modal v-model:open="installOpen" title="Install a Node version">
+      <div class="space-y-4" data-testid="node-install-body">
+        <InfoBanner v-if="majorsError" variant="destructive" data-testid="node-releases-error">
+          <div class="flex flex-wrap items-center gap-2">
+            <span>Couldn't load the Node release list: {{ majorsError.message }}</span>
+            <Button variant="outline" size="sm" @click="reloadMajors({ force: true })">
+              Retry
+            </Button>
+          </div>
+        </InfoBanner>
+
+        <div class="flex items-center gap-2 text-sm">
+          <Switch
+            v-model="exactMode"
+            aria-labelledby="node-exact-mode-label"
+            data-testid="node-exact-toggle"
+          />
+          <span
+            id="node-exact-mode-label"
+            class="cursor-pointer"
+            @click="exactMode = !exactMode"
+          >
+            Install an exact version
+          </span>
+        </div>
+
+        <div class="border-t pt-4">
+          <span class="text-sm font-medium">Version</span>
+          <div class="mt-2">
+            <Input
+              v-if="exactMode"
+              v-model="exactVersion"
+              placeholder="22.9.0"
+              aria-label="Exact Node version"
+              class="font-mono"
+              @keydown.enter="confirmInstall"
+            />
+            <div v-else-if="majorsLoading && !majorsData" class="flex justify-center py-4">
+              <Spinner class="size-5" />
+            </div>
+            <Select
+              v-else-if="installOptions.length"
+              v-model="selectedMajor"
+              class="w-full"
+              :options="installOptions"
+              aria-label="Node release to install"
+            />
+            <p v-else class="text-sm text-muted-foreground" data-testid="node-install-none">
+              Every listed release line is already installed. Use an exact version to add an
+              older patch.
+            </p>
+          </div>
+          <p class="mt-2 text-xs text-muted-foreground">
+            <template v-if="exactMode">
+              Any release from major 9 up, for example <code>22.9.0</code> or <code>18</code>.
+            </template>
+            <template v-else>
+              Installs the newest patch of the chosen line beside any you already have.
+            </template>
+          </p>
+          <p
+            v-if="!exactMode && majors.length && !eolKnown"
+            class="mt-1 text-xs text-muted-foreground"
+            data-testid="node-eol-unknown"
+          >
+            End-of-life status unavailable.
+          </p>
+        </div>
+      </div>
+      <template #footer="{ close }">
+        <Button variant="ghost" @click="close">Cancel</Button>
+        <Button
+          :disabled="!canInstall || locked"
+          data-testid="node-install-submit"
+          @click="confirmInstall"
+        >
+          Install
+        </Button>
+      </template>
+    </Modal>
 
     <Modal v-model:open="logOpen" :title="logTitle" size="lg">
       <pre

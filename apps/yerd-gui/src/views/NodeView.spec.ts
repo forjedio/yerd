@@ -32,6 +32,7 @@ const jod: NodeRelease = {
   codename: "Jod",
   default: true,
   uninstall_blocked: true,
+  update: "22.12.0",
 };
 
 const iron: NodeRelease = {
@@ -196,33 +197,58 @@ describe("NodeView", () => {
     expect(body).not.toContain("Saved preference cleared");
   });
 
-  it("renders release badges and Install, Update and Installed states", async () => {
+  async function openInstall(wrapper: VueWrapper) {
+    await wrapper.get('[data-testid="node-install-open"]').trigger("click");
+    await flushPromises();
+  }
+
+  function optionLabels(wrapper: VueWrapper) {
+    return wrapper
+      .get('[aria-label="Node release to install"]')
+      .findAll("option")
+      .map((o) => o.text());
+  }
+
+  it("offers only release lines that are not installed, with badges", async () => {
     stubIpc();
     const wrapper = await mountView();
-    const r16 = wrapper.get('[data-testid="node-major-16"]').text();
-    expect(r16).toContain("LTS Gallium");
-    expect(r16).toContain("EOL");
-    expect(r16).toContain("Install");
-    expect(wrapper.get('[data-testid="node-major-22"]').text()).toContain("Update");
-    expect(wrapper.get('[data-testid="node-major-20"]').text()).toContain("Installed");
-    expect(wrapper.get('[data-testid="node-major-24"]').text()).not.toContain("EOL");
+    await openInstall(wrapper);
+    expect(optionLabels(wrapper)).toEqual([
+      "Node 24 (24.2.0)",
+      "Node 16 (16.20.2) - LTS Gallium - EOL",
+    ]);
     expect(wrapper.find('[data-testid="node-eol-unknown"]').exists()).toBe(false);
   });
 
-  it("installs a major's newest patch without moving the default", async () => {
-    stubIpc();
+  it("preselects the newest supported LTS line not yet installed", async () => {
+    stubIpc({
+      majors: [
+        { major: 25, latest: "25.1.0", eol: false, update_available: false },
+        { major: 24, latest: "24.2.0", codename: "Krypton", eol: false, update_available: false },
+      ],
+    });
     const wrapper = await mountView();
-    await buttonIn(wrapper, "node-major-24", "Install").trigger("click");
-    await flushPromises();
-    expect(callsOf("install_node_streamed")[0]?.[1]).toEqual({ version: "24", update: false });
+    await openInstall(wrapper);
+    const select = wrapper.get('[aria-label="Node release to install"]')
+      .element as HTMLSelectElement;
+    expect(select.value).toBe("24");
   });
 
-  it("sends update: true for an Update", async () => {
+  it("installs the picked line's newest patch without moving the default", async () => {
     stubIpc();
     const wrapper = await mountView();
-    await buttonIn(wrapper, "node-major-22", "Update").trigger("click");
+    await openInstall(wrapper);
+    await wrapper.get('[aria-label="Node release to install"]').setValue("16");
+    await wrapper.get('[data-testid="node-install-submit"]').trigger("click");
     await flushPromises();
-    expect(callsOf("install_node_streamed")[0]?.[1]).toEqual({ version: "22", update: true });
+    expect(callsOf("install_node_streamed")[0]?.[1]).toEqual({ version: "16", update: false });
+  });
+
+  it("disables Update on a release without a cached update", async () => {
+    stubIpc();
+    const wrapper = await mountView();
+    expect(buttonIn(wrapper, "node-row-20.18.0", "Update").attributes("disabled")).toBeDefined();
+    expect(wrapper.get('[data-testid="node-row-20.18.0"]').text()).not.toContain("→");
   });
 
   it("sends update: true from the installed row's Update action", async () => {
@@ -236,10 +262,14 @@ describe("NodeView", () => {
   it("installs the typed exact version", async () => {
     stubIpc();
     const wrapper = await mountView();
-    const submit = wrapper.get('[data-testid="node-exact-install"]');
-    expect(submit.attributes("disabled")).toBeDefined();
+    await openInstall(wrapper);
+    await wrapper.get('[data-testid="node-exact-toggle"]').trigger("click");
+    await flushPromises();
+    const submit = () => wrapper.get('[data-testid="node-install-submit"]');
+    expect(submit().attributes("disabled")).toBeDefined();
     await wrapper.get('[aria-label="Exact Node version"]').setValue(" 22.9.0 ");
-    await submit.trigger("click");
+    expect(submit().attributes("disabled")).toBeUndefined();
+    await submit().trigger("click");
     await flushPromises();
     expect(callsOf("install_node_streamed")[0]?.[1]).toEqual({
       version: "22.9.0",
@@ -247,22 +277,28 @@ describe("NodeView", () => {
     });
   });
 
+  it("starts in exact mode when every listed line is installed", async () => {
+    stubIpc({ majors: lines.filter((l) => l.installed_latest) });
+    const wrapper = await mountView();
+    await openInstall(wrapper);
+    expect(wrapper.find('[aria-label="Exact Node version"]').exists()).toBe(true);
+  });
+
   it("disables every mutating action while a node install runs", async () => {
     stubIpc();
     useOperations().begin({ id: "node-install:24", kind: "tool-install", label: "Installing" });
     const wrapper = await mountView();
-    expect(buttonIn(wrapper, "node-major-16", "Install").attributes("disabled")).toBeDefined();
-    expect(buttonIn(wrapper, "node-major-22", "Update").attributes("disabled")).toBeDefined();
+    expect(wrapper.get('[data-testid="node-install-open"]').attributes("disabled")).toBeDefined();
+    expect(buttonIn(wrapper, "node-row-22.9.0", "Update").attributes("disabled")).toBeDefined();
     expect(buttonIn(wrapper, "node-row-20.18.0", "Set default").attributes("disabled")).toBeDefined();
     expect(buttonIn(wrapper, "node-row-20.18.0", "Uninstall").attributes("disabled")).toBeDefined();
-    await wrapper.get('[aria-label="Exact Node version"]').setValue("22.9.0");
-    expect(wrapper.get('[data-testid="node-exact-install"]').attributes("disabled")).toBeDefined();
   });
 
-  it("keeps the installed table when the release list fails", async () => {
+  it("keeps the installed table and shows the error in the dialog when the list fails", async () => {
     stubIpc({ majors: new Error("offline") });
     const wrapper = await mountView();
     expect(wrapper.find('[data-testid="node-row-22.9.0"]').exists()).toBe(true);
+    await openInstall(wrapper);
     const err = wrapper.get('[data-testid="node-releases-error"]');
     expect(err.text()).toContain("offline");
     expect(err.text()).toContain("Retry");
@@ -271,27 +307,69 @@ describe("NodeView", () => {
   it("shows the error and Retry when a refresh fails over cached releases", async () => {
     stubIpc();
     const wrapper = await mountView();
-    expect(wrapper.find('[data-testid="node-releases-error"]').exists()).toBe(false);
+    await openInstall(wrapper);
     stubIpc({ majors: new Error("index unreachable") });
-    const refresh = wrapper.findAll("button").find((b) => b.text() === "Refresh");
-    if (!refresh) throw new Error("Refresh button not rendered");
-    await refresh.trigger("click");
-    await flushPromises();
+    await openInstall(wrapper);
     expect(wrapper.get('[data-testid="node-releases-error"]').text()).toContain(
       "index unreachable",
     );
-    expect(wrapper.find('[data-testid="node-major-22"]').exists()).toBe(true);
+    expect(optionLabels(wrapper)).toContain("Node 24 (24.2.0)");
     stubIpc();
     await buttonIn(wrapper, "node-releases-error", "Retry").trigger("click");
     await flushPromises();
     expect(wrapper.find('[data-testid="node-releases-error"]').exists()).toBe(false);
   });
 
+  it("fetches the release list only when the dialog opens", async () => {
+    stubIpc();
+    const wrapper = await mountView();
+    expect(callsOf("available_node")).toHaveLength(0);
+    await openInstall(wrapper);
+    expect(callsOf("available_node")).toHaveLength(1);
+  });
+
+  it("keeps a line picked while the release list is still refreshing", async () => {
+    stubIpc();
+    const wrapper = await mountView();
+    await openInstall(wrapper);
+    let finish: (v: unknown) => void = () => {};
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "available_node"
+        ? new Promise((resolve) => (finish = resolve))
+        : Promise.resolve({ type: "ok" }),
+    );
+    await wrapper.get('[data-testid="node-install-open"]').trigger("click");
+    await flushPromises();
+    await wrapper.get('[aria-label="Node release to install"]').setValue("16");
+    finish({ type: "available_node", majors: lines });
+    await flushPromises();
+    const select = wrapper.get('[aria-label="Node release to install"]')
+      .element as HTMLSelectElement;
+    expect(select.value).toBe("16");
+    stubIpc();
+    await wrapper.get('[data-testid="node-install-submit"]').trigger("click");
+    await flushPromises();
+    expect(callsOf("install_node_streamed")[0]?.[1]).toEqual({ version: "16", update: false });
+  });
+
+  it("selects a line once Retry loads the list after a failed first load", async () => {
+    stubIpc({ majors: new Error("offline") });
+    const wrapper = await mountView();
+    await openInstall(wrapper);
+    stubIpc();
+    await buttonIn(wrapper, "node-releases-error", "Retry").trigger("click");
+    await flushPromises();
+    expect(
+      wrapper.get('[data-testid="node-install-submit"]').attributes("disabled"),
+    ).toBeUndefined();
+  });
+
   it("notes when end-of-life status is unavailable", async () => {
     stubIpc({ majors: lines.map(({ eol: _eol, ...rest }) => rest) });
     const wrapper = await mountView();
+    await openInstall(wrapper);
     expect(wrapper.find('[data-testid="node-eol-unknown"]').exists()).toBe(true);
-    expect(wrapper.get('[data-testid="node-major-16"]').text()).not.toContain("EOL");
+    expect(optionLabels(wrapper)).toContain("Node 16 (16.20.2) - LTS Gallium");
   });
 
   it("shows the empty state with no release installed", async () => {

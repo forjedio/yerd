@@ -884,6 +884,7 @@ mod variant_name_pinning {
                 port_redirect_targets: None,
                 lan_redirect_targets: None,
                 legacy_pf_redirect: None,
+                node_updates: 0,
             }),
         });
         pin_response(Response::Diagnoses {
@@ -995,6 +996,7 @@ mod variant_name_pinning {
                     root: "/srv/blog".into(),
                     site: Some("blog".into()),
                 }],
+                update: None,
             }],
         });
         pin_response(Response::AvailableNode {

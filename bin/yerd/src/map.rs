@@ -3441,6 +3441,7 @@ mod tests {
             port_redirect_targets: None,
             lan_redirect_targets: None,
             legacy_pf_redirect: None,
+            node_updates: 0,
         }
     }
 

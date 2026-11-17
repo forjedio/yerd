@@ -184,6 +184,12 @@ pub struct StatusReport {
     /// skip_serializing_if)]` keeps the wire additive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy_pf_redirect: Option<bool>,
+    /// Installed Node releases with a newer patch, from the daemon's cached
+    /// release-index check (no network). `0` (omitted from the wire) when up to
+    /// date or never checked. `#[serde(default, skip_serializing_if)]` keeps the
+    /// wire additive.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub node_updates: u32,
 }
 
 /// Destination ports `(http, https)` an installed macOS port forwarder (or

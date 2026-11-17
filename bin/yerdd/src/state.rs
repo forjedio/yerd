@@ -78,6 +78,13 @@ pub struct DaemonState {
     /// from the last manifest poll. Populated by the periodic checker /
     /// `CheckPhpUpdates` and served (no network) on `ListPhp`.
     pub php_updates: RwLock<HashMap<PhpVersion, (String, u32)>>,
+    /// Node update cache: major → newest installable patch from the last
+    /// release-index fetch. Populated by the periodic checker / `AvailableNode`
+    /// and served (no network) on `ListNode`.
+    pub node_updates: RwLock<std::collections::BTreeMap<u32, String>>,
+    /// Installed Node releases with a newer patch in `node_updates`, kept by
+    /// `node_updates::recount` so `Status` never touches the disk for it.
+    pub node_update_count: std::sync::atomic::AtomicU32,
     /// Yerd self-update cache: the releases seen at the last GitHub poll. Empty
     /// until the first successful fetch. Populated by the periodic checker /
     /// `CheckUpdate` and served (no network) when a live fetch fails.
