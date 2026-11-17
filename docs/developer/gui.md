@@ -516,8 +516,8 @@ file/asset origin) maps the in-shell routes - **OverviewView** (`/overview`, the
 default landing dashboard), **GeneralView** (`/general`, the **Settings** page),
 **PhpView**, **NodeView** (`/node`, installed releases, an Install dialog picking from the upstream releases list,
 streamed installs, Update, uninstall, and the global default; in the command
-palette without a digit), **SitesView**, **ToolingView** (`/tooling`, whose
-installed Node row links to `/node`), **ServicesView**,
+palette without a digit), **SitesView**, **ToolingView** (`/tooling`; Node is
+not listed there, it has its own page), **ServicesView**,
 **LaravelDumpsView** (`/dumps`), **MailView** (`/mail`), **DoctorView** (which
 also hosts the OS-privileges **EnvironmentCard** - CA trust / resolver / ports),
 **AboutView** - plus two **standalone** routes that the auxiliary windows load:

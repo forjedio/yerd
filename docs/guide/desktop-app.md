@@ -102,7 +102,7 @@ If your local CA isn't trusted in the system store, the Sites view shows a banne
 
 <ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="Tooling page" />
 
-Installs self-contained developer tools - Composer, Node, Bun, and pnpm - onto your PATH alongside PHP, each managed by Yerd (install / update / uninstall) so they don't collide with system installs. Once Node is installed its row shows **Manage versions**, which opens the [Node](#node) page. See [Tooling](./tooling).
+Installs self-contained developer tools - Composer, Bun, pnpm, the Laravel installer, and WP-CLI - onto your PATH alongside PHP, each managed by Yerd (install / update / uninstall) so they don't collide with system installs. Node.js isn't listed here: it has its own [Node](#node) page. See [Tooling](./tooling).
 
 ### Proxies
 

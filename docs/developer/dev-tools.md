@@ -169,6 +169,24 @@ resolves a selector against `index.json` and unpacks into
   release, and `tools/node/.default` when it names the target or no release
   remains. The default/preference decisions are the pure `plan_uninstall`, run by
   the `UninstallNode` handler before any files are touched.
+- **Update cache.** `latest_patches(dl)` fetches only the index and returns the
+  newest installable patch per major; `install_release` returns the same map
+  from the index the installer already fetched. `node_updates.rs` stores it in
+  `DaemonState::node_updates` (refreshed by the 12h PHP update tick while a
+  release is installed, by every `AvailableNode`, and by every Node install),
+  derives per-release `update` for `ListNode` with the pure `release_updates`,
+  and keeps `DaemonState::node_update_count` (served on `Status` as
+  `node_updates`) in step via `recount`, which `reconcile_tool_shims_now` also
+  calls after any install or uninstall.
+- **Create-site Node.** A Laravel create with `LaravelOptions.node` set (and
+  frontend dependencies not skipped) resolves that installed release in
+  preflight, puts its `bin` right after the per-job bin in the job `PATH`
+  (`create_site::composed_path`), and saves it as the new site's Node preference
+  after registration.
+- **Legacy root.** The pre-side-by-side `{data}/tools/node` install is discovered
+  as a normal release; it is always LTS (that installer only fetched the latest
+  LTS) and, with no `[node] default`, is the effective default via
+  `legacy_default`.
 
 Project-file discovery (`.nvmrc`, then `.node-version` per directory, nearest
 directory wins) and selection live in `yerd_platform::node::{project_file, select}`,
@@ -274,10 +292,9 @@ moved between runs).
   (`listTools`/`installTool`/`uninstallTool`), `views/ToolingView.vue` (a table
   copied from the PHP view's pattern - install/update/uninstall with a busy
   spinner and toasts), plus the `SideNav.vue` + `router.ts` entries that place
-  **Tooling** between Sites and Services. Once Node is installed its row shows
-  only a **Manage versions** button that routes to `/node` (`NodeView.vue`),
-  which drives the [Node requests](./ipc-protocol)
-  instead of `InstallTool` / `UninstallTool`.
+  **Tooling** between Sites and Services. The view filters Node out of the
+  `ListTools` reply: Node has its own page, `/node` (`NodeView.vue`), which drives
+  the [Node requests](./ipc-protocol) instead of `InstallTool` / `UninstallTool`.
 - **CLI**: `yerd tools`, `yerd install tool <id>`, `yerd uninstall tool <id>` -
   a `Tool` variant on the `InstallTarget`/`UninstallTarget` enums and a `Tools`
   command, mapped in `map::to_request` (exhaustive, compile-checked) with an

@@ -100,8 +100,8 @@ updates, and uninstalls individual releases.
 `yerd exec node`, `npm`, and `npx` select the nearest project `.nvmrc` or
 `.node-version`, then a saved site preference, then the global default. See
 [Node resolution](./exec#node-resolution). Bare `node`, `npm`, and `npx` commands
-on Yerd's `PATH` continue to use the global default. `yerd tools` and the GUI
-show that default's version.
+on Yerd's `PATH` continue to use the global default. `yerd tools` shows that
+default's version; the desktop app's Node page stars it.
 
 `yerd uninstall tool node` removes all managed Node releases and their commands,
 and clears the global default. Saved site preferences remain; executing a site
