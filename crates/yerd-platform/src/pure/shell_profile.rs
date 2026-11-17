@@ -247,6 +247,107 @@ fn marker_line_indices(text: &str) -> Option<(usize, usize)> {
     None
 }
 
+/// Whether Yerd's `bin_dir` still needs wiring onto the user's `PATH`.
+///
+/// `login_path` is the `PATH` the user's login shell builds (when it could be
+/// probed); `rc_contents` are the user's rc files. Either source showing the
+/// directory is enough: the probe catches PATH wired by a dotfiles manager or a
+/// sourced file, while the rc scan covers what a login shell can miss (a bash
+/// login shell never reads `.bashrc` unless `.bash_profile` sources it) and a
+/// `yerd path install` made since the probe's PATH was cached.
+#[must_use]
+pub fn bin_dir_needs_setup(
+    login_path: Option<&[PathBuf]>,
+    bin_dir: &Path,
+    home: &Path,
+    rc_contents: &[String],
+) -> bool {
+    let on_login_path = login_path.is_some_and(|dirs| dirs.iter().any(|d| d == bin_dir));
+    let in_rc = rc_contents
+        .iter()
+        .any(|c| contains_block(c) || mentions_dir(c, bin_dir, home));
+    !(on_login_path || in_rc)
+}
+
+/// True if a line of `content` that sets `PATH` spells out `dir` as a whole
+/// path entry, either absolutely or as `$HOME/..`, `${HOME}/..`, or `~/..`
+/// relative to `home`. Comments are ignored. A heuristic: lines naming a file
+/// inside `dir` (an alias to `{dir}/composer`), a sibling (`{dir}-old`), a
+/// longer path ending in `dir`, or another variable (`MANPATH`) don't count.
+#[must_use]
+pub fn mentions_dir(content: &str, dir: &Path, home: &Path) -> bool {
+    let mut spellings = vec![dir.display().to_string()];
+    if let Ok(rel) = dir.strip_prefix(home) {
+        let rel = rel.display();
+        spellings.push(format!("$HOME/{rel}"));
+        spellings.push(format!("${{HOME}}/{rel}"));
+        spellings.push(format!("~/{rel}"));
+    }
+    content
+        .lines()
+        .map(strip_comment)
+        .filter(|l| sets_path(l))
+        .any(|l| spellings.iter().any(|sp| has_path_entry(l, sp)))
+}
+
+/// `line` without its shell comment: everything from the first `#` that
+/// starts a word outside quotes.
+fn strip_comment(line: &str) -> &str {
+    let mut quote = None;
+    let mut prev_blank = true;
+    for (i, c) in line.char_indices() {
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+        } else if c == '"' || c == '\'' {
+            quote = Some(c);
+        } else if c == '#' && prev_blank {
+            return line.get(..i).unwrap_or(line);
+        }
+        prev_blank = c.is_whitespace();
+    }
+    line
+}
+
+/// True if `line` assigns or edits the `PATH` variable: `PATH`/`path` as a
+/// whole word that isn't an expansion (`$PATH`, `${PATH}`), or `fish_add_path`.
+fn sets_path(line: &str) -> bool {
+    if line.contains("fish_add_path") {
+        return true;
+    }
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    ["PATH", "path"].iter().any(|word| {
+        line.match_indices(word).any(|(i, _)| {
+            let before = line.get(..i).and_then(|b| b.chars().next_back());
+            let after = line.get(i + word.len()..).and_then(|a| a.chars().next());
+            !before.is_some_and(|c| is_word(c) || c == '$' || c == '{')
+                && !after.is_some_and(is_word)
+        })
+    })
+}
+
+/// True if `needle` occurs in `line` as a whole path entry: preceded by the
+/// start of the line, `:`, `=`, `(`, a quote, or whitespace, and followed by the
+/// end of the line, `:`, a quote, `)`, `;`, or whitespace (a single trailing `/`
+/// is allowed).
+fn has_path_entry(line: &str, needle: &str) -> bool {
+    line.match_indices(needle).any(|(i, _)| {
+        let starts = line
+            .get(..i)
+            .and_then(|b| b.chars().next_back())
+            .map_or(true, |c| {
+                matches!(c, ':' | '=' | '(' | '"' | '\'') || c.is_whitespace()
+            });
+        let rest = line.get(i + needle.len()..).unwrap_or("");
+        let rest = rest.strip_prefix('/').unwrap_or(rest);
+        let ends = rest.chars().next().map_or(true, |c| {
+            matches!(c, ':' | '"' | '\'' | ')' | ';') || c.is_whitespace()
+        });
+        starts && ends
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 mod tests {
@@ -384,5 +485,76 @@ mod tests {
         let s = "# install yerd PATH stuff manually\nexport FOO=1\n";
         assert!(!contains_block(s));
         assert_eq!(remove_block(s), s);
+    }
+
+    fn home() -> PathBuf {
+        PathBuf::from("/Users/x")
+    }
+
+    type SetupCase<'a> = (Option<&'a [PathBuf]>, &'a [String], bool);
+
+    #[test]
+    fn bin_dir_needs_setup_table() {
+        let d = bin();
+        let on_path = vec![PathBuf::from("/usr/bin"), d.clone()];
+        let trailing = vec![PathBuf::from(format!("{}/", d.display()))];
+        let off_path = vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")];
+        let block = vec![upsert_block("", Shell::Zsh, &d)];
+        let literal = vec![format!("export PATH=\"{}:$PATH\"", d.display())];
+        let unrelated = vec!["export PATH=\"/usr/bin\"".to_owned()];
+        let cases: [SetupCase<'_>; 9] = [
+            (Some(&on_path), &[], false),
+            (Some(&trailing), &[], false),
+            (Some(&off_path), &[], true),
+            (Some(&off_path), &block, false),
+            (Some(&off_path), &literal, false),
+            (None, &block, false),
+            (None, &literal, false),
+            (None, &unrelated, true),
+            (None, &[], true),
+        ];
+        for (i, (login, rc, want)) in cases.into_iter().enumerate() {
+            assert_eq!(
+                bin_dir_needs_setup(login, &d, &home(), rc),
+                want,
+                "case {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn mentions_dir_table() {
+        let d = bin();
+        let ds = d.display().to_string();
+        let rel = "Library/Application Support/io.yerd.Yerd/bin";
+        let hits = [
+            format!("export PATH=\"{ds}:$PATH\""),
+            format!("export PATH={ds}"),
+            format!("  PATH=\"$HOME/{rel}/:$PATH\""),
+            format!("PATH=\"${{HOME}}/{rel}:$PATH\""),
+            format!("path+=(~/{rel})"),
+            format!("fish_add_path '{ds}'"),
+            format!("set -gx PATH \"{ds}\" $PATH # yerd"),
+            format!("export PATH=\"/opt/a#b:{ds}:$PATH\""),
+        ];
+        for line in &hits {
+            assert!(mentions_dir(line, &d, &home()), "{line}");
+        }
+        let misses = [
+            format!("# export PATH=\"{ds}:$PATH\""),
+            format!("alias composer=\"{ds}/composer\""),
+            format!("export PATH=\"{ds}-old:$PATH\""),
+            format!("export PATH=\"{ds}/sub:$PATH\""),
+            format!("cd {ds}"),
+            format!("export FOO=1 # PATH {ds}"),
+            format!("export PATH=\"/opt{ds}:$PATH\""),
+            format!("export MANPATH=\"{ds}:$MANPATH\""),
+            format!("alias p=\"echo $PATH {ds}\""),
+            "export PATH=\"/usr/bin\"".to_owned(),
+            String::new(),
+        ];
+        for line in &misses {
+            assert!(!mentions_dir(line, &d, &home()), "{line}");
+        }
     }
 }
