@@ -25,6 +25,10 @@ const removeRouteRule = vi.fn();
 const listResponseHeaders = vi.fn();
 const setResponseHeader = vi.fn();
 const removeResponseHeader = vi.fn();
+const nodeSite = vi.fn();
+const listNode = vi.fn();
+const setNodeVersion = vi.fn();
+const clearNodeVersion = vi.fn();
 const clipboardWriteText = vi.fn();
 vi.mock("@/ipc/client", () => ({
   openInBrowser: (...args: unknown[]) => openInBrowser(...args),
@@ -50,12 +54,20 @@ vi.mock("@/ipc/client", () => ({
   listResponseHeaders: (...args: unknown[]) => listResponseHeaders(...args),
   setResponseHeader: (...args: unknown[]) => setResponseHeader(...args),
   removeResponseHeader: (...args: unknown[]) => removeResponseHeader(...args),
+  nodeSite: (...args: unknown[]) => nodeSite(...args),
+  listNode: (...args: unknown[]) => listNode(...args),
+  setNodeVersion: (...args: unknown[]) => setNodeVersion(...args),
+  clearNodeVersion: (...args: unknown[]) => clearNodeVersion(...args),
   IpcError: class IpcError extends Error {},
 }));
 
 const toastError = vi.fn();
 vi.mock("@/composables/useToast", () => ({
   useToast: () => ({ success: vi.fn(), error: toastError }),
+}));
+
+vi.mock("vue-router", () => ({
+  useRouter: () => ({ push: vi.fn() }),
 }));
 
 const hostPlatform = ref("linux");
@@ -155,6 +167,10 @@ describe("SiteDetailsSidebar", () => {
     listResponseHeaders.mockReset().mockResolvedValue([]);
     setResponseHeader.mockReset().mockResolvedValue(undefined);
     removeResponseHeader.mockReset().mockResolvedValue(undefined);
+    nodeSite.mockReset().mockResolvedValue({ type: "node_site" });
+    listNode.mockReset().mockResolvedValue([]);
+    setNodeVersion.mockReset().mockResolvedValue(undefined);
+    clearNodeVersion.mockReset().mockResolvedValue(undefined);
     clipboardWriteText.mockReset();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,

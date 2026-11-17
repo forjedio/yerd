@@ -50,9 +50,9 @@ apps/yerd-gui/
     │   └── client.test.ts  command-mapping + error-categorisation tests
     ├── composables/        useDaemon (singleton poller), usePoll, useToast, useIdes
     ├── components/         AppShell, SideNav, NavLink, TitleBar, StatusPill, ComingSoon, EnvironmentCard,
-    │                       SiteCard, SiteDetailsSidebar (+ SiteDomainsPanel / SiteRoutesPanel / SiteHeadersPanel),
+    │                       SiteCard, SiteDetailsSidebar (+ SiteDomainsPanel / SiteRoutesPanel / SiteHeadersPanel / SiteNodePanel),
     │                       PhpVersionPanel, ServiceOverridesModal, ui/ (incl. AsyncState, EmptyState, InfoBanner)
-    ├── views/              OverviewView, GeneralView, PhpView, SitesView, ProxiesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView, AboutView
+    ├── views/              OverviewView, GeneralView, PhpView, NodeView, SitesView, ProxiesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView, AboutView
     └── lib/                utils (cn, humanisers), theme, desktop chrome, domainValidation,
                             siteFilter (match a query against every domain a site answers),
                             ideChoice (resolve "auto"/"system"/an id to a label), wpAdmin,
@@ -441,7 +441,10 @@ export type Response =
 `SiteDomainsPanel.vue`, the routing mutators `addRouteRule` / `removeRouteRule` /
 `listRoutes` behind `SiteRoutesPanel.vue`, the header mutators
 `setResponseHeader` / `removeResponseHeader` / `listResponseHeaders` behind
-`SiteHeadersPanel.vue`, `setPhpPoolSettings` behind
+`SiteHeadersPanel.vue`, `nodeSite` / `setNodeVersion` / `clearNodeVersion`
+behind `SiteNodePanel.vue`, `listNode` / `availableNode` /
+`installNodeWithProgress` / `uninstallNode` behind `NodeView.vue`,
+`setPhpPoolSettings` behind
 `PhpVersionPanel.vue`, and `serviceOverrides` / `setServiceOverride` behind
 `ServiceOverridesModal.vue`. A low-level `call` normalises every rejection into an
 `IpcError`, and `ensureOk` defensively throws if a `type:"error"` ever slips
@@ -511,7 +514,10 @@ the daemon when the window is hidden to the tray - a real cost, since each
 The hash router (`createWebHashHistory`, because the webview loads from a
 file/asset origin) maps the in-shell routes - **OverviewView** (`/overview`, the
 default landing dashboard), **GeneralView** (`/general`, the **Settings** page),
-**PhpView**, **SitesView**, **ToolingView** (`/tooling`), **ServicesView**,
+**PhpView**, **NodeView** (`/node`, installed releases, the upstream releases list,
+streamed installs, Update, uninstall, and the global default; in the command
+palette without a digit), **SitesView**, **ToolingView** (`/tooling`, whose
+installed Node row links to `/node`), **ServicesView**,
 **LaravelDumpsView** (`/dumps`), **MailView** (`/mail`), **DoctorView** (which
 also hosts the OS-privileges **EnvironmentCard** - CA trust / resolver / ports),
 **AboutView** - plus two **standalone** routes that the auxiliary windows load:

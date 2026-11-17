@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
-import { Download, RefreshCw, Trash2 } from "lucide-vue-next";
+import { Download, Hexagon, RefreshCw, Trash2 } from "lucide-vue-next";
+import { useRouter } from "vue-router";
 
 import PageHeader from "@/components/PageHeader.vue";
 import Badge from "@/components/ui/Badge.vue";
@@ -26,6 +27,7 @@ import type { ToolStatus } from "@/ipc/types";
 
 const toast = useToast();
 const { refresh } = useDaemon();
+const router = useRouter();
 
 const tools = ref<ToolStatus[]>([]);
 const loading = ref(true);
@@ -162,7 +164,8 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
           <CardTitle>Developer tools</CardTitle>
           <CardDescription>
             Each tool installs the latest release (LTS for Node) into Yerd's
-            data directory and exposes its commands on your PATH.
+            data directory and exposes its commands on your PATH. Once Node is
+            installed, its versions are managed from the Node page.
           </CardDescription>
         </CardHeader>
 
@@ -220,6 +223,14 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                       v-if="busy?.endsWith(`:${t.id}`)"
                       class="size-4"
                     />
+                    <Button
+                      v-else-if="t.installed && t.id === 'node'"
+                      variant="outline"
+                      size="sm"
+                      @click="router.push('/node')"
+                    >
+                      <Hexagon class="mr-1.5 size-3.5" /> Manage versions
+                    </Button>
                     <template v-else-if="t.installed">
                       <Button
                         variant="outline"

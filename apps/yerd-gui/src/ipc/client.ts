@@ -28,6 +28,9 @@ import type {
   JobProgressResponse,
   MailDetail,
   MailSummary,
+  MajorLine,
+  NodeRelease,
+  NodeSiteResponse,
   AddableServiceType,
   PhpExtInfo,
   PhpVersion,
@@ -559,6 +562,78 @@ export async function installToolStreamed(tool: string): Promise<string> {
   const r = ensureOk(await call<Response>("install_tool_streamed", { tool }));
   if (r.type !== "job_started") throw new IpcError("unexpected response to install_tool_streamed");
   return r.job_id;
+}
+
+// ── node versions ────────────────────────────────────────────────────────────
+
+function nodeReleasesOf(r: Response, cmd: string): NodeRelease[] {
+  if (r.type !== "node_versions") throw new IpcError(`unexpected response to ${cmd}`);
+  return r.installed;
+}
+
+/** Installed Node releases, each with its default marker and uninstall effects. */
+export async function listNode(): Promise<NodeRelease[]> {
+  return nodeReleasesOf(ensureOk(await call<Response>("list_node")), "list_node");
+}
+
+/** The nodejs.org release index grouped by major, newest first. Network-bound. */
+export async function availableNode(): Promise<MajorLine[]> {
+  const r = ensureOk(await call<Response>("available_node"));
+  if (r.type !== "available_node") throw new IpcError("unexpected response to available_node");
+  return r.majors;
+}
+
+/**
+ * Start a streamed Node install of `version` (a major, or an exact version) and
+ * return the job id. `update` moves the global default onto the new patch when
+ * it currently resolves to an older patch of the same major.
+ */
+export async function installNodeStreamed(version: string, update: boolean): Promise<string> {
+  const r = ensureOk(await call<Response>("install_node_streamed", { version, update }));
+  if (r.type !== "job_started") throw new IpcError("unexpected response to install_node_streamed");
+  return r.job_id;
+}
+
+/**
+ * Install Node as a streamed job, delivering progress lines via `onProgress`,
+ * and resolve only when the job ends. Polls to the end regardless of any modal
+ * the caller shows; throws on a failed or cancelled job.
+ */
+export async function installNodeWithProgress(
+  version: string,
+  update: boolean,
+  onProgress?: (lines: string[]) => void,
+): Promise<void> {
+  const jobId = await installNodeStreamed(version, update);
+  const final = await pollJobToEnd(jobId, (lines) => onProgress?.(lines));
+  if (final.state !== "succeeded") {
+    throw new IpcError(final.error || `Node ${version} install ${final.state}`);
+  }
+}
+
+/** Uninstall one exact Node release; returns the refreshed installed list. */
+export async function uninstallNode(version: string): Promise<NodeRelease[]> {
+  return nodeReleasesOf(
+    ensureOk(await call<Response>("uninstall_node", { version })),
+    "uninstall_node",
+  );
+}
+
+/** Set the global default (`site === null`) or a site's saved Node preference. */
+export async function setNodeVersion(version: string, site: string | null): Promise<void> {
+  ensureOk(await call<Response>("set_node_version", { version, site }));
+}
+
+/** Remove a site's saved Node preference (idempotent). */
+export async function clearNodeVersion(site: string): Promise<void> {
+  ensureOk(await call<Response>("clear_node_version", { site }));
+}
+
+/** A site's effective Node version and where it comes from. */
+export async function nodeSite(site: string): Promise<NodeSiteResponse> {
+  const r = ensureOk(await call<Response>("node_site", { site }));
+  if (r.type !== "node_site") throw new IpcError("unexpected response to node_site");
+  return r;
 }
 
 /**

@@ -55,11 +55,12 @@ export interface Command {
 }
 
 /** Main-window views in sidebar order (About omitted). The first nine bind
- *  ⌘1…⌘9 via an explicit `digit`; Share has no digit (the digit slots are full),
- *  so it is reachable from the command palette only. */
+ *  ⌘1…⌘9 via an explicit `digit`; Node, Proxies and Share have no digit (the
+ *  digit slots are full), so they are reachable from the command palette only. */
 export const VIEW_TARGETS: { path: string; title: string; digit?: number }[] = [
   { path: "/overview", title: "Overview", digit: 1 },
   { path: "/php", title: "PHP", digit: 2 },
+  { path: "/node", title: "Node" },
   { path: "/sites", title: "Sites", digit: 3 },
   { path: "/tooling", title: "Tooling", digit: 4 },
   { path: "/services", title: "Services", digit: 5 },

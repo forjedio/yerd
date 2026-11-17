@@ -92,13 +92,16 @@ when executing a command.
 
 A versioned install preserves an existing global default. The first installation
 becomes the default if none exists. `yerd install tool node` installs the newest
-LTS and makes it the default, retaining previously installed releases. The
-existing GUI Install and Update buttons keep this newest-LTS behavior.
+LTS and makes it the default, retaining previously installed releases. Releases
+below major 9 are not installable, including `yerd install tool node 8`. In the
+desktop app, the [Node page](../../guide/tooling#node-versions) browses, installs,
+updates, and uninstalls individual releases.
 
-`yerd exec node`, `npm`, and `npx` select the nearest project `.nvmrc`, then a
-saved site preference, then the global default. See [Node resolution](./exec#node-resolution).
-Bare `node`, `npm`, and `npx` commands on Yerd's `PATH` continue to use the global
-default. `yerd tools` and the GUI show that default's version.
+`yerd exec node`, `npm`, and `npx` select the nearest project `.nvmrc` or
+`.node-version`, then a saved site preference, then the global default. See
+[Node resolution](./exec#node-resolution). Bare `node`, `npm`, and `npx` commands
+on Yerd's `PATH` continue to use the global default. `yerd tools` and the GUI
+show that default's version.
 
 `yerd uninstall tool node` removes all managed Node releases and their commands,
 and clears the global default. Saved site preferences remain; executing a site

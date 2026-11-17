@@ -215,6 +215,14 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `ListTools` | `{"type":"list_tools"}` |
 | `InstallTool { tool }` | `{"type":"install_tool","tool":"node"}` |
 | `UninstallTool { tool }` | `{"type":"uninstall_tool","tool":"bun"}` |
+| `InstallNode { version }` | `{"type":"install_node","version":"24"}` (blocking; major, minor, exact, `node`, or `lts/*`) |
+| `SetNodeVersion { version, site: Option }` | `{"type":"set_node_version","version":"22.9.0","site":"blog"}` or `…,"site":null` (global default) |
+| `ListNode` | `{"type":"list_node"}` (replies `NodeVersions { installed }`; disk only) |
+| `AvailableNode` | `{"type":"available_node"}` (replies `AvailableNode { majors }`; fetches the nodejs.org index on demand) |
+| `InstallNodeStreamed { version, update }` | `{"type":"install_node_streamed","version":"22"}` (`update` defaults `false` and is skipped; `…,"update":true` may move the global default; replies `JobStarted`) |
+| `UninstallNode { version }` | `{"type":"uninstall_node","version":"22.9.0"}` (one exact release; replies `NodeVersions`) |
+| `ClearNodeVersion { site }` | `{"type":"clear_node_version","site":"blog"}` (removes the saved preference; idempotent; replies `Ok`) |
+| `NodeSite { site }` | `{"type":"node_site","site":"blog"}` (replies `NodeSite`) |
 | `CreateSite { spec }` | `{"type":"create_site","spec":{"name":"blog","parent_dir":"/srv","php":"8.3","secure":false,"framework":{"framework":"wordpress",…}}}` (replies `JobStarted`; poll `JobStatus`) |
 | `AvailableWordpressVersions` | `{"type":"available_wordpress_versions"}` |
 | `MintWordpressLoginToken { site }` | `{"type":"mint_wordpress_login_token","site":"blog"}` |
@@ -271,6 +279,9 @@ pub enum Response {
     Mails { mails: Vec<MailSummary> },
     Mail { mail: Box<MailDetail> },               // boxed: large payload
     Tools { tools: Vec<ToolStatus> },             // installable dev tools
+    NodeVersions { installed: Vec<NodeRelease> },  // ListNode / UninstallNode
+    AvailableNode { majors: Vec<MajorLine> },     // newest major first
+    NodeSite { preference, project_file, effective, source, error },
     WordpressVersions { versions: Vec<WordPressVersionInfo> },
     WordpressLoginToken { token: String },
     WordpressAdminUsers { users: Vec<WordPressAdminUser> },
@@ -290,7 +301,7 @@ pub enum Response {
         counts: DumpCounts,
         features: BTreeMap<String, bool>,
     },
-    JobStarted { job_id: JobId },                 // CreateSite / InstallToolStreamed / InstallPhpStreamed
+    JobStarted { job_id: JobId },                 // CreateSite / InstallToolStreamed / InstallPhpStreamed / InstallNodeStreamed
     JobProgress { state: JobState, /* phase label, … */ },  // streamed updates
 }
 ```
@@ -337,6 +348,19 @@ Per-site [routing rules](../reference/cli/routes) add three variants - `AddRoute
 
 All three variants are additive by serde tag, so existing pins are byte-identical and no `PROTOCOL_VERSION` bump was needed.
 
+:::
+
+::: info Node version management
+Six additive requests back the GUI's Node page and site Node row: `ListNode`, `AvailableNode`, `InstallNodeStreamed { version, update }`, `UninstallNode { version }`, `ClearNodeVersion { site }`, and `NodeSite { site }`.
+
+- `NodeVersions { installed }` carries one `NodeRelease { version, lts, codename, default, uninstall_blocked, clears_preferences }` per installed release. `default` marks the release the effective global default resolves to; `uninstall_blocked` and `clears_preferences` (a list of `NodePreferenceRef { root, site }`, `site` set when a registered site has that root) are the daemon's uninstall plan, so the GUI never reimplements the rule.
+- `AvailableNode { majors }` is a list of `yerd_core::node::MajorLine { major, latest, codename, eol, installed_latest, update_available }`, re-exported from `yerd-core` like `PhpVersion`. `eol` is absent when the release schedule couldn't be fetched. Majors below 9 and releases without a build for the host are never listed.
+- `NodeSite { preference, project_file, effective, source, error }` reports a site's saved preference, its `NodeProjectFile { kind, selector }`, and the effective version with its `NodeSource`. A resolution failure (unknown site, invalid project file, release not installed) is the `error` field, not a `Response::Error`.
+- `NodeSource` serialises kebab-case: `nvmrc`, `node-version`, `site`, `default`, the same strings `yerd which --json` prints. `NodeProjectFile.kind` is only ever `nvmrc` or `node-version`.
+- `InstallNodeStreamed`'s `update` flag (skipped when `false`) only controls whether the global default moves to the new patch: it moves when the default currently resolves to an older patch of that major. Site preferences are never repointed.
+- `UninstallNode` refuses the release the default resolves to while others remain with `ErrorCode::InvalidPath` (the same code `uninstall_php` uses for the default), and an unknown or malformed version with `NotFound`.
+
+All `Option` fields are skipped when `None` and `Vec` fields when empty. No `PROTOCOL_VERSION` bump.
 :::
 
 ::: info Response headers mirror routing rules

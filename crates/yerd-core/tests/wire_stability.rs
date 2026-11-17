@@ -12,6 +12,7 @@
     clippy::indexing_slicing
 )]
 
+use yerd_core::node::{MajorLine, NodeSource};
 use yerd_core::{PhpVersion, RouterConfig, Site, SiteKind};
 
 #[test]
@@ -45,4 +46,44 @@ fn canonical_site_byte_shape_frozen() {
 fn router_config_default_byte_shape_frozen() {
     let got = serde_json::to_string(&RouterConfig::default()).unwrap();
     assert_eq!(got, r#"{"tld":"test"}"#);
+}
+
+#[test]
+fn node_source_serialises_as_kebab_case_string() {
+    for (source, expected) in [
+        (NodeSource::Nvmrc, r#""nvmrc""#),
+        (NodeSource::NodeVersion, r#""node-version""#),
+        (NodeSource::Site, r#""site""#),
+        (NodeSource::Default, r#""default""#),
+    ] {
+        assert_eq!(serde_json::to_string(&source).unwrap(), expected);
+    }
+}
+
+#[test]
+fn major_line_byte_shape_frozen() {
+    let full = MajorLine {
+        major: 22,
+        latest: "22.12.0".into(),
+        codename: Some("Jod".into()),
+        eol: Some(false),
+        installed_latest: Some("22.9.0".into()),
+        update_available: true,
+    };
+    assert_eq!(
+        serde_json::to_string(&full).unwrap(),
+        r#"{"major":22,"latest":"22.12.0","codename":"Jod","eol":false,"installed_latest":"22.9.0","update_available":true}"#
+    );
+    let bare = MajorLine {
+        major: 25,
+        latest: "25.1.0".into(),
+        codename: None,
+        eol: None,
+        installed_latest: None,
+        update_available: false,
+    };
+    assert_eq!(
+        serde_json::to_string(&bare).unwrap(),
+        r#"{"major":25,"latest":"25.1.0","update_available":false}"#
+    );
 }

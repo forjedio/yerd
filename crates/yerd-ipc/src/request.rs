@@ -584,6 +584,39 @@ pub enum Request {
         /// Named site; absent selects the global default.
         site: Option<String>,
     },
+    /// List installed Node releases with default and uninstall effects.
+    /// Returns [`super::Response::NodeVersions`].
+    ListNode,
+    /// List published Node releases grouped by major.
+    /// Returns [`super::Response::AvailableNode`].
+    AvailableNode,
+    /// Install a Node release as a background job. Returns
+    /// [`super::Response::JobStarted`]; progress is polled via [`Self::JobStatus`].
+    InstallNodeStreamed {
+        /// Major, minor, exact numeric selector, `node`, or `lts/*`.
+        version: String,
+        /// An Update: move the global default to the new patch when it is on an
+        /// older patch of the same major. A plain install never moves it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        update: bool,
+    },
+    /// Remove one installed Node release. Returns [`super::Response::NodeVersions`].
+    UninstallNode {
+        /// Exact installed version, with or without a leading `v`.
+        version: String,
+    },
+    /// Clear a site's saved Node preference. Idempotent; returns
+    /// [`super::Response::Ok`].
+    ClearNodeVersion {
+        /// Site name.
+        site: String,
+    },
+    /// Report a site's effective Node version and where it comes from.
+    /// Returns [`super::Response::NodeSite`].
+    NodeSite {
+        /// Site name.
+        site: String,
+    },
     /// Download + install a dev tool's latest release into yerd's data dir and
     /// expose its commands on `PATH`. Idempotent (reinstalls/updates to latest).
     InstallTool {
@@ -967,6 +1000,12 @@ mod variant_name_pinning {
             Request::ListTools => {}
             Request::InstallNode { .. } => {}
             Request::SetNodeVersion { .. } => {}
+            Request::ListNode => {}
+            Request::AvailableNode => {}
+            Request::InstallNodeStreamed { .. } => {}
+            Request::UninstallNode { .. } => {}
+            Request::ClearNodeVersion { .. } => {}
+            Request::NodeSite { .. } => {}
             Request::InstallTool { .. } => {}
             Request::UninstallTool { .. } => {}
             Request::InstallToolStreamed { .. } => {}
@@ -1196,6 +1235,28 @@ mod variant_name_pinning {
         });
         pin(Request::SetMailEnabled { enabled: true });
         pin(Request::ListTools);
+        pin(Request::InstallNode {
+            version: "22".into(),
+        });
+        pin(Request::SetNodeVersion {
+            version: "22.9.0".into(),
+            site: Some("blog".into()),
+        });
+        pin(Request::ListNode);
+        pin(Request::AvailableNode);
+        pin(Request::InstallNodeStreamed {
+            version: "22".into(),
+            update: true,
+        });
+        pin(Request::UninstallNode {
+            version: "22.9.0".into(),
+        });
+        pin(Request::ClearNodeVersion {
+            site: "blog".into(),
+        });
+        pin(Request::NodeSite {
+            site: "blog".into(),
+        });
         pin(Request::InstallTool {
             tool: "node".into(),
         });

@@ -30,6 +30,15 @@ export const router = createRouter({
       component: () => import("@/views/PhpView.vue"),
     },
     {
+      path: "/node",
+      name: "node",
+      meta: {
+        title: "Node",
+        subtitle: "Installed Node.js versions, updates, and the global default",
+      },
+      component: () => import("@/views/NodeView.vue"),
+    },
+    {
       path: "/sites",
       name: "sites",
       meta: { title: "Sites", subtitle: "Parked and linked .test sites" },

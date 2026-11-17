@@ -37,6 +37,9 @@ lists the developer tools Yerd manages and their install status:
   each showing the commands it provides.
 - Click **Install** to fetch the latest release; once installed you get
   **Update** (re-fetch the current latest) and **Uninstall**.
+- Node is the exception: once installed, its row shows **Manage versions**, which
+  opens the **Node** page (under **Environment**) where releases are installed,
+  updated, uninstalled, and set as the default. See [Node versions](#node-versions).
 - A tool you've installed yourself shows an **External** badge and a *Managed by
   you* note. **Install** is still offered, so you can take Yerd's own copy as
   well - see [External tools](#external-tools) below.
@@ -144,11 +147,43 @@ yerd node use 22 --site blog
 yerd exec npm install
 ```
 
-`yerd exec node`, `npm`, and `npx` honor a project's `.nvmrc`, then its saved
-preference, then the global default. Bare managed commands use the global
-default. The GUI continues to install and select the newest LTS; a versioned CLI
-install preserves the existing default. See [Node version commands](../reference/cli/tooling#node-versions)
+`yerd exec node`, `npm`, and `npx` honor a project's `.nvmrc` or `.node-version`,
+then its saved preference, then the global default. Bare `node`, `npm`, and `npx`
+on your `PATH` always use the global default; run `yerd exec npm …` inside a
+project to use its version. A versioned CLI install preserves the existing
+default. See [Node version commands](../reference/cli/tooling#node-versions)
 and [resolution rules](../reference/cli/exec#node-resolution).
+
+In the desktop app, the **Node** page (sidebar, under **Environment**) manages
+releases:
+
+- **Installed versions** lists each release with its LTS codename and a star on
+  the global default. Each row offers **Set default**, **Uninstall**, and
+  **Update** when a newer patch of that major exists.
+- **Available releases** lists Node's upstream releases grouped by major, newest
+  first, with the newest patch, the LTS codename, and an **EOL** badge for
+  end-of-life majors. One click installs a major's newest patch; a field below
+  installs an exact version. Majors below 9 aren't offered. If the release
+  schedule can't be fetched the list still loads, without EOL badges.
+- Installs run in the background with a live log you can close; the operations
+  indicator keeps tracking them. Other version actions are disabled until the
+  install finishes. The first install becomes the global default.
+- **Update** installs the newest patch of that major alongside the old one. The
+  global default moves to it only when the default currently resolves to an
+  older patch of that major. Saved site preferences are never changed, and the
+  old patch stays installed.
+- **Uninstall** removes a single release. While other releases are installed, a
+  release can't be removed if the global default would then resolve to nothing
+  (for example an exact default naming it) - set another default first. Removing the last release is allowed and clears the default. Saved site
+  preferences that resolve only to the removed release are cleared; the
+  confirmation lists them first, and those sites fall back to their project file
+  or the global default.
+
+Each site's details sidebar also has a **Node** row: pick a saved preference (or
+clear it), and see the effective version and where it comes from (`.nvmrc`,
+`.node-version`, site preference, or global default). A warning shows when a
+project file takes precedence over the saved preference. Nothing installs
+automatically: a missing version shows an error with a link to the Node page.
 
 Other tools install the latest stable release, replacing their previous files.
 
@@ -208,7 +243,8 @@ extension list.
 | Path | Contents |
 |---|---|
 | `{data}/tools/composer/composer.phar` | The Composer phar. |
-| `{data}/tools/node/node-<ver>-<os>-<arch>/` | The unpacked Node distribution. |
+| `{data}/tools/node-versions/<version>/` | One unpacked Node release (side by side). |
+| `{data}/tools/node/node-<ver>-<os>-<arch>/` | A legacy single-version Node install, still usable. |
 | `{data}/tools/bun/bun-<os>-<arch>/bun` | The Bun binary. |
 | `{data}/tools/pnpm/pnpm-<os>-<arch>/pnpm` | The pnpm binary (`pnpx` beside it). |
 | `{data}/tools/laravel/bin/laravel` | The Laravel installer (built via Composer). |

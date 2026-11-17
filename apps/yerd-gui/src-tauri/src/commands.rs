@@ -947,6 +947,43 @@ pub async fn install_tool_streamed(tool: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::InstallToolStreamed { tool }).await?)
 }
 
+// ── Node versions ────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn list_node() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListNode).await?)
+}
+
+#[tauri::command]
+pub async fn available_node() -> Result<Response, GuiError> {
+    finish(exchange(&Request::AvailableNode).await?)
+}
+
+#[tauri::command]
+pub async fn install_node_streamed(version: String, update: bool) -> Result<Response, GuiError> {
+    finish(exchange(&Request::InstallNodeStreamed { version, update }).await?)
+}
+
+#[tauri::command]
+pub async fn uninstall_node(version: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::UninstallNode { version }).await?)
+}
+
+#[tauri::command]
+pub async fn set_node_version(version: String, site: Option<String>) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetNodeVersion { version, site }).await?)
+}
+
+#[tauri::command]
+pub async fn clear_node_version(site: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::ClearNodeVersion { site }).await?)
+}
+
+#[tauri::command]
+pub async fn node_site(site: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::NodeSite { site }).await?)
+}
+
 // ── tunnels (Cloudflare Tunnel integration) ──────────────────────────────────
 
 /// Install the `cloudflared` binary as a streamed job (returns a job id).

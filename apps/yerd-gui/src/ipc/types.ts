@@ -659,6 +659,21 @@ export type Response =
   | { type: "mails"; mails: MailSummary[] }
   | { type: "mail"; mail: MailDetail }
   | { type: "tools"; tools: ToolStatus[] }
+  | { type: "node_versions"; installed: NodeRelease[] }
+  | { type: "available_node"; majors: MajorLine[] }
+  | {
+      type: "node_site";
+      /** The saved site preference (a selector), when one is set. */
+      preference?: string;
+      /** The nearest `.nvmrc` / `.node-version` inside the site, when found. */
+      project_file?: NodeProjectFile;
+      /** The exact installed release the site resolves to. */
+      effective?: string;
+      /** Where `effective` came from. */
+      source?: NodeSource;
+      /** Why no release could be resolved (missing release, unreadable file, unknown site). */
+      error?: string;
+    }
   | { type: "job_started"; job_id: string }
   | {
       type: "job_progress";
@@ -741,6 +756,54 @@ export interface ToolStatus {
   external_path?: string;
 }
 
+// ── node versions (crates/yerd-ipc/src/node.rs, crates/yerd-core/src/node.rs) ──
+
+/** crates/yerd-core/src/node.rs - NodeSource. Where a site's Node version comes from. */
+export type NodeSource = "nvmrc" | "node-version" | "site" | "default";
+
+/** crates/yerd-ipc/src/node.rs - NodePreferenceRef. A saved per-project preference. */
+export interface NodePreferenceRef {
+  /** Canonical project root the preference is keyed by. */
+  root: string;
+  /** The registered site with that root, when there is one. */
+  site?: string;
+}
+
+/** crates/yerd-ipc/src/node.rs - NodeRelease. One installed Node release. */
+export interface NodeRelease {
+  /** Exact version, e.g. `22.12.0`. */
+  version: string;
+  lts: boolean;
+  /** LTS codename (e.g. `Jod`), when known. */
+  codename?: string;
+  /** This release is what the effective global default resolves to. */
+  default: boolean;
+  /** Uninstalling is refused: others remain and the global default would no longer resolve. */
+  uninstall_blocked: boolean;
+  /** Saved preferences an uninstall of this release would clear. Omitted when empty. */
+  clears_preferences?: NodePreferenceRef[];
+}
+
+/** crates/yerd-core/src/node.rs - MajorLine. One major from the nodejs.org index. */
+export interface MajorLine {
+  major: number;
+  /** Newest installable patch of this major. */
+  latest: string;
+  codename?: string;
+  /** End-of-life status; absent when the release schedule is unavailable. */
+  eol?: boolean;
+  /** Highest installed patch of this major, when any is installed. */
+  installed_latest?: string;
+  update_available: boolean;
+}
+
+/** crates/yerd-ipc/src/node.rs - NodeProjectFile. */
+export interface NodeProjectFile {
+  /** Only ever `nvmrc` or `node-version`. */
+  kind: NodeSource;
+  selector: string;
+}
+
 /** One user database in a SQL service (mirrors the daemon's `DatabaseSummary`). */
 export interface DatabaseSummary {
   name: string;
@@ -818,6 +881,9 @@ export type DumpsResponse = Extract<Response, { type: "dumps" }>;
 export type DumpsStatusResponse = Extract<Response, { type: "dumps_status" }>;
 export type MailsResponse = Extract<Response, { type: "mails" }>;
 export type MailResponse = Extract<Response, { type: "mail" }>;
+export type NodeVersionsResponse = Extract<Response, { type: "node_versions" }>;
+export type AvailableNodeResponse = Extract<Response, { type: "available_node" }>;
+export type NodeSiteResponse = Extract<Response, { type: "node_site" }>;
 export type JobStartedResponse = Extract<Response, { type: "job_started" }>;
 export type JobProgressResponse = Extract<Response, { type: "job_progress" }>;
 export type TunnelsResponse = Extract<Response, { type: "tunnels" }>;

@@ -16,6 +16,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 
 import SiteDomainsPanel from "@/components/SiteDomainsPanel.vue";
 import SiteHeadersPanel from "@/components/SiteHeadersPanel.vue";
+import SiteNodePanel from "@/components/SiteNodePanel.vue";
 import SiteRoutesPanel from "@/components/SiteRoutesPanel.vue";
 import Button from "@/components/ui/Button.vue";
 import InfoBanner from "@/components/ui/InfoBanner.vue";
@@ -599,6 +600,7 @@ onUnmounted(() => {
                     />
                   </dd>
                 </div>
+                <SiteNodePanel :site="site" />
                 <!-- Same macOS-or-Linux predicate as the PATH install: host editor
                      launching has no Windows adapter either. -->
                 <div

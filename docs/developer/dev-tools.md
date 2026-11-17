@@ -143,6 +143,38 @@ than building a URL that 404s. Bun's zip is unpacked with the `zip` crate
 flate2 backend - pinned to 2.x to stay within the workspace's MSRV-1.77
 discipline; see the `Cargo.toml` MSRV-pin block).
 
+### Node releases
+
+Node is the one tool installed side by side: `install_version(dirs, dl, selector, progress)`
+resolves a selector against `index.json` and unpacks into
+`{data}/tools/node-versions/<exact>/` (a pre-existing single-version install in
+`{data}/tools/node` stays discoverable). Beyond the table above:
+
+- **Progress.** With a progress sink (the streamed `InstallNodeStreamed` job) it
+  emits Resolving, Downloading (byte progress via `download_with_progress` and
+  `php_install::emit_byte_progress`), Verifying SHA-256, Unpacking, and Installed
+  lines. The blocking `InstallTool` / `InstallNode` paths pass `None`.
+- **Codename.** The release's LTS codename is written into the `.lts` marker; an
+  empty marker (older installs) still reads as LTS with no codename.
+- **Installability filter.** `yerd_core::node::installable` keeps only releases
+  whose `files` list the host build (`osx-arm64-tar`, `osx-x64-tar`, `linux-x64`,
+  `linux-arm64`) and whose major is at least `MIN_LISTED_MAJOR` (9, because part
+  of the 8.x line ships without `npx`). The same filter backs the install and the
+  `AvailableNode` listing.
+- **Listing.** `available(dl, installed, today)` fetches `index.json` (a failure is
+  an error) and nodejs/Release `schedule.json` (a failure leaves every `eol` unset)
+  and groups them with the pure `major_lines`.
+- **Per-release uninstall.** `uninstall_version(dirs, installed, last)` removes one
+  release dir, the legacy `tools/node` root when its `.version` names the same
+  release, and `tools/node/.default` when it names the target or no release
+  remains. The default/preference decisions are the pure `plan_uninstall`, run by
+  the `UninstallNode` handler before any files are touched.
+
+Project-file discovery (`.nvmrc`, then `.node-version` per directory, nearest
+directory wins) and selection live in `yerd_platform::node::{project_file, select}`,
+shared by `yerd exec` / `yerd which` and the daemon's `NodeSite` handler; the
+precedence rule itself (`SEARCH_ORDER`, `choose`) is pure in `yerd-core`.
+
 ### Composer-built tools: the Laravel installer and WP-CLI
 
 `laravel.rs` and `wp_cli.rs` don't fit the download-a-release-asset shape above
@@ -242,7 +274,10 @@ moved between runs).
   (`listTools`/`installTool`/`uninstallTool`), `views/ToolingView.vue` (a table
   copied from the PHP view's pattern - install/update/uninstall with a busy
   spinner and toasts), plus the `SideNav.vue` + `router.ts` entries that place
-  **Tooling** between Sites and Services.
+  **Tooling** between Sites and Services. Once Node is installed its row shows
+  only a **Manage versions** button that routes to `/node` (`NodeView.vue`),
+  which drives the [Node requests](./ipc-protocol)
+  instead of `InstallTool` / `UninstallTool`.
 - **CLI**: `yerd tools`, `yerd install tool <id>`, `yerd uninstall tool <id>` -
   a `Tool` variant on the `InstallTarget`/`UninstallTarget` enums and a `Tools`
   command, mapped in `map::to_request` (exhaustive, compile-checked) with an

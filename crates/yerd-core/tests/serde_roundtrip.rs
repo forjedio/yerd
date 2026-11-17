@@ -13,6 +13,7 @@
 
 use std::path::PathBuf;
 
+use yerd_core::node::{MajorLine, NodeSource};
 use yerd_core::{PhpVersion, Site, Tld};
 
 #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -58,4 +59,44 @@ fn json_round_trip_ipc_set_php() {
 
     let back: IpcSetPhp = serde_json::from_str(&s).unwrap();
     assert_eq!(back, original);
+}
+
+#[test]
+fn json_round_trip_node_source() {
+    for source in [
+        NodeSource::Nvmrc,
+        NodeSource::NodeVersion,
+        NodeSource::Site,
+        NodeSource::Default,
+    ] {
+        let s = serde_json::to_string(&source).unwrap();
+        let back: NodeSource = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, source);
+    }
+}
+
+#[test]
+fn json_round_trip_major_line() {
+    for original in [
+        MajorLine {
+            major: 22,
+            latest: "22.12.0".into(),
+            codename: Some("Jod".into()),
+            eol: Some(true),
+            installed_latest: Some("22.9.0".into()),
+            update_available: true,
+        },
+        MajorLine {
+            major: 25,
+            latest: "25.1.0".into(),
+            codename: None,
+            eol: None,
+            installed_latest: None,
+            update_available: false,
+        },
+    ] {
+        let s = serde_json::to_string(&original).unwrap();
+        let back: MajorLine = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, original);
+    }
 }

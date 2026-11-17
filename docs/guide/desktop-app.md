@@ -17,7 +17,7 @@ The sidebar opens on **Overview** and groups the rest:
 | Group | Pages |
 | --- | --- |
 | General | **Overview** - a live dashboard of what's running · **About** |
-| Environment | **Sites** · **PHP** · **Services** |
+| Environment | **Sites** · **PHP** · **Node** · **Services** |
 | Developer | **Tooling** · **Proxies** · **Mail** · **Dumps** |
 | Integrations | **Share** - publish a site over a public URL ([guide](./sharing)) |
 | System | **Settings** · **Doctor** |
@@ -55,6 +55,15 @@ Manages your installed [PHP versions](./php-versions):
 - The Extensions section of that card registers extra `.so` extensions for the selected version (loaded into both FPM and the CLI): Add… browses for the file, optionally names it and toggles Zend extension. Each is load-probed before saving, and any whose file has gone missing is flagged. See [Custom extensions](./php-versions#custom-extensions).
 - **FPM pool size** sets how many PHP workers that version may run at once (`pm.max_children`, 1-1024, default 16). It applies to the web pool only, never the CLI. The pool is on-demand, so a higher ceiling costs nothing while idle - raise it when requests queue behind queue workers, parallel test runs, or long-lived streams. Saving restarts that version's pool. See [Pool size](./php-versions#pool-size).
 
+### Node
+
+Manages your installed [Node versions](./tooling#node-versions):
+
+- An Installed versions card lists each release with its LTS codename and a star on the global default. Each row's `⋯` menu offers Update (when a newer patch of that major exists), Set default, and Uninstall. Uninstall is disabled for the default while other releases exist; its confirmation lists any site preferences it would clear.
+- An Available releases card lists upstream releases grouped by major, newest first, with LTS codenames and EOL badges. Install fetches a major's newest patch; a field below installs an exact version. Installs stream a live log you can close while they keep running.
+- Update installs the newest patch alongside and moves the global default to it only when the default was on an older patch of that major. Site preferences are never changed.
+- A banner notes that bare `node`, `npm`, and `npx` always use the global default; run `yerd exec npm …` inside a project to use its version.
+
 ### Sites
 
 <ThemedImage light="/images/sites-light.png" dark="/images/sites-dark.png" alt="Sites page" />
@@ -75,7 +84,7 @@ Sites can also be organized into named, reorderable groups shown as collapsible 
 
 Five tabs, covering everything Yerd knows about one site:
 
-- **General.** An **Open site** button, then a row of actions - **Terminal** (opens your terminal in the project directory), the **editor** button (macOS and Linux), **Dumps** or **WP Admin** depending on the site, and **Share publicly…** (a [Cloudflare Quick Tunnel](#share)). Below them: PHP version, the **Editor** used for this site, the path (with reveal), the served web root (blank means auto-detect), the URL, the **HTTPS** toggle, **WordPress Auto Admin Login** with an admin picker on WordPress sites, its [group](./sites#site-groups), and - for a linked site only - **Unlink**. Parked sites have no destructive action here; remove them by un-parking their folder, or they'd reappear.
+- **General.** An **Open site** button, then a row of actions - **Terminal** (opens your terminal in the project directory), the **editor** button (macOS and Linux), **Dumps** or **WP Admin** depending on the site, and **Share publicly…** (a [Cloudflare Quick Tunnel](#share)). Below them: PHP version, **Node** (a saved preference you can set or clear, the effective version and whether it comes from `.nvmrc`, `.node-version`, the site preference, or the global default, and a warning when a project file overrides the saved preference), the **Editor** used for this site, the path (with reveal), the served web root (blank means auto-detect), the URL, the **HTTPS** toggle, **WordPress Auto Admin Login** with an admin picker on WordPress sites, its [group](./sites#site-groups), and - for a linked site only - **Unlink**. Parked sites have no destructive action here; remove them by un-parking their folder, or they'd reappear.
 - **Domains.** Set the primary domain and add or remove aliases, subdomains, and wildcards. See [Domains](../reference/cli/domains).
 - **Routing.** The **Route through front controller** switch (on: everything funnels through `index.php`, as Laravel and Symfony want; off: named `.php` files execute directly), and beneath it the per-prefix [routing rules](../reference/cli/routes) that carve exceptions out of that default - a nested `api/index.php`, or `index.html` for an SPA.
 - **Headers.** Custom [response headers](../reference/cli/headers) added to every response the site serves, such as `Access-Control-Allow-Origin` for CORS. Set a name and value, or remove one with its trash button.
@@ -91,7 +100,7 @@ If your local CA isn't trusted in the system store, the Sites view shows a banne
 
 <ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="Tooling page" />
 
-Installs self-contained developer tools - Composer, Node, Bun, and pnpm - onto your PATH alongside PHP, each managed by Yerd (install / update / uninstall) so they don't collide with system installs. See [Tooling](./tooling).
+Installs self-contained developer tools - Composer, Node, Bun, and pnpm - onto your PATH alongside PHP, each managed by Yerd (install / update / uninstall) so they don't collide with system installs. Once Node is installed its row shows **Manage versions**, which opens the [Node](#node) page. See [Tooling](./tooling).
 
 ### Proxies
 
@@ -185,7 +194,7 @@ The command palette also lists your sites at the bottom (grouped by domain): **O
 | Close window | `⌘W` | `Ctrl+W` | Hide the window to the tray |
 | Close dialog | `Esc` | `Esc` | Dismiss the open modal |
 
-`⌘1`…`⌘9` are: **1** Overview, **2** PHP, **3** Sites, **4** Tooling, **5** Services, **6** Mail, **7** Dumps, **8** Settings, **9** Doctor. Proxies and About have no digit - reach them from the sidebar or the command palette.
+`⌘1`…`⌘9` are: **1** Overview, **2** PHP, **3** Sites, **4** Tooling, **5** Services, **6** Mail, **7** Dumps, **8** Settings, **9** Doctor. Node, Proxies, and About have no digit - reach them from the sidebar or the command palette.
 
 ::: info Quitting the app
 There's no Quit shortcut: closing the window (`⌘W` / `Ctrl+W`) hides it to the tray and leaves the daemon running, by design. Quit from the tray menu, or on macOS with the standard `⌘Q`.

@@ -16,41 +16,13 @@ pub struct NodeSelection {
     pub installed: node::InstalledNode,
     /// Registered site name, if matched.
     pub site: Option<String>,
-    /// `nvmrc`, `site`, or `default`.
+    /// `nvmrc`, `node-version`, `site`, or `default`.
     pub source: &'static str,
 }
 
 fn report(message: &str, code: u8) -> ExitCode {
     eprintln!("yerd: {message}");
     ExitCode::from(code)
-}
-
-/// Find the nearest `.nvmrc`, stopping at a registered project root.
-///
-/// # Errors
-/// An existing file that cannot be read, is empty or is unsupported must fail.
-pub fn nvmrc(cwd: &Path, root: Option<&Path>) -> Result<Option<String>, String> {
-    for dir in cwd.ancestors() {
-        let file = dir.join(".nvmrc");
-        match std::fs::symlink_metadata(&file) {
-            Ok(_) => {
-                let value = std::fs::read_to_string(&file)
-                    .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
-                let value = value.trim();
-                if !matches!(value, "node" | "lts/*") {
-                    yerd_core::node::numeric_selector(value)
-                        .map_err(|e| format!("invalid {}: {e}", file.display()))?;
-                }
-                return Ok(Some(value.to_owned()));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("cannot inspect {}: {e}", file.display())),
-        }
-        if root == Some(dir) {
-            break;
-        }
-    }
-    Ok(None)
 }
 
 /// Select a release after the site lookup. All selector sources fail explicitly.
@@ -64,24 +36,23 @@ pub fn select(
     site: Option<(&str, &Path)>,
 ) -> Result<NodeSelection, String> {
     let root = site.map(|(_, root)| root);
-    let file = nvmrc(cwd, root)?;
     let preference = root.and_then(|root| config.node.sites.get(root.to_string_lossy().as_ref()));
     let fallback = config
         .node
         .default
         .clone()
         .or_else(|| node::legacy_default(dirs));
-    let (selector, source) = if let Some(selector) = file.as_deref() {
-        (selector, "nvmrc")
-    } else if let Some(selector) = preference {
-        (selector.as_str(), "site")
-    } else {
-        (fallback.as_deref().ok_or_else(|| "no global Node default — run `yerd install tool node` or `yerd node use <version>`".to_owned())?, "default")
-    };
+    let selected = node::select(
+        dirs,
+        cwd,
+        root,
+        preference.map(String::as_str),
+        fallback.as_deref(),
+    )?;
     Ok(NodeSelection {
-        installed: node::resolve(dirs, selector)?,
+        installed: selected.installed,
         site: site.map(|(name, _)| name.to_owned()),
-        source,
+        source: selected.source.as_str(),
     })
 }
 
@@ -364,5 +335,28 @@ mod tests {
             .output()
             .unwrap();
         assert_eq!(String::from_utf8(output.stdout).unwrap(), "24.1.0\n");
+    }
+    #[test]
+    fn node_version_file_is_honoured_and_nvmrc_wins_in_same_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs(tmp.path());
+        fake(&dirs, "20.1.0");
+        fake(&dirs, "22.9.0");
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let mut cfg = Config::default();
+        cfg.node.default = Some("20.1.0".to_owned());
+        std::fs::write(project.join(".node-version"), "22.9.0\n").unwrap();
+        let chosen = select(&dirs, &cfg, &project, Some(("example", &project))).unwrap();
+        assert_eq!(
+            (chosen.installed.version.as_str(), chosen.source),
+            ("22.9.0", "node-version")
+        );
+        std::fs::write(project.join(".nvmrc"), "20").unwrap();
+        let chosen = select(&dirs, &cfg, &project, Some(("example", &project))).unwrap();
+        assert_eq!(
+            (chosen.installed.version.as_str(), chosen.source),
+            ("20.1.0", "nvmrc")
+        );
     }
 }

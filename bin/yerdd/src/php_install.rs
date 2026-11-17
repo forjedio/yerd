@@ -36,7 +36,7 @@ const PROGRESS_STEP: u64 = 4 * 1024 * 1024;
 
 /// Byte counts are formatted as integer tenths-of-a-MB to avoid a float cast and
 /// its precision lint.
-fn emit_byte_progress(
+pub(crate) fn emit_byte_progress(
     tx: &ProgressTx,
     label: &str,
     done: u64,

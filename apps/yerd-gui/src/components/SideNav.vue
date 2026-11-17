@@ -4,6 +4,7 @@ import { computed, onMounted, ref } from "vue";
 import {
   ClipboardList,
   Database,
+  Hexagon,
   Info,
   LayoutDashboard,
   LayoutGrid,
@@ -84,6 +85,7 @@ const sections = computed<{ title: string; items: Item[] }[]>(() => [
     items: [
       { to: "/sites", label: "Sites", icon: LayoutGrid },
       { to: "/php", label: "PHP", icon: SquareCode, badge: phpUpdates.value },
+      { to: "/node", label: "Node", icon: Hexagon },
       { to: "/services", label: "Services", icon: Database },
     ],
   },

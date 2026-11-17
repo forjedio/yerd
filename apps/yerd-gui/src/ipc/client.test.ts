@@ -9,15 +9,21 @@ vi.mock("@tauri-apps/api/core", () => ({
 import {
   addDomain,
   addRouteRule,
+  availableNode,
   clearMails,
+  clearNodeVersion,
   deleteMails,
   getMail,
   IpcError,
+  installNodeStreamed,
+  installNodeWithProgress,
   listMails,
+  listNode,
   listPhp,
   listResponseHeaders,
   listRoutes,
   listSites,
+  nodeSite,
   removeDomain,
   removeResponseHeader,
   removeRouteRule,
@@ -25,6 +31,7 @@ import {
   setFrontController,
   setMailEnabled,
   setMailPort,
+  setNodeVersion,
   setPhpDirectives,
   setPhpPoolSettings,
   setPhpVersionSettings,
@@ -33,6 +40,7 @@ import {
   setSymlinkProtection,
   setMcpEnabled,
   status,
+  uninstallNode,
   unlink,
   updatePhp,
 } from "./client";
@@ -328,6 +336,100 @@ describe("error handling", () => {
     });
   });
 
+});
+
+describe("node commands", () => {
+  const release = {
+    version: "22.12.0",
+    lts: true,
+    codename: "Jod",
+    default: true,
+    uninstall_blocked: false,
+  };
+
+  it("listNode unwraps the installed releases", async () => {
+    invokeMock.mockResolvedValue({ type: "node_versions", installed: [release] });
+    await expect(listNode()).resolves.toEqual([release]);
+    expect(invokeMock).toHaveBeenCalledWith("list_node", undefined);
+  });
+
+  it("availableNode unwraps the major lines", async () => {
+    const line = { major: 22, latest: "22.12.0", update_available: false };
+    invokeMock.mockResolvedValue({ type: "available_node", majors: [line] });
+    await expect(availableNode()).resolves.toEqual([line]);
+    expect(invokeMock).toHaveBeenCalledWith("available_node", undefined);
+  });
+
+  it("installNodeStreamed sends version and update and returns the job id", async () => {
+    invokeMock.mockResolvedValue({ type: "job_started", job_id: "j9" });
+    await expect(installNodeStreamed("22", true)).resolves.toBe("j9");
+    expect(invokeMock).toHaveBeenCalledWith("install_node_streamed", {
+      version: "22",
+      update: true,
+    });
+  });
+
+  it("installNodeWithProgress polls to the end and throws on failure", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "install_node_streamed") {
+        return Promise.resolve({ type: "job_started", job_id: "j1" });
+      }
+      return Promise.resolve({
+        type: "job_progress",
+        state: "failed",
+        phase: "",
+        log: ["Downloading"],
+        next_cursor: 1,
+        error: "checksum mismatch",
+      });
+    });
+    const lines: string[] = [];
+    await expect(
+      installNodeWithProgress("24", false, (l) => lines.push(...l)),
+    ).rejects.toMatchObject({ message: "checksum mismatch" });
+    expect(lines).toEqual(["Downloading"]);
+    expect(invokeMock).toHaveBeenCalledWith("job_status", { jobId: "j1", cursor: 0 });
+  });
+
+  it("uninstallNode sends the version and returns the refreshed list", async () => {
+    invokeMock.mockResolvedValue({ type: "node_versions", installed: [] });
+    await expect(uninstallNode("20.18.0")).resolves.toEqual([]);
+    expect(invokeMock).toHaveBeenCalledWith("uninstall_node", { version: "20.18.0" });
+  });
+
+  it("setNodeVersion sends a null site for the global default", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await setNodeVersion("22.12.0", null);
+    expect(invokeMock).toHaveBeenCalledWith("set_node_version", {
+      version: "22.12.0",
+      site: null,
+    });
+    await setNodeVersion("20.18.0", "blog");
+    expect(invokeMock).toHaveBeenLastCalledWith("set_node_version", {
+      version: "20.18.0",
+      site: "blog",
+    });
+  });
+
+  it("clearNodeVersion sends the site", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await clearNodeVersion("blog");
+    expect(invokeMock).toHaveBeenCalledWith("clear_node_version", { site: "blog" });
+  });
+
+  it("nodeSite passes the reply through with optional fields absent", async () => {
+    invokeMock.mockResolvedValue({ type: "node_site", effective: "22.12.0", source: "default" });
+    const r = await nodeSite("blog");
+    expect(invokeMock).toHaveBeenCalledWith("node_site", { site: "blog" });
+    expect(r.effective).toBe("22.12.0");
+    expect(r.source).toBe("default");
+    expect(r.preference).toBeUndefined();
+  });
+
+  it("listNode rejects an unexpected response type", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await expect(listNode()).rejects.toBeInstanceOf(IpcError);
+  });
 });
 
 describe("IpcError categorisation", () => {

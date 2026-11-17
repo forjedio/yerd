@@ -702,10 +702,17 @@ default = "24.2.0"
 "/srv/example" = "22.9.0"
 ```
 
-A project `.nvmrc` overrides its saved preference. Absent preferences use the
-global default; an old single-version Node installation remains the default
-until one is saved. Stored selectors must be numeric and project keys absolute.
-See [Node resolution](./cli/exec#node-resolution).
+A project `.nvmrc` or `.node-version` overrides its saved preference. Absent
+preferences use the global default; an old single-version Node installation
+remains the default until one is saved. Stored selectors must be numeric and
+project keys absolute. A value may be a partial selector (`"22"` or `"22.9"`),
+resolved to the highest matching installed release when used.
+
+Uninstalling a release from the desktop app's Node page clears any preference
+that resolves only to that release, and, while others remain, refuses to remove a
+release when `default` would then resolve to nothing. An Update moves `default` to the new
+patch only when it named an older patch of that major; preferences are never
+changed. See [Node resolution](./cli/exec#node-resolution).
 
 ## Atomic saves
 

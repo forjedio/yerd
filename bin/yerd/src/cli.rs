@@ -273,7 +273,8 @@ pub enum Command {
         args: Vec<std::ffi::OsString>,
     },
     /// Run a tool under the project's selected PHP or Node version. PHP uses
-    /// the site's pinned version; Node uses .nvmrc, then the saved site
+    /// the site's pinned version; Node uses .nvmrc or .node-version (nearest
+    /// directory; .nvmrc wins in the same directory), then the saved site
     /// preference, then the global default. Use --site <name> to select a
     /// named project's root. Node resolution requires a running daemon.
     /// Everything after the tool is passed through, so Yerd flags must come
