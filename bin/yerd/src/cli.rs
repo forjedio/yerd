@@ -334,6 +334,42 @@ pub enum Command {
         #[command(subcommand)]
         action: NetworkAction,
     },
+    /// Turn the bundled Xdebug on or off for a PHP version's sites, or show
+    /// its state. Use `phpdebug` / `php<ver>debug` for a single CLI run.
+    Xdebug {
+        /// What to do.
+        #[command(subcommand)]
+        action: XdebugAction,
+    },
+}
+
+/// `yerd xdebug <action>`.
+#[derive(clap::Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum XdebugAction {
+    /// Load Xdebug into a version's FPM pool (downloads it on first use) and
+    /// restart that pool.
+    On {
+        /// PHP version (e.g. `8.4`); defaults to the default PHP.
+        version: Option<String>,
+        /// Xdebug modes, comma-separated: debug, develop, coverage, profile,
+        /// trace, gcstats. Keeps the current modes when omitted.
+        #[arg(long, value_name = "MODES", value_delimiter = ',')]
+        mode: Option<Vec<String>>,
+        /// Start a session only when a trigger (cookie, query or env) is
+        /// present.
+        #[arg(long, conflicts_with = "always")]
+        trigger: bool,
+        /// Start a session on every request (the default).
+        #[arg(long)]
+        always: bool,
+    },
+    /// Stop loading Xdebug into a version's FPM pool and restart that pool.
+    Off {
+        /// PHP version (e.g. `8.4`); defaults to the default PHP.
+        version: Option<String>,
+    },
+    /// Show each installed version's Xdebug state.
+    Status,
 }
 
 /// `yerd network <action>`.

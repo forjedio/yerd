@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use yerd_core::{PhpVersion, Site};
+use yerd_core::{PhpVersion, Site, XdebugSettings};
 
 use crate::dump::{DumpCounts, DumpEvent, DumpExtStatus};
 use crate::status::{
@@ -128,9 +128,10 @@ pub enum Response {
         /// The current global default.
         default: PhpVersion,
         /// Installed minors with a newer patch available (from the daemon's
-        /// update cache). Empty when none / cache cold.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        updates: Vec<PhpUpdate>,
+        /// update cache). Empty when none / cache cold. Boxed (transparent on
+        /// the wire) to keep `Response` small.
+        #[serde(default, skip_serializing_if = "boxed_updates_is_empty")]
+        updates: Box<Vec<PhpUpdate>>,
         /// Global PHP ini settings applied to every version's FPM pool
         /// (`"memory_limit" -> "512M"`). Empty when none are set.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -168,6 +169,17 @@ pub enum Response {
         /// older and omits it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         libvips_found: Option<bool>,
+        /// Configured per-version Xdebug settings. Only versions whose
+        /// settings differ from the default appear; an absent version has
+        /// Xdebug off. `#[serde(default)]` keeps older daemons (which omit it)
+        /// decodable. Boxed like `version_settings`.
+        #[serde(default, skip_serializing_if = "boxed_xdebug_map_is_empty")]
+        xdebug: Box<BTreeMap<PhpVersion, XdebugSettings>>,
+        /// Installed versions a bundled Xdebug is published for on this host,
+        /// so clients only offer the toggle where it can work. Boxed like
+        /// `ffi_versions`.
+        #[serde(default, skip_serializing_if = "boxed_versions_is_empty")]
+        xdebug_versions: Box<Vec<PhpVersion>>,
     },
     /// Reply to [`crate::Request::AvailablePhp`].
     AvailablePhp {
@@ -646,6 +658,18 @@ fn boxed_versions_is_empty(v: &[PhpVersion]) -> bool {
     v.is_empty()
 }
 
+/// `skip_serializing_if` predicate for [`Response::PhpVersions`]'s boxed
+/// `updates` list.
+fn boxed_updates_is_empty(v: &[PhpUpdate]) -> bool {
+    v.is_empty()
+}
+
+/// `skip_serializing_if` predicate for [`Response::PhpVersions`]'s boxed
+/// `xdebug` map.
+fn boxed_xdebug_map_is_empty(m: &BTreeMap<PhpVersion, XdebugSettings>) -> bool {
+    m.is_empty()
+}
+
 /// An available newer patch for an installed PHP minor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhpUpdate {
@@ -708,6 +732,16 @@ pub enum ErrorCode {
     /// provoke it and, lacking the variant, will surface it as an
     /// `IpcError::Decode` rather than a typed error.
     LegacyRestricted,
+    /// The bundled Xdebug can't be used for the requested version: none is
+    /// published for that PHP version and host platform, or it could not be
+    /// downloaded. Returned only for `SetXdebug`, so older clients never
+    /// receive it.
+    XdebugUnavailable,
+    /// A setting value was rejected by validation (for example an empty
+    /// Xdebug mode list). Distinct from [`Self::InvalidPath`], which is about
+    /// filesystem paths. Returned only for `SetXdebug`, so older clients
+    /// never receive it.
+    InvalidSetting,
     /// Catch-all for daemon-side failures that don't fit a typed code.
     /// Expand this enum rather than overloading `Internal`.
     Internal,
@@ -792,6 +826,8 @@ mod variant_name_pinning {
             ErrorCode::InstanceAlreadyExists => {}
             ErrorCode::LanNotReady => {}
             ErrorCode::LegacyRestricted => {}
+            ErrorCode::XdebugUnavailable => {}
+            ErrorCode::InvalidSetting => {}
             ErrorCode::Internal => {}
         }
     }
@@ -830,12 +866,14 @@ mod variant_name_pinning {
         pin_response(Response::PhpVersions {
             installed: vec![PhpVersion::new(8, 5)],
             default: PhpVersion::new(8, 5),
-            updates: vec![],
+            updates: Box::default(),
             settings: BTreeMap::new(),
             version_settings: Box::new(BTreeMap::new()),
             directives: Box::new(BTreeMap::new()),
             ffi_versions: Box::new(vec![]),
             libvips_found: None,
+            xdebug: Box::default(),
+            xdebug_versions: Box::default(),
             pool: Box::new(BTreeMap::new()),
         });
         pin_response(Response::AvailablePhp {
@@ -1158,6 +1196,8 @@ mod variant_name_pinning {
             ErrorCode::InstanceAlreadyExists,
             ErrorCode::LanNotReady,
             ErrorCode::LegacyRestricted,
+            ErrorCode::XdebugUnavailable,
+            ErrorCode::InvalidSetting,
             ErrorCode::Internal,
         ] {
             pin_code(c);

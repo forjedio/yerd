@@ -33,6 +33,31 @@ fn assert_response_roundtrips(r: Response) {
 }
 
 #[test]
+fn set_xdebug_request_roundtrips() {
+    assert_request_roundtrips(Request::SetXdebug {
+        version: Some(PhpVersion::new(8, 4)),
+        enabled: Some(true),
+        modes: Some(vec![
+            yerd_core::XdebugMode::Coverage,
+            yerd_core::XdebugMode::Gcstats,
+        ]),
+        start: Some(yerd_core::XdebugStart::Always),
+    });
+    assert_request_roundtrips(Request::SetXdebug {
+        version: None,
+        enabled: Some(false),
+        modes: None,
+        start: None,
+    });
+    assert_request_roundtrips(Request::SetXdebug {
+        version: None,
+        enabled: None,
+        modes: Some(vec![yerd_core::XdebugMode::Profile]),
+        start: None,
+    });
+}
+
+#[test]
 fn encode_then_decode_request_roundtrip() {
     assert_request_roundtrips(Request::Ping);
     assert_request_roundtrips(Request::ListSites);
@@ -146,22 +171,24 @@ fn encode_then_decode_response_roundtrip() {
     assert_response_roundtrips(Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)],
         default: PhpVersion::new(8, 5),
-        updates: vec![],
+        updates: Box::default(),
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
         ffi_versions: Box::new(vec![]),
         libvips_found: None,
+        xdebug: Box::default(),
+        xdebug_versions: Box::default(),
         pool: Box::new(BTreeMap::new()),
     });
     assert_response_roundtrips(Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 5)],
         default: PhpVersion::new(8, 5),
-        updates: vec![yerd_ipc::PhpUpdate {
+        updates: Box::new(vec![yerd_ipc::PhpUpdate {
             version: PhpVersion::new(8, 5),
             installed: "8.5.6".into(),
             latest: "8.5.7".into(),
-        }],
+        }]),
         settings: BTreeMap::from([("memory_limit".to_string(), "512M".to_string())]),
         version_settings: Box::new(BTreeMap::from([(
             PhpVersion::new(8, 5),
@@ -173,6 +200,8 @@ fn encode_then_decode_response_roundtrip() {
         )])),
         ffi_versions: Box::new(vec![]),
         libvips_found: None,
+        xdebug: Box::default(),
+        xdebug_versions: Box::default(),
         pool: Box::new(BTreeMap::from([(
             PhpVersion::new(8, 5),
             BTreeMap::from([("max_children".to_string(), "32".to_string())]),

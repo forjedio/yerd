@@ -329,6 +329,56 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         Command::Network {
             action: crate::cli::NetworkAction::Proxy { action },
         } => network_proxy_request(action),
+        Command::Xdebug { action } => xdebug_request(action)?,
+    })
+}
+
+/// Map a `yerd xdebug <action>` to its wire request. `status` reads the state
+/// from `ListPhp`; `on`/`off` without a version leave it to the daemon to pick
+/// the default PHP.
+fn xdebug_request(action: &crate::cli::XdebugAction) -> Result<Request, ClientError> {
+    use crate::cli::XdebugAction;
+    use yerd_core::{XdebugMode, XdebugStart};
+    let version = |v: &Option<String>| v.as_deref().map(parse_php).transpose();
+    Ok(match action {
+        XdebugAction::Status => Request::ListPhp,
+        XdebugAction::Off { version: v } => Request::SetXdebug {
+            version: version(v)?,
+            enabled: Some(false),
+            modes: None,
+            start: None,
+        },
+        XdebugAction::On {
+            version: v,
+            mode,
+            trigger,
+            always,
+        } => {
+            let modes = mode
+                .as_ref()
+                .map(|list| {
+                    list.iter()
+                        .map(|m| {
+                            m.parse::<XdebugMode>()
+                                .map_err(|e| ClientError::Usage(e.to_string()))
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?;
+            let start = if *trigger {
+                Some(XdebugStart::Trigger)
+            } else if *always {
+                Some(XdebugStart::Always)
+            } else {
+                None
+            };
+            Request::SetXdebug {
+                version: version(v)?,
+                enabled: Some(true),
+                modes,
+                start,
+            }
+        }
     })
 }
 
@@ -1312,6 +1362,64 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
         Response::NetworkTest { result } => format_network_test(result),
         _ => Rendered::err("unexpected response from daemon".to_owned()),
     }
+}
+
+/// Render the reply to `yerd xdebug on|off|status`: one row per installed PHP
+/// version (`on` with its modes and start, `off`, or `not available` where no
+/// Xdebug is published for that version on this host; a version switched on
+/// but not available says it isn't loaded) and an IDE port hint.
+/// With `json`, or for any reply other than `PhpVersions` (an error), this is
+/// [`render`].
+#[must_use]
+pub fn render_xdebug_status(resp: &Response, json: bool) -> Rendered {
+    let Response::PhpVersions {
+        installed,
+        default,
+        xdebug,
+        xdebug_versions,
+        ..
+    } = resp
+    else {
+        return render(resp, json);
+    };
+    if json {
+        return render(resp, json);
+    }
+    if installed.is_empty() {
+        return Rendered::ok(format!(
+            "no PHP versions installed (default: {default}) - `yerd install php {default}`"
+        ));
+    }
+    let labels: Vec<String> = installed
+        .iter()
+        .map(|v| {
+            if v == default {
+                format!("{v} (default)")
+            } else {
+                v.to_string()
+            }
+        })
+        .collect();
+    let width = labels.iter().map(String::len).max().unwrap_or(0);
+    let mut out = String::new();
+    for (v, label) in installed.iter().zip(&labels) {
+        let available = xdebug_versions.contains(v);
+        let state = match xdebug.get(v) {
+            Some(s) if s.enabled && available => {
+                format!("on   modes: {}  start: {}", s.mode_value(), s.start)
+            }
+            Some(s) if s.enabled => "on (not available on this platform, not loaded)".to_owned(),
+            _ if available => "off".to_owned(),
+            _ => "not available".to_owned(),
+        };
+        let _ = writeln!(out, "PHP {label:<width$}  {state}");
+    }
+    let _ = write!(
+        out,
+        "\nYour IDE should listen on port {} by default (match any `xdebug.client_port` override).",
+        yerd_core::php_xdebug::CLIENT_PORT
+    );
+    Rendered::ok(out)
 }
 
 /// Render `yerd route list [site]`. With `filter`, shows only that site's rules.
@@ -3336,16 +3444,18 @@ mod tests {
             &Response::PhpVersions {
                 installed: vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)],
                 default: PhpVersion::new(8, 5),
-                updates: vec![yerd_ipc::PhpUpdate {
+                updates: Box::new(vec![yerd_ipc::PhpUpdate {
                     version: PhpVersion::new(8, 3),
                     installed: "8.3.6".into(),
                     latest: "8.3.31".into(),
-                }],
+                }]),
                 settings: std::collections::BTreeMap::new(),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
                 directives: Box::new(std::collections::BTreeMap::new()),
                 ffi_versions: Box::new(vec![]),
                 libvips_found: None,
+                xdebug: Box::default(),
+                xdebug_versions: Box::default(),
                 pool: Box::new(std::collections::BTreeMap::new()),
             },
             false,
@@ -3361,12 +3471,14 @@ mod tests {
             &Response::PhpVersions {
                 installed: vec![],
                 default: PhpVersion::new(8, 3),
-                updates: vec![],
+                updates: Box::default(),
                 settings: std::collections::BTreeMap::new(),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
                 directives: Box::new(std::collections::BTreeMap::new()),
                 ffi_versions: Box::new(vec![]),
                 libvips_found: None,
+                xdebug: Box::default(),
+                xdebug_versions: Box::default(),
                 pool: Box::new(std::collections::BTreeMap::new()),
             },
             false,
@@ -3381,7 +3493,7 @@ mod tests {
             &Response::PhpVersions {
                 installed: vec![v83, PhpVersion::new(8, 5)],
                 default: PhpVersion::new(8, 5),
-                updates: vec![],
+                updates: Box::default(),
                 settings: std::collections::BTreeMap::from([(
                     "memory_limit".to_string(),
                     "512M".to_string(),
@@ -3402,6 +3514,8 @@ mod tests {
                 )])),
                 ffi_versions: Box::new(vec![]),
                 libvips_found: None,
+                xdebug: Box::default(),
+                xdebug_versions: Box::default(),
                 pool: Box::new(std::collections::BTreeMap::from([(
                     v83,
                     std::collections::BTreeMap::from([(
@@ -3561,7 +3675,7 @@ mod tests {
             &Response::PhpVersions {
                 installed: vec![PhpVersion::new(8, 5)],
                 default: PhpVersion::new(8, 5),
-                updates: vec![],
+                updates: Box::default(),
                 settings: std::collections::BTreeMap::from([
                     ("memory_limit".to_string(), "512M".to_string()),
                     ("display_errors".to_string(), "On".to_string()),
@@ -3570,6 +3684,8 @@ mod tests {
                 directives: Box::new(std::collections::BTreeMap::new()),
                 ffi_versions: Box::new(vec![]),
                 libvips_found: None,
+                xdebug: Box::default(),
+                xdebug_versions: Box::default(),
                 pool: Box::new(std::collections::BTreeMap::new()),
             },
             false,
@@ -5419,5 +5535,197 @@ mod tests {
             render(&Response::NodeVersions { installed: vec![] }, false).stdout,
             "no Node releases installed"
         );
+    }
+
+    fn xdebug_request_from(args: &[&str]) -> Result<Request, ClientError> {
+        use clap::Parser as _;
+        let cli = crate::cli::Cli::try_parse_from(args).unwrap();
+        to_request(&cli.command)
+    }
+
+    #[test]
+    fn xdebug_commands_map_to_requests() {
+        use yerd_core::{XdebugMode, XdebugStart};
+        let cases = [
+            (
+                &["yerd", "xdebug", "on"][..],
+                Request::SetXdebug {
+                    version: None,
+                    enabled: Some(true),
+                    modes: None,
+                    start: None,
+                },
+            ),
+            (
+                &[
+                    "yerd",
+                    "xdebug",
+                    "on",
+                    "8.4",
+                    "--mode",
+                    "debug,profile",
+                    "--trigger",
+                ][..],
+                Request::SetXdebug {
+                    version: Some(PhpVersion::new(8, 4)),
+                    enabled: Some(true),
+                    modes: Some(vec![XdebugMode::Debug, XdebugMode::Profile]),
+                    start: Some(XdebugStart::Trigger),
+                },
+            ),
+            (
+                &["yerd", "xdebug", "on", "--always"][..],
+                Request::SetXdebug {
+                    version: None,
+                    enabled: Some(true),
+                    modes: None,
+                    start: Some(XdebugStart::Always),
+                },
+            ),
+            (
+                &["yerd", "xdebug", "off"][..],
+                Request::SetXdebug {
+                    version: None,
+                    enabled: Some(false),
+                    modes: None,
+                    start: None,
+                },
+            ),
+            (
+                &["yerd", "xdebug", "off", "8.3"][..],
+                Request::SetXdebug {
+                    version: Some(PhpVersion::new(8, 3)),
+                    enabled: Some(false),
+                    modes: None,
+                    start: None,
+                },
+            ),
+            (&["yerd", "xdebug", "status"][..], Request::ListPhp),
+        ];
+        for (args, expected) in cases {
+            assert_eq!(xdebug_request_from(args).unwrap(), expected, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn xdebug_bad_arguments_are_usage_errors() {
+        for args in [
+            &["yerd", "xdebug", "on", "--mode", "off"][..],
+            &["yerd", "xdebug", "on", "--mode", "debug,bogus"][..],
+            &["yerd", "xdebug", "on", "nope"][..],
+            &["yerd", "xdebug", "off", "8"][..],
+        ] {
+            assert!(
+                matches!(xdebug_request_from(args), Err(ClientError::Usage(_))),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn xdebug_trigger_and_always_conflict() {
+        use clap::Parser as _;
+        let err =
+            crate::cli::Cli::try_parse_from(["yerd", "xdebug", "on", "--trigger", "--always"])
+                .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    fn xdebug_versions_reply() -> Response {
+        let v82 = PhpVersion::new(8, 2);
+        let v84 = PhpVersion::new(8, 4);
+        Response::PhpVersions {
+            installed: vec![PhpVersion::new(7, 4), v82, v84],
+            default: v84,
+            updates: Box::default(),
+            settings: std::collections::BTreeMap::new(),
+            version_settings: Box::default(),
+            directives: Box::default(),
+            ffi_versions: Box::default(),
+            libvips_found: None,
+            xdebug: Box::new(std::collections::BTreeMap::from([(
+                v84,
+                yerd_core::XdebugSettings {
+                    enabled: true,
+                    modes: vec![yerd_core::XdebugMode::Debug, yerd_core::XdebugMode::Profile],
+                    start: yerd_core::XdebugStart::Trigger,
+                },
+            )])),
+            xdebug_versions: Box::new(vec![v82, v84]),
+            pool: Box::default(),
+        }
+    }
+
+    #[test]
+    fn xdebug_status_renders_on_off_and_unavailable_rows() {
+        let r = render_xdebug_status(&xdebug_versions_reply(), false);
+        assert_eq!(r.code, 0);
+        assert_eq!(
+            r.stdout,
+            "PHP 7.4            not available\n\
+             PHP 8.2            off\n\
+             PHP 8.4 (default)  on   modes: debug,profile  start: trigger\n\
+             \n\
+             Your IDE should listen on port 9003 by default (match any `xdebug.client_port` override)."
+        );
+    }
+
+    #[test]
+    fn xdebug_status_flags_an_enabled_version_that_is_not_available() {
+        let mut reply = xdebug_versions_reply();
+        if let Response::PhpVersions { xdebug, .. } = &mut reply {
+            xdebug.insert(
+                PhpVersion::new(7, 4),
+                yerd_core::XdebugSettings {
+                    enabled: true,
+                    ..yerd_core::XdebugSettings::default()
+                },
+            );
+        }
+        let r = render_xdebug_status(&reply, false);
+        assert!(
+            r.stdout
+                .contains("PHP 7.4            on (not available on this platform, not loaded)\n"),
+            "{}",
+            r.stdout
+        );
+        assert!(
+            r.stdout.contains("PHP 8.2            off\n"),
+            "{}",
+            r.stdout
+        );
+    }
+
+    #[test]
+    fn xdebug_status_json_and_errors_pass_through_render() {
+        let reply = xdebug_versions_reply();
+        assert_eq!(render_xdebug_status(&reply, true), render(&reply, true));
+        let err = Response::Error {
+            code: yerd_ipc::ErrorCode::XdebugUnavailable,
+            message: "nope".into(),
+        };
+        let r = render_xdebug_status(&err, false);
+        assert_eq!(r, render(&err, false));
+        assert_eq!(r.code, 1);
+    }
+
+    #[test]
+    fn xdebug_status_with_nothing_installed_points_at_install() {
+        let reply = Response::PhpVersions {
+            installed: vec![],
+            default: PhpVersion::new(8, 4),
+            updates: Box::default(),
+            settings: std::collections::BTreeMap::new(),
+            version_settings: Box::default(),
+            directives: Box::default(),
+            ffi_versions: Box::default(),
+            libvips_found: None,
+            xdebug: Box::default(),
+            xdebug_versions: Box::default(),
+            pool: Box::default(),
+        };
+        assert!(render_xdebug_status(&reply, false)
+            .stdout
+            .contains("yerd install php 8.4"));
     }
 }

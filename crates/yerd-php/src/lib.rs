@@ -20,9 +20,13 @@ pub mod version;
 pub use error::{DownloadError, ExitReason, PhpError, SpawnFailureReason};
 pub use listen::{AllocatedListen, Listen};
 pub use manager::{DumpExtSettings, PhpManager, PoolRunState, PoolSnapshot};
-pub use pool::{ExtLoad, PoolConfig, ProcessManagerMode};
-pub use probe::{probe_extension, probe_ffi, CommandRunner, ProbeOutput, TokioCommandRunner};
-pub use pure::ext_probe::{ffi_listed, interpret_probe, ExtLoadError};
+pub use pool::{ExtLoad, PoolConfig, ProcessManagerMode, XdebugLoad};
+pub use probe::{
+    probe_extension, probe_ffi, probe_zend_module, CommandRunner, ProbeOutput, TokioCommandRunner,
+};
+pub use pure::ext_probe::{
+    ffi_listed, interpret_probe, require_zend_module, zend_module_listed, ExtLoadError,
+};
 pub use real::{SystemClock, TokioChild, TokioProcessSpawner};
 pub use release::{
     available_minors, current_os_arch, display_build, is_newer_build, is_safe_member,

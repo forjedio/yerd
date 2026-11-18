@@ -8,6 +8,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import PhpView from "./PhpView.vue";
 import { useDaemon } from "@/composables/useDaemon";
+import { useToast } from "@/composables/useToast";
 import { resetResourceCache } from "@/composables/useResource";
 import type { PhpVersion } from "@/ipc/types";
 
@@ -22,6 +23,8 @@ function stubIpc(opts: {
   settings?: Record<string, string>;
   ffiVersions?: PhpVersion[];
   libvipsFound?: boolean | null;
+  xdebug?: Record<string, unknown>;
+  xdebugVersions?: PhpVersion[];
 }) {
   const installed = opts.installed ?? ["8.1", "8.4"];
   const available = opts.available ?? ["8.5"];
@@ -29,20 +32,23 @@ function stubIpc(opts: {
   const extensions = opts.extensions ?? {};
   const pool = opts.pool ?? {};
   const settings = opts.settings ?? {};
+  const phpVersions = () => ({
+    type: "php_versions",
+    installed,
+    default: "8.4",
+    updates: [],
+    settings,
+    version_settings: {},
+    pool,
+    ffi_versions: opts.ffiVersions,
+    libvips_found: opts.libvipsFound,
+    xdebug: opts.xdebug,
+    xdebug_versions: opts.xdebugVersions,
+  });
   invokeMock.mockImplementation((cmd: string) => {
     switch (cmd) {
       case "list_php":
-        return Promise.resolve({
-          type: "php_versions",
-          installed,
-          default: "8.4",
-          updates: [],
-          settings,
-          version_settings: {},
-          pool,
-          ffi_versions: opts.ffiVersions,
-          libvips_found: opts.libvipsFound,
-        });
+        return Promise.resolve(phpVersions());
       case "set_php_settings":
         return Promise.resolve({
           type: "php_versions",
@@ -50,6 +56,8 @@ function stubIpc(opts: {
           default: "8.4",
           settings: {},
         });
+      case "check_php_updates":
+        return Promise.resolve(phpVersions());
       case "list_php_extensions":
         return Promise.resolve({ type: "php_extensions", by_version: extensions });
       case "available_php":
@@ -277,6 +285,98 @@ describe("PhpView per-version configuration", () => {
     expect(wrapper.text()).toContain("not installed");
   });
 
+  it("badges only the versions with Xdebug on and passes availability to the panel", async () => {
+    stubIpc({
+      installed: ["8.1", "8.3", "8.4"],
+      xdebug: {
+        "8.3": { enabled: false, modes: ["debug"], start: "trigger" },
+        "8.4": { enabled: true, modes: ["debug"], start: "always" },
+      },
+      xdebugVersions: ["8.3", "8.4"],
+    });
+    const wrapper = await mountView();
+
+    const rows = wrapper.findAll("tbody tr");
+    const rowFor = (v: string) => rows.find((r) => r.text().includes(`PHP ${v}`));
+    expect(rowFor("8.4")!.find('[data-testid="xdebug-badge"]').exists()).toBe(true);
+    expect(rowFor("8.3")!.find('[data-testid="xdebug-badge"]').exists()).toBe(false);
+    expect(rowFor("8.1")!.find('[data-testid="xdebug-badge"]').exists()).toBe(false);
+    expect(wrapper.findAll('[data-testid="xdebug-badge"]')).toHaveLength(1);
+
+    expect(
+      wrapper.find('button[aria-label="Xdebug for PHP 8.4"]').attributes("aria-checked"),
+    ).toBe("true");
+    expect(wrapper.findAll('[data-testid="xdebug-unavailable"]')).toHaveLength(1);
+
+    const shownPanelFor = async (v: string) => {
+      const tab = wrapper.findAll('[role="tab"]').find((t) => t.text().includes(v));
+      await tab!.trigger("mousedown", { button: 0 });
+      await flushPromises();
+      const shown = wrapper
+        .findAll('[role="tabpanel"]')
+        .filter((p) => p.attributes("hidden") === undefined);
+      expect(shown).toHaveLength(1);
+      return shown[0];
+    };
+
+    const old = await shownPanelFor("8.1");
+    expect(old.find('[data-testid="xdebug-unavailable"]').exists()).toBe(true);
+    expect(
+      old.find('button[aria-label="Xdebug for PHP 8.1"]').attributes("disabled"),
+    ).toBeDefined();
+
+    const current = await shownPanelFor("8.3");
+    expect(current.find('[data-testid="xdebug-unavailable"]').exists()).toBe(false);
+    const sw = current.find('button[aria-label="Xdebug for PHP 8.3"]');
+    expect(sw.attributes("disabled")).toBeUndefined();
+    expect(sw.attributes("aria-checked")).toBe("false");
+  });
+
+  it("applies the Xdebug state from the update check response without a second list call", async () => {
+    stubIpc({ installed: ["8.4"], xdebugVersions: ["8.4"] });
+    let finishCheck: (r: unknown) => void = () => {};
+    const wrapper = await mountView();
+    const base = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((cmd: string, ...rest: unknown[]) => {
+      if (cmd === "check_php_updates") {
+        return new Promise((resolve) => {
+          finishCheck = resolve;
+        });
+      }
+      return base(cmd, ...rest);
+    });
+    const listCalls = () => invokeMock.mock.calls.filter(([c]) => c === "list_php").length;
+    const before = listCalls();
+    expect(wrapper.find('[data-testid="xdebug-badge"]').exists()).toBe(false);
+
+    const refreshBtn = wrapper.findAll("button").find((b) => b.text().trim() === "Refresh");
+    await refreshBtn!.trigger("click");
+    await flushPromises();
+    expect(invokeMock).toHaveBeenCalledWith("check_php_updates", undefined);
+    expect(refreshBtn!.attributes("disabled")).toBeDefined();
+
+    finishCheck({
+      type: "php_versions",
+      installed: ["8.4"],
+      default: "8.4",
+      updates: [],
+      settings: {},
+      version_settings: {},
+      pool: {},
+      xdebug: { "8.4": { enabled: true, modes: ["debug"], start: "always" } },
+      xdebug_versions: ["8.4"],
+    });
+    await flushPromises();
+
+    expect(listCalls()).toBe(before);
+    expect(refreshBtn!.attributes("disabled")).toBeUndefined();
+    expect(wrapper.find('[data-testid="xdebug-badge"]').exists()).toBe(true);
+    expect(
+      wrapper.find('button[aria-label="Xdebug for PHP 8.4"]').attributes("aria-checked"),
+    ).toBe("true");
+    expect(useToast().toasts.value.map((t) => t.title)).toContain("Update check complete");
+  });
+
   it("has no per-version card when nothing is installed or registered", async () => {
     stubIpc({ installed: [] });
     const wrapper = await mountView();
@@ -370,5 +470,43 @@ describe("PhpView FFI switch", () => {
     expect(wrapper.find('[data-testid="ffi-unavailable"]').exists()).toBe(false);
     expect(wrapper.find(toggle).exists()).toBe(true);
     expect(wrapper.find(toggle).attributes("disabled")).toBeUndefined();
+  });
+});
+
+describe("PhpView uninstall", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    resetResourceCache();
+    useDaemon().report.value = null;
+  });
+
+  afterEach(() => {
+    mounted.forEach((w) => w.unmount());
+    mounted.length = 0;
+  });
+
+  it("reloads the PHP list after a failed uninstall and keeps the error toast", async () => {
+    stubIpc({ installed: ["8.1", "8.4"] });
+    const wrapper = await mountView();
+    const base = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((cmd: string, ...rest: unknown[]) =>
+      cmd === "uninstall_php"
+        ? Promise.reject(new Error("pool for PHP 8.1 is still in use"))
+        : base(cmd, ...rest),
+    );
+    const listCalls = () => invokeMock.mock.calls.filter(([c]) => c === "list_php").length;
+    const before = listCalls();
+
+    (wrapper.vm as unknown as { openUninstall: (v: string) => void }).openUninstall("8.1");
+    await flushPromises();
+    const confirm = wrapper
+      .findAll("button")
+      .find((b) => b.text().trim() === "Uninstall" && b.attributes("aria-haspopup") === undefined);
+    await confirm!.trigger("click");
+    await flushPromises();
+
+    expect(invokeMock).toHaveBeenCalledWith("uninstall_php", { version: "8.1" });
+    expect(listCalls()).toBeGreaterThan(before);
+    expect(useToast().toasts.value.map((t) => t.title)).toContain("Couldn't uninstall PHP 8.1");
   });
 });

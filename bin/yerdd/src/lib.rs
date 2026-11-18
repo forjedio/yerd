@@ -50,6 +50,7 @@ pub mod wordpress_login;
 pub mod wordpress_url_sync;
 pub mod wordpress_users;
 pub mod wordpress_versions;
+pub mod xdebug;
 
 #[cfg(test)]
 pub mod test_support;
@@ -394,6 +395,25 @@ async fn run_until_shutdown(
             }
             crate::ipc_server::refresh_pcov_and_shims(&state).await;
             crate::ipc_server::write_cli_ini_now(&state).await;
+        })
+    };
+
+    let _xdebug_refresh = {
+        let state = daemon.state.clone();
+        let mut rx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if !state.network.wait_ready_or_shutdown(&mut rx).await {
+                return;
+            }
+            let dl = crate::network::downloader(&state).await;
+            crate::xdebug::refresh_enabled(
+                &state,
+                &dl,
+                &yerd_php::TokioCommandRunner,
+                crate::ext_install::host_os_arch(),
+                crate::xdebug::FETCH_DEADLINE,
+            )
+            .await;
         })
     };
 

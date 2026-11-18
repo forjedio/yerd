@@ -128,6 +128,7 @@ The main command groups registered via `main.rs`'s `tauri::generate_handler!` (t
 | `set_default_php` | `SetDefaultPhp { version }` | |
 | `update_php` | `UpdatePhp { version }` | `version: Option<PhpVersion>`; `None` = update all |
 | `set_php_settings` | `SetPhpSettings { settings }` | `BTreeMap<String, String>` |
+| `set_xdebug` | `SetXdebug { version, enabled, modes, start }` | `version: Option<PhpVersion>` (`None` = default PHP); `modes: Option<Vec<XdebugMode>>`, `start: Option<XdebugStart>` keep the current value when `None`; replies `PhpVersions` |
 | `restart_php` | `RestartPhp { version }` | |
 | `restart_all_php` | `RestartAllPhp` | |
 | `uninstall_php` | `UninstallPhp { version }` | |

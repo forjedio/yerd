@@ -1,23 +1,30 @@
-import { mount } from "@vue/test-utils";
+import { flushPromises, mount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { nextTick } from "vue";
 
 import PhpVersionPanel from "./PhpVersionPanel.vue";
+import { useToast } from "@/composables/useToast";
 import type { PhpExtInfo } from "@/ipc/types";
 
 const setPhpDirectives = vi.hoisted(() => vi.fn());
 const setPhpPoolSettings = vi.hoisted(() => vi.fn());
 const removePhpExtension = vi.hoisted(() => vi.fn());
 const setPhpVersionSettings = vi.hoisted(() => vi.fn());
+const setXdebug = vi.hoisted(() => vi.fn());
+const listPhp = vi.hoisted(() => vi.fn());
+const openInBrowser = vi.hoisted(() => vi.fn());
 
 // Vitest module mocks are total, so every client symbol the panel imports has
 // to appear here or it arrives as undefined.
 vi.mock("@/ipc/client", () => ({
   IpcError: class IpcError extends Error {},
+  listPhp,
+  openInBrowser,
   removePhpExtension,
   setPhpDirectives,
   setPhpPoolSettings,
   setPhpVersionSettings,
+  setXdebug,
 }));
 
 // The row actions live in a reka-ui dropdown, which needs a real pointer stack
@@ -62,6 +69,8 @@ function mountPanel(
       extensionsLoading: false,
       ffiAvailable: false,
       libvipsFound: null,
+      xdebug: null,
+      xdebugAvailable: true,
       ...props,
     },
     global: { stubs: dropdownStubs },
@@ -76,6 +85,14 @@ function button(w: ReturnType<typeof mountPanel>, label: string) {
 /** The Save/Discard buttons carry no aria-label; find them by their text. */
 function byText(w: ReturnType<typeof mountPanel>, text: string) {
   return w.findAll("button").find((b) => b.text().includes(text));
+}
+
+/** The pool's Apply button; the Xdebug section above it has its own. */
+function poolApply(w: ReturnType<typeof mountPanel>) {
+  return w
+    .find('[data-testid="pool-section"]')
+    .findAll("button")
+    .find((b) => b.text().includes("Apply"));
 }
 
 /** The most recent `dirty` payload (the ES2020 lib target rules out `.at`). */
@@ -201,7 +218,7 @@ describe("PhpVersionPanel FPM pool size", () => {
   it("sets a pool value and reports the refreshed list", async () => {
     const w = mountPanel();
     await w.find(poolInput).setValue("32");
-    await byText(w, "Apply")!.trigger("click");
+    await poolApply(w)!.trigger("click");
     await vi.waitFor(() => expect(setPhpPoolSettings).toHaveBeenCalled());
 
     expect(setPhpPoolSettings).toHaveBeenCalledWith("8.3", { max_children: "32" });
@@ -212,7 +229,7 @@ describe("PhpVersionPanel FPM pool size", () => {
     setPhpPoolSettings.mockResolvedValue({ installed: ["8.3"], default: "8.3" });
     const w = mountPanel({ pool: { max_children: "64" } });
     await w.find(poolInput).setValue("");
-    await byText(w, "Apply")!.trigger("click");
+    await poolApply(w)!.trigger("click");
     await vi.waitFor(() => expect(setPhpPoolSettings).toHaveBeenCalled());
 
     expect(setPhpPoolSettings).toHaveBeenCalledWith("8.3", { max_children: "" });
@@ -222,7 +239,7 @@ describe("PhpVersionPanel FPM pool size", () => {
     const w = mountPanel();
     for (const value of ["0", "2000"]) {
       await w.find(poolInput).setValue(value);
-      expect(byText(w, "Apply")!.attributes("disabled")).toBeDefined();
+      expect(poolApply(w)!.attributes("disabled")).toBeDefined();
       expect(w.text()).toContain("between 1 and 1024");
     }
     expect(setPhpPoolSettings).not.toHaveBeenCalled();
@@ -409,5 +426,376 @@ describe("PhpVersionPanel FFI override", () => {
       globalSettings: { "ffi.enable": "On" },
     });
     expect(found.find('[data-testid="libvips-hint"]').exists()).toBe(false);
+  });
+});
+
+describe("PhpVersionPanel Xdebug", () => {
+  const xdebugOn = {
+    installed: ["8.3"],
+    default: "8.3",
+    xdebug: { "8.3": { enabled: true, modes: ["debug"], start: "always" } },
+    xdebug_versions: ["8.3"],
+  };
+
+  function modeBox(w: ReturnType<typeof mountPanel>, mode: string) {
+    return w.find(`input[aria-label="Xdebug ${mode} mode for PHP 8.3"]`);
+  }
+
+  function xdebugSwitch(w: ReturnType<typeof mountPanel>) {
+    return w.find('button[aria-label="Xdebug for PHP 8.3"]');
+  }
+
+  function startSelect(w: ReturnType<typeof mountPanel>) {
+    return w.find('select[aria-label="Xdebug start for PHP 8.3"]');
+  }
+
+  function xdebugApply(w: ReturnType<typeof mountPanel>) {
+    return w.find('[data-testid="xdebug-apply"]');
+  }
+
+  beforeEach(() => {
+    setXdebug.mockReset();
+    setXdebug.mockResolvedValue(xdebugOn);
+    listPhp.mockReset();
+    listPhp.mockResolvedValue(xdebugOn);
+    openInBrowser.mockReset();
+  });
+
+  it("turns Xdebug on immediately from the switch", async () => {
+    const w = mountPanel();
+    expect(xdebugSwitch(w).attributes("aria-checked")).toBe("false");
+    await xdebugSwitch(w).trigger("click");
+    await vi.waitFor(() => expect(setXdebug).toHaveBeenCalled());
+
+    expect(setXdebug).toHaveBeenCalledWith("8.3", true);
+    expect(w.emitted("updated")?.[0]).toEqual([xdebugOn]);
+  });
+
+  it("sends staged modes and start with the switch when turning on", async () => {
+    const staged = {
+      ...xdebugOn,
+      xdebug: { "8.3": { enabled: true, modes: ["debug", "profile"], start: "trigger" } },
+    };
+    setXdebug.mockResolvedValue(staged);
+    const w = mountPanel();
+    await modeBox(w, "profile").setValue(true);
+    await w.find('select[aria-label="Xdebug start for PHP 8.3"]').setValue("trigger");
+    expect(lastDirty(w)).toEqual([true]);
+    await xdebugSwitch(w).trigger("click");
+    await vi.waitFor(() => expect(setXdebug).toHaveBeenCalled());
+
+    expect(setXdebug).toHaveBeenCalledTimes(1);
+    expect(setXdebug).toHaveBeenCalledWith("8.3", true, ["debug", "profile"], "trigger");
+    expect(lastDirty(w)).toEqual([false]);
+    expect(xdebugApply(w).attributes("disabled")).toBeDefined();
+  });
+
+  it("keeps staged edits and sends only the switch when turning off", async () => {
+    setXdebug.mockResolvedValue({ ...xdebugOn, xdebug: {} });
+    const w = mountPanel({ xdebug: xdebugOn.xdebug["8.3"] });
+    await modeBox(w, "trace").setValue(true);
+    await xdebugSwitch(w).trigger("click");
+    await vi.waitFor(() => expect(setXdebug).toHaveBeenCalled());
+
+    expect(setXdebug).toHaveBeenCalledWith("8.3", false);
+    expect((modeBox(w, "trace").element as HTMLInputElement).checked).toBe(true);
+    expect(lastDirty(w)).toEqual([true]);
+  });
+
+  it("turns Xdebug off from the switch when it is on", async () => {
+    const w = mountPanel({ xdebug: xdebugOn.xdebug["8.3"] });
+    expect(xdebugSwitch(w).attributes("aria-checked")).toBe("true");
+    await xdebugSwitch(w).trigger("click");
+    await vi.waitFor(() => expect(setXdebug).toHaveBeenCalled());
+
+    expect(setXdebug).toHaveBeenCalledWith("8.3", false);
+  });
+
+  it("seeds debug and always from the default when the version has no entry", () => {
+    const w = mountPanel();
+    expect((modeBox(w, "debug").element as HTMLInputElement).checked).toBe(true);
+    expect((modeBox(w, "profile").element as HTMLInputElement).checked).toBe(false);
+    const start = w.find('select[aria-label="Xdebug start for PHP 8.3"]');
+    expect((start.element as HTMLSelectElement).value).toBe("always");
+    expect(xdebugApply(w).attributes("disabled")).toBeDefined();
+  });
+
+  it("stages a mode change as unsaved work without calling the daemon", async () => {
+    const w = mountPanel();
+    await modeBox(w, "profile").setValue(true);
+
+    expect(lastDirty(w)).toEqual([true]);
+    expect(xdebugApply(w).attributes("disabled")).toBeUndefined();
+    expect(setXdebug).not.toHaveBeenCalled();
+  });
+
+  it("applies the staged modes and start together and keeps the saved values", async () => {
+    const saved = {
+      ...xdebugOn,
+      xdebug: { "8.3": { enabled: true, modes: ["debug", "profile"], start: "trigger" } },
+    };
+    setXdebug.mockResolvedValue(saved);
+    const w = mountPanel({ xdebug: xdebugOn.xdebug["8.3"] });
+    await modeBox(w, "profile").setValue(true);
+    await startSelect(w).setValue("trigger");
+    await xdebugApply(w).trigger("click");
+    await vi.waitFor(() => expect(setXdebug).toHaveBeenCalled());
+
+    expect(setXdebug).toHaveBeenCalledWith("8.3", null, ["debug", "profile"], "trigger");
+    expect(w.emitted("updated")?.[0]).toEqual([saved]);
+    expect(lastDirty(w)).toEqual([false]);
+    expect((modeBox(w, "profile").element as HTMLInputElement).checked).toBe(true);
+    expect((startSelect(w).element as HTMLSelectElement).value).toBe("trigger");
+  });
+
+  it("applies only the modes when only the modes were edited", async () => {
+    const w = mountPanel({ xdebug: xdebugOn.xdebug["8.3"] });
+    await modeBox(w, "profile").setValue(true);
+    await xdebugApply(w).trigger("click");
+    await vi.waitFor(() => expect(setXdebug).toHaveBeenCalled());
+
+    expect(setXdebug).toHaveBeenCalledWith("8.3", null, ["debug", "profile"], undefined);
+  });
+
+  it("applies only the start when only the start was edited", async () => {
+    const w = mountPanel({ xdebug: xdebugOn.xdebug["8.3"] });
+    await startSelect(w).setValue("trigger");
+    await xdebugApply(w).trigger("click");
+    await vi.waitFor(() => expect(setXdebug).toHaveBeenCalled());
+
+    expect(setXdebug).toHaveBeenCalledWith("8.3", null, undefined, "trigger");
+  });
+
+  it("sends only the edited start with the switch when turning on", async () => {
+    const w = mountPanel();
+    await startSelect(w).setValue("trigger");
+    await xdebugSwitch(w).trigger("click");
+    await vi.waitFor(() => expect(setXdebug).toHaveBeenCalled());
+
+    expect(setXdebug).toHaveBeenCalledWith("8.3", true, undefined, "trigger");
+  });
+
+  it("refreshes an untouched field while another holds an edit", async () => {
+    const w = mountPanel({ xdebug: xdebugOn.xdebug["8.3"] });
+    await modeBox(w, "profile").setValue(true);
+    await w.setProps({ xdebug: { enabled: true, modes: ["debug"], start: "trigger" } });
+
+    expect((startSelect(w).element as HTMLSelectElement).value).toBe("trigger");
+    expect((modeBox(w, "profile").element as HTMLInputElement).checked).toBe(true);
+
+    await modeBox(w, "profile").setValue(false);
+    expect(lastDirty(w)).toEqual([false]);
+    expect((startSelect(w).element as HTMLSelectElement).value).toBe("trigger");
+  });
+
+  it("shows the latest saved modes when an edit is reverted after a refresh", async () => {
+    const w = mountPanel({ xdebug: xdebugOn.xdebug["8.3"] });
+    await modeBox(w, "profile").setValue(true);
+    await w.setProps({ xdebug: { enabled: true, modes: ["debug", "trace"], start: "always" } });
+    await modeBox(w, "profile").setValue(false);
+
+    expect((modeBox(w, "trace").element as HTMLInputElement).checked).toBe(true);
+    expect((modeBox(w, "profile").element as HTMLInputElement).checked).toBe(false);
+    expect(lastDirty(w)).toEqual([false]);
+  });
+
+  it("reloads the PHP state after a failed save before unlocking the controls", async () => {
+    setXdebug.mockRejectedValue(new Error("daemon did not respond within 120s"));
+    let finishRead: (r: typeof xdebugOn) => void = () => {};
+    listPhp.mockReturnValue(
+      new Promise((resolve) => {
+        finishRead = resolve;
+      }),
+    );
+    const w = mountPanel({ xdebug: xdebugOn.xdebug["8.3"] });
+    await modeBox(w, "profile").setValue(true);
+    await xdebugApply(w).trigger("click");
+    await vi.waitFor(() => expect(listPhp).toHaveBeenCalled());
+    await flushPromises();
+
+    expect(xdebugApply(w).attributes("disabled")).toBeDefined();
+    expect(w.emitted("updated")).toBeUndefined();
+
+    finishRead(xdebugOn);
+    await flushPromises();
+
+    expect(w.emitted("updated")?.[0]).toEqual([xdebugOn]);
+    expect(xdebugApply(w).attributes("disabled")).toBeUndefined();
+  });
+
+  it("unlocks the controls and says so when the recovery read never answers", async () => {
+    vi.useFakeTimers();
+    try {
+      setXdebug.mockRejectedValue(new Error("daemon did not respond within 120s"));
+      listPhp.mockReturnValue(new Promise(() => {}));
+      const w = mountPanel({ xdebug: xdebugOn.xdebug["8.3"] });
+      await modeBox(w, "profile").setValue(true);
+      await xdebugApply(w).trigger("click");
+      await flushPromises();
+
+      expect(listPhp).toHaveBeenCalled();
+      expect(xdebugApply(w).attributes("disabled")).toBeDefined();
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await flushPromises();
+
+      expect(xdebugApply(w).attributes("disabled")).toBeUndefined();
+      expect(w.emitted("updated")).toBeUndefined();
+      expect(useToast().toasts.value.map((t) => t.title)).toContain(
+        "Couldn't confirm PHP 8.3's saved Xdebug state",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("applies a recovery read that resolves after the timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      setXdebug.mockRejectedValue(new Error("daemon did not respond within 120s"));
+      let finishRead: (r: typeof xdebugOn) => void = () => {};
+      listPhp.mockReturnValue(
+        new Promise((resolve) => {
+          finishRead = resolve;
+        }),
+      );
+      const w = mountPanel({ xdebug: xdebugOn.xdebug["8.3"] });
+      await modeBox(w, "profile").setValue(true);
+      await xdebugApply(w).trigger("click");
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await flushPromises();
+
+      expect(xdebugApply(w).attributes("disabled")).toBeUndefined();
+      expect(w.emitted("updated")).toBeUndefined();
+
+      finishRead(xdebugOn);
+      await flushPromises();
+
+      expect(w.emitted("updated")).toEqual([[xdebugOn]]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops a late recovery read once another save has started", async () => {
+    vi.useFakeTimers();
+    try {
+      setXdebug.mockRejectedValueOnce(new Error("daemon did not respond within 120s"));
+      let finishRead: (r: typeof xdebugOn) => void = () => {};
+      listPhp.mockReturnValue(
+        new Promise((resolve) => {
+          finishRead = resolve;
+        }),
+      );
+      const w = mountPanel({ xdebug: xdebugOn.xdebug["8.3"] });
+      await modeBox(w, "profile").setValue(true);
+      await xdebugApply(w).trigger("click");
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await flushPromises();
+
+      const saved = {
+        ...xdebugOn,
+        xdebug: { "8.3": { enabled: true, modes: ["debug", "profile"], start: "always" } },
+      };
+      let finishRetry: (r: typeof saved) => void = () => {};
+      setXdebug.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishRetry = resolve;
+        }),
+      );
+      await xdebugApply(w).trigger("click");
+      await flushPromises();
+      finishRead(xdebugOn);
+      await flushPromises();
+
+      expect(w.emitted("updated")).toBeUndefined();
+
+      finishRetry(saved);
+      await flushPromises();
+
+      expect(w.emitted("updated")).toEqual([[saved]]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("says the state is unconfirmed when the recovery read fails", async () => {
+    setXdebug.mockRejectedValue(new Error("daemon did not respond within 120s"));
+    listPhp.mockRejectedValue(new Error("daemon unreachable"));
+    const w = mountPanel({ xdebug: xdebugOn.xdebug["8.3"] });
+    await modeBox(w, "profile").setValue(true);
+    await xdebugApply(w).trigger("click");
+    await vi.waitFor(() => expect(listPhp).toHaveBeenCalled());
+    await flushPromises();
+
+    expect(xdebugApply(w).attributes("disabled")).toBeUndefined();
+    expect(w.emitted("updated")).toBeUndefined();
+    expect(
+      useToast().toasts.value.find(
+        (t) => t.detail === "Yerd couldn't read the current settings. Refresh to try again.",
+      )?.title,
+    ).toBe("Couldn't confirm PHP 8.3's saved Xdebug state");
+  });
+
+  it("explains the managed directives while Xdebug is on", () => {
+    expect(mountPanel().find('[data-testid="xdebug-directives-hint"]').exists()).toBe(false);
+    const on = mountPanel({ xdebug: xdebugOn.xdebug["8.3"] });
+    expect(on.find('[data-testid="xdebug-directives-hint"]').text()).toContain("opcache.jit");
+  });
+
+  it("won't let the last checked mode be unchecked", async () => {
+    const w = mountPanel();
+    const debug = modeBox(w, "debug");
+    expect(debug.attributes("disabled")).toBeDefined();
+
+    await modeBox(w, "coverage").setValue(true);
+    expect(debug.attributes("disabled")).toBeUndefined();
+    await debug.setValue(false);
+    expect(modeBox(w, "coverage").attributes("disabled")).toBeDefined();
+    expect((modeBox(w, "coverage").element as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("discards staged Xdebug edits with the rest of the panel", async () => {
+    const w = mountPanel();
+    await modeBox(w, "trace").setValue(true);
+    await byText(w, "Discard")!.trigger("click");
+
+    expect((modeBox(w, "trace").element as HTMLInputElement).checked).toBe(false);
+    expect(lastDirty(w)).toEqual([false]);
+  });
+
+  it("shows not available and disables every control when no build exists", () => {
+    const w = mountPanel({ xdebugAvailable: false });
+    expect(w.find('[data-testid="xdebug-unavailable"]').text()).toContain(
+      "Xdebug isn't published for this PHP version on this platform.",
+    );
+    expect(xdebugSwitch(w).attributes("disabled")).toBeDefined();
+    expect(modeBox(w, "develop").attributes("disabled")).toBeDefined();
+    expect(
+      w.find('select[aria-label="Xdebug start for PHP 8.3"]').attributes("disabled"),
+    ).toBeDefined();
+    expect(xdebugApply(w).attributes("disabled")).toBeDefined();
+    expect(w.find('[data-testid="xdebug-ide-hint"]').exists()).toBe(false);
+  });
+
+  it("still lets an enabled but unavailable version be switched off", () => {
+    const w = mountPanel({ xdebugAvailable: false, xdebug: xdebugOn.xdebug["8.3"] });
+    expect(xdebugSwitch(w).attributes("disabled")).toBeUndefined();
+  });
+
+  it("shows the IDE port hint and opens the guide", async () => {
+    const w = mountPanel();
+    const hint = w.find('[data-testid="xdebug-ide-hint"]');
+    expect(hint.text()).toContain("port 9003 by default");
+    expect(hint.text()).toContain("xdebug.client_port");
+    await hint.find("button").trigger("click");
+    expect(openInBrowser).toHaveBeenCalledWith("https://yerd.app/guide/xdebug");
+  });
+
+  it("is hidden for a version that is no longer installed", () => {
+    const w = mountPanel({ installedVersion: false, extensions: [XDEBUG] });
+    expect(w.find('[data-testid="xdebug-section"]').exists()).toBe(false);
   });
 });

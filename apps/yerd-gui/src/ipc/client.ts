@@ -57,6 +57,8 @@ import type {
   UpdateStatusResponse,
   WordPressAdminUser,
   WordPressVersionInfo,
+  XdebugMode,
+  XdebugStart,
 } from "./types";
 
 /** A normalised IPC/host failure surfaced to the UI (toasts, banners). */
@@ -489,6 +491,30 @@ export async function setPhpPoolSettings(
 ): Promise<PhpVersionsResponse> {
   return ensureOk(
     await call<Response>("set_php_pool_settings", { version, settings }),
+  ) as PhpVersionsResponse;
+}
+
+/**
+ * Change the bundled Xdebug for one version: turn it on or off, and optionally
+ * change its modes and start trigger. A `null` `enabled` and an omitted
+ * `modes`/`start` keep the version's current value; a `null` version means the
+ * default PHP. The bridge gives up after 120s; the daemon itself gives up on a
+ * stuck download or probe after 90s and reports `xdebug_unavailable` with
+ * nothing changed.
+ */
+export async function setXdebug(
+  version: PhpVersion | null,
+  enabled: boolean | null,
+  modes?: XdebugMode[],
+  start?: XdebugStart,
+): Promise<PhpVersionsResponse> {
+  return ensureOk(
+    await call<Response>("set_xdebug", {
+      version,
+      enabled,
+      modes: modes ?? null,
+      start: start ?? null,
+    }),
   ) as PhpVersionsResponse;
 }
 

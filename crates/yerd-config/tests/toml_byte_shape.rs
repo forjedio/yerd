@@ -54,8 +54,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 28\n"),
-        "expected first line `version = 28`; got: {s}"
+        s.starts_with("version = 29\n"),
+        "expected first line `version = 29`; got: {s}"
     );
 }
 
@@ -453,6 +453,10 @@ fn default_config_emits_no_version_settings_or_directives_tables() {
         !s.contains("[php.pool"),
         "default config must omit pool; got: {s}"
     );
+    assert!(
+        !s.contains("xdebug"),
+        "default config must omit xdebug; got: {s}"
+    );
 }
 
 #[test]
@@ -767,4 +771,51 @@ fn manual_network_section_emits_last_and_round_trips() {
 
     let default = Config::default().to_toml().unwrap();
     assert!(!default.contains("[network]"), "got: {default}");
+}
+
+#[test]
+fn populated_xdebug_emits_exact_table_and_round_trips() {
+    let mut c = Config::default();
+    c.php.xdebug.insert(
+        PhpVersion::new(8, 4),
+        yerd_core::XdebugSettings {
+            enabled: true,
+            ..yerd_core::XdebugSettings::default()
+        },
+    );
+    let s = c.to_toml().unwrap();
+    assert!(
+        s.contains(
+            "[php.xdebug.\"8.4\"]\nenabled = true\nmodes = [\"debug\"]\nstart = \"always\"\n"
+        ),
+        "got: {s}"
+    );
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
+}
+
+#[test]
+fn default_xdebug_entry_is_not_written() {
+    let mut c = Config::default();
+    c.php
+        .xdebug
+        .insert(PhpVersion::new(8, 3), yerd_core::XdebugSettings::default());
+    c.php.xdebug.insert(
+        PhpVersion::new(8, 4),
+        yerd_core::XdebugSettings {
+            enabled: true,
+            ..yerd_core::XdebugSettings::default()
+        },
+    );
+    let s = c.to_toml().unwrap();
+    assert!(!s.contains("[php.xdebug.\"8.3\"]"), "got: {s}");
+    assert!(s.contains("[php.xdebug.\"8.4\"]"), "got: {s}");
+
+    let mut only_default = Config::default();
+    only_default
+        .php
+        .xdebug
+        .insert(PhpVersion::new(8, 3), yerd_core::XdebugSettings::default());
+    let s = only_default.to_toml().unwrap();
+    assert!(!s.contains("xdebug"), "got: {s}");
 }

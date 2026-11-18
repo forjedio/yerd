@@ -296,6 +296,7 @@ The pcov code-coverage launcher (the [`yerd` multi-call binary](./yerd#cover-shi
 - `phpcover` - points at `yerd_bin`; resolves the default version at run time.
 - per installed version `v`: `php<v>` → that version's clean CLI binary, and `php<v>cover` → `yerd_bin`.
 - it then **prunes** managed `php<X.Y>` / `php<X.Y>cover` symlinks whose version is no longer installed. `managed_shim_version` matches *only* canonical names (rejecting `php`, `phpcover`, leading-zero spellings, and foreign files like `phpunit`), so the pruner only ever removes links yerd created.
+- **ownership** (`is_yerd_link`) - a link is Yerd's to replace or prune when it points at `yerd_bin`, at any file named like it (a moved app, macOS App Translocation, a dev build), or at an absolute path inside `{data}/php/` (older builds linked `php` and `php<v>` straight at a bundled binary, so those links migrate to the wrapper). Any other link or regular file is left alone with a warning.
 
 `versioned_shim_name` emits the canonical dotted form; `set_default_shim` (used by `set_default_php`) atomically repoints just `php`. All link writes go through an atomic temp-then-rename `place_symlink`.
 

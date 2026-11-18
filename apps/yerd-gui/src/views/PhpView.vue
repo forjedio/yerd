@@ -271,15 +271,15 @@ function onExtensionsUpdated(map: PhpExtensionsMap): void {
   mutateExts(() => map);
 }
 
+/**
+ * Check for patch updates. The daemon answers with the full PHP state, so it
+ * replaces the cached view whole and settings such as Xdebug stay current.
+ */
 async function refreshUpdates(): Promise<void> {
   busy.value = "refresh";
   try {
     const r = await checkPhpUpdates();
-    mutate((cur) =>
-      cur
-        ? { ...cur, installed: r.installed, default: r.default, updates: r.updates ?? [] }
-        : { ...r, updates: r.updates ?? [] },
-    );
+    mutate(() => ({ ...r, updates: r.updates ?? [] }));
     toast.success(
       "Update check complete",
       r.updates?.length ? `${r.updates.length} update(s) available` : "All up to date",
@@ -384,6 +384,7 @@ async function confirmUninstall(close: () => void): Promise<void> {
     await reloadPhp({ force: true });
   } catch (e) {
     toast.error(`Couldn't uninstall PHP ${v}`, (e as IpcError).message);
+    await reloadPhp({ force: true });
   } finally {
     busy.value = null;
     uninstallTarget.value = null;
@@ -595,6 +596,13 @@ onUnmounted(
                   <Star class="size-3" /> default
                 </Badge>
                 <Badge v-if="isLegacyVersion(v)" variant="warning">legacy</Badge>
+                <Badge
+                  v-if="data?.xdebug?.[v]?.enabled"
+                  variant="warning"
+                  data-testid="xdebug-badge"
+                >
+                  Xdebug on
+                </Badge>
               </div>
             </td>
             <td class="py-3 pr-4">
@@ -824,6 +832,8 @@ onUnmounted(
                     :pool="data?.pool?.[v] ?? {}"
                     :ffi-available="ffiVersions.includes(v)"
                     :libvips-found="data?.libvips_found ?? null"
+                    :xdebug="data?.xdebug?.[v] ?? null"
+                    :xdebug-available="(data?.xdebug_versions ?? []).includes(v)"
                     :extensions="extensionsFor(v)"
                     :installed-version="installed.includes(v)"
                     :extensions-loading="extLoading"

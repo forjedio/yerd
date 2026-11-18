@@ -256,6 +256,11 @@ struct PhpSectionSer<'a> {
     // empty for the same byte-stability reason.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pool: BTreeMap<String, &'a BTreeMap<String, String>>,
+    // Sub-tables keyed by version string (`[php.xdebug."8.4"]`). Skipped when
+    // empty for the same byte-stability reason; entries equal to the default
+    // are never written, so a default entry can't leave an empty-looking table.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    xdebug: BTreeMap<String, &'a yerd_core::XdebugSettings>,
     // Array-of-tables keyed by version string (`[[php.extensions."8.5"]]`).
     // Skipped when empty so a default config emits no `[php.extensions]` region
     // (byte-shape goldens assume no extra tables). A trailing sub-table region,
@@ -362,6 +367,13 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 .map(|(v, m)| (v.to_string(), m))
                 .collect(),
             pool: c.php.pool.iter().map(|(v, m)| (v.to_string(), m)).collect(),
+            xdebug: c
+                .php
+                .xdebug
+                .iter()
+                .filter(|(_, s)| **s != yerd_core::XdebugSettings::default())
+                .map(|(v, s)| (v.to_string(), s))
+                .collect(),
             extensions: c
                 .php
                 .extensions
@@ -633,8 +645,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 28\n"),
-            "expected `version = 28` first line; got: {s}"
+            s.starts_with("version = 29\n"),
+            "expected `version = 29` first line; got: {s}"
         );
     }
 

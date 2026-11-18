@@ -30,6 +30,13 @@ pub enum ArgError {
         /// The permitted values, comma-separated.
         allowed: String,
     },
+    /// An argument the tool's schema does not declare.
+    #[error("unexpected argument `{0}`")]
+    Unexpected(String),
+    /// A tool that changes nothing on its own was called without any of the
+    /// arguments that would make it do something.
+    #[error("at least one of {0} is required")]
+    NeedsOneOf(&'static str),
     /// An argument had the right type but an invalid value.
     #[error("argument `{name}` is invalid: {reason}")]
     Invalid {

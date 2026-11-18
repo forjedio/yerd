@@ -23,22 +23,34 @@ import {
 import Input from "@/components/ui/Input.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import Switch from "@/components/ui/Switch.vue";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useStagedField } from "@/composables/useStagedField";
 import { useToast } from "@/composables/useToast";
 import {
   IpcError,
+  listPhp,
+  openInBrowser,
   type PhpExtensionsMap,
   removePhpExtension,
   setPhpDirectives,
   setPhpPoolSettings,
   setPhpVersionSettings,
+  setXdebug,
 } from "@/ipc/client";
-import type { PhpExtInfo, PhpVersion, PhpVersionsResponse } from "@/ipc/types";
+import type {
+  PhpExtInfo,
+  PhpVersion,
+  PhpVersionsResponse,
+  XdebugMode,
+  XdebugSettings,
+  XdebugStart,
+} from "@/ipc/types";
 import {
   DISPLAY_ERRORS_HINT,
   directiveNameProblem,
@@ -52,6 +64,13 @@ import {
   poolMaxChildrenProblem,
   SETTING_KEYS,
   TEXT_SETTINGS,
+  XDEBUG_DEFAULT,
+  XDEBUG_DIRECTIVES_HINT,
+  XDEBUG_DOCS_URL,
+  XDEBUG_IDE_HINT,
+  XDEBUG_MODES,
+  XDEBUG_START_OPTIONS,
+  XDEBUG_UNAVAILABLE_HINT,
 } from "@/lib/phpSettings";
 
 const props = defineProps<{
@@ -78,6 +97,10 @@ const props = defineProps<{
   ffiAvailable: boolean;
   /** Whether libvips was found on the host; `null` when not checked. */
   libvipsFound: boolean | null;
+  /** This version's Xdebug settings; `null` means the default (off). */
+  xdebug: XdebugSettings | null;
+  /** Whether a bundled Xdebug is published for this version on this host. */
+  xdebugAvailable: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -100,6 +123,16 @@ const toast = useToast();
 // clobber the first's result or discard edits made while it was away.
 const busy = ref<string | null>(null);
 const isBusy = computed(() => busy.value !== null);
+
+/** Counts the panel's mutations, so a late recovery read can tell it was overtaken. */
+let mutationSeq = 0;
+watch(
+  busy,
+  (b) => {
+    if (b !== null) mutationSeq += 1;
+  },
+  { flush: "sync" },
+);
 
 // ── per-version settings form ──
 // Fields hold only the override value; an empty field means "inherit" (the
@@ -236,6 +269,140 @@ async function savePool(): Promise<void> {
   }
 }
 
+// ── Xdebug ──
+// The switch applies at once. Modes and the start trigger are staged behind
+// Apply; each field reconciles with daemon refreshes on its own, and a save
+// sends only the fields the user edited so the daemon keeps the rest.
+const xdebugEnabled = computed(() => props.xdebug?.enabled ?? false);
+const modesField = useStagedField<XdebugMode[]>([...XDEBUG_DEFAULT.modes], (v) =>
+  v.join(","),
+);
+const startField = useStagedField<XdebugStart>(XDEBUG_DEFAULT.start);
+const { draft: xdebugModes } = modesField;
+const { draft: xdebugStart } = startField;
+
+const xdebugDirty = computed(() => modesField.dirty.value || startField.dirty.value);
+
+function syncXdebug(x: XdebugSettings | null): void {
+  const s = x ?? XDEBUG_DEFAULT;
+  modesField.sync([...s.modes]);
+  startField.sync(s.start);
+}
+
+function seedXdebug(x: XdebugSettings | null): void {
+  const s = x ?? XDEBUG_DEFAULT;
+  modesField.reset([...s.modes]);
+  startField.reset(s.start);
+}
+
+watch(() => props.xdebug, syncXdebug, { immediate: true });
+
+/** Whether the mode's checkbox is locked: the last checked mode can't be cleared. */
+function modeLocked(m: XdebugMode): boolean {
+  return xdebugModes.value.length === 1 && xdebugModes.value[0] === m;
+}
+
+function setMode(m: XdebugMode, checked: boolean): void {
+  if (!checked && modeLocked(m)) return;
+  const next = new Set(xdebugModes.value);
+  if (checked) next.add(m);
+  else next.delete(m);
+  modesField.edit(XDEBUG_MODES.map((o) => o.value).filter((v) => next.has(v)));
+}
+
+/** The staged modes and start, each only when the user edited it. */
+function editedXdebug(): [XdebugMode[] | undefined, XdebugStart | undefined] {
+  return [
+    modesField.dirty.value ? [...xdebugModes.value] : undefined,
+    startField.dirty.value ? xdebugStart.value : undefined,
+  ];
+}
+
+/** How long the post-failure state read may take before the controls unlock anyway. */
+const RECOVERY_READ_MS = 10_000;
+
+/**
+ * After a failed save the outcome is unknown when the bridge timed out or lost
+ * the daemon, so fetch the daemon's current state before the controls unlock.
+ * The read is bounded: a daemon that accepts connections but never answers
+ * would otherwise keep every PHP control locked. A read that lands after the
+ * timeout is still applied, unless another save started in the meantime, since
+ * its snapshot may predate that save. A read that times out or fails leaves
+ * the state unconfirmed, and the user is told so.
+ */
+async function reloadAfterFailure(): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), RECOVERY_READ_MS);
+  });
+  const read = listPhp().catch(() => null);
+  const r = await Promise.race([read, timedOut]);
+  clearTimeout(timer);
+  if (r !== "timeout" && r !== null) {
+    emit("updated", r);
+    return;
+  }
+  if (r === "timeout") {
+    const seq = mutationSeq;
+    void read.then((late) => {
+      if (late && seq === mutationSeq) emit("updated", late);
+    });
+  }
+  toast.info(
+    `Couldn't confirm PHP ${props.version}'s saved Xdebug state`,
+    r === "timeout"
+      ? "Yerd didn't answer in time. Refresh to see the current settings."
+      : "Yerd couldn't read the current settings. Refresh to try again.",
+  );
+}
+
+/**
+ * Flip the switch. Turning it on while the mode/start form has unapplied edits
+ * sends the edited fields with the enable, so the pool starts with what the
+ * user sees; turning it off sends only the switch and keeps the staged edits.
+ */
+async function toggleXdebug(on: boolean): Promise<void> {
+  if (isBusy.value) return;
+  busy.value = "xdebug-toggle";
+  const withStaged = on && xdebugDirty.value;
+  try {
+    const r = withStaged
+      ? await setXdebug(props.version, true, ...editedXdebug())
+      : await setXdebug(props.version, on);
+    if (withStaged) seedXdebug(r.xdebug?.[props.version] ?? null);
+    toast.success(`Xdebug ${on ? "on" : "off"} for PHP ${props.version}`, "Settings saved.");
+    emit("updated", r);
+  } catch (e) {
+    toast.error(
+      `Couldn't turn Xdebug ${on ? "on" : "off"} for PHP ${props.version}`,
+      (e as IpcError).message,
+    );
+    await reloadAfterFailure();
+  } finally {
+    busy.value = null;
+  }
+}
+
+async function saveXdebug(): Promise<void> {
+  if (isBusy.value) return;
+  busy.value = "xdebug";
+  try {
+    const r = await setXdebug(props.version, null, ...editedXdebug());
+    const saved = r.xdebug?.[props.version] ?? null;
+    seedXdebug(saved);
+    toast.success(
+      `PHP ${props.version} Xdebug settings saved`,
+      saved?.enabled ? undefined : "They apply the next time Xdebug is turned on.",
+    );
+    emit("updated", r);
+  } catch (e) {
+    toast.error(`Couldn't update PHP ${props.version} Xdebug settings`, (e as IpcError).message);
+    await reloadAfterFailure();
+  } finally {
+    busy.value = null;
+  }
+}
+
 // ── custom ini directives ──
 const dirName = ref("");
 const dirValue = ref("");
@@ -364,6 +531,7 @@ const panelDirty = computed(() => {
   return (
     settingsDirty.value ||
     poolDirty.value ||
+    xdebugDirty.value ||
     dirName.value !== "" ||
     dirValue.value !== "" ||
     editName.value !== null
@@ -375,6 +543,7 @@ watch(panelDirty, (d) => emit("dirty", d), { immediate: true });
 function discard(): void {
   seed(props.overrides);
   seedPool(props.pool);
+  seedXdebug(props.xdebug);
   dirName.value = "";
   dirValue.value = "";
   cancelEdit();
@@ -465,9 +634,103 @@ function discard(): void {
         </div>
       </TooltipProvider>
 
+      <!-- Xdebug, loaded into this version's web (FPM) pool only. -->
+      <div class="mt-5 border-t border-border pt-4" data-testid="xdebug-section">
+        <div class="flex items-center justify-between gap-2">
+          <TooltipProvider :delay-duration="0">
+            <div class="flex items-center gap-1">
+              <span class="text-xs font-medium">Xdebug</span>
+              <Tooltip>
+                <TooltipTrigger as-child>
+                  <span class="inline-flex cursor-help text-muted-foreground">
+                    <Info class="size-3.5" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Loads the bundled Xdebug into this version's web pool. Turning
+                  it on or off restarts the pool. Plain php on the command line
+                  never loads it; use phpdebug for a single command.
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          </TooltipProvider>
+          <span class="flex items-center gap-2">
+            <Spinner v-if="busy === 'xdebug-toggle'" class="size-4" />
+            <Switch
+              :model-value="xdebugEnabled"
+              :disabled="isBusy || (!xdebugAvailable && !xdebugEnabled)"
+              :aria-label="`Xdebug for PHP ${version}`"
+              @update:model-value="toggleXdebug"
+            />
+          </span>
+        </div>
+        <p
+          v-if="!xdebugAvailable"
+          class="mt-1 text-xs text-muted-foreground"
+          data-testid="xdebug-unavailable"
+        >
+          {{ XDEBUG_UNAVAILABLE_HINT }}
+        </p>
+        <fieldset class="mt-3" :disabled="!xdebugAvailable">
+          <legend class="text-xs text-muted-foreground">Modes</legend>
+          <div class="mt-1 grid grid-cols-1 gap-x-4 gap-y-1.5 sm:grid-cols-2">
+            <label
+              v-for="m in XDEBUG_MODES"
+              :key="m.value"
+              class="flex items-center gap-2 text-sm"
+            >
+              <input
+                type="checkbox"
+                class="size-4"
+                :checked="xdebugModes.includes(m.value)"
+                :disabled="isBusy || !xdebugAvailable || modeLocked(m.value)"
+                :aria-label="`Xdebug ${m.value} mode for PHP ${version}`"
+                @change="setMode(m.value, ($event.target as HTMLInputElement).checked)"
+              />
+              {{ m.label }}
+              <span class="text-xs text-muted-foreground">
+                {{ m.note ? `${m.value}, ${m.note}` : m.value }}
+              </span>
+            </label>
+          </div>
+        </fieldset>
+        <div class="mt-3 flex items-start gap-2">
+          <Select
+            class="w-72"
+            :model-value="xdebugStart"
+            :options="XDEBUG_START_OPTIONS"
+            :disabled="isBusy || !xdebugAvailable"
+            :aria-label="`Xdebug start for PHP ${version}`"
+            @update:model-value="(v: XdebugStart) => startField.edit(v)"
+          />
+          <Button
+            size="sm"
+            data-testid="xdebug-apply"
+            :disabled="!xdebugDirty || isBusy || !xdebugAvailable"
+            @click="saveXdebug"
+          >
+            <Spinner v-if="busy === 'xdebug'" class="size-4" />
+            {{ busy === "xdebug" ? "Applying…" : "Apply" }}
+          </Button>
+        </div>
+        <p
+          v-if="xdebugAvailable"
+          class="mt-1 text-xs text-muted-foreground"
+          data-testid="xdebug-ide-hint"
+        >
+          {{ XDEBUG_IDE_HINT }} See
+          <button
+            type="button"
+            class="text-brand hover:underline"
+            @click="openInBrowser(XDEBUG_DOCS_URL)"
+          >
+            Debugging with Xdebug</button>.
+        </p>
+      </div>
+
       <!-- FPM pool sizing. Web (FPM) only: these are pool-block settings, so
            they never reach this version's CLI ini. -->
-      <div class="mt-5 border-t border-border pt-4">
+      <div class="mt-5 border-t border-border pt-4" data-testid="pool-section">
         <TooltipProvider :delay-duration="0">
           <div class="flex items-center gap-1">
             <label class="text-xs font-medium" :for="`pool-${version}-max-children`">
@@ -623,13 +886,21 @@ function discard(): void {
               </span>
             </TooltipTrigger>
             <TooltipContent side="top">
-              Free-form directives for this version, e.g. xdebug.mode = debug.
+              Free-form directives for this version, e.g. opcache.validate_timestamps = 0.
               Names and values are checked for safety; whether a directive means
               anything is up to PHP and its extensions.
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
       </div>
+
+      <p
+        v-if="xdebugEnabled"
+        class="mt-1 text-xs text-muted-foreground"
+        data-testid="xdebug-directives-hint"
+      >
+        {{ XDEBUG_DIRECTIVES_HINT }}
+      </p>
 
       <div v-if="directiveEntries.length" class="mt-2 flex flex-col gap-2">
         <template v-for="[name, value] in directiveEntries" :key="name">

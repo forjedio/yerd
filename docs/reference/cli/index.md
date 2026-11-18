@@ -41,6 +41,7 @@ The exceptions are the two passthrough commands. Anything after [`coverage`](./c
 | [Response headers](./headers) | `header set`, `header remove`, `header list` |
 | [HTTPS](./https) | `secure`, `unsecure` |
 | [PHP](./php) | `use`, `install php`, `uninstall php`, `update php`, `restart php`, `list php`, `list parked`, `set php`, `unset php`, `php ext add`/`remove`/`list`, `php ini set`/`unset`/`list`, `php pool set`/`unset`/`list`, [`coverage`](./coverage) |
+| [Xdebug](./xdebug) | `xdebug on`, `xdebug off`, `xdebug status`, plus the `phpdebug` / `php<version>debug` shims |
 | [Exec and Which](./exec) | `exec php`, `exec composer`, `which php` |
 | [Tooling](./tooling) | `tools`, `install tool`, `uninstall tool`, `path install`, `path uninstall`, `path print` |
 | [Services](./services) | `services`, `service available`, `service install`, `service change-version`, `service uninstall`, `service start`, `service stop`, `service restart`, `service set-port`, `service set`, `service unset`, `service overrides`, `service logs`, `service add`, `service remove`, `service set-autostart`, `service set-site` |

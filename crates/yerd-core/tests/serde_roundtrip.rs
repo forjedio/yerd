@@ -100,3 +100,22 @@ fn json_round_trip_major_line() {
         assert_eq!(back, original);
     }
 }
+
+#[test]
+fn xdebug_types_round_trip() {
+    use yerd_core::{XdebugMode, XdebugSettings, XdebugStart};
+    for mode in XdebugMode::ALL {
+        let s = serde_json::to_string(&mode).unwrap();
+        assert_eq!(serde_json::from_str::<XdebugMode>(&s).unwrap(), mode);
+    }
+    let original = XdebugSettings {
+        enabled: true,
+        modes: vec![XdebugMode::Debug, XdebugMode::Profile],
+        start: XdebugStart::Trigger,
+    };
+    let s = serde_json::to_string(&original).unwrap();
+    assert_eq!(
+        serde_json::from_str::<XdebugSettings>(&s).unwrap(),
+        original
+    );
+}

@@ -39,6 +39,7 @@ import {
   setResponseHeader,
   setSymlinkProtection,
   setMcpEnabled,
+  setXdebug,
   getNetworkSettings,
   setNetworkSettings,
   testNetwork,
@@ -335,6 +336,47 @@ describe("client → command mapping", () => {
       settings: { max_children: "32" },
     });
     expect(r.pool?.["8.4"]?.["max_children"]).toBe("32");
+  });
+
+  it("setXdebug sends the version, toggle, modes and start", async () => {
+    invokeMock.mockResolvedValue({
+      type: "php_versions",
+      installed: ["8.4"],
+      default: "8.4",
+      xdebug: { "8.4": { enabled: true, modes: ["debug", "profile"], start: "trigger" } },
+      xdebug_versions: ["8.4"],
+    });
+    const r = await setXdebug("8.4", true, ["debug", "profile"], "trigger");
+    expect(invokeMock).toHaveBeenCalledWith("set_xdebug", {
+      version: "8.4",
+      enabled: true,
+      modes: ["debug", "profile"],
+      start: "trigger",
+    });
+    expect(r.xdebug?.["8.4"]?.start).toBe("trigger");
+    expect(r.xdebug_versions).toEqual(["8.4"]);
+  });
+
+  it("setXdebug sends null for omitted modes and start", async () => {
+    invokeMock.mockResolvedValue({ type: "php_versions", installed: ["8.4"], default: "8.4" });
+    await setXdebug("8.4", false);
+    expect(invokeMock).toHaveBeenCalledWith("set_xdebug", {
+      version: "8.4",
+      enabled: false,
+      modes: null,
+      start: null,
+    });
+  });
+
+  it("setXdebug sends a null enabled to keep the current state", async () => {
+    invokeMock.mockResolvedValue({ type: "php_versions", installed: ["8.4"], default: "8.4" });
+    await setXdebug("8.4", null, undefined, "trigger");
+    expect(invokeMock).toHaveBeenCalledWith("set_xdebug", {
+      version: "8.4",
+      enabled: null,
+      modes: null,
+      start: "trigger",
+    });
   });
 
   it("resetDomains sends just the name", async () => {

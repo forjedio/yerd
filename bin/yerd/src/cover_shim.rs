@@ -152,8 +152,9 @@ pub(crate) fn prepare_cover_ini(dirs: &PlatformDirs, minor: &str) -> Result<Path
 /// rename). `bin/yerd` doesn't otherwise depend on `yerd-php` (the FPM/
 /// site-pool crate), so this ~15-line helper is duplicated here rather than
 /// pulling in that whole crate for it - the same trade `yerd-php`'s own
-/// `io::atomic_write` already made against `yerd-config`'s equivalent.
-fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// `io::atomic_write` already made against `yerd-config`'s equivalent. Also
+/// used by the debug shims.
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
     })?;

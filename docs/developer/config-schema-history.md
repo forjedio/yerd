@@ -28,7 +28,24 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v28 (current)
+### v29 (current)
+
+**Added:** the optional `[php.xdebug]` table - per-version settings for the [bundled Xdebug](../guide/xdebug) toggle. `[php.xdebug."<version>"]` holds `enabled` (bool), `modes` (a non-empty list of `debug`, `develop`, `coverage`, `profile`, `trace`, `gcstats`) and `start` (`"always"` or `"trigger"`). An entry is written only while it differs from the default (off, `["debug"]`, `"always"`), so an untouched file omits the table entirely.
+
+```toml
+[php.xdebug."8.4"]
+enabled = true
+modes = ["debug"]
+start = "always"
+```
+
+The table loads **leniently**: an entry with an unparseable or empty mode list, a bad or missing `start`, or a legacy (< 8.2) version key is dropped during parsing rather than failing the load. A malformed version key or an unknown key inside an entry is still a hard error.
+
+**Migration from v28:** bare version bump - the table defaults to empty when absent, so a v28 file needs no other change.
+
+**To downgrade to v28:** change `version = 29` to `version = 28` and delete the `[php.xdebug]` table itself along with any `[php.xdebug.*]` tables (a v28 daemon rejects the unknown table under `deny_unknown_fields`, even an empty one). Every pool then starts without Xdebug. The downloaded `{data}/php-ext/php-<version>/xdebug.so` and `debug.ini` files are inert leftovers you can delete.
+
+### v28
 
 **Added:** the optional `[network]` table - the outbound HTTP proxy for Yerd's own downloads and the tools it runs: `mode` (`"system"`, `"manual"` or `"off"`), `http_proxy`, `https_proxy` and `no_proxy`. It is omitted while it holds the defaults (system detection, nothing manual).
 
