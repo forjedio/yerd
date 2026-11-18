@@ -12,7 +12,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tauri::Manager;
-use yerd_core::PhpVersion;
+use yerd_core::{PhpVersion, XdebugMode, XdebugStart};
 use yerd_ipc::{ErrorCode, Request, Response, SiteEntry};
 use yerd_platform::{
     DetectedIde, IdeErrorReason, IdeLauncher, PlatformError, SystemOpener, TerminalLauncher,
@@ -456,6 +456,26 @@ pub async fn set_php_pool_settings(
     settings: std::collections::BTreeMap<String, String>,
 ) -> Result<Response, GuiError> {
     finish(exchange(&Request::SetPhpPoolSettings { version, settings }).await?)
+}
+
+/// Turn the bundled Xdebug on or off for one PHP version (`None` means the
+/// default PHP). Absent `modes`/`start` keep the version's current values.
+#[tauri::command]
+pub async fn set_xdebug(
+    version: Option<PhpVersion>,
+    enabled: bool,
+    modes: Option<Vec<XdebugMode>>,
+    start: Option<XdebugStart>,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::SetXdebug {
+            version,
+            enabled,
+            modes,
+            start,
+        })
+        .await?,
+    )
 }
 
 #[tauri::command]

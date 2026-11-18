@@ -16,6 +16,8 @@ pub mod cli_shim;
 pub mod composer_shim;
 #[cfg(unix)]
 pub mod cover_shim;
+#[cfg(unix)]
+pub mod debug_shim;
 pub mod elevate;
 pub mod error;
 #[cfg(unix)]
@@ -164,7 +166,7 @@ pub async fn run(cli: Cli) -> ExitCode {
 
     match transport::exchange(&req).await {
         Ok(resp) => {
-            let r = map::render(&resp, cli.json);
+            let r = render_for(&cli.command, &resp, cli.json);
             if !r.stdout.is_empty() {
                 println!("{}", r.stdout);
             }
@@ -246,6 +248,16 @@ pub async fn run(cli: Cli) -> ExitCode {
             eprintln!("yerd: {e}");
             ExitCode::from(74)
         }
+    }
+}
+
+/// Render a reply for `command`: `yerd xdebug` shows its `PhpVersions` reply
+/// as the per-version Xdebug table rather than the full PHP listing; every
+/// other command uses the generic renderer.
+fn render_for(command: &Command, resp: &yerd_ipc::Response, json: bool) -> map::Rendered {
+    match command {
+        Command::Xdebug { .. } => map::render_xdebug_status(resp, json),
+        _ => map::render(resp, json),
     }
 }
 
@@ -1101,6 +1113,46 @@ mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
     use yerd_ipc::Request;
+
+    #[test]
+    fn render_for_uses_the_xdebug_table_only_for_xdebug_commands() {
+        use clap::Parser;
+        let reply = yerd_ipc::Response::PhpVersions {
+            installed: vec![yerd_core::PhpVersion::new(8, 4)],
+            default: yerd_core::PhpVersion::new(8, 4),
+            updates: Box::default(),
+            settings: std::collections::BTreeMap::new(),
+            version_settings: Box::default(),
+            directives: Box::default(),
+            ffi_versions: Box::default(),
+            libvips_found: None,
+            xdebug: Box::default(),
+            xdebug_versions: Box::new(vec![yerd_core::PhpVersion::new(8, 4)]),
+            pool: Box::default(),
+        };
+        let error = yerd_ipc::Response::Error {
+            code: yerd_ipc::ErrorCode::NotFound,
+            message: "nope".into(),
+        };
+        let xdebug = crate::cli::Cli::try_parse_from(["yerd", "xdebug", "status"]).unwrap();
+        let php = crate::cli::Cli::try_parse_from(["yerd", "status"]).unwrap();
+        for json in [false, true] {
+            for resp in [&reply, &error] {
+                assert_eq!(
+                    render_for(&xdebug.command, resp, json),
+                    map::render_xdebug_status(resp, json)
+                );
+                assert_eq!(
+                    render_for(&php.command, resp, json),
+                    map::render(resp, json)
+                );
+            }
+        }
+        assert_ne!(
+            render_for(&xdebug.command, &reply, false),
+            map::render(&reply, false)
+        );
+    }
 
     // ─── canonicalize_unpark ────────────────────────────────────────
 

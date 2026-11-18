@@ -57,6 +57,8 @@ import type {
   UpdateStatusResponse,
   WordPressAdminUser,
   WordPressVersionInfo,
+  XdebugMode,
+  XdebugStart,
 } from "./types";
 
 /** A normalised IPC/host failure surfaced to the UI (toasts, banners). */
@@ -489,6 +491,27 @@ export async function setPhpPoolSettings(
 ): Promise<PhpVersionsResponse> {
   return ensureOk(
     await call<Response>("set_php_pool_settings", { version, settings }),
+  ) as PhpVersionsResponse;
+}
+
+/**
+ * Turn the bundled Xdebug on or off for one version, optionally changing its
+ * modes and start trigger. An omitted `modes`/`start` keeps the version's
+ * current value; an omitted version means the default PHP.
+ */
+export async function setXdebug(
+  version: PhpVersion | null,
+  enabled: boolean,
+  modes?: XdebugMode[],
+  start?: XdebugStart,
+): Promise<PhpVersionsResponse> {
+  return ensureOk(
+    await call<Response>("set_xdebug", {
+      version,
+      enabled,
+      modes: modes ?? null,
+      start: start ?? null,
+    }),
   ) as PhpVersionsResponse;
 }
 

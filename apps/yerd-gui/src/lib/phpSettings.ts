@@ -5,6 +5,8 @@
  * the validation authority; the checks here only power inline hints.
  */
 
+import type { XdebugMode, XdebugSettings, XdebugStart } from "@/ipc/types";
+
 /** Text-input settings of the daemon's fixed allowlist (all but display_errors). */
 export const TEXT_SETTINGS = [
   {
@@ -73,6 +75,35 @@ export const LIBVIPS_HINT =
 
 export const NO_FFI_VERSIONS_HINT =
   "None of the installed PHP versions include the FFI extension.";
+
+/** Xdebug modes in the daemon's normalised order, with labels for the panel. */
+export const XDEBUG_MODES: readonly { value: XdebugMode; label: string; note?: string }[] = [
+  { value: "debug", label: "Step debugging" },
+  { value: "develop", label: "Development helpers" },
+  { value: "coverage", label: "Code coverage" },
+  { value: "profile", label: "Profiler", note: "slows every request" },
+  { value: "trace", label: "Function trace", note: "slows every request" },
+  { value: "gcstats", label: "GC statistics" },
+];
+
+export const XDEBUG_START_OPTIONS: readonly { value: XdebugStart; label: string }[] = [
+  { value: "always", label: "On every request" },
+  { value: "trigger", label: "Only with a trigger (XDEBUG_SESSION)" },
+];
+
+/** Built-in settings a version runs with when it has no `xdebug` entry. */
+export const XDEBUG_DEFAULT: XdebugSettings = {
+  enabled: false,
+  modes: ["debug"],
+  start: "always",
+};
+
+export const XDEBUG_IDE_HINT = "Your IDE listens on port 9003.";
+
+export const XDEBUG_DOCS_URL = "https://yerd.app/guide/xdebug";
+
+export const XDEBUG_UNAVAILABLE_HINT =
+  "Xdebug isn't published for this PHP version on this platform.";
 
 /** Every allowlisted setting name, including the select-backed display_errors and ffi.enable. */
 export const SETTING_KEYS: readonly string[] = [

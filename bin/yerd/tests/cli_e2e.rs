@@ -699,4 +699,70 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(5), ipc_task).await;
         drop(keep_alive);
     }
+
+    /// `yerd xdebug status` and an `off` for an unconfigured version over the
+    /// socket: both reply with `PhpVersions`, render to exit code 0 and leave
+    /// no Xdebug entry behind. PHP 8.3 is faked on disk; nothing is downloaded.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn xdebug_status_and_off_render_against_daemon() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = make_dirs(tmp.path());
+        let cfg_path = dirs.config.join("yerd.toml");
+
+        let base = dirs.data.join("php").join("php-8.3");
+        std::fs::create_dir_all(base.join("sbin")).unwrap();
+        std::fs::create_dir_all(base.join("bin")).unwrap();
+        std::fs::write(base.join("sbin").join("php-fpm"), b"x").unwrap();
+        std::fs::write(base.join("bin").join("php"), b"x").unwrap();
+
+        let daemon =
+            yerdd::startup::bring_up_with_dirs(dirs.clone(), valid_config(), cfg_path.clone())
+                .await
+                .expect("bring_up_with_dirs");
+        let sock = dirs.runtime.join("yerd.sock");
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let state = daemon.state.clone();
+        let ipc_task = tokio::spawn(yerdd::ipc_server::run(
+            daemon.ipc_listener,
+            state,
+            shutdown_rx,
+        ));
+        let keep_alive = (
+            daemon.lock,
+            daemon.dns_bound,
+            daemon.http_listener,
+            daemon.https_listener,
+            daemon.php_manager,
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let status = Command::Xdebug {
+            action: yerd::cli::XdebugAction::Status,
+        };
+        let resp = send(&sock, &status).await;
+        let rendered = map::render_xdebug_status(&resp, false);
+        assert_eq!(rendered.code, 0, "{rendered:?}");
+        assert!(rendered.stdout.contains("PHP 8.3"), "{rendered:?}");
+        assert!(rendered.stdout.contains("9003"), "{rendered:?}");
+
+        let off = Command::Xdebug {
+            action: yerd::cli::XdebugAction::Off {
+                version: Some("8.3".into()),
+            },
+        };
+        let resp = send(&sock, &off).await;
+        match &resp {
+            Response::PhpVersions { xdebug, .. } => assert!(xdebug.is_empty()),
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+        assert_eq!(map::render_xdebug_status(&resp, false).code, 0);
+        assert!(!std::fs::read_to_string(&cfg_path)
+            .unwrap_or_default()
+            .contains("xdebug"));
+
+        shutdown_tx.send_replace(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), ipc_task).await;
+        drop(keep_alive);
+    }
 }

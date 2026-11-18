@@ -166,3 +166,4 @@ front doors, subcommand and shim, share one implementation.
 
 - [PHP Versions](./php-versions) - installing versions and the `php`/`php<version>` shims.
 - [Laravel Dumps](./laravel-dumps) - the other extension served from `yerd-php-ext`.
+- [Debugging with Xdebug](./xdebug#code-coverage-with-xdebug) - branch and path coverage with `XDEBUG_MODE=coverage phpdebug`.

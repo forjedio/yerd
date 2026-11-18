@@ -359,6 +359,23 @@ struct PhpSectionWire {
     // pre-v20 files omit it.
     #[serde(default)]
     pool: BTreeMap<String, BTreeMap<String, String>>,
+    // v29: per-version bundled Xdebug settings, keyed by version string.
+    // Additive: pre-v29 files omit it.
+    #[serde(default)]
+    xdebug: BTreeMap<String, XdebugWire>,
+}
+
+/// One `[php.xdebug."<ver>"]` table, kept as raw strings so a hand-edited typo
+/// drops the entry in [`convert_xdebug`] instead of failing the load.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct XdebugWire {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    modes: Vec<String>,
+    #[serde(default)]
+    start: String,
 }
 
 impl Default for PhpSectionWire {
@@ -370,6 +387,7 @@ impl Default for PhpSectionWire {
             version_settings: BTreeMap::new(),
             directives: BTreeMap::new(),
             pool: BTreeMap::new(),
+            xdebug: BTreeMap::new(),
         }
     }
 }
@@ -558,6 +576,7 @@ impl TryFrom<Wire> for Config {
             version_settings: convert_version_settings(w.php.version_settings)?,
             directives: convert_directives(w.php.directives)?,
             pool: convert_pool(w.php.pool)?,
+            xdebug: convert_xdebug(w.php.xdebug)?,
         };
         let ports = Ports {
             http: w.ports.http,
@@ -914,6 +933,39 @@ fn convert_pool(
             .collect();
         if !kept.is_empty() {
             out.insert(v, kept);
+        }
+    }
+    Ok(out)
+}
+
+/// Convert the raw wire per-version Xdebug map into the typed
+/// [`PhpSection::xdebug`] shape. A bad version key errors, as in
+/// [`convert_pool`]. An entry is dropped leniently when it names a legacy
+/// version, when a mode or the start is missing or unparseable, or when the
+/// mode list is empty.
+fn convert_xdebug(
+    wire: BTreeMap<String, XdebugWire>,
+) -> Result<BTreeMap<yerd_core::PhpVersion, yerd_core::XdebugSettings>, ConfigError> {
+    use yerd_core::php_xdebug;
+    let mut out = BTreeMap::new();
+    for (ver, entry) in wire {
+        let v = yerd_core::PhpVersion::from_str(&ver)?;
+        if v.is_legacy() {
+            continue;
+        }
+        let modes: Result<Vec<yerd_core::XdebugMode>, _> =
+            entry.modes.iter().map(|m| m.parse()).collect();
+        let (Ok(modes), Ok(start)) = (modes, entry.start.parse::<yerd_core::XdebugStart>()) else {
+            continue;
+        };
+        let mut settings = yerd_core::XdebugSettings {
+            enabled: entry.enabled,
+            modes,
+            start,
+        };
+        settings.normalize();
+        if php_xdebug::validate(&settings).is_ok() {
+            out.insert(v, settings);
         }
     }
     Ok(out)
@@ -1510,7 +1562,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 28,
+                current: 29,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -3131,6 +3183,55 @@ target = \"../../etc/passwd\"\n";
     fn bad_pool_version_key_errors() {
         let bad = "version = 20\n[php]\ndefault = \"8.3\"\n\
                    [php.pool.\"eight\"]\nmax_children = \"32\"\n";
+        assert!(Config::from_toml(bad).is_err());
+    }
+
+    #[test]
+    fn xdebug_round_trip() {
+        let s = "version = 29\n[php]\ndefault = \"8.3\"\n\
+                 [php.xdebug.\"8.4\"]\nenabled = true\n\
+                 modes = [\"trace\", \"debug\", \"trace\"]\nstart = \"trigger\"\n";
+        let c = Config::from_toml(s).unwrap();
+        let got = c.php.xdebug.get(&yerd_core::PhpVersion::new(8, 4)).unwrap();
+        assert_eq!(
+            *got,
+            yerd_core::XdebugSettings {
+                enabled: true,
+                modes: vec![yerd_core::XdebugMode::Debug, yerd_core::XdebugMode::Trace],
+                start: yerd_core::XdebugStart::Trigger,
+            }
+        );
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
+    }
+
+    /// A hand-edited typo in a `[php.xdebug]` entry drops that entry rather
+    /// than failing the load, while valid siblings survive.
+    #[test]
+    fn invalid_xdebug_entries_are_dropped_leniently() {
+        let s = "version = 29\n[php]\ndefault = \"8.3\"\n\
+                 [php.xdebug.\"8.2\"]\nenabled = true\nmodes = []\nstart = \"always\"\n\
+                 [php.xdebug.\"8.3\"]\nenabled = true\nmodes = [\"off\"]\nstart = \"always\"\n\
+                 [php.xdebug.\"8.4\"]\nenabled = true\nmodes = [\"debug\"]\nstart = \"always\"\n\
+                 [php.xdebug.\"8.5\"]\nenabled = true\nmodes = [\"debug\"]\nstart = \"sometimes\"\n\
+                 [php.xdebug.\"8.1\"]\nenabled = true\nmodes = [\"debug\"]\nstart = \"always\"\n\
+                 [php.xdebug.\"8.6\"]\nenabled = true\nmodes = [\"debug\"]\n";
+        let c = Config::from_toml(s).unwrap();
+        let kept: Vec<_> = c.php.xdebug.keys().copied().collect();
+        assert_eq!(kept, vec![yerd_core::PhpVersion::new(8, 4)]);
+    }
+
+    #[test]
+    fn bad_xdebug_version_key_errors() {
+        let bad = "version = 29\n[php]\ndefault = \"8.3\"\n\
+                   [php.xdebug.\"eight\"]\nenabled = true\nmodes = [\"debug\"]\nstart = \"always\"\n";
+        assert!(Config::from_toml(bad).is_err());
+    }
+
+    #[test]
+    fn unknown_xdebug_field_fails_the_load() {
+        let bad = "version = 29\n[php]\ndefault = \"8.3\"\n\
+                   [php.xdebug.\"8.4\"]\nenabled = true\nmodes = [\"debug\"]\nstart = \"always\"\nport = 9000\n";
         assert!(Config::from_toml(bad).is_err());
     }
 

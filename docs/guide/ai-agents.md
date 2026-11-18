@@ -67,7 +67,7 @@ connected, with its tools available.
 | Sites | `list_sites`, `create_site`, `link_site`, `park_directory`, `list_parked`, `set_site_php`, `set_site_secure` |
 | Domains | `add_domain`, `remove_domain` |
 | Proxies | `add_proxy`, `remove_proxy`, `add_proxy_rule`, `remove_proxy_rule`, `list_proxies` (upstreams must be local) |
-| PHP | `list_php`, `list_available_php`, `install_php`, `set_default_php`, `set_php_setting` |
+| PHP | `list_php`, `list_available_php`, `install_php`, `set_default_php`, `set_php_setting`, `set_xdebug` (turn Xdebug on/off for a version, with optional modes and always/trigger start) |
 | Services | `list_services`, `list_databases`, `create_database` |
 | Mail | `set_mail_enabled`, `list_mails`, `get_mail` |
 | Dumps | `set_dumps_enabled`, `dumps_status`, `list_dumps` |
@@ -98,6 +98,10 @@ a background job and return a `job_id` straight away. The agent then polls
 new log lines — until `state` reads `succeeded`, `failed`, or `cancelled`. Yerd
 tells the agent this in the tool's own description, so it handles the flow
 itself.
+
+`set_xdebug` is the one exception that answers in a single call: turning Xdebug
+on may first download a few MB, so that call is allowed up to two minutes
+instead of the usual ten seconds.
 
 Jobs are held in memory. If the daemon restarts mid-job, the id is gone: the
 agent is told as much and asked to verify the outcome directly (with

@@ -509,6 +509,26 @@ export interface PhpExtInfo {
   present: boolean;
 }
 
+/** One Xdebug mode (a member of the `xdebug.mode` list). `off` is not a mode:
+ *  turning Xdebug off is the toggle's job. */
+export type XdebugMode =
+  | "debug"
+  | "develop"
+  | "coverage"
+  | "profile"
+  | "trace"
+  | "gcstats";
+
+/** When Xdebug starts a session: on every request, or only with a trigger. */
+export type XdebugStart = "always" | "trigger";
+
+/** One PHP version's Xdebug settings (see the `php_versions` response). */
+export interface XdebugSettings {
+  enabled: boolean;
+  modes: XdebugMode[];
+  start: XdebugStart;
+}
+
 export type ErrorCode =
   | "not_found"
   | "already_exists"
@@ -516,6 +536,7 @@ export type ErrorCode =
   | "port_in_use"
   | "extension_load_failed"
   | "legacy_restricted"
+  | "xdebug_unavailable"
   | "internal";
 
 /** One whole-host reverse proxy (`{name}.{tld}` → `target`). Reply element of a
@@ -615,6 +636,13 @@ export type Response =
       /** Whether libvips (needed by php-vips) was found on the host. Absent
        *  when the daemon doesn't check on this OS / older daemon. */
       libvips_found?: boolean | null;
+      /** Per-version Xdebug settings keyed by version string. Only versions
+       *  whose settings differ from the default (off, debug, always) appear.
+       *  Absent when none are configured / older daemon. */
+      xdebug?: Record<PhpVersion, XdebugSettings>;
+      /** Installed versions a bundled Xdebug is published for on this host.
+       *  Absent when none / older daemon. */
+      xdebug_versions?: PhpVersion[];
     }
   | {
       type: "available_php";

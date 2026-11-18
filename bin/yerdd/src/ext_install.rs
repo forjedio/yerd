@@ -1,7 +1,9 @@
-//! Downloads PHP extension `.so`s (`yerd-dump`, `pcov`) per installed PHP version.
+//! Downloads PHP extension `.so`s (`yerd-dump`, `pcov`, `xdebug`) per installed
+//! PHP version.
 //!
-//! Both come from the same `yerd-php-ext` GitHub release, each described by its
-//! own manifest (`manifest.json` for dump, `pcov-manifest.json` for pcov) listing
+//! All come from the same `yerd-php-ext` GitHub release, each described by its
+//! own manifest (`manifest.json` for dump, `pcov-manifest.json` for pcov,
+//! `xdebug-manifest.json` for Xdebug) listing
 //! each file's `php`/`os`/`arch`/`sha256`. yerd resolves
 //! the file matching the host triple for each installed PHP minor, verifies the
 //! SHA-256, and places it at `{data}/php-ext/php-<ver>/yerd-dump.so` (a sibling
@@ -64,9 +66,36 @@ const PCOV_SPEC: ExtSpec = ExtSpec {
     label: "pcov",
 };
 
+const XDEBUG_SPEC: ExtSpec = ExtSpec {
+    manifest_name: "xdebug-manifest.json",
+    so_name: "xdebug.so",
+    label: "xdebug",
+};
+
+/// Why a bundled Xdebug could not be made available for a version.
+#[derive(Debug, thiserror::Error)]
+pub enum XdebugFetchError {
+    /// The release manifest could not be downloaded or parsed.
+    #[error("the Xdebug release manifest is unavailable: {0}")]
+    ManifestUnavailable(String),
+    /// The manifest has no build for this PHP version and host triple.
+    #[error("no Xdebug build is published for PHP {version} on {os}/{arch}")]
+    NotPublished {
+        /// The PHP minor asked for.
+        version: PhpVersion,
+        /// The host OS, as the manifest spells it.
+        os: String,
+        /// The host architecture, as the manifest spells it.
+        arch: String,
+    },
+    /// The download, its SHA-256 check or the write to disk failed.
+    #[error("{0}")]
+    Download(String),
+}
+
 /// The host OS/arch as the manifest names them (`macos`/`linux`,
 /// `aarch64`/`x86_64`) - `std::env::consts` already uses these spellings.
-fn host_os_arch() -> (&'static str, &'static str) {
+pub(crate) fn host_os_arch() -> (&'static str, &'static str) {
     (std::env::consts::OS, std::env::consts::ARCH)
 }
 
@@ -90,6 +119,13 @@ pub fn so_path(dirs: &PlatformDirs, v: PhpVersion) -> PathBuf {
 #[must_use]
 pub fn pcov_so_path(dirs: &PlatformDirs, v: PhpVersion) -> PathBuf {
     so_path_named(dirs, v, PCOV_SPEC.so_name)
+}
+
+/// Absolute path of the bundled `xdebug.so` for `v` (present or not). Sibling
+/// of the dump and pcov `.so`s.
+#[must_use]
+pub fn xdebug_so_path(dirs: &PlatformDirs, v: PhpVersion) -> PathBuf {
+    so_path_named(dirs, v, XDEBUG_SPEC.so_name)
 }
 
 /// Installed PHP minors discovered from `{data}/php`.
@@ -138,43 +174,153 @@ async fn ensure_for_installed_spec(dirs: &PlatformDirs, dl: &dyn Downloader, spe
         .into_iter()
         .filter(|v| !v.is_legacy())
     {
-        let minor = v.to_string();
-        let Some(file) = manifest
-            .files
-            .iter()
-            .find(|f| f.php == minor && f.os == os && f.arch == arch)
-        else {
-            tracing::info!(php = %minor, os, arch, ext = spec.label, "no extension published for this triple");
-            continue;
-        };
-        let dest = so_path_named(dirs, v, spec.so_name);
-        if existing_matches(&dest, &file.sha256) {
-            continue;
-        }
-        match download_and_place(dl, &file.name, &file.sha256, &dest).await {
-            Ok(()) => tracing::info!(php = %minor, ext = spec.label, "installed PHP extension"),
-            Err(e) => {
-                tracing::warn!(php = %minor, ext = spec.label, error = %e, "failed to install PHP extension");
+        match place_from_manifest(dirs, dl, &manifest, spec, v, os, arch).await {
+            Ok(_) => {}
+            Err(PlaceError::NotPublished) => {
+                tracing::info!(php = %v, os, arch, ext = spec.label, "no extension published for this triple");
+            }
+            Err(PlaceError::Download(e)) => {
+                tracing::warn!(php = %v, ext = spec.label, error = %e, "failed to install PHP extension");
             }
         }
     }
 }
 
-async fn fetch_manifest(dl: &dyn Downloader, manifest_name: &str, label: &str) -> Option<Manifest> {
-    let url = format!("{RELEASE_BASE}/{manifest_name}");
-    match dl.download(&url).await {
-        Ok(bytes) => match serde_json::from_slice::<Manifest>(&bytes) {
-            Ok(m) => Some(m),
-            Err(e) => {
-                tracing::warn!(error = %e, ext = label, "manifest parse failed");
-                None
-            }
-        },
+/// Why [`place_from_manifest`] could not make a version's `.so` current.
+#[derive(Debug, thiserror::Error)]
+enum PlaceError {
+    /// The manifest has no entry for the version and host triple.
+    #[error("not published for this triple")]
+    NotPublished,
+    /// The download, its SHA-256 check or the write to disk failed.
+    #[error("{0}")]
+    Download(String),
+}
+
+/// Make `spec`'s `.so` for `v` match its `(v, os, arch)` manifest entry,
+/// downloading only when the file on disk is missing or has a different
+/// SHA-256. Returns whether the file was replaced.
+async fn place_from_manifest(
+    dirs: &PlatformDirs,
+    dl: &dyn Downloader,
+    manifest: &Manifest,
+    spec: &ExtSpec,
+    v: PhpVersion,
+    os: &str,
+    arch: &str,
+) -> Result<bool, PlaceError> {
+    let minor = v.to_string();
+    let file = manifest
+        .files
+        .iter()
+        .find(|f| f.php == minor && f.os == os && f.arch == arch)
+        .ok_or(PlaceError::NotPublished)?;
+    let dest = so_path_named(dirs, v, spec.so_name);
+    if existing_matches(&dest, &file.sha256) {
+        return Ok(false);
+    }
+    download_and_place(dl, &file.name, &file.sha256, &dest)
+        .await
+        .map_err(|e| PlaceError::Download(e.to_string()))?;
+    tracing::info!(php = %minor, ext = spec.label, "installed PHP extension");
+    Ok(true)
+}
+
+/// Make the bundled `xdebug.so` for `v` present and current: fetch the Xdebug
+/// manifest, find the `(v, os, arch)` entry, and download it unless the file on
+/// disk already matches its SHA-256. Returns whether the file was replaced. The
+/// triple is injected so tests don't depend on the CI host.
+///
+/// # Errors
+/// [`XdebugFetchError`] when the manifest is unavailable, has no build for the
+/// triple, or the download fails.
+pub async fn ensure_xdebug(
+    dirs: &PlatformDirs,
+    dl: &dyn Downloader,
+    v: PhpVersion,
+    os: &str,
+    arch: &str,
+) -> Result<bool, XdebugFetchError> {
+    let manifest = fetch_manifest_result(dl, XDEBUG_SPEC.manifest_name)
+        .await
+        .map_err(XdebugFetchError::ManifestUnavailable)?;
+    place_xdebug(dirs, dl, &manifest, v, os, arch).await
+}
+
+/// Best-effort startup refresh of the bundled Xdebug for `versions` (installed
+/// versions with Xdebug enabled): re-download any whose `.so` is missing or no
+/// longer matches the manifest. Returns the versions whose file was replaced.
+/// No network when `versions` is empty. Failures only log.
+pub async fn refresh_xdebug_for(
+    dirs: &PlatformDirs,
+    dl: &dyn Downloader,
+    versions: &[PhpVersion],
+    os: &str,
+    arch: &str,
+) -> Vec<PhpVersion> {
+    if versions.is_empty() {
+        return Vec::new();
+    }
+    let manifest = match fetch_manifest_result(dl, XDEBUG_SPEC.manifest_name).await {
+        Ok(m) => m,
         Err(e) => {
-            tracing::warn!(error = %e, ext = label, "manifest download failed");
+            tracing::warn!(error = %e, ext = XDEBUG_SPEC.label, "manifest unavailable");
+            return Vec::new();
+        }
+    };
+    let mut replaced = Vec::new();
+    for v in versions {
+        match place_xdebug(dirs, dl, &manifest, *v, os, arch).await {
+            Ok(true) => replaced.push(*v),
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(php = %v, ext = XDEBUG_SPEC.label, error = %e, "failed to refresh PHP extension");
+            }
+        }
+    }
+    replaced
+}
+
+async fn place_xdebug(
+    dirs: &PlatformDirs,
+    dl: &dyn Downloader,
+    manifest: &Manifest,
+    v: PhpVersion,
+    os: &str,
+    arch: &str,
+) -> Result<bool, XdebugFetchError> {
+    place_from_manifest(dirs, dl, manifest, &XDEBUG_SPEC, v, os, arch)
+        .await
+        .map_err(|e| match e {
+            PlaceError::NotPublished => XdebugFetchError::NotPublished {
+                version: v,
+                os: os.to_owned(),
+                arch: arch.to_owned(),
+            },
+            PlaceError::Download(e) => XdebugFetchError::Download(e),
+        })
+}
+
+async fn fetch_manifest(dl: &dyn Downloader, manifest_name: &str, label: &str) -> Option<Manifest> {
+    match fetch_manifest_result(dl, manifest_name).await {
+        Ok(m) => Some(m),
+        Err(e) => {
+            tracing::warn!(error = %e, ext = label, "manifest unavailable");
             None
         }
     }
+}
+
+async fn fetch_manifest_result(
+    dl: &dyn Downloader,
+    manifest_name: &str,
+) -> Result<Manifest, String> {
+    let url = format!("{RELEASE_BASE}/{manifest_name}");
+    let bytes = dl
+        .download(&url)
+        .await
+        .map_err(|e| format!("download failed: {e}"))?;
+    serde_json::from_slice::<Manifest>(&bytes).map_err(|e| format!("parse failed: {e}"))
 }
 
 /// True if `path` already holds bytes whose SHA-256 hex equals `want`.
@@ -407,6 +553,162 @@ mod tests {
             0,
             "the only version without pcov is legacy (7.4), which is skipped — no fetch"
         );
+    }
+
+    fn xdebug_manifest(entries: &[(&str, &str, &str, &str, &str)]) -> Vec<u8> {
+        let files: Vec<_> = entries
+            .iter()
+            .map(|(name, php, os, arch, sha)| {
+                serde_json::json!({"name": name, "php": php, "os": os, "arch": arch, "sha256": sha})
+            })
+            .collect();
+        serde_json::json!({ "files": files })
+            .to_string()
+            .into_bytes()
+    }
+
+    fn xdebug_routes(manifest: Vec<u8>, so: &[u8]) -> std::collections::HashMap<String, Vec<u8>> {
+        [
+            ("/xdebug-manifest.json".to_owned(), manifest),
+            ("/xdebug-8.4-macos-aarch64.so".to_owned(), so.to_vec()),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    #[test]
+    fn xdebug_so_path_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let p = xdebug_so_path(&dirs, PhpVersion::new(8, 4));
+        assert!(p.ends_with("php-ext/php-8.4/xdebug.so"));
+        assert_eq!(
+            p.parent(),
+            pcov_so_path(&dirs, PhpVersion::new(8, 4)).parent()
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_xdebug_manifest_missing_is_manifest_unavailable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let dl = FakeDownloader::new(std::collections::HashMap::new());
+        let err = ensure_xdebug(&dirs, &dl, PhpVersion::new(8, 4), "macos", "aarch64")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, XdebugFetchError::ManifestUnavailable(_)),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_xdebug_missing_triple_is_not_published() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let manifest =
+            xdebug_manifest(&[("xdebug-8.4-linux-x86_64.so", "8.4", "linux", "x86_64", "ab")]);
+        let dl = FakeDownloader::new(xdebug_routes(manifest, b"so"));
+        let err = ensure_xdebug(&dirs, &dl, PhpVersion::new(8, 4), "macos", "aarch64")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, XdebugFetchError::NotPublished { .. }),
+            "{err:?}"
+        );
+        assert!(!xdebug_so_path(&dirs, PhpVersion::new(8, 4)).exists());
+    }
+
+    #[tokio::test]
+    async fn ensure_xdebug_bad_sha_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let manifest = xdebug_manifest(&[(
+            "xdebug-8.4-macos-aarch64.so",
+            "8.4",
+            "macos",
+            "aarch64",
+            "deadbeef",
+        )]);
+        let dl = FakeDownloader::new(xdebug_routes(manifest, b"so-bytes"));
+        let err = ensure_xdebug(&dirs, &dl, PhpVersion::new(8, 4), "macos", "aarch64")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, XdebugFetchError::Download(_)), "{err:?}");
+        assert!(!xdebug_so_path(&dirs, PhpVersion::new(8, 4)).exists());
+    }
+
+    #[tokio::test]
+    async fn ensure_xdebug_downloads_then_skips_matching_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let manifest = xdebug_manifest(&[(
+            "xdebug-8.4-macos-aarch64.so",
+            "8.4",
+            "macos",
+            "aarch64",
+            &sha256_hex(b"so-bytes"),
+        )]);
+        let dl = FakeDownloader::new(xdebug_routes(manifest, b"so-bytes"));
+        let replaced = ensure_xdebug(&dirs, &dl, PhpVersion::new(8, 4), "macos", "aarch64")
+            .await
+            .unwrap();
+        assert!(replaced);
+        let path = xdebug_so_path(&dirs, PhpVersion::new(8, 4));
+        assert_eq!(std::fs::read(&path).unwrap(), b"so-bytes");
+        assert_eq!(dl.call_count(), 2);
+        let again = ensure_xdebug(&dirs, &dl, PhpVersion::new(8, 4), "macos", "aarch64")
+            .await
+            .unwrap();
+        assert!(!again);
+        assert_eq!(dl.call_count(), 3, "only the manifest is fetched again");
+    }
+
+    #[tokio::test]
+    async fn refresh_xdebug_for_no_versions_makes_no_calls() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let dl = FakeDownloader::new(std::collections::HashMap::new());
+        let replaced = refresh_xdebug_for(&dirs, &dl, &[], "macos", "aarch64").await;
+        assert!(replaced.is_empty());
+        assert_eq!(dl.call_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn refresh_xdebug_for_reports_only_replaced_versions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let v84 = PhpVersion::new(8, 4);
+        let v83 = PhpVersion::new(8, 3);
+        let manifest = xdebug_manifest(&[(
+            "xdebug-8.4-macos-aarch64.so",
+            "8.4",
+            "macos",
+            "aarch64",
+            &sha256_hex(b"so-bytes"),
+        )]);
+        let dl = FakeDownloader::new(xdebug_routes(manifest, b"so-bytes"));
+        let stale = xdebug_so_path(&dirs, v84);
+        std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        std::fs::write(&stale, b"stale").unwrap();
+
+        let replaced = refresh_xdebug_for(&dirs, &dl, &[v83, v84], "macos", "aarch64").await;
+        assert_eq!(replaced, vec![v84]);
+        assert_eq!(std::fs::read(&stale).unwrap(), b"so-bytes");
+
+        let again = refresh_xdebug_for(&dirs, &dl, &[v84], "macos", "aarch64").await;
+        assert!(again.is_empty());
+    }
+
+    #[tokio::test]
+    async fn refresh_xdebug_for_manifest_failure_replaces_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let dl = FakeDownloader::new(std::collections::HashMap::new());
+        let replaced =
+            refresh_xdebug_for(&dirs, &dl, &[PhpVersion::new(8, 4)], "macos", "aarch64").await;
+        assert!(replaced.is_empty());
+        assert_eq!(dl.call_count(), 1);
     }
 
     #[tokio::test]

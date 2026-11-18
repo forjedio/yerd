@@ -22,6 +22,8 @@ function stubIpc(opts: {
   settings?: Record<string, string>;
   ffiVersions?: PhpVersion[];
   libvipsFound?: boolean | null;
+  xdebug?: Record<string, unknown>;
+  xdebugVersions?: PhpVersion[];
 }) {
   const installed = opts.installed ?? ["8.1", "8.4"];
   const available = opts.available ?? ["8.5"];
@@ -42,6 +44,8 @@ function stubIpc(opts: {
           pool,
           ffi_versions: opts.ffiVersions,
           libvips_found: opts.libvipsFound,
+          xdebug: opts.xdebug,
+          xdebug_versions: opts.xdebugVersions,
         });
       case "set_php_settings":
         return Promise.resolve({
@@ -275,6 +279,30 @@ describe("PhpView per-version configuration", () => {
 
     expect(tabLabels(wrapper).some((t) => t.includes("8.2"))).toBe(true);
     expect(wrapper.text()).toContain("not installed");
+  });
+
+  it("badges only the versions with Xdebug on and passes availability to the panel", async () => {
+    stubIpc({
+      installed: ["8.1", "8.3", "8.4"],
+      xdebug: {
+        "8.3": { enabled: false, modes: ["debug"], start: "trigger" },
+        "8.4": { enabled: true, modes: ["debug"], start: "always" },
+      },
+      xdebugVersions: ["8.3", "8.4"],
+    });
+    const wrapper = await mountView();
+
+    const rows = wrapper.findAll("tbody tr");
+    const rowFor = (v: string) => rows.find((r) => r.text().includes(`PHP ${v}`));
+    expect(rowFor("8.4")!.find('[data-testid="xdebug-badge"]').exists()).toBe(true);
+    expect(rowFor("8.3")!.find('[data-testid="xdebug-badge"]').exists()).toBe(false);
+    expect(rowFor("8.1")!.find('[data-testid="xdebug-badge"]').exists()).toBe(false);
+    expect(wrapper.findAll('[data-testid="xdebug-badge"]')).toHaveLength(1);
+
+    expect(
+      wrapper.find('button[aria-label="Xdebug for PHP 8.4"]').attributes("aria-checked"),
+    ).toBe("true");
+    expect(wrapper.findAll('[data-testid="xdebug-unavailable"]')).toHaveLength(1);
   });
 
   it("has no per-version card when nothing is installed or registered", async () => {

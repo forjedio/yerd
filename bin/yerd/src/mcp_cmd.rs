@@ -14,8 +14,12 @@
 //! `bin/yerd/src/main.rs`), so a blocked read starves nothing. It does mean the
 //! session is single-flight - while a daemon exchange is in progress the loop
 //! cannot answer a `ping` - which is why every exchange is timeout-bounded and
-//! why no tool maps to a long-running daemon operation (`create_site` and
-//! `install_php` return a job id immediately and are polled).
+//! why tools avoid long-running daemon operations (`create_site` and
+//! `install_php` return a job id immediately and are polled). The one exception
+//! is `set_xdebug`: switching Xdebug on may download and load-probe a single
+//! `xdebug.so` of a few MB before restarting one pool. That work is bounded, so
+//! it runs synchronously under its own longer [`XDEBUG_EXCHANGE_TIMEOUT`]
+//! rather than through a job.
 //!
 //! For the same reason the exchanger is `.await`ed, never `block_on`'d: a nested
 //! `block_on` inside the runtime that is already driving this task panics.
@@ -38,6 +42,19 @@ use crate::transport;
 /// path, and would fail healthy status calls here.) Its elapse fails the user's
 /// actual call, so it is generous.
 const TOOL_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Ceiling for a `set_xdebug` exchange, which may download (manifest plus one
+/// `.so` of a few MB, each bounded by the daemon downloader's 30s connect and
+/// 60s read timeouts) and load-probe Xdebug before replying.
+const XDEBUG_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The exchange ceiling for a tool's daemon request.
+fn tool_timeout(request: &Request) -> Duration {
+    match request {
+        Request::SetXdebug { .. } => XDEBUG_EXCHANGE_TIMEOUT,
+        _ => TOOL_EXCHANGE_TIMEOUT,
+    }
+}
 
 /// Ceiling for the startup probe and gate re-polls. Shorter than
 /// [`TOOL_EXCHANGE_TIMEOUT`] despite sending the same probe-bound
@@ -183,7 +200,7 @@ where
             Outgoing::None => continue,
             Outgoing::Reply(reply) => reply,
             Outgoing::CallDaemon(call) => {
-                let result = exchange(call.request.clone(), TOOL_EXCHANGE_TIMEOUT).await;
+                let result = exchange(call.request.clone(), tool_timeout(&call.request)).await;
                 call.complete(result)
             }
             Outgoing::PolicyBlocked(call) => {
@@ -191,7 +208,7 @@ where
                     server.set_availability(fresh);
                 }
                 if server.availability() == Availability::Enabled {
-                    let result = exchange(call.request.clone(), TOOL_EXCHANGE_TIMEOUT).await;
+                    let result = exchange(call.request.clone(), tool_timeout(&call.request)).await;
                     call.complete(result)
                 } else {
                     server.gate_reply(&call)
@@ -717,6 +734,33 @@ mod tests {
             PROBE_TIMEOUT < TOOL_EXCHANGE_TIMEOUT,
             "a re-poll must not be given longer than the call it is gating"
         );
+    }
+
+    #[tokio::test]
+    async fn set_xdebug_gets_the_longer_download_deadline() {
+        let fake = FakeDaemon::default();
+        let set_xdebug = json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": { "name": "set_xdebug", "arguments": { "enabled": true } },
+        })
+        .to_string();
+        let _ = session(
+            Availability::Enabled,
+            &[initialize(), set_xdebug, call(3, "list_sites")],
+            &fake,
+        )
+        .await;
+
+        let deadlines: Vec<Duration> = fake.deadlines().into_iter().map(|(_, d)| d).collect();
+        assert_eq!(
+            deadlines,
+            vec![XDEBUG_EXCHANGE_TIMEOUT, TOOL_EXCHANGE_TIMEOUT]
+        );
+        assert!(matches!(
+            fake.requests().first(),
+            Some(Request::SetXdebug { enabled: true, .. })
+        ));
+        assert!(XDEBUG_EXCHANGE_TIMEOUT > TOOL_EXCHANGE_TIMEOUT);
     }
 
     #[test]

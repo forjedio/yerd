@@ -74,6 +74,7 @@ fn populated_expected() -> Config {
         version_settings: std::collections::BTreeMap::new(),
         directives: std::collections::BTreeMap::new(),
         pool: std::collections::BTreeMap::new(),
+        xdebug: std::collections::BTreeMap::new(),
     };
     c.parked.paths.insert("docroot-a".to_string());
     c.parked.paths.insert("docroot-b".to_string());

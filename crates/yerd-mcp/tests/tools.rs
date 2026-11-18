@@ -84,6 +84,7 @@ fn catalog_names_are_pinned() {
         "install_php",
         "set_default_php",
         "set_php_setting",
+        "set_xdebug",
         "list_services",
         "list_databases",
         "create_database",
@@ -171,6 +172,7 @@ fn required_arguments_are_declared_in_the_schema() {
         ("install_php", vec!["version"]),
         ("set_default_php", vec!["version"]),
         ("set_php_setting", vec!["name", "value"]),
+        ("set_xdebug", vec!["enabled"]),
         ("list_databases", vec!["service"]),
         ("create_database", vec!["service", "name"]),
         ("set_mail_enabled", vec!["enabled"]),
@@ -233,6 +235,7 @@ fn schema_property_names_match_the_builder() {
         ("install_php", vec!["version"]),
         ("set_default_php", vec!["version"]),
         ("set_php_setting", vec!["name", "value"]),
+        ("set_xdebug", vec!["enabled", "modes", "start", "version"]),
         ("list_databases", vec!["service"]),
         ("create_database", vec!["name", "service"]),
         ("set_mail_enabled", vec!["enabled"]),
@@ -309,6 +312,21 @@ fn optional_arguments_reach_the_request() {
         built("job_status", json!({ "job_id": "j" })),
         "job_status ignored `cursor`"
     );
+
+    let xdebug_default = built("set_xdebug", json!({ "enabled": true }));
+    for (key, value) in [
+        ("version", json!("8.4")),
+        ("modes", json!(["profile"])),
+        ("start", json!("trigger")),
+    ] {
+        let mut args = json!({ "enabled": true });
+        args[key] = value.clone();
+        assert_ne!(
+            built("set_xdebug", args),
+            xdebug_default,
+            "set_xdebug ignored `{key}` = {value}"
+        );
+    }
 }
 
 /// Guards the catalog against an entry with no builder arm. `build` resolves the
@@ -358,6 +376,7 @@ fn every_tool_builds_a_request() {
         ("set_mail_enabled", json!({ "enabled": true })),
         ("get_mail", json!({ "id": "000001" })),
         ("set_dumps_enabled", json!({ "enabled": true })),
+        ("set_xdebug", json!({ "enabled": true })),
         ("job_status", json!({ "job_id": "j1" })),
     ]
     .into_iter()
@@ -619,6 +638,63 @@ fn php_tools_map_to_their_requests() {
         ),
         Request::SetPhpSettings { settings }
     );
+}
+
+#[test]
+fn set_xdebug_maps_to_its_request() {
+    use yerd_core::{XdebugMode, XdebugStart};
+    assert_eq!(
+        built("set_xdebug", json!({ "enabled": false })),
+        Request::SetXdebug {
+            version: None,
+            enabled: false,
+            modes: None,
+            start: None,
+        }
+    );
+    assert_eq!(
+        built(
+            "set_xdebug",
+            json!({
+                "version": "8.4",
+                "enabled": true,
+                "modes": ["debug", "profile"],
+                "start": "trigger",
+            })
+        ),
+        Request::SetXdebug {
+            version: Some(PhpVersion::new(8, 4)),
+            enabled: true,
+            modes: Some(vec![XdebugMode::Debug, XdebugMode::Profile]),
+            start: Some(XdebugStart::Trigger),
+        }
+    );
+}
+
+#[test]
+fn set_xdebug_rejects_bad_arguments() {
+    for args in [
+        json!({}),
+        json!({ "enabled": "yes" }),
+        json!({ "enabled": true, "modes": ["bogus"] }),
+        json!({ "enabled": true, "modes": ["off"] }),
+        json!({ "enabled": true, "modes": [] }),
+        json!({ "enabled": true, "modes": "debug" }),
+        json!({ "enabled": true, "modes": [1] }),
+        json!({ "enabled": true, "start": "sometimes" }),
+        json!({ "enabled": true, "version": "eight" }),
+    ] {
+        let line = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "set_xdebug", "arguments": args },
+        })
+        .to_string();
+        let Outgoing::Reply(reply) = ready().handle_line(&line) else {
+            panic!("set_xdebug accepted {args}");
+        };
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v.pointer("/error/code"), Some(&json!(-32602)), "{args}");
+    }
 }
 
 #[test]

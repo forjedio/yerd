@@ -8,12 +8,12 @@ The fastest way to manage PHP is the **PHP** page (under the **Environment** gro
 
 <ThemedImage light="/images/php-light.png" dark="/images/php-dark.png" alt="The PHP page in the Yerd desktop app" />
 
-- A table of installed versions shows live FPM pool state, patch level, pool memory (RSS), and whether an update is available.
+- A table of installed versions shows live FPM pool state, patch level, pool memory (RSS), and whether an update is available. A version whose pool loads [Xdebug](./xdebug) carries an **Xdebug on** badge.
 - **Install** opens a picker of installable versions (already-installed ones are hidden); progress streams live next to the Install button as the prebuilt static build downloads. An **Install a legacy version** toggle (off by default) swaps the picker over to the [legacy minors](#legacy-php-versions) (7.4 / 8.0 / 8.1) behind a warning block and a mandatory confirmation checkbox; when every current version is already installed the toggle starts on and locks there, since legacy is all that's left to add.
 - **Refresh** re-checks for updates and **Update all** updates every version with one pending - [updates are notify-only](#updates-are-notify-only).
 - Each row's `⋯` menu offers **Restart**, **Set default** (marks it with a star; disabled for legacy rows, which are tagged with a `legacy` badge), **Update** (when available), and **Uninstall**; **Restart all** restarts every running pool.
 - A **Default settings** card edits the [global ini defaults](#tuning-php-settings) applied to every version; leave a field blank to use PHP's built-in default, and saving restarts running pools to apply.
-- A **Per-version configuration** card lists your versions down the side, newest first; picking one shows everything scoped to it: the settings form (empty fields inherit the defaults; see [Per-version configuration](#per-version-configuration)), its [custom extensions](#custom-extensions), an **FPM pool size** field (how many PHP workers that version may run at once), and a free-form ini-directive editor (e.g. `xdebug.mode = debug`). Each row badges how much that version has configured and marks unsaved edits, so switching versions never loses work. Saving restarts only that version's pool.
+- A **Per-version configuration** card lists your versions down the side, newest first; picking one shows everything scoped to it: the settings form (empty fields inherit the defaults; see [Per-version configuration](#per-version-configuration)), its [custom extensions](#custom-extensions), an **Xdebug** section (the [bundled Xdebug](./xdebug) switch, modes and always/trigger start), an **FPM pool size** field (how many PHP workers that version may run at once), and a free-form ini-directive editor (e.g. `apc.shm_size = 128M`). Each row badges how much that version has configured and marks unsaved edits, so switching versions never loses work. Saving restarts only that version's pool.
 
 ## From the command line
 
@@ -272,8 +272,11 @@ yerd php ext remove 8.5 scrypt
   that version's PHP and rejects it if it can't load - a wrong-version build, a
   missing dependency, or a Zend extension registered without `--zend` fails with a
   clear message instead of silently breaking your pools.
-- **Zend extensions** (xdebug/opcache-style) use `--zend`:
-  `yerd php ext add 8.5 /path/xdebug.so --zend`.
+- **Zend extensions** (opcache-style) use `--zend`:
+  `yerd php ext add 8.5 /path/ioncube_loader.so --zend`.
+- **Xdebug is built in.** Don't register your own `xdebug.so`: turn on the
+  bundled one with `yerd xdebug on` (see [Debugging with Xdebug](./xdebug)).
+  Yerd refuses to load Xdebug twice for the same version.
 - **Naming.** The removal handle defaults to the `.so` filename (`scrypt` above);
   override it with `--name`.
 - **Missing files** are handled gracefully: if a registered `.so` later disappears
@@ -521,13 +524,17 @@ yerd unset php memory_limit --only 8.3    # 8.3 inherits the global value again
 ```
 
 Beyond the allowlist, `yerd php ini` sets **free-form ini directives** per
-version - typically the settings of a custom extension. The classic xdebug
-setup is two commands:
+version - typically the settings of a custom extension. Loading and
+configuring one is two commands:
 
 ```sh
-yerd php ext add 8.3 /opt/php/xdebug.so --zend   # load the extension
-yerd php ini set 8.3 xdebug.mode debug           # configure it
+yerd php ext add 8.3 /opt/php/pecl/mongodb.so   # load the extension
+yerd php ini set 8.3 mongodb.debug stderr       # configure it
 ```
+
+For Xdebug, use the built-in toggle instead: `yerd xdebug on 8.3` downloads and
+loads it with sensible defaults, and `yerd php ini` is only needed to override
+those (see [Debugging with Xdebug](./xdebug#changing-the-port-and-other-settings)).
 
 Directive names and values are shape-checked so they can never corrupt the
 generated config, but Yerd doesn't second-guess their meaning - a directive PHP
@@ -577,7 +584,7 @@ and the denylist of directives Yerd manages elsewhere.
 | `yerd restart php [<version>]` | Restart one (or all) running FPM pools. |
 | `yerd set php <setting> <value> [--only <version>]` | Set a global PHP ini default, or a per-version override with `--only`. |
 | `yerd unset php <setting> [--only <version>]` | Reset a global setting to PHP's built-in value. With `--only`, remove one version's override so the global value applies again. |
-| `yerd php ini set <version> <name> <value>` | Set a free-form ini directive (e.g. `xdebug.mode`) for one version. |
+| `yerd php ini set <version> <name> <value>` | Set a free-form ini directive (e.g. `apc.shm_size`) for one version. |
 | `yerd php ini unset <version> <name>` | Remove a free-form ini directive. |
 | `yerd php ini list` | Show per-version overrides, directives, and pool sizes. |
 | `yerd php pool set <version> max_children <n>` | Set how many PHP workers that version may run at once (1-1024, default 16). |
@@ -586,6 +593,9 @@ and the denylist of directives Yerd manages elsewhere.
 | `yerd php ext add <version> <path> [--zend] [--name <name>]` | Register a custom extension (load-probed) for a version. |
 | `yerd php ext remove <version> <name>` | Remove a registered extension. |
 | `yerd php ext list` | List registered custom extensions, grouped by version. |
+| `yerd xdebug on [<version>] [--mode …] [--trigger\|--always]` | Turn on the [bundled Xdebug](./xdebug) for a version (default PHP when omitted). |
+| `yerd xdebug off [<version>]` | Turn it off again. |
+| `yerd xdebug status` | Show Xdebug state for every installed version. |
 
 Add `--json` to any command for machine-readable output.
 

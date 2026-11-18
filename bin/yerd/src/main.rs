@@ -17,6 +17,10 @@ fn main() -> ExitCode {
         return code;
     }
     #[cfg(unix)]
+    if let Some(code) = yerd::debug_shim::dispatch() {
+        return code;
+    }
+    #[cfg(unix)]
     if let Some(code) = yerd::laravel_shim::dispatch() {
         return code;
     }

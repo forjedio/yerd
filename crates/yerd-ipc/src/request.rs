@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use yerd_core::PhpVersion;
+use yerd_core::{PhpVersion, XdebugMode, XdebugStart};
 
 // IMPORTANT: per-field serde renames are forbidden in this crate. Add
 // new variants/fields additively; let rename_all handle casing. See
@@ -228,6 +228,23 @@ pub enum Request {
         /// Setting name → value; currently only `"max_children"` (`1..=1024`).
         /// `""` resets to the default.
         settings: BTreeMap<String, String>,
+    },
+    /// Turn the bundled Xdebug on or off for one PHP version, optionally
+    /// changing its modes and start trigger. Absent `modes`/`start` keep the
+    /// version's current value (or the default). The reply is
+    /// [`crate::Response::PhpVersions`].
+    SetXdebug {
+        /// The installed PHP version; `None` means the daemon's default PHP.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<PhpVersion>,
+        /// Whether that version's FPM pool loads Xdebug.
+        enabled: bool,
+        /// The `xdebug.mode` list; must be non-empty when present.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        modes: Option<Vec<XdebugMode>>,
+        /// When a debug session starts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start: Option<XdebugStart>,
     },
     /// Register a custom PHP extension for a version: the daemon validates and
     /// load-probes the `.so`, persists it, and loads it into that version's FPM
@@ -971,6 +988,7 @@ mod variant_name_pinning {
             Request::SetPhpVersionSettings { .. } => {}
             Request::SetPhpDirectives { .. } => {}
             Request::SetPhpPoolSettings { .. } => {}
+            Request::SetXdebug { .. } => {}
             Request::AddPhpExtension { .. } => {}
             Request::RemovePhpExtension { .. } => {}
             Request::ListPhpExtensions => {}

@@ -40,7 +40,7 @@ use yerd_platform::{ActivePortBinder, PlatformDirs};
 use crate::error::{ExitReason, PhpError, SpawnFailureReason};
 use crate::io::atomic_write;
 use crate::listen::{AllocatedListen, Listen};
-use crate::pool::{ExtLoad, PoolConfig};
+use crate::pool::{ExtLoad, PoolConfig, XdebugLoad};
 use crate::pure::supervisor::{
     transition, Action, Elapsed, ErrorTag, Event, KillSignal, PoolState, StopProtocol,
     SupervisorPolicy,
@@ -138,6 +138,7 @@ where
     pool_overrides: BTreeMap<PhpVersion, BTreeMap<String, String>>,
     dump_ext: Option<DumpExtSettings>,
     extensions: BTreeMap<PhpVersion, Vec<ExtLoad>>,
+    xdebug: BTreeMap<PhpVersion, XdebugLoad>,
     ca_bundle: Option<PathBuf>,
     instance_id: u32,
     /// Timing/restart policy fed to the pure state machine. FPM pools use the
@@ -180,6 +181,7 @@ where
             pool_overrides: BTreeMap::new(),
             dump_ext: None,
             extensions: BTreeMap::new(),
+            xdebug: BTreeMap::new(),
             ca_bundle: None,
             instance_id,
             policy: SupervisorPolicy::fpm(),
@@ -251,6 +253,31 @@ where
     /// spawn time is skipped with a warning, so a stale entry never blocks start.
     pub fn set_extensions(&mut self, extensions: BTreeMap<PhpVersion, Vec<ExtLoad>>) {
         self.extensions = extensions;
+    }
+
+    /// Replace the daemon-managed Xdebug loads, keyed by PHP version. A pool
+    /// whose version is in the map loads its `xdebug.so` and managed `-d`
+    /// defines on the next `ensure` / restart (a running pool keeps its current
+    /// command line until restarted), like `set_extensions`. A `.so` missing on
+    /// disk at spawn time is skipped with a warning.
+    pub fn set_xdebug(&mut self, xdebug: BTreeMap<PhpVersion, XdebugLoad>) {
+        self.xdebug = xdebug;
+    }
+
+    /// The managed Xdebug load for `v`, or `None` when it is off for `v` or
+    /// its `.so` is missing on disk (with a warning, so a vanished file never
+    /// blocks pool start).
+    fn resolve_xdebug(&self, v: PhpVersion) -> Option<XdebugLoad> {
+        let load = self.xdebug.get(&v)?;
+        if load.path.is_file() {
+            return Some(load.clone());
+        }
+        tracing::warn!(
+            version = %v,
+            path = %load.path.display(),
+            "skipping managed Xdebug: file not found"
+        );
+        None
     }
 
     /// The user extensions to load for `v`, dropping any whose `.so` is missing
@@ -332,6 +359,7 @@ where
         }
 
         cfg.user_extensions = self.resolve_user_extensions(v);
+        cfg.xdebug = self.resolve_xdebug(v);
 
         for path in [&cfg.config_path, &cfg.pid_file, &cfg.error_log] {
             if let Some(parent) = path.parent() {
@@ -351,17 +379,15 @@ where
         })?;
 
         let env = env_scrub::allowlist(&std::env::vars().collect::<Vec<_>>());
-        let extension = cfg.extension.clone();
-        let ini_defines = cfg.ini_defines.clone();
-        let user_extensions = cfg.user_extensions.clone();
         let cmd_builder = || {
             build_cmd(
                 &binary,
                 &cfg.config_path,
                 &env,
-                extension.as_deref(),
-                &ini_defines,
-                &user_extensions,
+                cfg.extension.as_deref(),
+                &cfg.ini_defines,
+                &cfg.user_extensions,
+                cfg.xdebug.as_ref(),
             )
         };
 
@@ -771,6 +797,7 @@ fn build_cmd(
     extension: Option<&std::path::Path>,
     ini_defines: &[(String, String)],
     user_extensions: &[ExtLoad],
+    xdebug: Option<&XdebugLoad>,
 ) -> StdCommand {
     let mut cmd = StdCommand::new(binary);
     if let Some(so) = extension {
@@ -787,6 +814,13 @@ fn build_cmd(
         };
         cmd.arg("-d")
             .arg(format!("{directive}={}", ext.path.display()));
+    }
+    if let Some(xd) = xdebug {
+        cmd.arg("-d")
+            .arg(format!("zend_extension={}", xd.path.display()));
+        for (k, val) in &xd.defines {
+            cmd.arg("-d").arg(format!("{k}={val}"));
+        }
     }
     cmd.arg("--fpm-config").arg(config_path);
     cmd.env_clear();
@@ -841,7 +875,7 @@ mod pure_helper_tests {
         let binary = PathBuf::from("/opt/php/bin/php");
         let config = PathBuf::from("/run/yerd/fpm-8.3.conf");
         let env = vec![("PATH".to_owned(), "/usr/bin".to_owned())];
-        let cmd = build_cmd(&binary, &config, &env, None, &[], &[]);
+        let cmd = build_cmd(&binary, &config, &env, None, &[], &[], None);
 
         assert_eq!(cmd.get_program(), OsStr::new("/opt/php/bin/php"));
         let args = args_of(&cmd);
@@ -867,7 +901,7 @@ mod pure_helper_tests {
         let env: Vec<(String, String)> = vec![];
         let so = Path::new("/lib/yerd-dump.so");
         let defines = vec![("yerd_dump.state_path".to_owned(), "/var/state".to_owned())];
-        let cmd = build_cmd(&binary, &config, &env, Some(so), &defines, &[]);
+        let cmd = build_cmd(&binary, &config, &env, Some(so), &defines, &[], None);
 
         let args = args_of(&cmd);
         assert_eq!(
@@ -904,7 +938,7 @@ mod pure_helper_tests {
                 zend: true,
             },
         ];
-        let cmd = build_cmd(&binary, &config, &env, None, &[], &user);
+        let cmd = build_cmd(&binary, &config, &env, None, &[], &user, None);
         let args = args_of(&cmd);
         assert_eq!(
             args,
@@ -919,7 +953,7 @@ mod pure_helper_tests {
         );
 
         let so = Path::new("/lib/yerd-dump.so");
-        let cmd = build_cmd(&binary, &config, &env, Some(so), &[], &user);
+        let cmd = build_cmd(&binary, &config, &env, Some(so), &[], &user, None);
         let args = args_of(&cmd);
         assert_eq!(
             args,
@@ -932,6 +966,55 @@ mod pure_helper_tests {
                 "zend_extension=/lib/xdebug.so",
                 "--fpm-config",
                 "/run/yerd/fpm-8.5.conf",
+            ]
+        );
+    }
+
+    #[test]
+    fn build_cmd_emits_managed_xdebug_after_user_extensions() {
+        let binary = PathBuf::from("/opt/php/bin/php");
+        let config = PathBuf::from("/run/yerd/fpm-8.4.conf");
+        let env: Vec<(String, String)> = vec![];
+        let user = vec![ExtLoad {
+            path: PathBuf::from("/lib/scrypt.so"),
+            zend: false,
+        }];
+        let xdebug = XdebugLoad {
+            path: PathBuf::from("/data/php-ext/php-8.4/xdebug.so"),
+            defines: vec![
+                ("xdebug.mode".to_owned(), "debug".to_owned()),
+                ("opcache.jit".to_owned(), "disable".to_owned()),
+            ],
+        };
+        let so = Path::new("/lib/yerd-dump.so");
+        let cmd = build_cmd(&binary, &config, &env, Some(so), &[], &user, Some(&xdebug));
+        assert_eq!(
+            args_of(&cmd),
+            vec![
+                "-d",
+                "extension=/lib/yerd-dump.so",
+                "-d",
+                "extension=/lib/scrypt.so",
+                "-d",
+                "zend_extension=/data/php-ext/php-8.4/xdebug.so",
+                "-d",
+                "xdebug.mode=debug",
+                "-d",
+                "opcache.jit=disable",
+                "--fpm-config",
+                "/run/yerd/fpm-8.4.conf",
+            ]
+        );
+        let without = build_cmd(&binary, &config, &env, Some(so), &[], &user, None);
+        assert_eq!(
+            args_of(&without),
+            vec![
+                "-d",
+                "extension=/lib/yerd-dump.so",
+                "-d",
+                "extension=/lib/scrypt.so",
+                "--fpm-config",
+                "/run/yerd/fpm-8.4.conf",
             ]
         );
     }

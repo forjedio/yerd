@@ -749,12 +749,14 @@ fn response_php_versions_byte_shape() {
     let r = Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)],
         default: PhpVersion::new(8, 5),
-        updates: vec![],
+        updates: Box::default(),
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
         ffi_versions: Box::new(vec![]),
         libvips_found: None,
+        xdebug: Box::default(),
+        xdebug_versions: Box::default(),
         pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -770,13 +772,15 @@ fn response_php_versions_ffi_and_libvips_byte_shape() {
     let r = Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 5)],
         default: PhpVersion::new(8, 5),
-        updates: vec![],
+        updates: Box::default(),
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
         pool: Box::new(BTreeMap::new()),
         ffi_versions: Box::new(vec![PhpVersion::new(8, 5)]),
         libvips_found: Some(false),
+        xdebug: Box::default(),
+        xdebug_versions: Box::default(),
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
@@ -825,16 +829,18 @@ fn response_php_versions_with_updates_byte_shape() {
     let r = Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 5)],
         default: PhpVersion::new(8, 5),
-        updates: vec![yerd_ipc::PhpUpdate {
+        updates: Box::new(vec![yerd_ipc::PhpUpdate {
             version: PhpVersion::new(8, 5),
             installed: "8.5.6".into(),
             latest: "8.5.7".into(),
-        }],
+        }]),
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
         ffi_versions: Box::new(vec![]),
         libvips_found: None,
+        xdebug: Box::default(),
+        xdebug_versions: Box::default(),
         pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -850,7 +856,7 @@ fn response_php_versions_with_settings_byte_shape() {
     let r = Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 5)],
         default: PhpVersion::new(8, 5),
-        updates: vec![],
+        updates: Box::default(),
         settings: BTreeMap::from([
             ("memory_limit".to_string(), "512M".to_string()),
             ("display_errors".to_string(), "On".to_string()),
@@ -859,6 +865,8 @@ fn response_php_versions_with_settings_byte_shape() {
         directives: Box::new(BTreeMap::new()),
         ffi_versions: Box::new(vec![]),
         libvips_found: None,
+        xdebug: Box::default(),
+        xdebug_versions: Box::default(),
         pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -874,7 +882,7 @@ fn response_php_versions_with_version_settings_and_directives_byte_shape() {
     let r = Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 3)],
         default: PhpVersion::new(8, 3),
-        updates: vec![],
+        updates: Box::default(),
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::from([(
             PhpVersion::new(8, 3),
@@ -886,6 +894,8 @@ fn response_php_versions_with_version_settings_and_directives_byte_shape() {
         )])),
         ffi_versions: Box::new(vec![]),
         libvips_found: None,
+        xdebug: Box::default(),
+        xdebug_versions: Box::default(),
         pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -913,12 +923,14 @@ fn response_php_versions_with_pool_byte_shape() {
     let r = Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 4)],
         default: PhpVersion::new(8, 4),
-        updates: vec![],
+        updates: Box::default(),
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
         ffi_versions: Box::new(vec![]),
         libvips_found: None,
+        xdebug: Box::default(),
+        xdebug_versions: Box::default(),
         pool: Box::new(BTreeMap::from([(
             PhpVersion::new(8, 4),
             BTreeMap::from([("max_children".to_string(), "32".to_string())]),
@@ -1047,6 +1059,7 @@ fn response_error_each_code_byte_shape() {
         (ErrorCode::PortInUse, "port_in_use"),
         (ErrorCode::ExtensionLoadFailed, "extension_load_failed"),
         (ErrorCode::LegacyRestricted, "legacy_restricted"),
+        (ErrorCode::XdebugUnavailable, "xdebug_unavailable"),
         (ErrorCode::Internal, "internal"),
     ] {
         let r = Response::Error {
@@ -1473,6 +1486,7 @@ fn error_code_each_variant_byte_shape() {
         ),
         (ErrorCode::LanNotReady, r#""lan_not_ready""#),
         (ErrorCode::LegacyRestricted, r#""legacy_restricted""#),
+        (ErrorCode::XdebugUnavailable, r#""xdebug_unavailable""#),
         (ErrorCode::Internal, r#""internal""#),
     ];
     for (code, expected) in cases {
@@ -3863,6 +3877,64 @@ fn response_response_headers_byte_shape() {
     assert_eq!(
         s,
         r#"{"type":"response_headers","headers":[{"site":"api","name":"Access-Control-Allow-Origin","value":"https://app.test"}]}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_xdebug_byte_shape() {
+    use yerd_core::{XdebugMode, XdebugStart};
+    let full = Request::SetXdebug {
+        version: Some(PhpVersion::new(8, 4)),
+        enabled: true,
+        modes: Some(vec![XdebugMode::Debug, XdebugMode::Profile]),
+        start: Some(XdebugStart::Trigger),
+    };
+    let s = serde_json::to_string(&full).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_xdebug","version":"8.4","enabled":true,"modes":["debug","profile"],"start":"trigger"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), full);
+
+    let minimal = Request::SetXdebug {
+        version: None,
+        enabled: false,
+        modes: None,
+        start: None,
+    };
+    let s = serde_json::to_string(&minimal).unwrap();
+    assert_eq!(s, r#"{"type":"set_xdebug","enabled":false}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), minimal);
+}
+
+#[test]
+fn response_php_versions_xdebug_byte_shape() {
+    use yerd_core::{XdebugMode, XdebugSettings, XdebugStart};
+    let r = Response::PhpVersions {
+        installed: vec![PhpVersion::new(8, 4), PhpVersion::new(8, 5)],
+        default: PhpVersion::new(8, 4),
+        updates: Box::default(),
+        settings: BTreeMap::new(),
+        version_settings: Box::new(BTreeMap::new()),
+        directives: Box::new(BTreeMap::new()),
+        pool: Box::new(BTreeMap::new()),
+        ffi_versions: Box::new(vec![]),
+        libvips_found: None,
+        xdebug: Box::new(BTreeMap::from([(
+            PhpVersion::new(8, 4),
+            XdebugSettings {
+                enabled: true,
+                modes: vec![XdebugMode::Debug, XdebugMode::Trace],
+                start: XdebugStart::Trigger,
+            },
+        )])),
+        xdebug_versions: Box::new(vec![PhpVersion::new(8, 4), PhpVersion::new(8, 5)]),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"php_versions","installed":["8.4","8.5"],"default":"8.4","xdebug":{"8.4":{"enabled":true,"modes":["debug","trace"],"start":"trigger"}},"xdebug_versions":["8.4","8.5"]}"#
     );
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }

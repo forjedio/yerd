@@ -518,24 +518,48 @@ pub fn set_default_shim(dirs: &PlatformDirs, _yerd_bin: &Path) -> Result<PathBuf
     Ok(shim_dir(dirs))
 }
 
-/// The shim filename for `v`: `php<major>.<minor>` (clean) or `…cover` (pcov).
-/// Dotted form matches the `PhpVersion` parser.
+/// Which flavour of per-version CLI shim a name refers to.
 #[cfg(unix)]
-fn versioned_shim_name(v: PhpVersion, cover: bool) -> String {
-    if cover {
-        format!("php{}.{}cover", v.major, v.minor)
-    } else {
-        format!("php{}.{}", v.major, v.minor)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShimKind {
+    /// `php<v>`: the plain CLI.
+    Clean,
+    /// `php<v>cover`: the CLI with pcov loaded.
+    Cover,
+    /// `php<v>debug`: the CLI with Xdebug loaded.
+    Debug,
+}
+
+#[cfg(unix)]
+impl ShimKind {
+    /// The filename suffix after `php<major>.<minor>`.
+    const fn suffix(self) -> &'static str {
+        match self {
+            Self::Clean => "",
+            Self::Cover => "cover",
+            Self::Debug => "debug",
+        }
     }
 }
 
+/// The shim filename for `v`: `php<major>.<minor>` (clean), `…cover` (pcov) or
+/// `…debug` (Xdebug). Dotted form matches the `PhpVersion` parser.
+#[cfg(unix)]
+fn versioned_shim_name(v: PhpVersion, kind: ShimKind) -> String {
+    format!("php{}.{}{}", v.major, v.minor, kind.suffix())
+}
+
 /// Parse a yerd-managed shim filename back to its PHP version. Matches **exactly**
-/// `php<MAJOR>.<MINOR>` or `php<MAJOR>.<MINOR>cover`; returns `None` for `php`,
-/// `phpcover`, and any other name - so the pruner never touches foreign files.
+/// `php<MAJOR>.<MINOR>`, `php<MAJOR>.<MINOR>cover` or `php<MAJOR>.<MINOR>debug`;
+/// returns `None` for `php`, `phpcover`, `phpdebug`, and any other name - so the
+/// pruner never touches foreign files.
 #[cfg(unix)]
 fn managed_shim_version(name: &str) -> Option<PhpVersion> {
     let rest = name.strip_prefix("php")?;
-    let rest = rest.strip_suffix("cover").unwrap_or(rest);
+    let rest = rest
+        .strip_suffix(ShimKind::Cover.suffix())
+        .or_else(|| rest.strip_suffix(ShimKind::Debug.suffix()))
+        .unwrap_or(rest);
     let (maj, min) = rest.split_once('.')?;
     if maj.is_empty() || min.is_empty() {
         return None;
@@ -550,20 +574,21 @@ fn managed_shim_version(name: &str) -> Option<PhpVersion> {
 
 /// Reconcile the per-version CLI shims in `{data}/bin` against what's installed.
 ///
-/// Every clean and cover shim is a Yerd multi-call wrapper (a symlink to
+/// Every clean, cover and debug shim is a Yerd multi-call wrapper (a symlink to
 /// `yerd_bin`): the wrapper reads `argv[0]`, resolves the target PHP + minor, and
 /// points `PHPRC` at that version's generated ini before `exec`ing PHP. So:
 ///
-/// * for each installed `v`: `php<v>` → `yerd_bin`, and `php<v>cover` → `yerd_bin`
-///   except for legacy (`< 8.2`) versions, which get no cover shim because pcov is
-///   never built for them (`cover_shim` rejects them regardless, so the shim keeps
-///   `{data}/bin` honest);
-/// * `phpcover` → `yerd_bin`;
+/// * for each installed `v`: `php<v>` → `yerd_bin`, and `php<v>cover` /
+///   `php<v>debug` → `yerd_bin` except for legacy (`< 8.2`) versions, which get
+///   neither because pcov and Xdebug are never built for them (the cover and
+///   debug shims reject them regardless, so this keeps `{data}/bin` honest);
+/// * `phpcover` and `phpdebug` → `yerd_bin`;
 /// * `php` → `yerd_bin` when at least one version is installed (the wrapper
 ///   resolves the default from `config.php.default` at run time);
-/// * prune managed `php<X.Y>`/`php<X.Y>cover` symlinks whose version is no longer
-///   installed, plus any legacy cover shim (e.g. `php7.4cover`) left by an older
-///   Yerd, which must go even when that legacy version is still installed.
+/// * prune managed `php<X.Y>`/`php<X.Y>cover`/`php<X.Y>debug` symlinks whose
+///   version is no longer installed, plus any legacy cover or debug shim (e.g.
+///   `php7.4cover`) left by an older Yerd, which must go even when that legacy
+///   version is still installed.
 ///
 /// A **single** `discover_bundled` snapshot drives both create and prune. Callers
 /// must serialize invocations (the daemon holds a dedicated mutex) so the
@@ -585,12 +610,14 @@ pub fn reconcile_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), PhpEr
         .collect();
 
     for &v in &installed {
-        place_symlink(&bin.join(versioned_shim_name(v, false)), yerd_bin)?;
+        place_symlink(&bin.join(versioned_shim_name(v, ShimKind::Clean)), yerd_bin)?;
         if !v.is_legacy() {
-            place_symlink(&bin.join(versioned_shim_name(v, true)), yerd_bin)?;
+            place_symlink(&bin.join(versioned_shim_name(v, ShimKind::Cover)), yerd_bin)?;
+            place_symlink(&bin.join(versioned_shim_name(v, ShimKind::Debug)), yerd_bin)?;
         }
     }
     place_symlink(&bin.join("phpcover"), yerd_bin)?;
+    place_symlink(&bin.join("phpdebug"), yerd_bin)?;
 
     if !installed.is_empty() {
         let php = bin.join("php");
@@ -607,14 +634,16 @@ pub fn reconcile_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), PhpEr
     for entry in entries.flatten() {
         let fname = entry.file_name();
         let Some(name) = fname.to_str() else { continue };
-        if name == "php" || name == "phpcover" {
+        if name == "php" || name == "phpcover" || name == "phpdebug" {
             continue;
         }
         let Some(v) = managed_shim_version(name) else {
             continue;
         };
-        let stale_legacy_cover = name.ends_with("cover") && v.is_legacy();
-        if installed.contains(&v) && !stale_legacy_cover {
+        let stale_legacy_extra = (name.ends_with(ShimKind::Cover.suffix())
+            || name.ends_with(ShimKind::Debug.suffix()))
+            && v.is_legacy();
+        if installed.contains(&v) && !stale_legacy_extra {
             continue;
         }
         let path = entry.path();
@@ -1155,8 +1184,15 @@ mod tests {
             managed_shim_version("php8.4cover"),
             Some(PhpVersion::new(8, 4))
         );
+        assert_eq!(
+            managed_shim_version("php8.4debug"),
+            Some(PhpVersion::new(8, 4))
+        );
         assert_eq!(managed_shim_version("php"), None);
         assert_eq!(managed_shim_version("phpcover"), None);
+        assert_eq!(managed_shim_version("phpdebug"), None);
+        assert_eq!(managed_shim_version("php8.4debugx"), None);
+        assert_eq!(managed_shim_version("php8.4coverdebug"), None);
         assert_eq!(managed_shim_version("php8"), None);
         assert_eq!(managed_shim_version("php8.4.1"), None);
         assert_eq!(managed_shim_version("phpunit"), None);
@@ -1169,8 +1205,9 @@ mod tests {
     #[test]
     fn versioned_shim_name_is_dotted() {
         let v = PhpVersion::new(8, 4);
-        assert_eq!(versioned_shim_name(v, false), "php8.4");
-        assert_eq!(versioned_shim_name(v, true), "php8.4cover");
+        assert_eq!(versioned_shim_name(v, ShimKind::Clean), "php8.4");
+        assert_eq!(versioned_shim_name(v, ShimKind::Cover), "php8.4cover");
+        assert_eq!(versioned_shim_name(v, ShimKind::Debug), "php8.4debug");
     }
 
     #[cfg(unix)]
@@ -1196,12 +1233,19 @@ mod tests {
         let bin = shim_dir(&dirs);
         std::fs::create_dir_all(&bin).unwrap();
         std::os::unix::fs::symlink(&yerd_bin, bin.join("php8.2cover")).unwrap();
+        std::os::unix::fs::symlink(&yerd_bin, bin.join("php8.2debug")).unwrap();
         std::fs::write(bin.join("keep.txt"), b"user file").unwrap();
 
         reconcile_shims(&dirs, &yerd_bin).unwrap();
 
         assert!(bin.join("php8.4cover").exists());
         assert!(bin.join("phpcover").exists());
+        assert_eq!(
+            std::fs::read_link(bin.join("php8.4debug")).unwrap(),
+            yerd_bin
+        );
+        assert_eq!(std::fs::read_link(bin.join("phpdebug")).unwrap(), yerd_bin);
+        assert!(!bin.join("php8.2debug").exists());
         assert_eq!(std::fs::read_link(bin.join("php8.4")).unwrap(), yerd_bin);
         assert_eq!(std::fs::read_link(bin.join("php")).unwrap(), yerd_bin);
         assert!(!bin.join("php8.2cover").exists());
@@ -1232,6 +1276,7 @@ mod tests {
         let bin = shim_dir(&dirs);
         std::fs::create_dir_all(&bin).unwrap();
         std::os::unix::fs::symlink(&yerd_bin, bin.join("php7.4cover")).unwrap();
+        std::os::unix::fs::symlink(&yerd_bin, bin.join("php7.4debug")).unwrap();
 
         reconcile_shims(&dirs, &yerd_bin).unwrap();
 
@@ -1244,6 +1289,11 @@ mod tests {
             "no cover shim for a legacy version, and a stale one is pruned"
         );
         assert!(bin.join("php8.4cover").exists(), "stable cover shim stays");
+        assert!(
+            !bin.join("php7.4debug").exists(),
+            "no debug shim for a legacy version, and a stale one is pruned"
+        );
+        assert!(bin.join("php8.4debug").exists(), "stable debug shim stays");
     }
 
     #[cfg(unix)]

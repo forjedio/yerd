@@ -234,6 +234,23 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::SetPhpPoolSettings { version, settings } => {
             set_php_pool_settings(version, settings, state).await
         }
+        Request::SetXdebug {
+            version,
+            enabled,
+            modes,
+            start,
+        } => {
+            crate::xdebug::set_xdebug(
+                state,
+                crate::xdebug::XdebugRequest {
+                    version,
+                    enabled,
+                    modes,
+                    start,
+                },
+            )
+            .await
+        }
         Request::AddPhpExtension {
             version,
             path,
@@ -559,12 +576,19 @@ pub(crate) async fn manager_ini_overrides(
 
 /// Build the `PhpVersions` reply: installed versions, the live global default,
 /// cached update annotations, the global ini settings, which versions include
-/// FFI (cached probe), and whether libvips was found. Read-only; no network.
-async fn php_versions_response(state: &DaemonState) -> Response {
+/// FFI (cached probe), whether libvips was found, and the per-version Xdebug
+/// settings plus which installed versions can use it. Read-only; no network.
+pub(crate) async fn php_versions_response(state: &DaemonState) -> Response {
     let installed = installed_versions(state);
     let bins = cli_bins(state, &installed);
     let ffi_versions = state.ffi_cache.capable_versions(&bins).await;
-    let (default, settings, version_settings, directives, pool) = {
+    let (os, arch) = crate::ext_install::host_os_arch();
+    let xdebug_versions: Vec<yerd_core::PhpVersion> = installed
+        .iter()
+        .copied()
+        .filter(|v| yerd_core::php_xdebug::is_available(*v, os, arch))
+        .collect();
+    let (default, settings, version_settings, directives, pool, xdebug) = {
         let cfg = state.config.lock().await;
         (
             cfg.php.default,
@@ -572,18 +596,21 @@ async fn php_versions_response(state: &DaemonState) -> Response {
             cfg.php.version_settings.clone(),
             cfg.php.directives.clone(),
             cfg.php.pool.clone(),
+            cfg.php.xdebug.clone(),
         )
     };
     Response::PhpVersions {
         installed,
         default,
-        updates: crate::php_updates::cached_updates(state).await,
+        updates: Box::new(crate::php_updates::cached_updates(state).await),
         settings,
         version_settings: Box::new(version_settings),
         directives: Box::new(directives),
         pool: Box::new(pool),
         ffi_versions: Box::new(ffi_versions),
         libvips_found: state.libvips_probe.libvips_found(),
+        xdebug: Box::new(xdebug),
+        xdebug_versions: Box::new(xdebug_versions),
     }
 }
 
@@ -1983,10 +2010,34 @@ async fn uninstall_php(version: yerd_core::PhpVersion, state: &DaemonState) -> R
         return internal(format!("failed to remove PHP {version}: {e}"));
     }
     let _ = std::fs::remove_file(crate::ext_install::pcov_so_path(&state.dirs, version));
+    let _ = std::fs::remove_file(crate::ext_install::xdebug_so_path(&state.dirs, version));
+    let _ = std::fs::remove_file(crate::xdebug::debug_ini_path(&state.dirs, version));
+    forget_xdebug(state, version).await;
     refresh_php_binaries(state).await;
     reconcile_shims_now(state).await;
     tracing::info!(version = %version, "uninstalled PHP");
     php_versions_response(state).await
+}
+
+/// Drop an uninstalled version's `[php.xdebug]` entry (saving only when one
+/// existed) and push the reduced load map into the manager.
+async fn forget_xdebug(state: &DaemonState, version: yerd_core::PhpVersion) {
+    let _mutate_guard = state.php_settings_mutate.lock().await;
+    let map = {
+        let mut cfg_guard = state.config.lock().await;
+        if cfg_guard.php.xdebug.contains_key(&version) {
+            let mut new = cfg_guard.clone();
+            new.php.xdebug.remove(&version);
+            match new.save(&state.config_path) {
+                Ok(()) => *cfg_guard = new,
+                Err(e) => {
+                    tracing::warn!(version = %version, error = %e, "failed to drop Xdebug settings for uninstalled PHP");
+                }
+            }
+        }
+        crate::xdebug::xdebug_load_map(&cfg_guard, &state.dirs)
+    };
+    state.php_manager.lock().await.set_xdebug(map);
 }
 
 /// `use <ver>` (global) - require the version installed, set the live default +
@@ -2529,7 +2580,10 @@ async fn set_php_pool_settings(
 /// `NotFound` error when `version` has no installed CLI binary, else `None`.
 /// Per-version config only makes sense for an installed version (mirrors
 /// `add_php_extension`).
-fn require_installed(version: yerd_core::PhpVersion, state: &DaemonState) -> Option<Response> {
+pub(crate) fn require_installed(
+    version: yerd_core::PhpVersion,
+    state: &DaemonState,
+) -> Option<Response> {
     let php_bin = crate::php_install::cli_binary_path(&state.dirs, version);
     if php_bin.exists() {
         return None;
@@ -2603,19 +2657,24 @@ async fn add_php_extension(
         };
     }
 
-    if state
-        .config
-        .lock()
-        .await
-        .php
-        .extensions
-        .get(&version)
-        .is_some_and(|list| list.iter().any(|e| e.name == name))
     {
-        return Response::Error {
-            code: ErrorCode::AlreadyExists,
-            message: format!("an extension named {name} is already registered for PHP {version}"),
-        };
+        let cfg = state.config.lock().await;
+        if let Some(resp) = managed_xdebug_conflict(&cfg, version, &name, &path) {
+            return resp;
+        }
+        if cfg
+            .php
+            .extensions
+            .get(&version)
+            .is_some_and(|list| list.iter().any(|e| e.name == name))
+        {
+            return Response::Error {
+                code: ErrorCode::AlreadyExists,
+                message: format!(
+                    "an extension named {name} is already registered for PHP {version}"
+                ),
+            };
+        }
     }
 
     let runner = yerd_php::TokioCommandRunner;
@@ -2630,6 +2689,9 @@ async fn add_php_extension(
 
     {
         let mut cfg_guard = state.config.lock().await;
+        if let Some(resp) = managed_xdebug_conflict(&cfg_guard, version, &name, &path) {
+            return resp;
+        }
         let mut new = cfg_guard.clone();
         let list = new.php.extensions.entry(version).or_default();
         if list.iter().any(|e| e.name == name) {
@@ -2651,6 +2713,26 @@ async fn add_php_extension(
     }
     apply_extensions(state, version).await;
     list_php_extensions(state).await
+}
+
+/// `AlreadyExists` when `name`/`path` is an Xdebug and Yerd's managed Xdebug is
+/// on for `version`, so the same `.so` is never loaded twice.
+fn managed_xdebug_conflict(
+    cfg: &yerd_config::Config,
+    version: yerd_core::PhpVersion,
+    name: &str,
+    path: &str,
+) -> Option<Response> {
+    let managed_on = cfg.php.xdebug.get(&version).is_some_and(|s| s.enabled);
+    if !managed_on || !yerd_core::php_xdebug::is_xdebug_extension(name, path) {
+        return None;
+    }
+    Some(Response::Error {
+        code: ErrorCode::AlreadyExists,
+        message: format!(
+            "Xdebug is managed by Yerd for PHP {version}; use `yerd xdebug on/off` instead"
+        ),
+    })
 }
 
 /// Remove a registered extension by name for `version`.
@@ -2718,9 +2800,14 @@ async fn list_php_extensions(state: &DaemonState) -> Response {
 /// released before the manager lock is taken.
 async fn apply_extensions(state: &DaemonState, affected: yerd_core::PhpVersion) {
     let ext_map = extension_load_map(state).await;
+    let xdebug_map = {
+        let cfg = state.config.lock().await;
+        crate::xdebug::xdebug_load_map(&cfg, &state.dirs)
+    };
     {
         let mut mgr = state.php_manager.lock().await;
         mgr.set_extensions(ext_map);
+        mgr.set_xdebug(xdebug_map);
         if mgr.snapshots().iter().any(|s| s.version == affected) {
             if let Err(e) = mgr.restart(affected).await {
                 tracing::warn!(version = %affected, error = %e, "failed to restart FPM pool after extension change");
@@ -4929,6 +5016,77 @@ Subject: Captured\r\n\r\nhi\r\n";
         assert!(!dir.exists(), "version dir should be removed");
     }
 
+    #[tokio::test]
+    async fn uninstall_php_removes_xdebug_files_and_entry_only_for_that_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let v84 = PhpVersion::new(8, 4);
+        let v85 = PhpVersion::new(8, 5);
+        fake_install(&state.dirs, v84);
+        fake_install(&state.dirs, v85);
+        dispatch(Request::SetDefaultPhp { version: v84 }, &state).await;
+        let on = yerd_core::XdebugSettings {
+            enabled: true,
+            ..yerd_core::XdebugSettings::default()
+        };
+        {
+            let mut cfg = state.config.lock().await;
+            cfg.php.xdebug.insert(v84, on.clone());
+            cfg.php.xdebug.insert(v85, on.clone());
+        }
+        let so = crate::ext_install::xdebug_so_path(&state.dirs, v85);
+        let ini = crate::xdebug::debug_ini_path(&state.dirs, v85);
+        std::fs::create_dir_all(so.parent().unwrap()).unwrap();
+        std::fs::write(&so, b"so").unwrap();
+        std::fs::write(&ini, b"ini").unwrap();
+
+        let resp = dispatch(Request::UninstallPhp { version: v85 }, &state).await;
+        assert!(matches!(resp, Response::PhpVersions { .. }), "{resp:?}");
+        assert!(!so.exists());
+        assert!(!ini.exists());
+        let cfg = state.config.lock().await;
+        assert_eq!(
+            cfg.php.xdebug.keys().copied().collect::<Vec<_>>(),
+            vec![v84]
+        );
+        let saved = yerd_config::Config::load(&state.config_path).unwrap();
+        assert_eq!(
+            saved.php.xdebug.keys().copied().collect::<Vec<_>>(),
+            vec![v84]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_php_reports_xdebug_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let v84 = PhpVersion::new(8, 4);
+        fake_install(&state.dirs, v84);
+        fake_install(&state.dirs, PhpVersion::new(7, 4));
+        let on = yerd_core::XdebugSettings {
+            enabled: true,
+            ..yerd_core::XdebugSettings::default()
+        };
+        state.config.lock().await.php.xdebug.insert(v84, on.clone());
+        match dispatch(Request::ListPhp, &state).await {
+            Response::PhpVersions {
+                xdebug,
+                xdebug_versions,
+                ..
+            } => {
+                assert_eq!(xdebug.get(&v84), Some(&on));
+                let (os, arch) = crate::ext_install::host_os_arch();
+                let want: Vec<PhpVersion> = if yerd_core::php_xdebug::is_available(v84, os, arch) {
+                    vec![v84]
+                } else {
+                    Vec::new()
+                };
+                assert_eq!(*xdebug_versions, want);
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+    }
+
     /// Guards the live-default fix: after `SetDefaultPhp`, a newly-linked site
     /// inherits the *new* default (not the startup snapshot).
     #[tokio::test]
@@ -5569,6 +5727,39 @@ Subject: Captured\r\n\r\nhi\r\n";
                 ..
             }
         ));
+        assert!(state.config.lock().await.php.extensions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn add_php_extension_refuses_xdebug_while_managed_xdebug_is_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let v = PhpVersion::new(8, 4);
+        fake_install(&state.dirs, v);
+        state.config.lock().await.php.xdebug.insert(
+            v,
+            yerd_core::XdebugSettings {
+                enabled: true,
+                ..yerd_core::XdebugSettings::default()
+            },
+        );
+        let resp = dispatch(
+            Request::AddPhpExtension {
+                version: v,
+                path: "/opt/ext/xdebug.so".to_string(),
+                name: None,
+                zend: true,
+            },
+            &state,
+        )
+        .await;
+        match resp {
+            Response::Error {
+                code: ErrorCode::AlreadyExists,
+                message,
+            } => assert!(message.contains("yerd xdebug"), "got: {message}"),
+            other => panic!("expected AlreadyExists, got {other:?}"),
+        }
         assert!(state.config.lock().await.php.extensions.is_empty());
     }
 

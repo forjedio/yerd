@@ -595,6 +595,13 @@ onUnmounted(
                   <Star class="size-3" /> default
                 </Badge>
                 <Badge v-if="isLegacyVersion(v)" variant="warning">legacy</Badge>
+                <Badge
+                  v-if="data?.xdebug?.[v]?.enabled"
+                  variant="warning"
+                  data-testid="xdebug-badge"
+                >
+                  Xdebug on
+                </Badge>
               </div>
             </td>
             <td class="py-3 pr-4">
@@ -824,6 +831,8 @@ onUnmounted(
                     :pool="data?.pool?.[v] ?? {}"
                     :ffi-available="ffiVersions.includes(v)"
                     :libvips-found="data?.libvips_found ?? null"
+                    :xdebug="data?.xdebug?.[v] ?? null"
+                    :xdebug-available="(data?.xdebug_versions ?? []).includes(v)"
                     :extensions="extensionsFor(v)"
                     :installed-version="installed.includes(v)"
                     :extensions-loading="extLoading"

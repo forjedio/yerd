@@ -171,6 +171,7 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `SetPhpVersionSettings { version, settings }` | `{"type":"set_php_version_settings","version":"8.3","settings":{…}}` (per-version overrides; `""` removes → falls back to global) |
 | `SetPhpDirectives { version, directives }` | `{"type":"set_php_directives","version":"8.3","directives":{"xdebug.mode":"debug"}}` (free-form ini directives; `""` removes) |
 | `SetPhpPoolSettings { version, settings }` | `{"type":"set_php_pool_settings","version":"8.4","settings":{"max_children":"32"}}` (FPM pool settings, currently only `max_children` at `1..=1024`; `""` resets to the default of 16; never reaches the CLI ini) |
+| `SetXdebug { version: Option, enabled, modes: Option, start: Option }` | `{"type":"set_xdebug","version":"8.4","enabled":true,"modes":["debug","profile"],"start":"trigger"}` or minimally `{"type":"set_xdebug","enabled":false}` (the [bundled Xdebug](../guide/xdebug) toggle; an omitted `version` means the default PHP, omitted `modes`/`start` keep the version's current value; replies `PhpVersions`) |
 | `AddPhpExtension { version, path, name: Option, zend }` | `{"type":"add_php_extension","version":"8.5","path":"/a/scrypt.so","name":null,"zend":false}` |
 | `RemovePhpExtension { version, name }` | `{"type":"remove_php_extension","version":"8.5","name":"scrypt"}` |
 | `ListPhpExtensions` | `{"type":"list_php_extensions"}` (replies `PhpExtensions { by_version }`) |
@@ -263,7 +264,7 @@ pub enum Response {
     Error { code: ErrorCode, message: String },
     Parked { paths: Vec<String> },
     Info { dns_addr, tld, ca_path, ca_fingerprint, http_port, https_port },
-    PhpVersions { installed, default, updates, settings, version_settings, directives, pool, ffi_versions, libvips_found },
+    PhpVersions { installed, default, updates, settings, version_settings, directives, pool, ffi_versions, libvips_found, xdebug, xdebug_versions },
     AvailablePhp { available, installed, legacy },
     PhpExtensions { by_version },                  // version → [PhpExtInfo{name,path,zend,present}]
     Status { report: Box<StatusReport> },         // boxed: large payload
@@ -371,6 +372,26 @@ Per-site [response headers](../reference/cli/headers) follow the same pattern: `
 `GetNetworkSettings` and `SetNetworkSettings { mode, http_proxy?, https_proxy?, no_proxy? }` both reply `Response::NetworkSettings { settings: NetworkSettings }` (`mode`, the redacted manual `http_proxy` / `https_proxy`, `no_proxy`, and `effective: Option<EffectiveProxy>` - the mode, `ProxySource`, redacted URLs and bypass list actually in use). `TestNetwork` replies `Response::NetworkTest { result: NetworkTestResult }` (`ok`, `url`, `status?`, `error?`, `via?`, `source`). In `SetNetworkSettings` an omitted field keeps the stored value and an empty one clears it; a URL whose password is the redacted `***` keeps the stored password only while scheme, user, host and port are unchanged, otherwise the daemon replies `ErrorCode::InvalidPath` ("re-enter the proxy password"). Every URL on the wire is redacted, and `OutboundProxyMode` / `ProxySource` are `yerd_core::network` enums serialised `snake_case`. `DiagnosisCode` gained `OutboundProxyUnreachable` and `OutboundProxyPacUnsupported`; reachability and PAC state are a Doctor side channel, not `StatusReport` fields. All additive, no `PROTOCOL_VERSION` bump.
 :::
 
+::: info Bundled Xdebug: `SetXdebug` and two `PhpVersions` fields
+`SetXdebug` is one shared operation behind `yerd xdebug on|off`, the GUI's Xdebug
+section and the MCP `set_xdebug` tool. `version` (skipped when `None`, meaning the
+daemon's default PHP), `modes` (a list of `debug` / `develop` / `coverage` /
+`profile` / `trace` / `gcstats`, never `off` or empty) and `start` (`"always"` or
+`"trigger"`) are all optional; `enabled` is required. The reply is the same
+`PhpVersions` as `ListPhp`, which gained two boxed, skip-if-empty fields:
+`xdebug` (a version → `{enabled, modes, start}` map holding only the versions
+whose settings differ from the default; an absent version is off) and
+`xdebug_versions` (installed versions with a bundled Xdebug published for this
+host). Errors: `LegacyRestricted` for enabling on a legacy version,
+`XdebugUnavailable` when nothing is published for the version/platform or the
+download fails, `AlreadyExists` when a hand-registered Xdebug extension is
+loaded for that version, `ExtensionLoadFailed` when the load-probe fails,
+`NotFound` for a version that isn't installed, and `InvalidPath` for an empty
+mode list. A request that changes nothing replies without saving or restarting.
+`AddPhpExtension` also refuses an Xdebug `.so` with `AlreadyExists` while that
+version's managed Xdebug is on. All additive, no `PROTOCOL_VERSION` bump.
+:::
+
 ### ErrorCode
 
 Failures are a `Response::Error { code, message }` where `code` is machine-readable and `message` is for human display:
@@ -385,13 +406,14 @@ pub enum ErrorCode {
     PortInUse,            // "port_in_use"
     ExtensionLoadFailed,  // "extension_load_failed" - a valid path whose .so failed its load-probe
     LegacyRestricted,     // "legacy_restricted" - a legacy version used somewhere it's disallowed
+    XdebugUnavailable,    // "xdebug_unavailable" - no bundled Xdebug for that version/platform, or its download failed
     Internal,             // "internal" - catch-all; expand the enum, don't overload this
 }
 ```
 
 `LegacyRestricted` is returned when a request tries to do something an [out-of-support legacy version](../guide/php-versions#legacy-php-versions)
 (7.4 / 8.0 / 8.1) can't: setting it as the global default, or installing it
-without `confirm_legacy: true`.
+without `confirm_legacy: true`, or turning on Xdebug for it.
 
 There is deliberately **no `#[serde(other)]` catch-all**. An unknown code from a newer daemon fails closed as `IpcError::Decode` rather than silently downgrading - the same signal as an unknown `type` tag, and the placeholder for a real version mismatch until a handshake lands.
 
@@ -461,7 +483,7 @@ The JSON shapes are the **published contract**, pinned three ways so a rename or
    }).unwrap(), r#"{"type":"set_php","name":"foo","version":"8.3"}"#);
    ```
 
-   It also pins additive back-compat: `Response::Info` decodes legacy daemons that omit `http_port`/`https_port` (they default to 0), and `Response::PhpVersions` skips an empty `updates`/`settings`/`version_settings`/`directives`/`pool`/`ffi_versions` and an absent `libvips_found` on the wire so the bytes match the pre-field shape.
+   It also pins additive back-compat: `Response::Info` decodes legacy daemons that omit `http_port`/`https_port` (they default to 0), and `Response::PhpVersions` skips an empty `updates`/`settings`/`version_settings`/`directives`/`pool`/`ffi_versions` /`xdebug`/`xdebug_versions` and an absent `libvips_found` on the wire so the bytes match the pre-field shape.
 
 2. **Inline `variant_name_pinning` modules** in `request.rs` and `response.rs` contain exhaustive `match` arms over the (in-crate, so matchable despite `#[non_exhaustive]`) enums. A renamed Rust variant fails to compile there - integration tests can't catch this across the crate boundary.
 

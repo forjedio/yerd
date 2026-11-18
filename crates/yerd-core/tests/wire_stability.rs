@@ -125,3 +125,33 @@ fn proxy_source_serialises_as_snake_case_string() {
         );
     }
 }
+
+#[test]
+fn xdebug_settings_default_byte_shape() {
+    use yerd_core::XdebugSettings;
+    assert_eq!(
+        serde_json::to_string(&XdebugSettings::default()).unwrap(),
+        r#"{"enabled":false,"modes":["debug"],"start":"always"}"#
+    );
+}
+
+#[test]
+fn xdebug_mode_and_start_serialise_as_snake_case_strings() {
+    use yerd_core::{XdebugMode, XdebugStart};
+    for (mode, expected) in [
+        (XdebugMode::Debug, r#""debug""#),
+        (XdebugMode::Develop, r#""develop""#),
+        (XdebugMode::Coverage, r#""coverage""#),
+        (XdebugMode::Profile, r#""profile""#),
+        (XdebugMode::Trace, r#""trace""#),
+        (XdebugMode::Gcstats, r#""gcstats""#),
+    ] {
+        assert_eq!(serde_json::to_string(&mode).unwrap(), expected);
+    }
+    for (start, expected) in [
+        (XdebugStart::Always, r#""always""#),
+        (XdebugStart::Trigger, r#""trigger""#),
+    ] {
+        assert_eq!(serde_json::to_string(&start).unwrap(), expected);
+    }
+}

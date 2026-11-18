@@ -130,6 +130,7 @@ PHP defaults applied across sites.
 | `version_settings` | table     | Sparse per-version overrides of `settings`, keyed by PHP version. | empty   |
 | `directives`       | table     | Free-form per-version ini directives, keyed by PHP version.  | empty   |
 | `pool`             | table     | Per-version FPM pool settings, keyed by PHP version.         | empty   |
+| `xdebug`           | table     | Per-version bundled Xdebug settings, keyed by PHP version.   | empty   |
 | `extensions`       | table     | Custom `.so` extensions to load, keyed by PHP version.       | empty   |
 
 `default` is a `MAJOR.MINOR` version string validated by `yerd-core`'s `PhpVersion`; an out-of-range minor or a non-numeric value is rejected. See [PHP Versions](../guide/php-versions).
@@ -204,6 +205,41 @@ Setting values through the CLI/GUI still validates strictly. A malformed
 :::
 
 Manage these with [`yerd set php --only <version>`, `yerd php ini`, and `yerd php pool`](cli/php#custom-ini-directives) or the desktop app's **Per-version configuration** card.
+
+`[php.xdebug."<version>"]` (schema v29) holds the settings of the
+[bundled Xdebug](../guide/xdebug) toggle for one installed version.
+
+| Key       | TOML type       | Meaning                                                                 |
+| --------- | --------------- | ----------------------------------------------------------------------- |
+| `enabled` | bool            | Whether that version's FPM pool loads Xdebug.                          |
+| `modes`   | array of string | The `xdebug.mode` list: any of `debug`, `develop`, `coverage`, `profile`, `trace`, `gcstats`. Must not be empty; `off` is not a mode. |
+| `start`   | string          | `always` (`xdebug.start_with_request = yes`) or `trigger` (`= trigger`). |
+
+```toml
+[php.xdebug."8.4"]
+enabled = true
+modes = ["debug"]
+start = "always"
+```
+
+An entry is written only when it differs from the default (off, `["debug"]`,
+`always`), so turning Xdebug off with the default modes removes the version's
+table, and an untouched config has no `[php.xdebug]` at all. Modes are stored
+sorted and de-duplicated. Like the three tables above, the table loads
+leniently: an entry with an unknown or empty mode list, an unknown or missing
+`start`, a missing `modes`, or a [legacy](../guide/php-versions#legacy-php-versions)
+version key is silently dropped (a missing `enabled` reads as `false`). A
+malformed version key, or a key other than these three inside an entry, is
+still a hard error. Uninstalling a version removes its entry.
+
+While a version's Xdebug is on, Yerd passes `xdebug.mode`,
+`xdebug.start_with_request` and `opcache.jit` on the FPM command line, so any
+free-form `[php.directives]` entry with one of those three names is **not
+rendered** into that version's pool (it comes back when Xdebug is turned off).
+Other `xdebug.*` directives, such as `xdebug.client_port` or `xdebug.idekey`,
+still apply and override the managed values. Manage this table with
+[`yerd xdebug`](cli/xdebug) or the Xdebug section of the desktop app's
+**Per-version configuration** card.
 
 `[php.extensions]` maps a **PHP version string** to an array of custom extensions to load into both that version's FPM pool and its CLI. It is written as an array-of-tables per version and omitted entirely when empty. Because a native `.so` is ABI-bound to a PHP minor, an entry only applies to the version it is keyed under.
 
@@ -668,14 +704,14 @@ the desktop app's General settings.
 
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `28`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `29`.
 
 When the daemon loads a file, it routes on the version it finds:
 
 ```text
-found  > CURRENT (28)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (28)   →  parse directly
-found  < CURRENT (28)   →  walk forward migration steps, then parse
+found  > CURRENT (29)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (29)   →  parse directly
+found  < CURRENT (29)   →  walk forward migration steps, then parse
 ```
 
 A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
@@ -707,6 +743,7 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v25 → v26`** is a bare version bump: v26 only **added** the optional `"ffi.enable"` key in `[php.settings]` and `[php.version_settings."<version>"]` (the Allow FFI in web requests switch), which is absent unless set.
 - **`v26 → v27`** is a bare version bump: v27 only **added** the optional `[node]` table (global Node default) and `[node.sites]` (per-project Node preferences), which default to empty when absent.
 - **`v27 → v28`** is a bare version bump: v28 only **added** the optional `[network]` table (outbound proxy), which defaults to system detection when absent.
+- **`v28 → v29`** is a bare version bump: v29 only **added** the optional `[php.xdebug]` table (per-version bundled Xdebug settings), which defaults to empty when absent.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 

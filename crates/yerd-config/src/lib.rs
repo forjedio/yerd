@@ -118,8 +118,10 @@ pub use schema::{
 ///
 /// v27 added the optional `[node]` table ([`Config::node`]); v28 added the
 /// optional `[network]` outbound-proxy table ([`Config::network`]). Both
-/// default when absent, so v26→v27 and v27→v28 are bare bumps too.
+/// default when absent, so v26→v27 and v27→v28 are bare bumps too. v29 added
+/// the optional `[php.xdebug]` per-version table ([`PhpSection::xdebug`]); it
+/// defaults (empty) when absent, so v28→v29 is a bare bump too.
 ///
 /// The per-version detail, including how to hand-edit a file back down for an
 /// older binary, lives in `docs/developer/config-schema-history.md`.
-pub const CURRENT_VERSION: u32 = 28;
+pub const CURRENT_VERSION: u32 = 29;

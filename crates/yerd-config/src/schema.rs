@@ -534,6 +534,12 @@ pub struct PhpSection {
     /// dropped rather than failing the load. Empty by default, so
     /// `[php.pool.*]` tables are omitted from a default config.
     pub pool: BTreeMap<PhpVersion, BTreeMap<String, String>>,
+    /// Per-version bundled Xdebug settings (see [`yerd_core::php_xdebug`]).
+    /// Only versions whose settings differ from the default are stored, so a
+    /// fresh install has no `[php.xdebug.*]` tables. Entries that fail to parse
+    /// or validate, or that name a legacy version, are dropped leniently at
+    /// load time.
+    pub xdebug: BTreeMap<PhpVersion, yerd_core::XdebugSettings>,
 }
 
 /// One registered custom PHP extension (see [`PhpSection::extensions`]).
@@ -561,6 +567,7 @@ impl Default for PhpSection {
             version_settings: BTreeMap::new(),
             directives: BTreeMap::new(),
             pool: BTreeMap::new(),
+            xdebug: BTreeMap::new(),
         }
     }
 }

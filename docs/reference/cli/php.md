@@ -130,7 +130,7 @@ registered under one version.
 
 ```sh
 yerd php ext add 8.5 /opt/homebrew/lib/php/pecl/20250925/scrypt.so
-yerd php ext add 8.5 /opt/php/xdebug.so --zend --name xdebug
+yerd php ext add 8.5 /opt/php/ioncube_loader.so --zend --name ioncube
 yerd php ext list
 yerd php ext remove 8.5 scrypt
 ```
@@ -139,7 +139,7 @@ yerd php ext remove 8.5 scrypt
 - `PATH` must be an absolute path ending in `.so`, with no control characters,
   NUL, `"`, or `$` (spaces are allowed). It is validated client-side before
   connecting, so a bad path is a clean usage error rather than a round-trip.
-- `--zend` loads it as a `zend_extension` (xdebug/opcache-style) rather than a
+- `--zend` loads it as a `zend_extension` (opcache-style) rather than a
   plain `extension`.
 - `--name` sets the removal/display handle; it defaults to the `.so` basename.
 
@@ -147,6 +147,14 @@ On `add`, the daemon **load-probes** the `.so` against that version's PHP and
 rejects it if it can't load (wrong-version build, missing dependency, or a Zend
 extension registered without `--zend`), so a bad extension is a clear error rather
 than a broken pool. `add`/`remove` restart that version's running FPM pool.
+
+::: tip Xdebug is built in
+You don't need to register Xdebug yourself: Yerd ships it for PHP 8.2-8.5 and
+turns it on per version with [`yerd xdebug on`](./xdebug). While a version's
+managed Xdebug is on, `add` refuses an `xdebug.so` for that version, and
+`yerd xdebug on` refuses while a hand-registered Xdebug is loaded, so it is
+never loaded twice. See [Debugging with Xdebug](../../guide/xdebug).
+:::
 `yerd php ext list` tags any extension whose `.so` is missing on disk with
 `(missing!)`. See the [Configuration Reference](../configuration#php) for how the
 registry is stored.
@@ -155,20 +163,20 @@ registry is stored.
 
 `yerd php ini` sets free-form ini directives for **one** installed version - the
 directives Yerd's typed allowlist doesn't cover, typically extension settings
-like `xdebug.mode` or `opcache.jit_buffer_size`. They apply to that version's
+like `apc.shm_size` or `opcache.jit_buffer_size`. They apply to that version's
 FPM (web) pool and its CLI.
 
 | Command | Description | Example |
 | --- | --- | --- |
-| `yerd php ini set <VERSION> <NAME> <VALUE>` | Set a directive for one installed version. | `yerd php ini set 8.3 xdebug.mode debug` |
-| `yerd php ini unset <VERSION> <NAME>` | Remove a directive. | `yerd php ini unset 8.3 xdebug.mode` |
+| `yerd php ini set <VERSION> <NAME> <VALUE>` | Set a directive for one installed version. | `yerd php ini set 8.3 apc.shm_size 128M` |
+| `yerd php ini unset <VERSION> <NAME>` | Remove a directive. | `yerd php ini unset 8.3 apc.shm_size` |
 | `yerd php ini list` | List per-version overrides, directives, and pool sizes (same output as `yerd list php`). | `yerd php ini list` |
 
 ```sh
-yerd php ext add 8.3 /opt/php/xdebug.so --zend   # 1. load the extension
-yerd php ini set 8.3 xdebug.mode debug           # 2. configure it
+yerd php ext add 8.3 /opt/php/pecl/mongodb.so          # 1. load the extension
+yerd php ini set 8.3 mongodb.debug stderr               # 2. configure it
 yerd php ini list
-yerd php ini unset 8.3 xdebug.mode
+yerd php ini unset 8.3 mongodb.debug
 ```
 
 Names and values are **shape-validated** (no control characters or the ini
@@ -184,6 +192,12 @@ In the FPM pool config a directive renders as `php_value[name] = value`
 a plain `name = value` line. Setting or removing a directive restarts only that
 version's pool, and directives survive uninstalling and reinstalling the
 version.
+
+While a version's [managed Xdebug](./xdebug) is on, the directives
+`xdebug.mode`, `xdebug.start_with_request` and `opcache.jit` set here are not
+rendered into that version's pool (Yerd sets them on the FPM command line).
+Any other `xdebug.*` directive, such as `xdebug.client_port`, still applies and
+overrides Yerd's value.
 
 FPM's own pool-block settings (anything starting with `pm.`) are **not** ini
 directives and are refused here with a pointer at
