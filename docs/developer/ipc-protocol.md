@@ -379,8 +379,9 @@ daemon's default PHP), `modes` (a list of `debug` / `develop` / `coverage` /
 `profile` / `trace` / `gcstats`, never `off` or empty) and `start` (`"always"` or
 `"trigger"`) are all optional, and so is `enabled`: an omitted or `null`
 `enabled` keeps the version's current on/off state, which is what the GUI's
-**Apply** sends (with only the fields the user edited), while the switch, the CLI
-and MCP send an explicit `true`/`false`. The reply is the same
+**Apply** sends (with only the fields the user edited), while the switch and the
+CLI send an explicit `true`/`false`. MCP's `set_xdebug` passes `enabled` through
+when the agent gives it and omits it otherwise. The reply is the same
 `PhpVersions` as `ListPhp`, which gained two boxed, skip-if-empty fields:
 `xdebug` (a version → `{enabled, modes, start}` map holding only the versions
 whose settings differ from the default; an absent version is off) and

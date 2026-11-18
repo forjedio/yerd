@@ -271,16 +271,15 @@ function onExtensionsUpdated(map: PhpExtensionsMap): void {
   mutateExts(() => map);
 }
 
+/**
+ * Check for patch updates. The daemon answers with the full PHP state, so it
+ * replaces the cached view whole and settings such as Xdebug stay current.
+ */
 async function refreshUpdates(): Promise<void> {
   busy.value = "refresh";
   try {
     const r = await checkPhpUpdates();
-    mutate((cur) =>
-      cur
-        ? { ...cur, installed: r.installed, default: r.default, updates: r.updates ?? [] }
-        : { ...r, updates: r.updates ?? [] },
-    );
-    void reloadPhp({ force: true });
+    mutate(() => ({ ...r, updates: r.updates ?? [] }));
     toast.success(
       "Update check complete",
       r.updates?.length ? `${r.updates.length} update(s) available` : "All up to date",

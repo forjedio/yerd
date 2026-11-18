@@ -1958,15 +1958,29 @@ async fn restart_all_php(state: &DaemonState) -> Response {
 /// the same way `set_default_php` accepts its read-then-act window.
 ///
 /// The version's `[php.xdebug]` entry is dropped and saved before success is
-/// reported. If that save fails the error is returned; a retry finds the
-/// version already gone and only finishes the Xdebug cleanup.
+/// reported. If that save or removing its Xdebug files fails the error is
+/// returned; a retry finds the version already gone and only finishes the
+/// Xdebug cleanup, recognised by the config entry or the files left behind.
+/// That retry answers with the plain PHP list like a real uninstall, so the
+/// CLI and GUI need no new response shape, and its errors never claim the
+/// version was removed by this request.
 async fn uninstall_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Response {
     let installed = installed_versions(state);
     if !installed.contains(&version) {
-        if state.config.lock().await.php.xdebug.contains_key(&version) {
+        let has_entry = state.config.lock().await.php.xdebug.contains_key(&version);
+        if has_entry || xdebug_files_left(&state.dirs, version) {
             return match remove_xdebug_leftovers(state, version).await {
-                Ok(()) => php_versions_response(state).await,
-                Err(e) => internal(e),
+                Ok(()) => {
+                    tracing::info!(
+                        version = %version,
+                        "PHP {version} isn't installed; removed leftover Xdebug files"
+                    );
+                    php_versions_response(state).await
+                }
+                Err(e) => internal(format!(
+                    "couldn't remove leftover Xdebug files for PHP {version}: {e}; fix and \
+                     retry `yerd uninstall php {version}`"
+                )),
             };
         }
         return Response::Error {
@@ -2024,24 +2038,60 @@ async fn uninstall_php(version: yerd_core::PhpVersion, state: &DaemonState) -> R
     refresh_php_binaries(state).await;
     reconcile_shims_now(state).await;
     if let Err(e) = cleanup {
-        return internal(e);
+        return internal(format!(
+            "PHP {version} was removed, but its Xdebug cleanup failed: {e}. Fix that and run \
+             `yerd uninstall php {version}` to finish"
+        ));
     }
     tracing::info!(version = %version, "uninstalled PHP");
     php_versions_response(state).await
 }
 
-/// Remove an uninstalled version's bundled `xdebug.so` and `debug.ini`, then
-/// drop its `[php.xdebug]` entry.
+/// An uninstalled version's bundled `xdebug.so` and `debug.ini`.
+fn xdebug_files(
+    dirs: &yerd_platform::PlatformDirs,
+    version: yerd_core::PhpVersion,
+) -> [std::path::PathBuf; 2] {
+    [
+        crate::ext_install::xdebug_so_path(dirs, version),
+        crate::xdebug::debug_ini_path(dirs, version),
+    ]
+}
+
+/// True if any of `version`'s [`xdebug_files`] is still on disk.
+fn xdebug_files_left(dirs: &yerd_platform::PlatformDirs, version: yerd_core::PhpVersion) -> bool {
+    xdebug_files(dirs, version)
+        .iter()
+        .any(|p| std::fs::symlink_metadata(p).is_ok())
+}
+
+/// Remove an uninstalled version's [`xdebug_files`], then drop its
+/// `[php.xdebug]` entry. A file that is already gone counts as removed.
 ///
 /// # Errors
-/// A human message when the config save fails; the uninstall can be retried.
+/// The failures joined into one human message when a file can't be removed or
+/// the config save fails. The caller frames it and names the retry.
 async fn remove_xdebug_leftovers(
     state: &DaemonState,
     version: yerd_core::PhpVersion,
 ) -> Result<(), String> {
-    let _ = std::fs::remove_file(crate::ext_install::xdebug_so_path(&state.dirs, version));
-    let _ = std::fs::remove_file(crate::xdebug::debug_ini_path(&state.dirs, version));
-    forget_xdebug(state, version).await
+    let mut failed: Vec<String> = xdebug_files(&state.dirs, version)
+        .iter()
+        .filter_map(|path| match std::fs::remove_file(path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Some(format!("couldn't remove {} ({e})", path.display()))
+            }
+            _ => None,
+        })
+        .collect();
+    if let Err(e) = forget_xdebug(state, version).await {
+        failed.push(e);
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(failed.join("; "))
+    }
 }
 
 /// Drop an uninstalled version's `[php.xdebug]` entry (saving only when one
@@ -2060,10 +2110,7 @@ async fn forget_xdebug(state: &DaemonState, version: yerd_core::PhpVersion) -> R
             match new.save(&state.config_path) {
                 Ok(()) => *cfg_guard = new,
                 Err(e) => {
-                    saved = Err(format!(
-                        "PHP {version} was removed, but dropping its Xdebug settings failed \
-                         ({e}); run the uninstall again to finish"
-                    ));
+                    saved = Err(format!("dropping its Xdebug settings failed ({e})"));
                 }
             }
         }
@@ -5098,6 +5145,95 @@ Subject: Captured\r\n\r\nhi\r\n";
     }
 
     #[tokio::test]
+    async fn uninstall_php_reports_a_failed_xdebug_file_removal_and_a_retry_finishes_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let v84 = PhpVersion::new(8, 4);
+        let v85 = PhpVersion::new(8, 5);
+        fake_install(&state.dirs, v84);
+        fake_install(&state.dirs, v85);
+        state.config.lock().await.php.default = v84;
+        let so = crate::ext_install::xdebug_so_path(&state.dirs, v85);
+        std::fs::create_dir_all(so.join("busy")).unwrap();
+
+        let resp = dispatch(Request::UninstallPhp { version: v85 }, &state).await;
+        match resp {
+            Response::Error { code, message } => {
+                assert_eq!(code, ErrorCode::Internal);
+                assert!(message.starts_with("PHP 8.5 was removed"), "{message}");
+                assert!(message.contains("couldn't remove"), "{message}");
+                assert!(message.contains("`yerd uninstall php 8.5`"), "{message}");
+            }
+            other => panic!("expected an error, got {other:?}"),
+        }
+        assert!(state.config.lock().await.php.xdebug.is_empty());
+
+        std::fs::remove_dir_all(&so).unwrap();
+        std::fs::write(&so, b"so").unwrap();
+        let retry = dispatch(Request::UninstallPhp { version: v85 }, &state).await;
+        assert!(matches!(retry, Response::PhpVersions { .. }), "{retry:?}");
+        assert!(std::fs::symlink_metadata(&so).is_err());
+
+        let again = dispatch(Request::UninstallPhp { version: v85 }, &state).await;
+        assert!(
+            matches!(
+                again,
+                Response::Error {
+                    code: ErrorCode::NotFound,
+                    ..
+                }
+            ),
+            "{again:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn uninstall_php_cleans_stray_xdebug_files_of_a_version_that_is_not_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let v84 = PhpVersion::new(8, 4);
+        let v85 = PhpVersion::new(8, 5);
+        fake_install(&state.dirs, v84);
+        let so = crate::ext_install::xdebug_so_path(&state.dirs, v85);
+        std::fs::create_dir_all(so.join("busy")).unwrap();
+
+        let resp = dispatch(Request::UninstallPhp { version: v85 }, &state).await;
+        match resp {
+            Response::Error { code, message } => {
+                assert_eq!(code, ErrorCode::Internal);
+                assert!(
+                    message.starts_with("couldn't remove leftover Xdebug files for PHP 8.5"),
+                    "{message}"
+                );
+                assert!(!message.contains("was removed"), "{message}");
+                assert!(message.contains("`yerd uninstall php 8.5`"), "{message}");
+            }
+            other => panic!("expected an error, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&so).unwrap();
+        std::fs::write(&so, b"so").unwrap();
+        let retry = dispatch(Request::UninstallPhp { version: v85 }, &state).await;
+        match retry {
+            Response::PhpVersions { installed, .. } => assert_eq!(installed, vec![v84]),
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+        assert!(std::fs::symlink_metadata(&so).is_err());
+
+        let again = dispatch(Request::UninstallPhp { version: v85 }, &state).await;
+        assert!(
+            matches!(
+                again,
+                Response::Error {
+                    code: ErrorCode::NotFound,
+                    ..
+                }
+            ),
+            "{again:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn uninstall_php_reports_a_failed_xdebug_cleanup_and_a_retry_finishes_it() {
         let tmp = tempfile::tempdir().unwrap();
         let mut state = state_in(tmp.path());
@@ -5122,11 +5258,29 @@ Subject: Captured\r\n\r\nhi\r\n";
         match resp {
             Response::Error { code, message } => {
                 assert_eq!(code, ErrorCode::Internal);
-                assert!(message.contains("run the uninstall again"), "{message}");
+                assert!(
+                    message.contains("dropping its Xdebug settings failed"),
+                    "{message}"
+                );
+                assert!(message.contains("`yerd uninstall php 8.5`"), "{message}");
             }
             other => panic!("expected an error, got {other:?}"),
         }
         assert!(state.config.lock().await.php.xdebug.contains_key(&v85));
+
+        let leftover = dispatch(Request::UninstallPhp { version: v85 }, &state).await;
+        match leftover {
+            Response::Error { code, message } => {
+                assert_eq!(code, ErrorCode::Internal);
+                assert!(
+                    message.starts_with("couldn't remove leftover Xdebug files for PHP 8.5"),
+                    "{message}"
+                );
+                assert!(!message.contains("was removed"), "{message}");
+                assert!(message.contains("`yerd uninstall php 8.5`"), "{message}");
+            }
+            other => panic!("expected an error, got {other:?}"),
+        }
 
         state.config_path = good_path;
         let retry = dispatch(Request::UninstallPhp { version: v85 }, &state).await;

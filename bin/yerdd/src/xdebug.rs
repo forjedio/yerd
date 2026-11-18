@@ -121,11 +121,9 @@ pub async fn set_xdebug_with(
     }
 
     let so = crate::ext_install::xdebug_so_path(&state.dirs, v);
-    if new == current && (!new.enabled || so.is_file()) {
-        return Ok(Applied::Unchanged);
-    }
+    let unchanged = new == current && (!new.enabled || so.is_file());
 
-    let fresh = if new.enabled && (!current.enabled || !so.is_file()) {
+    let fresh = if !unchanged && new.enabled && (!current.enabled || !so.is_file()) {
         if let Some(name) = registered {
             return Err(conflict(v, &name));
         }
@@ -135,10 +133,11 @@ pub async fn set_xdebug_with(
     };
 
     let _mutate_guard = state.php_settings_mutate.lock().await;
-    let committed = persist(state, v, &req, fresh).await?;
-    if committed.merged.enabled && committed.merged.writes_output() {
-        create_output_dir(&state.dirs);
+    prepare_output_dir(state, v, &req).await?;
+    if unchanged {
+        return Ok(Applied::Unchanged);
     }
+    let committed = persist(state, v, &req, fresh).await?;
     let restart = apply_xdebug(
         state,
         v,
@@ -235,6 +234,8 @@ async fn probe(
 /// A build that fails its probe is discarded and the last good file kept. Each
 /// publish runs under `php_settings_mutate` and only if the daemon isn't
 /// shutting down and the version is still installed with managed Xdebug on.
+/// Shutdown is re-checked once the locks are held, since it may have started
+/// while waiting for them.
 pub async fn refresh_enabled(
     state: &DaemonState,
     dl: &dyn Downloader,
@@ -264,6 +265,9 @@ pub async fn refresh_enabled(
         let _mutate_guard = state.php_settings_mutate.lock().await;
         let map = {
             let cfg = state.config.lock().await;
+            if shutting_down(state) {
+                break;
+            }
             let map = xdebug_load_map(&cfg, &state.dirs);
             if !map.contains_key(&v)
                 || !crate::php_install::cli_binary_path(&state.dirs, v).exists()
@@ -311,20 +315,53 @@ fn shutting_down(state: &DaemonState) -> bool {
     *state.shutdown_tx.borrow()
 }
 
+/// Create the output dir when the request's merged result for `v` is enabled
+/// and writes output, so a failure returns before anything is saved. An
+/// Unchanged request passes through here too, which repairs a dir removed
+/// since the last save. The caller holds `php_settings_mutate`, which every
+/// writer of `[php.xdebug]` takes, so the merge here matches the one
+/// [`persist`] saves; the config lock is released before touching the
+/// filesystem.
+///
+/// # Errors
+/// The merge's validation error, or the actionable output-dir error.
+async fn prepare_output_dir(
+    state: &DaemonState,
+    v: PhpVersion,
+    req: &XdebugRequest,
+) -> Result<(), Response> {
+    let current = state
+        .config
+        .lock()
+        .await
+        .php
+        .xdebug
+        .get(&v)
+        .cloned()
+        .unwrap_or_default();
+    let merged = merge(&current, req)?;
+    if merged.enabled && merged.writes_output() {
+        create_output_dir(&state.dirs)?;
+    }
+    Ok(())
+}
+
 /// What [`persist`] committed.
 struct Committed {
     map: BTreeMap<PhpVersion, XdebugLoad>,
     old_load: Option<XdebugLoad>,
     new_load: Option<XdebugLoad>,
-    merged: XdebugSettings,
     published: bool,
 }
 
 /// Re-check and persist the request against the fresh config under the config
 /// lock (the caller holds `php_settings_mutate`), publishing `fresh` first when
-/// the merged result is enabled. A version whose settings end up equal to the
-/// default has its entry removed rather than stored. Dropping `fresh` on any
-/// other path removes its temp file.
+/// the merged result is enabled. An enabled result with nothing staged needs
+/// the existing `xdebug.so` to still be on disk (an uninstall may have removed
+/// it since the probe). The output dir was already prepared by
+/// [`prepare_output_dir`]. A version whose settings end up equal to the default
+/// has its entry removed rather than stored. Dropping `fresh` on any other
+/// path removes its temp file.
 async fn persist(
     state: &DaemonState,
     v: PhpVersion,
@@ -351,18 +388,29 @@ async fn persist(
             return Err(conflict(v, &name));
         }
     }
-    let mut published = false;
-    if let (true, Some(staged)) = (merged.enabled, fresh) {
-        staged.publish().map_err(|e| {
-            crate::ipc_server::internal(format!("couldn't install Xdebug for PHP {v}: {e}"))
-        })?;
-        published = true;
-    }
+    let published = match (merged.enabled, fresh) {
+        (true, Some(staged)) => {
+            staged.publish().map_err(|e| {
+                crate::ipc_server::internal(format!("couldn't install Xdebug for PHP {v}: {e}"))
+            })?;
+            true
+        }
+        (true, None) if !crate::ext_install::xdebug_so_path(&state.dirs, v).is_file() => {
+            return Err(error(
+                ErrorCode::XdebugUnavailable,
+                format!(
+                    "the Xdebug library for PHP {v} is missing; nothing changed, retry to \
+                     download it again"
+                ),
+            ));
+        }
+        _ => false,
+    };
     let mut next = cfg_guard.clone();
     if merged == XdebugSettings::default() {
         next.php.xdebug.remove(&v);
     } else {
-        next.php.xdebug.insert(v, merged.clone());
+        next.php.xdebug.insert(v, merged);
     }
     if next.php.xdebug != cfg_guard.php.xdebug {
         if let Err(e) = next.validate() {
@@ -383,7 +431,6 @@ async fn persist(
         map,
         old_load,
         new_load,
-        merged,
         published,
     })
 }
@@ -420,8 +467,9 @@ async fn apply_xdebug(
 /// were saved.
 fn restart_failed_message(v: PhpVersion, e: &dyn std::fmt::Display) -> String {
     format!(
-        "Xdebug settings saved, but PHP {v} failed to restart: {e}. Use Restart in the app \
-         or `yerd restart php {v}` to try again"
+        "Xdebug settings saved, but PHP {v} failed to restart: {e}. Reloading a site that \
+         uses PHP {v} starts it with the new settings, or run `yerd restart php {v}` to try \
+         again"
     )
 }
 
@@ -493,10 +541,13 @@ pub(crate) fn registered_xdebug(cfg: &yerd_config::Config, v: PhpVersion) -> Opt
 }
 
 /// Startup: create the output dir when any enabled version writes files
-/// there, so a pool started before the first `SetXdebug` can write them.
+/// there, so a pool started before the first `SetXdebug` can write them. A
+/// failure is logged; the next `SetXdebug` for such a version reports it.
 pub fn ensure_output_dir(cfg: &yerd_config::Config, dirs: &PlatformDirs) {
     if needs_output_dir(cfg) {
-        create_output_dir(dirs);
+        if let Err(resp) = create_output_dir(dirs) {
+            tracing::warn!(response = ?resp, "failed to create the Xdebug output dir");
+        }
     }
 }
 
@@ -510,11 +561,20 @@ pub fn needs_output_dir(cfg: &yerd_config::Config) -> bool {
         .any(|(v, s)| s.enabled && !v.is_legacy() && s.writes_output())
 }
 
-fn create_output_dir(dirs: &PlatformDirs) {
+/// Create `{data}/xdebug`, or the actionable error to return before anything
+/// that writes output there is saved.
+fn create_output_dir(dirs: &PlatformDirs) -> Result<(), Response> {
     let dir = output_dir(dirs);
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        tracing::warn!(path = %dir.display(), error = %e, "failed to create the Xdebug output dir");
-    }
+    std::fs::create_dir_all(&dir).map_err(|e| output_dir_error(&dir, &e))
+}
+
+fn output_dir_error(dir: &Path, e: &dyn std::fmt::Display) -> Response {
+    crate::ipc_server::internal(format!(
+        "couldn't create the Xdebug output directory {}: {e}. Profile, trace and gcstats \
+         files are written there; make sure it can be created as a directory (for example \
+         remove a file at that path), then try again. Nothing changed",
+        dir.display()
+    ))
 }
 
 /// `{data}/xdebug`, where profile, trace and gcstats files are written.
@@ -1277,6 +1337,113 @@ mod tests {
             "{msg}"
         );
         assert!(msg.contains("`yerd restart php 8.4`"), "{msg}");
+        assert!(msg.contains("Reloading a site that uses PHP 8.4"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn enable_commit_without_a_staged_file_requires_the_library() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install(&state.dirs, V84);
+        let err = persist(&state, V84, &req(Some(V84), true), None)
+            .await
+            .err()
+            .unwrap();
+        match err {
+            Response::Error { code, message } => {
+                assert_eq!(code, ErrorCode::XdebugUnavailable);
+                assert!(message.contains("missing"), "{message}");
+                assert!(message.contains("retry"), "{message}");
+            }
+            other => panic!("expected an error, got {other:?}"),
+        }
+        assert!(state.config.lock().await.php.xdebug.is_empty());
+        assert!(!state.config_path.exists());
+
+        write_so(&state, SO_BYTES);
+        let committed = persist(&state, V84, &req(Some(V84), true), None)
+            .await
+            .ok()
+            .unwrap();
+        assert!(committed.new_load.is_some());
+        assert!(!committed.published);
+    }
+
+    #[tokio::test]
+    async fn output_mode_with_a_blocked_output_dir_saves_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install(&state.dirs, V84);
+        std::fs::create_dir_all(&state.dirs.data).unwrap();
+        std::fs::write(output_dir(&state.dirs), b"not a dir").unwrap();
+        let dl = FakeDownloader::serving_84();
+        let runner = FakeRunner::new(true);
+        let profile = XdebugRequest {
+            version: Some(V84),
+            enabled: Some(true),
+            modes: Some(vec![XdebugMode::Profile]),
+            start: None,
+        };
+        let err = run(&state, &dl, &runner, profile.clone())
+            .await
+            .unwrap_err();
+        match err {
+            Response::Error { code, message } => {
+                assert_eq!(code, ErrorCode::Internal);
+                assert!(message.contains("Xdebug output directory"), "{message}");
+                assert!(message.contains("Nothing changed"), "{message}");
+            }
+            other => panic!("expected an error, got {other:?}"),
+        }
+        assert!(state.config.lock().await.php.xdebug.is_empty());
+        assert!(!state.config_path.exists());
+        assert!(!crate::ext_install::xdebug_so_path(&state.dirs, V84).exists());
+        assert_ne!(dl.calls(), 0);
+        assert!(temp_files(&state).is_empty());
+
+        let debug_only = run(&state, &dl, &runner, req(Some(V84), true))
+            .await
+            .unwrap();
+        assert_eq!(debug_only, Applied::Changed { restart: true });
+        let disabled_profile = XdebugRequest {
+            enabled: Some(false),
+            ..profile.clone()
+        };
+        let got = run(&state, &dl, &runner, disabled_profile).await.unwrap();
+        assert_eq!(got, Applied::Changed { restart: true });
+
+        state.config.lock().await.php.xdebug.insert(
+            V84,
+            XdebugSettings {
+                enabled: true,
+                modes: vec![XdebugMode::Profile],
+                start: XdebugStart::Trigger,
+            },
+        );
+        std::fs::remove_file(output_dir(&state.dirs)).unwrap();
+        let unchanged = run(&state, &dl, &runner, profile).await.unwrap();
+        assert_eq!(unchanged, Applied::Unchanged);
+        assert!(output_dir(&state.dirs).is_dir());
+    }
+
+    #[tokio::test]
+    async fn startup_refresh_rechecks_shutdown_after_waiting_for_the_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install(&state.dirs, V84);
+        let so = write_so(&state, b"stale");
+        enable_in_config(&mut *state.config.lock().await, V84);
+        let dl = FakeDownloader::serving_84();
+        let runner = FakeRunner::new(true);
+        let guard = state.php_settings_mutate.lock().await;
+        let (replaced, ()) = tokio::join!(refresh(&state, &dl, &runner), async {
+            assert_eq!(runner.calls(), 1);
+            state.shutdown_tx.send_replace(true);
+            drop(guard);
+        });
+        assert!(replaced.is_empty());
+        assert_eq!(std::fs::read(&so).unwrap(), b"stale");
+        assert!(temp_files(&state).is_empty());
     }
 
     #[test]
@@ -1382,6 +1549,21 @@ mod tests {
         assert!(needs_output_dir(&cfg));
         ensure_output_dir(&cfg, &dirs);
         assert!(output_dir(&dirs).is_dir());
+    }
+
+    #[tokio::test]
+    async fn php_versions_response_omits_a_hand_edited_default_xdebug_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        *state.config.lock().await = yerd_config::Config::from_toml(
+            "version = 29\n[php]\ndefault = \"8.4\"\n\
+             [php.xdebug.\"8.4\"]\nenabled = false\nmodes = [\"debug\"]\nstart = \"always\"\n",
+        )
+        .unwrap();
+        match crate::ipc_server::php_versions_response(&state).await {
+            Response::PhpVersions { xdebug, .. } => assert!(xdebug.is_empty(), "{xdebug:?}"),
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
     }
 
     #[test]

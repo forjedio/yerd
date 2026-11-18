@@ -504,12 +504,17 @@ pub(crate) fn remove_if_symlink(path: &Path) -> std::io::Result<()> {
 /// Ensure the managed `php` shim points at the Yerd multi-call wrapper
 /// (`yerd_bin`), created/replaced atomically. The wrapper resolves the default
 /// version from `config.php.default` at run time, so this is version-independent.
-/// Returns the shim dir for PATH hints.
+/// Follows the reconcile's ownership rule ([`is_yerd_link`]): a file or link
+/// the user put at `{data}/bin/php` is left alone with a warning. Returns the
+/// shim dir for PATH hints.
+///
+/// # Errors
+/// When the shim dir can't be created, or Yerd's own link can't be placed.
 #[cfg(unix)]
 pub fn set_default_shim(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<PathBuf, PhpError> {
     let bin = shim_dir(dirs);
     fs_ctx(std::fs::create_dir_all(&bin), &bin)?;
-    place_symlink(&bin.join("php"), yerd_bin)?;
+    try_place_managed(&bin.join("php"), yerd_bin)?;
     Ok(bin)
 }
 
@@ -671,41 +676,49 @@ fn reconcile_shims_for_host(
 }
 
 /// True if `path` is a link a shim reconcile placed and may replace or prune:
-/// it points at `yerd_bin`, at another binary with the same file name (an older
-/// install location of the Yerd wrapper), or at nothing (dangling).
+/// its target is `yerd_bin`, or any path whose file name matches `yerd_bin`'s
+/// (the `yerd` wrapper at an older location: a moved app, macOS App
+/// Translocation, or a dev build versus the installed one). That holds whether
+/// or not the target exists. Any other link, dangling or not, and any regular
+/// file is the user's.
 #[cfg(unix)]
 fn is_yerd_link(path: &Path, yerd_bin: &Path) -> bool {
-    let Ok(target) = std::fs::read_link(path) else {
-        return false;
-    };
-    target == yerd_bin
-        || (target.file_name().is_some() && target.file_name() == yerd_bin.file_name())
-        || !path.exists()
+    std::fs::read_link(path).is_ok_and(|target| {
+        target == yerd_bin
+            || (yerd_bin.file_name().is_some() && target.file_name() == yerd_bin.file_name())
+    })
+}
+
+/// [`try_place_managed`] for the reconcile: failures only warn so one bad entry
+/// never stops the rest of it.
+#[cfg(unix)]
+fn place_managed(link: &Path, yerd_bin: &Path) {
+    if let Err(e) = try_place_managed(link, yerd_bin) {
+        tracing::warn!(path = %link.display(), error = %e, "failed to place shim");
+    }
 }
 
 /// Point the managed shim `link` at `yerd_bin` when it is missing or one of
-/// Yerd's own links ([`is_yerd_link`]); otherwise leave the user's file alone.
-/// Failures only warn so one bad entry never stops the rest of the reconcile.
+/// Yerd's own links ([`is_yerd_link`]); otherwise leave the user's file alone
+/// with a warning and succeed.
+///
+/// # Errors
+/// When `link` can't be inspected, or Yerd's own link can't be placed.
 #[cfg(unix)]
-fn place_managed(link: &Path, yerd_bin: &Path) {
+fn try_place_managed(link: &Path, yerd_bin: &Path) -> Result<(), PhpError> {
     let owned = match std::fs::symlink_metadata(link) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
-        Err(e) => {
-            tracing::warn!(path = %link.display(), error = %e, "can't inspect shim, skipping it");
-            return;
-        }
+        Err(e) => return Err(fs_err(link, &e)),
         Ok(_) => is_yerd_link(link, yerd_bin),
     };
     if !owned {
         tracing::warn!(path = %link.display(), "leaving a file Yerd didn't create in place of its shim");
-        return;
+        return Ok(());
     }
     if std::fs::read_link(link).ok().as_deref() == Some(yerd_bin) {
-        return;
+        return Ok(());
     }
-    if let Err(e) = place_symlink(link, yerd_bin) {
-        tracing::warn!(path = %link.display(), error = %e, "failed to place shim");
-    }
+    place_symlink(link, yerd_bin)
 }
 
 #[cfg(not(unix))]
@@ -1371,8 +1384,10 @@ mod tests {
         let dirs = dirs_in(tmp.path());
         let yerd_bin = tmp.path().join("yerd");
         std::fs::write(&yerd_bin, b"#!fake").unwrap();
-        let other = tmp.path().join("my-php");
+        let other = tmp.path().join("x").join("my-wrapper");
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
         std::fs::write(&other, b"#!mine").unwrap();
+        let unmounted = tmp.path().join("mnt").join("x").join("custom-php");
         mk_install(&dirs, PhpVersion::new(8, 4));
 
         let bin = shim_dir(&dirs);
@@ -1381,11 +1396,8 @@ mod tests {
         std::os::unix::fs::symlink(&other, bin.join("phpdebug")).unwrap();
         std::fs::write(bin.join("php8.3"), b"stale user script").unwrap();
         std::os::unix::fs::symlink(&other, bin.join("php8.2cover")).unwrap();
-        std::os::unix::fs::symlink(tmp.path().join("gone"), bin.join("php8.1")).unwrap();
-        let old_install = tmp.path().join("old").join("yerd");
-        std::fs::create_dir_all(old_install.parent().unwrap()).unwrap();
-        std::fs::write(&old_install, b"#!old").unwrap();
-        std::os::unix::fs::symlink(&old_install, bin.join("php8.4cover")).unwrap();
+        std::os::unix::fs::symlink(&unmounted, bin.join("php8.1")).unwrap();
+        std::os::unix::fs::symlink(&unmounted, bin.join("phpcover")).unwrap();
 
         reconcile_shims_for_host(&dirs, &yerd_bin, HOST).unwrap();
 
@@ -1396,16 +1408,101 @@ mod tests {
             b"stale user script"
         );
         assert_eq!(std::fs::read_link(bin.join("php8.2cover")).unwrap(), other);
-        assert!(std::fs::symlink_metadata(bin.join("php8.1")).is_err());
-        assert_eq!(
-            std::fs::read_link(bin.join("php8.4cover")).unwrap(),
-            yerd_bin
-        );
+        assert_eq!(std::fs::read_link(bin.join("php8.1")).unwrap(), unmounted);
+        assert_eq!(std::fs::read_link(bin.join("phpcover")).unwrap(), unmounted);
         assert_eq!(
             std::fs::read_link(bin.join("php8.4debug")).unwrap(),
             yerd_bin
         );
         assert_eq!(std::fs::read_link(bin.join("php")).unwrap(), yerd_bin);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_repairs_and_prunes_links_to_a_moved_or_dangling_yerd_wrapper() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let yerd_bin = tmp.path().join("new").join("yerd");
+        std::fs::create_dir_all(yerd_bin.parent().unwrap()).unwrap();
+        std::fs::write(&yerd_bin, b"#!fake").unwrap();
+        let moved = tmp.path().join("old").join("yerd");
+        std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        std::fs::write(&moved, b"#!old").unwrap();
+        let dangling = tmp.path().join("translocated").join("yerd");
+        mk_install(&dirs, PhpVersion::new(8, 4));
+
+        let bin = shim_dir(&dirs);
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(&moved, bin.join("php8.4")).unwrap();
+        std::os::unix::fs::symlink(&dangling, bin.join("php8.4cover")).unwrap();
+        std::os::unix::fs::symlink(&moved, bin.join("php8.3")).unwrap();
+        std::os::unix::fs::symlink(&dangling, bin.join("php8.0debug")).unwrap();
+        std::os::unix::fs::symlink(&dangling, bin.join("php")).unwrap();
+
+        reconcile_shims_for_host(&dirs, &yerd_bin, HOST).unwrap();
+
+        assert_eq!(std::fs::read_link(bin.join("php8.4")).unwrap(), yerd_bin);
+        assert_eq!(
+            std::fs::read_link(bin.join("php8.4cover")).unwrap(),
+            yerd_bin
+        );
+        assert!(std::fs::symlink_metadata(bin.join("php8.3")).is_err());
+        assert!(std::fs::symlink_metadata(bin.join("php8.0debug")).is_err());
+        assert_eq!(std::fs::read_link(bin.join("php")).unwrap(), yerd_bin);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_repairs_and_prunes_dangling_links_to_the_exact_wrapper_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let yerd_bin = tmp.path().join("missing").join("yerd");
+        mk_install(&dirs, PhpVersion::new(8, 4));
+        let bin = shim_dir(&dirs);
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(&yerd_bin, bin.join("php8.4")).unwrap();
+        std::os::unix::fs::symlink(&yerd_bin, bin.join("php8.2cover")).unwrap();
+
+        reconcile_shims_for_host(&dirs, &yerd_bin, HOST).unwrap();
+
+        assert_eq!(std::fs::read_link(bin.join("php8.4")).unwrap(), yerd_bin);
+        assert!(std::fs::symlink_metadata(bin.join("php8.2cover")).is_err());
+        assert_eq!(
+            std::fs::read_link(bin.join("php8.4debug")).unwrap(),
+            yerd_bin
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn set_default_shim_keeps_a_foreign_php_and_updates_its_own() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let yerd_bin = tmp.path().join("yerd");
+        std::fs::write(&yerd_bin, b"#!fake").unwrap();
+        let php = shim_dir(&dirs).join("php");
+
+        assert_eq!(set_default_shim(&dirs, &yerd_bin).unwrap(), shim_dir(&dirs));
+        assert_eq!(std::fs::read_link(&php).unwrap(), yerd_bin);
+        set_default_shim(&dirs, &yerd_bin).unwrap();
+        assert_eq!(std::fs::read_link(&php).unwrap(), yerd_bin);
+
+        std::fs::remove_file(&php).unwrap();
+        std::fs::write(&php, b"user script").unwrap();
+        set_default_shim(&dirs, &yerd_bin).unwrap();
+        assert_eq!(std::fs::read(&php).unwrap(), b"user script");
+
+        std::fs::remove_file(&php).unwrap();
+        let other = tmp.path().join("x").join("my-wrapper");
+        std::os::unix::fs::symlink(&other, &php).unwrap();
+        set_default_shim(&dirs, &yerd_bin).unwrap();
+        assert_eq!(std::fs::read_link(&php).unwrap(), other);
+
+        std::fs::remove_file(&php).unwrap();
+        let moved = tmp.path().join("old").join("yerd");
+        std::os::unix::fs::symlink(&moved, &php).unwrap();
+        set_default_shim(&dirs, &yerd_bin).unwrap();
+        assert_eq!(std::fs::read_link(&php).unwrap(), yerd_bin);
     }
 
     #[cfg(unix)]

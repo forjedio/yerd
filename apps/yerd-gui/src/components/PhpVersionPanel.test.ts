@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { nextTick } from "vue";
 
 import PhpVersionPanel from "./PhpVersionPanel.vue";
+import { useToast } from "@/composables/useToast";
 import type { PhpExtInfo } from "@/ipc/types";
 
 const setPhpDirectives = vi.hoisted(() => vi.fn());
@@ -600,14 +601,114 @@ describe("PhpVersionPanel Xdebug", () => {
 
   it("reloads the PHP state after a failed save before unlocking the controls", async () => {
     setXdebug.mockRejectedValue(new Error("daemon did not respond within 120s"));
+    let finishRead: (r: typeof xdebugOn) => void = () => {};
+    listPhp.mockReturnValue(
+      new Promise((resolve) => {
+        finishRead = resolve;
+      }),
+    );
     const w = mountPanel({ xdebug: xdebugOn.xdebug["8.3"] });
     await modeBox(w, "profile").setValue(true);
     await xdebugApply(w).trigger("click");
     await vi.waitFor(() => expect(listPhp).toHaveBeenCalled());
     await flushPromises();
 
+    expect(xdebugApply(w).attributes("disabled")).toBeDefined();
+    expect(w.emitted("updated")).toBeUndefined();
+
+    finishRead(xdebugOn);
+    await flushPromises();
+
     expect(w.emitted("updated")?.[0]).toEqual([xdebugOn]);
     expect(xdebugApply(w).attributes("disabled")).toBeUndefined();
+  });
+
+  it("unlocks the controls and says so when the recovery read never answers", async () => {
+    vi.useFakeTimers();
+    try {
+      setXdebug.mockRejectedValue(new Error("daemon did not respond within 120s"));
+      listPhp.mockReturnValue(new Promise(() => {}));
+      const w = mountPanel({ xdebug: xdebugOn.xdebug["8.3"] });
+      await modeBox(w, "profile").setValue(true);
+      await xdebugApply(w).trigger("click");
+      await flushPromises();
+
+      expect(listPhp).toHaveBeenCalled();
+      expect(xdebugApply(w).attributes("disabled")).toBeDefined();
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await flushPromises();
+
+      expect(xdebugApply(w).attributes("disabled")).toBeUndefined();
+      expect(w.emitted("updated")).toBeUndefined();
+      expect(useToast().toasts.value.map((t) => t.title)).toContain(
+        "Couldn't confirm PHP 8.3's saved Xdebug state",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("applies a recovery read that resolves after the timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      setXdebug.mockRejectedValue(new Error("daemon did not respond within 120s"));
+      let finishRead: (r: typeof xdebugOn) => void = () => {};
+      listPhp.mockReturnValue(
+        new Promise((resolve) => {
+          finishRead = resolve;
+        }),
+      );
+      const w = mountPanel({ xdebug: xdebugOn.xdebug["8.3"] });
+      await modeBox(w, "profile").setValue(true);
+      await xdebugApply(w).trigger("click");
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await flushPromises();
+
+      expect(xdebugApply(w).attributes("disabled")).toBeUndefined();
+      expect(w.emitted("updated")).toBeUndefined();
+
+      finishRead(xdebugOn);
+      await flushPromises();
+
+      expect(w.emitted("updated")).toEqual([[xdebugOn]]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops a late recovery read once another save has started", async () => {
+    vi.useFakeTimers();
+    try {
+      setXdebug.mockRejectedValueOnce(new Error("daemon did not respond within 120s"));
+      let finishRead: (r: typeof xdebugOn) => void = () => {};
+      listPhp.mockReturnValue(
+        new Promise((resolve) => {
+          finishRead = resolve;
+        }),
+      );
+      const w = mountPanel({ xdebug: xdebugOn.xdebug["8.3"] });
+      await modeBox(w, "profile").setValue(true);
+      await xdebugApply(w).trigger("click");
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await flushPromises();
+
+      const saved = {
+        ...xdebugOn,
+        xdebug: { "8.3": { enabled: true, modes: ["debug", "profile"], start: "always" } },
+      };
+      setXdebug.mockResolvedValueOnce(saved);
+      await xdebugApply(w).trigger("click");
+      await flushPromises();
+      finishRead(xdebugOn);
+      await flushPromises();
+
+      expect(w.emitted("updated")).toEqual([[saved]]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("explains the managed directives while Xdebug is on", () => {

@@ -942,7 +942,9 @@ fn convert_pool(
 /// [`PhpSection::xdebug`] shape. A bad version key errors, as in
 /// [`convert_pool`]. An entry is dropped leniently when it names a legacy
 /// version, when a mode or the start is missing or unparseable, or when the
-/// mode list is empty.
+/// mode list is empty. An entry equal to the default is dropped too, matching
+/// the serializer, which never writes one, so the loaded map only ever holds
+/// real overrides.
 fn convert_xdebug(
     wire: BTreeMap<String, XdebugWire>,
 ) -> Result<BTreeMap<yerd_core::PhpVersion, yerd_core::XdebugSettings>, ConfigError> {
@@ -964,7 +966,9 @@ fn convert_xdebug(
             start,
         };
         settings.normalize();
-        if php_xdebug::validate(&settings).is_ok() {
+        if php_xdebug::validate(&settings).is_ok()
+            && settings != yerd_core::XdebugSettings::default()
+        {
             out.insert(v, settings);
         }
     }
@@ -3219,6 +3223,17 @@ target = \"../../etc/passwd\"\n";
         let c = Config::from_toml(s).unwrap();
         let kept: Vec<_> = c.php.xdebug.keys().copied().collect();
         assert_eq!(kept, vec![yerd_core::PhpVersion::new(8, 4)]);
+    }
+
+    #[test]
+    fn xdebug_entries_equal_to_the_default_are_dropped_at_load() {
+        let s = "version = 29\n[php]\ndefault = \"8.3\"\n\
+                 [php.xdebug.\"8.3\"]\nenabled = false\nmodes = [\"debug\"]\nstart = \"always\"\n\
+                 [php.xdebug.\"8.4\"]\nenabled = false\nmodes = [\"debug\", \"debug\"]\nstart = \"always\"\n\
+                 [php.xdebug.\"8.5\"]\nenabled = false\nmodes = [\"profile\"]\nstart = \"always\"\n";
+        let c = Config::from_toml(s).unwrap();
+        let kept: Vec<_> = c.php.xdebug.keys().copied().collect();
+        assert_eq!(kept, vec![yerd_core::PhpVersion::new(8, 5)]);
     }
 
     #[test]

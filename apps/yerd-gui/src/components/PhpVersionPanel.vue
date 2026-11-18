@@ -124,6 +124,16 @@ const toast = useToast();
 const busy = ref<string | null>(null);
 const isBusy = computed(() => busy.value !== null);
 
+/** Counts the panel's mutations, so a late recovery read can tell it was overtaken. */
+let mutationSeq = 0;
+watch(
+  busy,
+  (b) => {
+    if (b !== null) mutationSeq += 1;
+  },
+  { flush: "sync" },
+);
+
 // ── per-version settings form ──
 // Fields hold only the override value; an empty field means "inherit" (the
 // placeholder shows what is inherited). Same pristine/seed discipline as the
@@ -308,13 +318,37 @@ function editedXdebug(): [XdebugMode[] | undefined, XdebugStart | undefined] {
   ];
 }
 
+/** How long the post-failure state read may take before the controls unlock anyway. */
+const RECOVERY_READ_MS = 10_000;
+
 /**
  * After a failed save the outcome is unknown when the bridge timed out or lost
  * the daemon, so fetch the daemon's current state before the controls unlock.
+ * The read is bounded: a daemon that accepts connections but never answers
+ * would otherwise keep every PHP control locked. A read that lands after the
+ * timeout is still applied, unless another save started in the meantime, since
+ * its snapshot may predate that save.
  */
 async function reloadAfterFailure(): Promise<void> {
-  const r = await listPhp().catch(() => null);
-  if (r) emit("updated", r);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), RECOVERY_READ_MS);
+  });
+  const read = listPhp().catch(() => null);
+  const r = await Promise.race([read, timedOut]);
+  clearTimeout(timer);
+  if (r === "timeout") {
+    const seq = mutationSeq;
+    void read.then((late) => {
+      if (late && seq === mutationSeq) emit("updated", late);
+    });
+    toast.info(
+      `Couldn't confirm PHP ${props.version}'s saved Xdebug state`,
+      "Yerd didn't answer in time. Refresh to see the current settings.",
+    );
+  } else if (r) {
+    emit("updated", r);
+  }
 }
 
 /**

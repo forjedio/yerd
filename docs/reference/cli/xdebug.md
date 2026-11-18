@@ -31,7 +31,7 @@ version.
 
 | Flag | Description |
 | --- | --- |
-| `--mode <MODES>` | Comma-separated `xdebug.mode` list from `debug`, `develop`, `coverage`, `profile`, `trace`, `gcstats`. `off` is rejected (use `yerd xdebug off`), and so is an empty list. `gcstats` can't be combined with `--trigger`, because Xdebug only collects GC statistics when every request starts a session. |
+| `--mode <MODES>` | Comma-separated `xdebug.mode` list from `debug`, `develop`, `coverage`, `profile`, `trace`, `gcstats`. `off` is rejected (use `yerd xdebug off`), and so is an empty list. Xdebug collects GC statistics automatically only when every request starts a session, so turning Xdebug on with `gcstats` and `--trigger` is rejected (an explicit `xdebug_start_gcstats()` call in your code is a separate route). `yerd xdebug off` always works, even with that pair saved. |
 | `--trigger` | Start a session only when a trigger is present (`xdebug.start_with_request = trigger`), as a cookie, query or POST parameter. `XDEBUG_TRIGGER` starts every mode; `XDEBUG_SESSION` only starts step debugging (`debug`), not profiling or tracing. |
 | `--always` | Start a session on every request (`xdebug.start_with_request = yes`). Conflicts with `--trigger`. |
 
@@ -62,7 +62,7 @@ and these directives on the command line:
 | `xdebug.client_port` | `9003` (the default; your IDE must match any override) |
 | `xdebug.log_level` | `0` (no "Could not connect to debugging client" noise when no IDE is listening) |
 | `opcache.jit` | `disable` (Xdebug and the JIT can't run together) |
-| `xdebug.output_dir` | `{data}/xdebug`, only when `profile` or `trace` is selected |
+| `xdebug.output_dir` | `{data}/xdebug`, only when `profile`, `trace` or `gcstats` is selected |
 
 `client_host`, `client_port`, `log_level` and `output_dir` can be overridden per
 version with [`yerd php ini set`](./php#custom-ini-directives), for example
@@ -120,6 +120,7 @@ on Intel Macs. `yerd xdebug status` shows those versions as `not available`.
 | The download or load-probe takes longer than 90 seconds | `xdebug_unavailable`, saying it timed out. Nothing is saved. |
 | The downloaded `.so` fails to load | `extension_load_failed`. Nothing is saved. |
 | A setting the daemon rejects, such as an empty mode list | `invalid_setting`. Nothing is saved. |
+| `{data}/xdebug` can't be created while `profile`, `trace` or `gcstats` is on (for example a file sits at that path) | An error naming the folder and what to fix. Nothing is saved; repeating the request after fixing the path creates the folder. |
 | `--mode off`, an unknown mode, or `--trigger` with `--always` | Usage error (exit code `2`), before contacting the daemon. |
 
 ## Debug shims: `phpdebug` and `php<version>debug`
@@ -132,9 +133,12 @@ says. They sit in `{data}/bin` next to the `php` and `phpcover` shims:
   version that Xdebug is published for on this platform (not for legacy
   versions or on Intel Macs).
 
-Yerd only manages shims it created. If `{data}/bin/phpdebug` (or a versioned
-alias) already exists and isn't a Yerd shim, Yerd leaves it in place and logs a
-warning rather than overwriting it.
+Yerd only manages a debug alias that is a link pointing at a `yerd` wrapper
+binary, whether that's the current one or an older copy (for example after the
+app moved). If `{data}/bin/phpdebug` (or a versioned alias) is anything else,
+including a link to another program or a dangling link to some other missing
+target, Yerd leaves it in place and logs a warning rather than overwriting it.
+A link to a `yerd` binary is repointed at the current one if needed.
 
 ```sh
 phpdebug artisan migrate                         # step-debug an artisan command

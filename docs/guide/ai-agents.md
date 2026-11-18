@@ -67,7 +67,7 @@ connected, with its tools available.
 | Sites | `list_sites`, `create_site`, `link_site`, `park_directory`, `list_parked`, `set_site_php`, `set_site_secure` |
 | Domains | `add_domain`, `remove_domain` |
 | Proxies | `add_proxy`, `remove_proxy`, `add_proxy_rule`, `remove_proxy_rule`, `list_proxies` (upstreams must be local) |
-| PHP | `list_php`, `list_available_php`, `install_php`, `set_default_php`, `set_php_setting`, `set_xdebug` (turn Xdebug on/off for a version, with optional modes and always/trigger start) |
+| PHP | `list_php`, `list_available_php`, `install_php`, `set_default_php`, `set_php_setting`, `set_xdebug` (turn Xdebug on/off for a version, with optional modes and always/trigger start; leave out `enabled` to change only modes or start and keep the current on/off state) |
 | Services | `list_services`, `list_databases`, `create_database` |
 | Mail | `set_mail_enabled`, `list_mails`, `get_mail` |
 | Dumps | `set_dumps_enabled`, `dumps_status`, `list_dumps` |

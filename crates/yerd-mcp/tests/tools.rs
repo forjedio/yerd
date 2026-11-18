@@ -172,7 +172,6 @@ fn required_arguments_are_declared_in_the_schema() {
         ("install_php", vec!["version"]),
         ("set_default_php", vec!["version"]),
         ("set_php_setting", vec!["name", "value"]),
-        ("set_xdebug", vec!["enabled"]),
         ("list_databases", vec!["service"]),
         ("create_database", vec!["service", "name"]),
         ("set_mail_enabled", vec!["enabled"]),
@@ -314,6 +313,11 @@ fn optional_arguments_reach_the_request() {
     );
 
     let xdebug_default = built("set_xdebug", json!({ "enabled": true }));
+    assert_ne!(
+        built("set_xdebug", json!({})),
+        xdebug_default,
+        "set_xdebug ignored `enabled`"
+    );
     for (key, value) in [
         ("version", json!("8.4")),
         ("modes", json!(["profile"])),
@@ -669,12 +673,26 @@ fn set_xdebug_maps_to_its_request() {
             start: Some(XdebugStart::Trigger),
         }
     );
+    for args in [
+        json!({ "modes": ["trace"] }),
+        json!({ "enabled": null, "modes": ["trace"] }),
+    ] {
+        assert_eq!(
+            built("set_xdebug", args.clone()),
+            Request::SetXdebug {
+                version: None,
+                enabled: None,
+                modes: Some(vec![XdebugMode::Trace]),
+                start: None,
+            },
+            "{args}"
+        );
+    }
 }
 
 #[test]
 fn set_xdebug_rejects_bad_arguments() {
     for args in [
-        json!({}),
         json!({ "enabled": "yes" }),
         json!({ "enabled": true, "modes": ["bogus"] }),
         json!({ "enabled": true, "modes": ["off"] }),

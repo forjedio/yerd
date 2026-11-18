@@ -47,7 +47,8 @@ Only that version's pool restarts. Sites on other versions aren't touched. See
 the [`yerd xdebug` reference](../reference/cli/xdebug) for every flag.
 
 AI agents connected through [`yerd mcp`](./ai-agents) can do the same with the
-`set_xdebug` tool.
+`set_xdebug` tool. Its `enabled` argument is optional: leave it out to change
+only the modes or start and keep Xdebug on or off as it is.
 
 ## What Yerd sets up
 
@@ -150,7 +151,7 @@ checkboxes in the desktop app):
 | `coverage` | Code coverage, including branch and path coverage. |
 | `profile` | Writes a cachegrind profile per request. |
 | `trace` | Writes a function trace per request. |
-| `gcstats` | Garbage-collection statistics. Needs the start setting on every request: Xdebug never starts GC statistics from a trigger, so `gcstats` with trigger mode is rejected. |
+| `gcstats` | Garbage-collection statistics, collected automatically from the start of each request. That automatic collection only happens when every request starts a session, never from a trigger, so Yerd won't turn Xdebug on with `gcstats` and trigger mode together. (Calling `xdebug_start_gcstats()` from your own code starts collection explicitly instead, whatever the start setting.) Turning Xdebug off is always allowed, even with that pair saved. |
 
 ```sh
 yerd xdebug on 8.4 --mode debug,develop
@@ -168,8 +169,8 @@ requests you choose.
 
 ### Profile and trace output
 
-When `profile` or `trace` is selected, Yerd points `xdebug.output_dir` at an
-`xdebug` folder in its data directory and creates it for you:
+When `profile`, `trace` or `gcstats` is selected, Yerd points `xdebug.output_dir`
+at an `xdebug` folder in its data directory and creates it for you:
 
 | OS | Output folder |
 | --- | --- |
@@ -180,6 +181,12 @@ Profiles are named `cachegrind.out.<pid>` and open in KCachegrind,
 QCachegrind or PhpStorm's profiler viewer. The folder isn't cleaned up for you,
 so delete old files when you're done. To write somewhere else, override the
 directory (see the next section).
+
+If Yerd can't create that folder while Xdebug is on with one of those modes (for
+example because a file already sits at that path), the request fails with an
+error that names the folder and says what to fix, and nothing is saved. Fix the
+path and send the same request again: Yerd creates the folder then, even though
+the settings themselves haven't changed.
 
 ## Changing the port and other settings
 
@@ -215,9 +222,11 @@ php8.4debug vendor/bin/phpunit --filter InvoiceTest
   for each installed version that Xdebug is published for on your platform, so
   legacy versions and Intel Macs don't get one.
 
-If a file Yerd didn't create already sits at `{data}/bin/phpdebug` (or at a
-versioned debug alias), Yerd leaves it alone and logs a warning instead of
-replacing it. Rename or remove that file and restart Yerd to get the debug shim.
+Yerd only manages a debug alias that is a link pointing at a `yerd` wrapper
+binary, including an older copy left behind when the app moved. If anything else
+already sits at `{data}/bin/phpdebug` (or at a versioned debug alias), including
+a link to some other program or a dangling link to some other missing target,
+Yerd leaves it alone and logs a warning instead of replacing it. Rename or remove that file and restart Yerd to get the debug shim.
 
 They live in `{data}/bin` next to the `php` and `phpcover` shims, so once that
 folder is on your `PATH` they work everywhere. They use the same defaults as the
@@ -280,9 +289,11 @@ copy and its Xdebug settings.
 
 **The breakpoint is never hit.**
 
-- Check that your IDE is actually listening on **9003**:
-  `lsof -nP -iTCP:9003 -sTCP:LISTEN` should show your editor. If another program
-  holds the port, stop it or [move Xdebug to another port](#changing-the-port-and-other-settings).
+- Check that your IDE is actually listening on Xdebug's port: **9003** by
+  default, or the `xdebug.client_port` you set for that version.
+  `lsof -nP -iTCP:9003 -sTCP:LISTEN` (with your port in place of 9003) should
+  show your editor. If another program holds the port, stop it or
+  [move Xdebug to another port](#changing-the-port-and-other-settings).
 - Check Xdebug is on for the version that site uses: `yerd xdebug status`, and
   `yerd sites` for the site's PHP version.
 - In [trigger mode](#trigger-mode), make sure the helper extension is set to
@@ -290,7 +301,8 @@ copy and its Xdebug settings.
 - Xdebug connects from PHP to your IDE over `127.0.0.1`, so a firewall rarely
   gets in the way. If your IDE runs somewhere else (a VM, a container, a remote
   machine), set `xdebug.client_host` to its address with `yerd php ini set` and
-  allow inbound connections on 9003 in that machine's firewall.
+  allow inbound connections on that port (9003 unless you changed
+  `xdebug.client_port`) in that machine's firewall.
 - To see what Xdebug is doing, point its log at a file you can write to and
   raise the log level for a moment, then read that file after loading the page:
   `yerd php ini set 8.4 xdebug.log /tmp/xdebug.log` and

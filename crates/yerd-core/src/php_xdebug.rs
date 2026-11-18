@@ -234,13 +234,15 @@ pub fn validate(settings: &XdebugSettings) -> Result<(), XdebugError> {
 ///
 /// Xdebug starts GC statistics only when `xdebug.start_with_request=yes` (its
 /// trigger check never covers `gcstats`), so a request that would leave
-/// `gcstats` with the trigger start is refused. This is a request-time check
-/// only: a hand-edited config with that pair still loads, it just collects no
-/// GC statistics.
+/// `gcstats` with the trigger start enabled is refused. Disabling is always
+/// allowed, even with that pair saved. This is a request-time check only: a
+/// hand-edited config with that pair still loads, it just collects no GC
+/// statistics automatically.
 ///
 /// # Errors
 /// [`XdebugError::EmptyModes`] when the request supplies an empty mode list;
-/// [`XdebugError::GcstatsNeedsAlways`] for `gcstats` with the trigger start.
+/// [`XdebugError::GcstatsNeedsAlways`] for an enabled `gcstats` with the
+/// trigger start.
 pub fn merge_request(
     current: Option<&XdebugSettings>,
     enabled: Option<bool>,
@@ -255,7 +257,10 @@ pub fn merge_request(
     };
     merged.normalize();
     validate(&merged)?;
-    if merged.start == XdebugStart::Trigger && merged.modes.contains(&XdebugMode::Gcstats) {
+    if merged.enabled
+        && merged.start == XdebugStart::Trigger
+        && merged.modes.contains(&XdebugMode::Gcstats)
+    {
         return Err(XdebugError::GcstatsNeedsAlways);
     }
     Ok(merged)
@@ -324,37 +329,80 @@ pub fn is_xdebug_extension(name: &str, path: &str) -> bool {
 }
 
 /// True if any `extension = …` or `zend_extension = …` line in `ini` loads an
-/// Xdebug (per [`is_xdebug_extension`]). Quotes around the path and a trailing
-/// `;` comment outside quotes are ignored.
+/// Xdebug (per [`is_xdebug_extension`]). See [`ini_load_paths`] for how each
+/// value is read.
 #[must_use]
 pub fn ini_loads_xdebug(ini: &str) -> bool {
-    ini.lines().any(|line| {
-        let Some((key, value)) = line.split_once('=') else {
-            return false;
-        };
-        let key = key.trim();
-        if !(key.eq_ignore_ascii_case("extension") || key.eq_ignore_ascii_case("zend_extension")) {
-            return false;
-        }
-        let path = strip_ini_comment(value)
-            .trim()
-            .trim_matches(|c| c == '"' || c == '\'');
-        is_xdebug_extension("", path)
-    })
+    ini_load_paths(ini)
+        .iter()
+        .any(|path| is_xdebug_extension("", path))
 }
 
-/// `value` up to the first `;` that is outside single or double quotes.
+/// The paths of every `extension = …` and `zend_extension = …` line in `ini`,
+/// in file order. A trailing `;` comment outside quotes is dropped and quotes
+/// around the value are removed. Inside double quotes `\"`, `\\` and `\$`
+/// decode to the escaped character, as PHP's ini scanner does; any other
+/// backslash is kept.
+#[must_use]
+pub fn ini_load_paths(ini: &str) -> Vec<String> {
+    ini.lines()
+        .filter_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            let key = key.trim();
+            (key.eq_ignore_ascii_case("extension") || key.eq_ignore_ascii_case("zend_extension"))
+                .then(|| unquote_ini_value(strip_ini_comment(value).trim()))
+        })
+        .collect()
+}
+
+/// `value` up to the first `;` that is outside single or double quotes. A
+/// backslash inside double quotes escapes the next character, so `\"` doesn't
+/// close the quote.
 fn strip_ini_comment(value: &str) -> &str {
     let mut quote: Option<char> = None;
+    let mut escaped = false;
     for (i, c) in value.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
         match (quote, c) {
             (None, ';') => return value.get(..i).unwrap_or(value),
             (None, '"' | '\'') => quote = Some(c),
+            (Some('"'), '\\') => escaped = true,
             (Some(q), _) if q == c => quote = None,
             _ => {}
         }
     }
     value
+}
+
+/// The text of an ini value with its surrounding quotes removed and double-quote
+/// escapes decoded (see [`ini_load_paths`]). An unquoted value is returned as is.
+fn unquote_ini_value(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some('"') => {
+            let mut out = String::with_capacity(value.len());
+            while let Some(c) = chars.next() {
+                match c {
+                    '"' => break,
+                    '\\' => match chars.next() {
+                        Some(n @ ('"' | '\\' | '$')) => out.push(n),
+                        Some(n) => {
+                            out.push('\\');
+                            out.push(n);
+                        }
+                        None => out.push('\\'),
+                    },
+                    _ => out.push(c),
+                }
+            }
+            out
+        }
+        Some('\'') => chars.take_while(|c| *c != '\'').collect(),
+        _ => value.to_owned(),
+    }
 }
 
 /// `path` as a double-quoted ini string: `"`, `\` and `$` are backslash-escaped
@@ -652,6 +700,61 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_gcstats_trigger_pair_can_always_be_disabled() {
+        let saved = XdebugSettings {
+            enabled: true,
+            modes: vec![XdebugMode::Gcstats],
+            start: XdebugStart::Trigger,
+        };
+        assert_eq!(
+            merge_request(Some(&saved), Some(false), None, None),
+            Ok(XdebugSettings {
+                enabled: false,
+                ..saved.clone()
+            })
+        );
+        let off = XdebugSettings {
+            enabled: false,
+            ..saved.clone()
+        };
+        for enabled in [None, Some(false)] {
+            assert_eq!(
+                merge_request(Some(&off), enabled, None, None),
+                Ok(off.clone()),
+                "{enabled:?}"
+            );
+        }
+        assert_eq!(
+            merge_request(Some(&off), Some(true), None, None),
+            Err(XdebugError::GcstatsNeedsAlways)
+        );
+        assert_eq!(
+            merge_request(Some(&saved), None, None, None),
+            Err(XdebugError::GcstatsNeedsAlways)
+        );
+    }
+
+    #[test]
+    fn ini_load_paths_decode_quotes_and_escapes() {
+        let ini = "memory_limit = 1G\n\
+                   extension = /x/redis.so ; c\n\
+                   zend_extension = \"/opt/a\\\";b/x.so\"\n\
+                   zend_extension = \"/opt/\\\\\\$d\\n/x.so\"\n\
+                   EXTENSION = '/opt/s\\q.so' ; c\n\
+                   ; extension = /x/off.so\n";
+        assert_eq!(
+            ini_load_paths(ini),
+            vec![
+                "/x/redis.so".to_owned(),
+                "/opt/a\";b/x.so".to_owned(),
+                "/opt/\\$d\\n/x.so".to_owned(),
+                "/opt/s\\q.so".to_owned(),
+            ]
+        );
+        assert!(ini_load_paths("").is_empty());
+    }
+
+    #[test]
     fn availability_matrix() {
         let cases = [
             ((8, 2), "linux", "x86_64", true),
@@ -763,6 +866,11 @@ mod tests {
             ("zend_extension = /x/xdebug.so ; loaded by hand\n", true),
             ("zend_extension = /x/xdebug.so;comment\n", true),
             ("zend_extension = \"/x/a;b/xdebug.so\" ; c\n", true),
+            ("zend_extension = \"/opt/a\\\";b/xdebug.so\"\n", true),
+            (
+                "zend_extension = \"/opt/a\\\";b/pcov.so\" ; xdebug.so\n",
+                false,
+            ),
             ("extension = /x/pcov.so ; xdebug.so\n", false),
             ("", false),
         ];

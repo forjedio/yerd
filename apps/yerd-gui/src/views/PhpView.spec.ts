@@ -8,6 +8,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import PhpView from "./PhpView.vue";
 import { useDaemon } from "@/composables/useDaemon";
+import { useToast } from "@/composables/useToast";
 import { resetResourceCache } from "@/composables/useResource";
 import type { PhpVersion } from "@/ipc/types";
 
@@ -31,22 +32,23 @@ function stubIpc(opts: {
   const extensions = opts.extensions ?? {};
   const pool = opts.pool ?? {};
   const settings = opts.settings ?? {};
+  const phpVersions = () => ({
+    type: "php_versions",
+    installed,
+    default: "8.4",
+    updates: [],
+    settings,
+    version_settings: {},
+    pool,
+    ffi_versions: opts.ffiVersions,
+    libvips_found: opts.libvipsFound,
+    xdebug: opts.xdebug,
+    xdebug_versions: opts.xdebugVersions,
+  });
   invokeMock.mockImplementation((cmd: string) => {
     switch (cmd) {
       case "list_php":
-        return Promise.resolve({
-          type: "php_versions",
-          installed,
-          default: "8.4",
-          updates: [],
-          settings,
-          version_settings: {},
-          pool,
-          ffi_versions: opts.ffiVersions,
-          libvips_found: opts.libvipsFound,
-          xdebug: opts.xdebug,
-          xdebug_versions: opts.xdebugVersions,
-        });
+        return Promise.resolve(phpVersions());
       case "set_php_settings":
         return Promise.resolve({
           type: "php_versions",
@@ -55,7 +57,7 @@ function stubIpc(opts: {
           settings: {},
         });
       case "check_php_updates":
-        return Promise.resolve({ type: "php_versions", installed, default: "8.4", updates: [] });
+        return Promise.resolve(phpVersions());
       case "list_php_extensions":
         return Promise.resolve({ type: "php_extensions", by_version: extensions });
       case "available_php":
@@ -330,18 +332,49 @@ describe("PhpView per-version configuration", () => {
     expect(sw.attributes("aria-checked")).toBe("false");
   });
 
-  it("reloads the PHP state after an update check so Xdebug state stays current", async () => {
-    stubIpc({ installed: ["8.4"] });
+  it("applies the Xdebug state from the update check response without a second list call", async () => {
+    stubIpc({ installed: ["8.4"], xdebugVersions: ["8.4"] });
+    let finishCheck: (r: unknown) => void = () => {};
     const wrapper = await mountView();
+    const base = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((cmd: string, ...rest: unknown[]) => {
+      if (cmd === "check_php_updates") {
+        return new Promise((resolve) => {
+          finishCheck = resolve;
+        });
+      }
+      return base(cmd, ...rest);
+    });
     const listCalls = () => invokeMock.mock.calls.filter(([c]) => c === "list_php").length;
     const before = listCalls();
+    expect(wrapper.find('[data-testid="xdebug-badge"]').exists()).toBe(false);
 
     const refreshBtn = wrapper.findAll("button").find((b) => b.text().trim() === "Refresh");
     await refreshBtn!.trigger("click");
     await flushPromises();
-
     expect(invokeMock).toHaveBeenCalledWith("check_php_updates", undefined);
-    expect(listCalls()).toBeGreaterThan(before);
+    expect(refreshBtn!.attributes("disabled")).toBeDefined();
+
+    finishCheck({
+      type: "php_versions",
+      installed: ["8.4"],
+      default: "8.4",
+      updates: [],
+      settings: {},
+      version_settings: {},
+      pool: {},
+      xdebug: { "8.4": { enabled: true, modes: ["debug"], start: "always" } },
+      xdebug_versions: ["8.4"],
+    });
+    await flushPromises();
+
+    expect(listCalls()).toBe(before);
+    expect(refreshBtn!.attributes("disabled")).toBeUndefined();
+    expect(wrapper.find('[data-testid="xdebug-badge"]').exists()).toBe(true);
+    expect(
+      wrapper.find('button[aria-label="Xdebug for PHP 8.4"]').attributes("aria-checked"),
+    ).toBe("true");
+    expect(useToast().toasts.value.map((t) => t.title)).toContain("Update check complete");
   });
 
   it("has no per-version card when nothing is installed or registered", async () => {

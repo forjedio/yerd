@@ -17,9 +17,18 @@ pub fn allowlist(snapshot: &[(String, String)]) -> Vec<(String, String)> {
 }
 
 /// Environment variables that override Yerd's managed Xdebug settings:
-/// `XDEBUG_MODE` replaces `xdebug.mode`, and `XDEBUG_TRIGGER` /
-/// `XDEBUG_SESSION` in the environment would start a session on every request.
-pub const XDEBUG_OVERRIDES: [&str; 3] = ["XDEBUG_MODE", "XDEBUG_TRIGGER", "XDEBUG_SESSION"];
+/// `XDEBUG_MODE` replaces `xdebug.mode`, and the triggers (`XDEBUG_TRIGGER`,
+/// `XDEBUG_SESSION` and the legacy `XDEBUG_SESSION_START`, `XDEBUG_PROFILE`
+/// and `XDEBUG_TRACE`) in the environment would start a session, profile or
+/// trace on every request. Request-supplied triggers are unaffected.
+pub const XDEBUG_OVERRIDES: [&str; 6] = [
+    "XDEBUG_MODE",
+    "XDEBUG_TRIGGER",
+    "XDEBUG_SESSION",
+    "XDEBUG_SESSION_START",
+    "XDEBUG_PROFILE",
+    "XDEBUG_TRACE",
+];
 
 /// [`allowlist`] for one FPM pool. When the pool loads Yerd's managed Xdebug,
 /// the [`XDEBUG_OVERRIDES`] are dropped too so the daemon's environment can't
@@ -108,6 +117,9 @@ mod tests {
             s("XDEBUG_MODE", "coverage"),
             s("XDEBUG_TRIGGER", "1"),
             s("XDEBUG_SESSION", "PHPSTORM"),
+            s("XDEBUG_SESSION_START", "PHPSTORM"),
+            s("XDEBUG_PROFILE", "1"),
+            s("XDEBUG_TRACE", "1"),
             s("XDEBUG_CONFIG", "idekey=PHPSTORM"),
             s("SECRET", "x"),
         ];
@@ -119,6 +131,9 @@ mod tests {
                     "XDEBUG_MODE",
                     "XDEBUG_TRIGGER",
                     "XDEBUG_SESSION",
+                    "XDEBUG_SESSION_START",
+                    "XDEBUG_PROFILE",
+                    "XDEBUG_TRACE",
                     "XDEBUG_CONFIG",
                 ],
             ),

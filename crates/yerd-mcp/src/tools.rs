@@ -117,7 +117,7 @@ const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "set_xdebug",
-        description: "Turn Xdebug on or off for one PHP version, optionally choosing modes and always/trigger start.",
+        description: "Turn Xdebug on or off for one PHP version, or change its modes and always/trigger start; an omitted field keeps its current value.",
     },
     ToolDef {
         name: "list_services",
@@ -267,7 +267,7 @@ fn build_request(name: &'static str, args: &Value) -> Result<Request, ArgError> 
         }
         "set_xdebug" => Request::SetXdebug {
             version: opt_php(args, "version")?,
-            enabled: Some(req_bool(args, "enabled")?),
+            enabled: maybe_bool(args, "enabled")?,
             modes: opt_xdebug_modes(args, "modes")?,
             start: opt_mapped(
                 args,
@@ -455,14 +455,14 @@ fn schema_for(name: &str) -> Value {
         "set_xdebug" => schema(
             &[
                 ("version", string_prop("An installed PHP version, e.g. \"8.4\"; omit for the default PHP")),
-                ("enabled", bool_prop("True to load Xdebug into that version's FPM pool, false to stop loading it")),
+                ("enabled", bool_prop("True to load Xdebug into that version's FPM pool, false to stop loading it; omit to keep the current state")),
                 ("modes", string_array_prop(
                     "Xdebug modes (non-empty); omit to keep the current modes (default debug)",
                     &XdebugMode::ALL.map(XdebugMode::as_str),
                 )),
                 ("start", enum_prop("When a debug session starts; omit to keep the current value (default always)", &["always", "trigger"])),
             ],
-            &["enabled"],
+            &[],
         ),
         "list_databases" => schema(
             &[("service", string_prop("Service id, e.g. mysql, mariadb, or postgres"))],
@@ -554,9 +554,14 @@ fn req_str(args: &Value, name: &'static str) -> Result<String, ArgError> {
 }
 
 fn req_bool(args: &Value, name: &'static str) -> Result<bool, ArgError> {
+    maybe_bool(args, name)?.ok_or(ArgError::Missing(name))
+}
+
+/// An optional boolean with no default: `None` when absent or null.
+fn maybe_bool(args: &Value, name: &'static str) -> Result<Option<bool>, ArgError> {
     match args.get(name) {
-        None | Some(Value::Null) => Err(ArgError::Missing(name)),
-        Some(Value::Bool(b)) => Ok(*b),
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
         Some(_) => Err(ArgError::Type {
             name,
             expected: "a boolean",
@@ -565,14 +570,7 @@ fn req_bool(args: &Value, name: &'static str) -> Result<bool, ArgError> {
 }
 
 fn opt_bool(args: &Value, name: &'static str, default: bool) -> Result<bool, ArgError> {
-    match args.get(name) {
-        None | Some(Value::Null) => Ok(default),
-        Some(Value::Bool(b)) => Ok(*b),
-        Some(_) => Err(ArgError::Type {
-            name,
-            expected: "a boolean",
-        }),
-    }
+    Ok(maybe_bool(args, name)?.unwrap_or(default))
 }
 
 fn opt_u64(args: &Value, name: &'static str, default: u64) -> Result<u64, ArgError> {

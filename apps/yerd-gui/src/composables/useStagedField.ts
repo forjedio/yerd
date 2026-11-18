@@ -1,5 +1,8 @@
 import { computed, ref, type ComputedRef, type Ref } from "vue";
 
+/** Field values that compare correctly by identity. */
+export type StagedScalar = string | number | boolean | bigint | symbol | null | undefined;
+
 /** One staged form field reconciled against the daemon's latest saved value. */
 export interface StagedField<T> {
   /** What the control shows; the user's edit while dirty, else the saved value. */
@@ -23,23 +26,27 @@ export interface StagedField<T> {
  * edit started from, and the `draft`. Reverting an edit back to `base` shows
  * `saved` rather than the stale base, so an out-of-band change made while the
  * user was editing is not hidden.
+ *
+ * Scalar fields compare by identity (`Object.is`). Any other field type must
+ * pass a `key` that maps equal values to the same string, since identity would
+ * call every fresh array or object a change.
  */
-export function useStagedField<T>(
-  initial: T,
-  key: (v: T) => string = (v) => String(v),
-): StagedField<T> {
+export function useStagedField<T extends StagedScalar>(initial: T): StagedField<T>;
+export function useStagedField<T>(initial: T, key: (v: T) => string): StagedField<T>;
+export function useStagedField<T>(initial: T, key?: (v: T) => string): StagedField<T> {
   const saved = ref(initial) as Ref<T>;
   const base = ref(initial) as Ref<T>;
   const draft = ref(initial) as Ref<T>;
 
-  const dirty = computed(() => key(draft.value) !== key(saved.value));
+  const same = (a: T, b: T): boolean => (key ? key(a) === key(b) : Object.is(a, b));
+  const dirty = computed(() => !same(draft.value, saved.value));
 
   function settle(): void {
     if (!dirty.value) base.value = saved.value;
   }
 
   function edit(value: T): void {
-    draft.value = key(value) === key(base.value) ? saved.value : value;
+    draft.value = same(value, base.value) ? saved.value : value;
     settle();
   }
 

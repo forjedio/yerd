@@ -23,11 +23,12 @@ mod tests {
 
     use yerd_platform::PlatformDirs;
 
-    /// A stand-in PHP CLI that prints the `PHPRC` it was started with and the
-    /// arguments it received.
+    /// A stand-in PHP CLI that prints the `PHPRC` it was started with, then
+    /// each argument it received on its own `arg=[…]` line, so argument
+    /// boundaries survive.
     const STUB_PHP: &str = "#!/bin/sh\n\
         printf 'phprc=%s\\n' \"$PHPRC\"\n\
-        printf 'args=%s\\n' \"$*\"\n";
+        for a in \"$@\"; do printf 'arg=[%s]\\n' \"$a\"; done\n";
 
     /// A faked home with a stub PHP 8.4 CLI, its bundled `xdebug.so` and Yerd's
     /// base CLI ini. Returns `(tempdir, home, dirs)`.
@@ -63,7 +64,7 @@ mod tests {
             .expect("run yerd")
     }
 
-    fn assert_debug_run(output: &std::process::Output, dirs: &PlatformDirs, want_args: &str) {
+    fn assert_debug_run(output: &std::process::Output, dirs: &PlatformDirs, want_args: &[&str]) {
         assert!(
             output.status.success(),
             "debug run failed: {}",
@@ -76,14 +77,23 @@ mod tests {
             stdout.lines().any(|l| l == want_phprc),
             "PHPRC must point at debug.ini, got: {stdout}"
         );
-        assert!(
-            stdout.lines().any(|l| l == format!("args={want_args}")),
+        let got_args: Vec<&str> = stdout
+            .lines()
+            .filter_map(|l| l.strip_prefix("arg=[")?.strip_suffix(']'))
+            .collect();
+        assert_eq!(
+            got_args, want_args,
             "args must be forwarded verbatim, got: {stdout}"
         );
         let ini = fs::read_to_string(&debug_ini).expect("debug.ini written");
         let so = dirs.data.join("php-ext").join("php-8.4").join("xdebug.so");
         assert!(
-            ini.starts_with(&format!("zend_extension = \"{}\"\n", so.display())),
+            ini.starts_with("zend_extension = \""),
+            "debug.ini must start with the Xdebug load line, got: {ini}"
+        );
+        assert_eq!(
+            yerd_core::php_xdebug::ini_load_paths(&ini),
+            vec![so.to_string_lossy().into_owned()],
             "debug.ini must load the bundled Xdebug, got: {ini}"
         );
         assert!(ini.contains("memory_limit = 512M"), "got: {ini}");
@@ -95,7 +105,7 @@ mod tests {
         let shim = tmp.path().join("php8.4debug");
         symlink(env!("CARGO_BIN_EXE_yerd"), &shim).expect("symlink debug shim");
         let output = run_in_home(&shim, &["artisan", "test", "--filter=Foo"], &home);
-        assert_debug_run(&output, &dirs, "artisan test --filter=Foo");
+        assert_debug_run(&output, &dirs, &["artisan", "test", "--filter=Foo"]);
     }
 
     #[test]
@@ -104,7 +114,7 @@ mod tests {
         let shim = tmp.path().join("phpdebug");
         symlink(env!("CARGO_BIN_EXE_yerd"), &shim).expect("symlink debug shim");
         let output = run_in_home(&shim, &["-r", "echo 1;"], &home);
-        assert_debug_run(&output, &dirs, "-r echo 1;");
+        assert_debug_run(&output, &dirs, &["-r", "echo 1;"]);
     }
 
     #[test]
