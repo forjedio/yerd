@@ -327,7 +327,8 @@ const RECOVERY_READ_MS = 10_000;
  * The read is bounded: a daemon that accepts connections but never answers
  * would otherwise keep every PHP control locked. A read that lands after the
  * timeout is still applied, unless another save started in the meantime, since
- * its snapshot may predate that save.
+ * its snapshot may predate that save. A read that times out or fails leaves
+ * the state unconfirmed, and the user is told so.
  */
 async function reloadAfterFailure(): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -337,18 +338,22 @@ async function reloadAfterFailure(): Promise<void> {
   const read = listPhp().catch(() => null);
   const r = await Promise.race([read, timedOut]);
   clearTimeout(timer);
+  if (r !== "timeout" && r !== null) {
+    emit("updated", r);
+    return;
+  }
   if (r === "timeout") {
     const seq = mutationSeq;
     void read.then((late) => {
       if (late && seq === mutationSeq) emit("updated", late);
     });
-    toast.info(
-      `Couldn't confirm PHP ${props.version}'s saved Xdebug state`,
-      "Yerd didn't answer in time. Refresh to see the current settings.",
-    );
-  } else if (r) {
-    emit("updated", r);
   }
+  toast.info(
+    `Couldn't confirm PHP ${props.version}'s saved Xdebug state`,
+    r === "timeout"
+      ? "Yerd didn't answer in time. Refresh to see the current settings."
+      : "Yerd couldn't read the current settings. Refresh to try again.",
+  );
 }
 
 /**

@@ -164,11 +164,11 @@ fn prepare_debug_ini(dirs: &PlatformDirs, minor: &str) -> Result<PathBuf, String
 }
 
 /// The name of an extension registered in `yerd.toml` for `minor` that is an
-/// Xdebug (by name or `.so` basename) and that `base`, the CLI ini this shim
-/// read, loads by its exact path. A registered Xdebug the ini doesn't load
-/// (its file is missing, or the ini predates it) is ignored, since only a real
-/// second load would clash with the bundled one. A missing or unreadable
-/// config counts as none.
+/// Xdebug (by name or `.so` basename), that `base`, the CLI ini this shim
+/// read, loads by its exact path, and whose file exists. A registered Xdebug
+/// the ini doesn't load (the ini predates it) or whose file is gone is ignored:
+/// PHP can't load a missing file, and only a real second load would clash with
+/// the bundled one. A missing or unreadable config counts as none.
 ///
 /// This is narrower than the daemon's FPM-side check, which refuses any
 /// registered Xdebug for the version whether or not a current ini loads it:
@@ -182,7 +182,11 @@ fn registered_xdebug(dirs: &PlatformDirs, minor: &str, base: &str) -> Option<Str
         .extensions
         .get(&v)?
         .iter()
-        .find(|e| php_xdebug::is_xdebug_extension(&e.name, &e.path) && loaded.contains(&e.path))
+        .find(|e| {
+            php_xdebug::is_xdebug_extension(&e.name, &e.path)
+                && loaded.contains(&e.path)
+                && Path::new(&e.path).is_file()
+        })
         .map(|e| e.name.clone())
 }
 
@@ -419,6 +423,22 @@ mod tests {
         write_base_ini(&dirs, "memory_limit = 512M\n");
         let gone = tmp.path().join("gone").join("xdebug.so");
         write_config_with_extension(&dirs, "xdebug", &gone.to_string_lossy());
+        assert!(prepare_debug_ini(&dirs, "8.4").is_ok());
+    }
+
+    #[test]
+    fn registered_xdebug_the_ini_loads_but_whose_file_is_gone_is_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_at(tmp.path());
+        place_so(&dirs, "8.4");
+        let custom = tmp.path().join("debugger-3.4.so");
+        std::fs::write(&custom, b"so").unwrap();
+        let custom_str = custom.to_string_lossy().into_owned();
+        write_config_with_extension(&dirs, "xdebug", &custom_str);
+        write_base_ini(&dirs, &format!("zend_extension = \"{custom_str}\"\n"));
+        assert!(prepare_debug_ini(&dirs, "8.4").is_err());
+
+        std::fs::remove_file(&custom).unwrap();
         assert!(prepare_debug_ini(&dirs, "8.4").is_ok());
     }
 

@@ -1968,8 +1968,17 @@ async fn uninstall_php(version: yerd_core::PhpVersion, state: &DaemonState) -> R
     let installed = installed_versions(state);
     if !installed.contains(&version) {
         let has_entry = state.config.lock().await.php.xdebug.contains_key(&version);
-        if has_entry || xdebug_files_left(&state.dirs, version) {
-            return match remove_xdebug_leftovers(state, version).await {
+        let leftovers = if has_entry {
+            Ok(true)
+        } else {
+            xdebug_files_left(&state.dirs, version)
+        };
+        return match leftovers {
+            Err(e) => internal(format!(
+                "couldn't check for leftover Xdebug files for PHP {version}: {e}; fix and retry \
+                 `yerd uninstall php {version}`"
+            )),
+            Ok(true) => match remove_xdebug_leftovers(state, version).await {
                 Ok(()) => {
                     tracing::info!(
                         version = %version,
@@ -1981,11 +1990,11 @@ async fn uninstall_php(version: yerd_core::PhpVersion, state: &DaemonState) -> R
                     "couldn't remove leftover Xdebug files for PHP {version}: {e}; fix and \
                      retry `yerd uninstall php {version}`"
                 )),
-            };
-        }
-        return Response::Error {
-            code: ErrorCode::NotFound,
-            message: format!("PHP {version} is not installed"),
+            },
+            Ok(false) => Response::Error {
+                code: ErrorCode::NotFound,
+                message: format!("PHP {version} is not installed"),
+            },
         };
     }
 
@@ -2058,11 +2067,25 @@ fn xdebug_files(
     ]
 }
 
-/// True if any of `version`'s [`xdebug_files`] is still on disk.
-fn xdebug_files_left(dirs: &yerd_platform::PlatformDirs, version: yerd_core::PhpVersion) -> bool {
-    xdebug_files(dirs, version)
-        .iter()
-        .any(|p| std::fs::symlink_metadata(p).is_ok())
+/// True if any of `version`'s [`xdebug_files`] is still on disk. Only
+/// `NotFound` counts as absent.
+///
+/// # Errors
+/// A human message naming the path when one can't be inspected for any other
+/// reason, so the caller never reports a clean uninstall it couldn't verify.
+fn xdebug_files_left(
+    dirs: &yerd_platform::PlatformDirs,
+    version: yerd_core::PhpVersion,
+) -> Result<bool, String> {
+    let mut left = false;
+    for path in xdebug_files(dirs, version) {
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => left = true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("couldn't inspect {} ({e})", path.display())),
+        }
+    }
+    Ok(left)
 }
 
 /// Remove an uninstalled version's [`xdebug_files`], then drop its
@@ -5220,6 +5243,48 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
         assert!(std::fs::symlink_metadata(&so).is_err());
 
+        let again = dispatch(Request::UninstallPhp { version: v85 }, &state).await;
+        assert!(
+            matches!(
+                again,
+                Response::Error {
+                    code: ErrorCode::NotFound,
+                    ..
+                }
+            ),
+            "{again:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn uninstall_php_reports_an_xdebug_leftover_it_cannot_inspect() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let v84 = PhpVersion::new(8, 4);
+        let v85 = PhpVersion::new(8, 5);
+        fake_install(&state.dirs, v84);
+        let so = crate::ext_install::xdebug_so_path(&state.dirs, v85);
+        let ext_dir = so.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(ext_dir.parent().unwrap()).unwrap();
+        std::fs::write(&ext_dir, b"not a directory").unwrap();
+
+        assert!(xdebug_files_left(&state.dirs, v85).is_err());
+        let resp = dispatch(Request::UninstallPhp { version: v85 }, &state).await;
+        match resp {
+            Response::Error { code, message } => {
+                assert_eq!(code, ErrorCode::Internal);
+                assert!(
+                    message.starts_with("couldn't check for leftover Xdebug files for PHP 8.5"),
+                    "{message}"
+                );
+                assert!(message.contains(&so.display().to_string()), "{message}");
+                assert!(message.contains("`yerd uninstall php 8.5`"), "{message}");
+            }
+            other => panic!("expected an error, got {other:?}"),
+        }
+
+        std::fs::remove_file(&ext_dir).unwrap();
+        assert_eq!(xdebug_files_left(&state.dirs, v85), Ok(false));
         let again = dispatch(Request::UninstallPhp { version: v85 }, &state).await;
         assert!(
             matches!(

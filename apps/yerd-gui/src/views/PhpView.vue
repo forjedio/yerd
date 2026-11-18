@@ -384,6 +384,7 @@ async function confirmUninstall(close: () => void): Promise<void> {
     await reloadPhp({ force: true });
   } catch (e) {
     toast.error(`Couldn't uninstall PHP ${v}`, (e as IpcError).message);
+    await reloadPhp({ force: true });
   } finally {
     busy.value = null;
     uninstallTarget.value = null;

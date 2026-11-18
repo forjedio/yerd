@@ -71,7 +71,10 @@ indistinguishable, in an agent's server list, from one that is broken.
 
 **Validation beats the gate.** Tool lookup and argument checks run before the
 availability check, so a malformed call is reported as malformed even while
-gated - otherwise the agent is sent to fix the wrong thing.
+gated - otherwise the agent is sent to fix the wrong thing. An argument the
+tool's schema does not declare is rejected by name (the schemas advertise
+`additionalProperties: false`), so a misspelt optional argument never silently
+falls back to its default.
 
 **Guidance is rendered on demand.** `Server::gate_reply` reflects the *current*
 availability. A session that starts with no daemon and later finds the toggle off

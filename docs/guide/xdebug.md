@@ -206,6 +206,11 @@ through it: `xdebug.mode` and `xdebug.start_with_request` (use `--mode` and
 is on. A directive you set with one of those names is ignored for that version's
 pool until you turn Xdebug off.
 
+While Xdebug is on, a version's pool also ignores `XDEBUG_MODE`, `XDEBUG_CONFIG`
+and the trigger variables (such as `XDEBUG_SESSION`) in the daemon's
+environment, so a shell variable can't quietly change the toggle's settings. Use
+`yerd php ini` for anything you would have put in `XDEBUG_CONFIG`.
+
 ## Debugging CLI commands with `phpdebug`
 
 The web toggle only affects your sites. To debug an artisan command, a queue job

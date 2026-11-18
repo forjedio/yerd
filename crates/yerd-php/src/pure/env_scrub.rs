@@ -17,12 +17,15 @@ pub fn allowlist(snapshot: &[(String, String)]) -> Vec<(String, String)> {
 }
 
 /// Environment variables that override Yerd's managed Xdebug settings:
-/// `XDEBUG_MODE` replaces `xdebug.mode`, and the triggers (`XDEBUG_TRIGGER`,
-/// `XDEBUG_SESSION` and the legacy `XDEBUG_SESSION_START`, `XDEBUG_PROFILE`
-/// and `XDEBUG_TRACE`) in the environment would start a session, profile or
-/// trace on every request. Request-supplied triggers are unaffected.
-pub const XDEBUG_OVERRIDES: [&str; 6] = [
+/// `XDEBUG_MODE` replaces `xdebug.mode`, `XDEBUG_CONFIG` can set any other
+/// `xdebug.*` setting (such as `start_with_request` or `client_port`), and the
+/// triggers (`XDEBUG_TRIGGER`, `XDEBUG_SESSION` and the legacy
+/// `XDEBUG_SESSION_START`, `XDEBUG_PROFILE` and `XDEBUG_TRACE`) in the
+/// environment would start a session, profile or trace on every request.
+/// Request-supplied triggers are unaffected.
+pub const XDEBUG_OVERRIDES: [&str; 7] = [
     "XDEBUG_MODE",
+    "XDEBUG_CONFIG",
     "XDEBUG_TRIGGER",
     "XDEBUG_SESSION",
     "XDEBUG_SESSION_START",
@@ -32,8 +35,8 @@ pub const XDEBUG_OVERRIDES: [&str; 6] = [
 
 /// [`allowlist`] for one FPM pool. When the pool loads Yerd's managed Xdebug,
 /// the [`XDEBUG_OVERRIDES`] are dropped too so the daemon's environment can't
-/// override the version's Xdebug settings; other `XDEBUG_*` variables (such as
-/// `XDEBUG_CONFIG`) are kept.
+/// override the version's Xdebug settings; set other `xdebug.*` values per
+/// version with `yerd php ini` instead. Any other `XDEBUG_*` variable is kept.
 #[must_use]
 pub fn pool_env(snapshot: &[(String, String)], managed_xdebug: bool) -> Vec<(String, String)> {
     snapshot
@@ -121,6 +124,7 @@ mod tests {
             s("XDEBUG_PROFILE", "1"),
             s("XDEBUG_TRACE", "1"),
             s("XDEBUG_CONFIG", "idekey=PHPSTORM"),
+            s("XDEBUG_OTHER", "1"),
             s("SECRET", "x"),
         ];
         let cases: [(bool, &[&str]); 2] = [
@@ -135,9 +139,10 @@ mod tests {
                     "XDEBUG_PROFILE",
                     "XDEBUG_TRACE",
                     "XDEBUG_CONFIG",
+                    "XDEBUG_OTHER",
                 ],
             ),
-            (true, &["PATH", "XDEBUG_CONFIG"]),
+            (true, &["PATH", "XDEBUG_OTHER"]),
         ];
         for (managed, want) in cases {
             let out = pool_env(&input, managed);

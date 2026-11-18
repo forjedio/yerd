@@ -33,6 +33,11 @@ const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// and this only trips for a wedged daemon.
 const XDEBUG_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Bound for `list_php`: a local read that normally answers in milliseconds,
+/// so this only trips for a wedged daemon. It keeps the PHP panel's recovery
+/// read, issued after a `set_xdebug` timeout, from holding a socket forever.
+const LIST_PHP_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Cached mail attachment files older than this are removed on the next save.
 const MAIL_ATTACHMENT_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -270,7 +275,7 @@ pub async fn rename_group(from: String, to: String) -> Result<Response, GuiError
 
 #[tauri::command]
 pub async fn list_php() -> Result<Response, GuiError> {
-    finish(exchange(&Request::ListPhp).await?)
+    finish(exchange_timeout(&Request::ListPhp, LIST_PHP_TIMEOUT).await?)
 }
 
 #[tauri::command]
@@ -1537,6 +1542,13 @@ mod tests {
     fn xdebug_timeout_outlasts_the_daemon_deadline() {
         assert!(XDEBUG_TIMEOUT > Duration::from_secs(90));
         assert!(XDEBUG_TIMEOUT > PROBE_TIMEOUT);
+    }
+
+    #[test]
+    fn list_php_timeout_is_bounded_but_generous() {
+        assert_eq!(LIST_PHP_TIMEOUT, Duration::from_secs(30));
+        assert!(LIST_PHP_TIMEOUT > PROBE_TIMEOUT);
+        assert!(LIST_PHP_TIMEOUT < XDEBUG_TIMEOUT);
     }
 
     #[test]

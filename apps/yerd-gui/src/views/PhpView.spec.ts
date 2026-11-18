@@ -472,3 +472,41 @@ describe("PhpView FFI switch", () => {
     expect(wrapper.find(toggle).attributes("disabled")).toBeUndefined();
   });
 });
+
+describe("PhpView uninstall", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    resetResourceCache();
+    useDaemon().report.value = null;
+  });
+
+  afterEach(() => {
+    mounted.forEach((w) => w.unmount());
+    mounted.length = 0;
+  });
+
+  it("reloads the PHP list after a failed uninstall and keeps the error toast", async () => {
+    stubIpc({ installed: ["8.1", "8.4"] });
+    const wrapper = await mountView();
+    const base = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((cmd: string, ...rest: unknown[]) =>
+      cmd === "uninstall_php"
+        ? Promise.reject(new Error("pool for PHP 8.1 is still in use"))
+        : base(cmd, ...rest),
+    );
+    const listCalls = () => invokeMock.mock.calls.filter(([c]) => c === "list_php").length;
+    const before = listCalls();
+
+    (wrapper.vm as unknown as { openUninstall: (v: string) => void }).openUninstall("8.1");
+    await flushPromises();
+    const confirm = wrapper
+      .findAll("button")
+      .find((b) => b.text().trim() === "Uninstall" && b.attributes("aria-haspopup") === undefined);
+    await confirm!.trigger("click");
+    await flushPromises();
+
+    expect(invokeMock).toHaveBeenCalledWith("uninstall_php", { version: "8.1" });
+    expect(listCalls()).toBeGreaterThan(before);
+    expect(useToast().toasts.value.map((t) => t.title)).toContain("Couldn't uninstall PHP 8.1");
+  });
+});

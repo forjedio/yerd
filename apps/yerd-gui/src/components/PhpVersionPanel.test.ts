@@ -699,16 +699,44 @@ describe("PhpVersionPanel Xdebug", () => {
         ...xdebugOn,
         xdebug: { "8.3": { enabled: true, modes: ["debug", "profile"], start: "always" } },
       };
-      setXdebug.mockResolvedValueOnce(saved);
+      let finishRetry: (r: typeof saved) => void = () => {};
+      setXdebug.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishRetry = resolve;
+        }),
+      );
       await xdebugApply(w).trigger("click");
       await flushPromises();
       finishRead(xdebugOn);
+      await flushPromises();
+
+      expect(w.emitted("updated")).toBeUndefined();
+
+      finishRetry(saved);
       await flushPromises();
 
       expect(w.emitted("updated")).toEqual([[saved]]);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("says the state is unconfirmed when the recovery read fails", async () => {
+    setXdebug.mockRejectedValue(new Error("daemon did not respond within 120s"));
+    listPhp.mockRejectedValue(new Error("daemon unreachable"));
+    const w = mountPanel({ xdebug: xdebugOn.xdebug["8.3"] });
+    await modeBox(w, "profile").setValue(true);
+    await xdebugApply(w).trigger("click");
+    await vi.waitFor(() => expect(listPhp).toHaveBeenCalled());
+    await flushPromises();
+
+    expect(xdebugApply(w).attributes("disabled")).toBeUndefined();
+    expect(w.emitted("updated")).toBeUndefined();
+    expect(
+      useToast().toasts.value.find(
+        (t) => t.detail === "Yerd couldn't read the current settings. Refresh to try again.",
+      )?.title,
+    ).toBe("Couldn't confirm PHP 8.3's saved Xdebug state");
   });
 
   it("explains the managed directives while Xdebug is on", () => {

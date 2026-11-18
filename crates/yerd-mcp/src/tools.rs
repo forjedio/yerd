@@ -117,7 +117,7 @@ const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "set_xdebug",
-        description: "Turn Xdebug on or off for one PHP version, or change its modes and always/trigger start; an omitted field keeps its current value.",
+        description: "Turn Xdebug on or off for one PHP version, or change its modes and always/trigger start; an omitted enabled, modes or start keeps its current value.",
     },
     ToolDef {
         name: "list_services",
@@ -188,13 +188,36 @@ pub(crate) fn list_result() -> Value {
 /// Look a tool up and turn its arguments into the daemon request it maps to.
 /// Returns the catalog name alongside the request so the caller can render the
 /// answer without re-matching the client's (unvalidated) string.
+///
+/// An argument key the tool's schema does not declare is rejected rather than
+/// ignored, matching the advertised `additionalProperties: false`: a misspelt
+/// optional argument would otherwise fall back to its default without a word.
 pub(crate) fn build(name: &str, args: &Value) -> Result<(&'static str, Request), ArgError> {
     let def = TOOLS
         .iter()
         .find(|t| t.name == name)
         .ok_or_else(|| ArgError::UnknownTool(name.to_owned()))?;
+    reject_undeclared(def.name, args)?;
     let request = build_request(def.name, args)?;
     Ok((def.name, request))
+}
+
+/// Fail on the first key of an object `args` that is not among the tool's
+/// schema `properties`. Non-object `args` carry no keys, so they pass here and
+/// each builder reports what it is missing.
+fn reject_undeclared(name: &str, args: &Value) -> Result<(), ArgError> {
+    let Some(given) = args.as_object() else {
+        return Ok(());
+    };
+    let schema = schema_for(name);
+    let declared = schema.get("properties").and_then(Value::as_object);
+    match given
+        .keys()
+        .find(|key| !declared.is_some_and(|props| props.contains_key(key.as_str())))
+    {
+        Some(key) => Err(ArgError::Unexpected(key.clone())),
+        None => Ok(()),
+    }
 }
 
 /// Build the request one catalog tool maps to.
@@ -265,20 +288,7 @@ fn build_request(name: &'static str, args: &Value) -> Result<Request, ArgError> 
             settings.insert(req_str(args, "name")?, req_str(args, "value")?);
             Request::SetPhpSettings { settings }
         }
-        "set_xdebug" => Request::SetXdebug {
-            version: opt_php(args, "version")?,
-            enabled: maybe_bool(args, "enabled")?,
-            modes: opt_xdebug_modes(args, "modes")?,
-            start: opt_mapped(
-                args,
-                "start",
-                &[
-                    ("always", Some(XdebugStart::Always)),
-                    ("trigger", Some(XdebugStart::Trigger)),
-                ],
-                None,
-            )?,
-        },
+        "set_xdebug" => set_xdebug_request(args)?,
         "list_services" => Request::ListServices,
         "list_databases" => Request::ListDatabases {
             service: req_str(args, "service")?,
@@ -310,6 +320,33 @@ fn build_request(name: &'static str, args: &Value) -> Result<Request, ArgError> 
         other => return Err(ArgError::UnknownTool(other.to_owned())),
     };
     Ok(request)
+}
+
+/// `set_xdebug` with at least one of `enabled`, `modes` or `start`: with none
+/// (or all null) the call would change nothing, which is almost certainly a
+/// malformed call rather than an intended no-op.
+fn set_xdebug_request(args: &Value) -> Result<Request, ArgError> {
+    let version = opt_php(args, "version")?;
+    let enabled = maybe_bool(args, "enabled")?;
+    let modes = opt_xdebug_modes(args, "modes")?;
+    let start = opt_mapped(
+        args,
+        "start",
+        &[
+            ("always", Some(XdebugStart::Always)),
+            ("trigger", Some(XdebugStart::Trigger)),
+        ],
+        None,
+    )?;
+    if enabled.is_none() && modes.is_none() && start.is_none() {
+        return Err(ArgError::NeedsOneOf("`enabled`, `modes` or `start`"));
+    }
+    Ok(Request::SetXdebug {
+        version,
+        enabled,
+        modes,
+        start,
+    })
 }
 
 /// Laravel-only in v1. The knobs an agent plausibly cares about are arguments;
