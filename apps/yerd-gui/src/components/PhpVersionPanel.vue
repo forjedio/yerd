@@ -30,9 +30,11 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useStagedField } from "@/composables/useStagedField";
 import { useToast } from "@/composables/useToast";
 import {
   IpcError,
+  listPhp,
   openInBrowser,
   type PhpExtensionsMap,
   removePhpExtension,
@@ -63,6 +65,7 @@ import {
   SETTING_KEYS,
   TEXT_SETTINGS,
   XDEBUG_DEFAULT,
+  XDEBUG_DIRECTIVES_HINT,
   XDEBUG_DOCS_URL,
   XDEBUG_IDE_HINT,
   XDEBUG_MODES,
@@ -258,35 +261,31 @@ async function savePool(): Promise<void> {
 
 // ── Xdebug ──
 // The switch applies at once. Modes and the start trigger are staged behind
-// Apply with the same pristine/seed discipline as the pool field.
+// Apply; each field reconciles with daemon refreshes on its own, and a save
+// sends only the fields the user edited so the daemon keeps the rest.
 const xdebugEnabled = computed(() => props.xdebug?.enabled ?? false);
-const xdebugModes = ref<XdebugMode[]>([]);
-const xdebugStart = ref<XdebugStart>("always");
-const xdebugSeeded = ref<{ modes: XdebugMode[]; start: XdebugStart }>({
-  modes: [],
-  start: "always",
-});
+const modesField = useStagedField<XdebugMode[]>([...XDEBUG_DEFAULT.modes], (v) =>
+  v.join(","),
+);
+const startField = useStagedField<XdebugStart>(XDEBUG_DEFAULT.start);
+const { draft: xdebugModes } = modesField;
+const { draft: xdebugStart } = startField;
+
+const xdebugDirty = computed(() => modesField.dirty.value || startField.dirty.value);
+
+function syncXdebug(x: XdebugSettings | null): void {
+  const s = x ?? XDEBUG_DEFAULT;
+  modesField.sync([...s.modes]);
+  startField.sync(s.start);
+}
 
 function seedXdebug(x: XdebugSettings | null): void {
   const s = x ?? XDEBUG_DEFAULT;
-  xdebugModes.value = [...s.modes];
-  xdebugStart.value = s.start;
-  xdebugSeeded.value = { modes: [...s.modes], start: s.start };
+  modesField.reset([...s.modes]);
+  startField.reset(s.start);
 }
 
-const xdebugDirty = computed(
-  () =>
-    xdebugStart.value !== xdebugSeeded.value.start ||
-    xdebugModes.value.join(",") !== xdebugSeeded.value.modes.join(","),
-);
-
-watch(
-  () => props.xdebug,
-  (x) => {
-    if (!xdebugDirty.value) seedXdebug(x);
-  },
-  { immediate: true },
-);
+watch(() => props.xdebug, syncXdebug, { immediate: true });
 
 /** Whether the mode's checkbox is locked: the last checked mode can't be cleared. */
 function modeLocked(m: XdebugMode): boolean {
@@ -298,13 +297,30 @@ function setMode(m: XdebugMode, checked: boolean): void {
   const next = new Set(xdebugModes.value);
   if (checked) next.add(m);
   else next.delete(m);
-  xdebugModes.value = XDEBUG_MODES.map((o) => o.value).filter((v) => next.has(v));
+  modesField.edit(XDEBUG_MODES.map((o) => o.value).filter((v) => next.has(v)));
+}
+
+/** The staged modes and start, each only when the user edited it. */
+function editedXdebug(): [XdebugMode[] | undefined, XdebugStart | undefined] {
+  return [
+    modesField.dirty.value ? [...xdebugModes.value] : undefined,
+    startField.dirty.value ? xdebugStart.value : undefined,
+  ];
+}
+
+/**
+ * After a failed save the outcome is unknown when the bridge timed out or lost
+ * the daemon, so fetch the daemon's current state before the controls unlock.
+ */
+async function reloadAfterFailure(): Promise<void> {
+  const r = await listPhp().catch(() => null);
+  if (r) emit("updated", r);
 }
 
 /**
  * Flip the switch. Turning it on while the mode/start form has unapplied edits
- * sends those edits with the enable, so the pool starts with what the user
- * sees; turning it off sends only the switch and keeps the staged edits.
+ * sends the edited fields with the enable, so the pool starts with what the
+ * user sees; turning it off sends only the switch and keeps the staged edits.
  */
 async function toggleXdebug(on: boolean): Promise<void> {
   if (isBusy.value) return;
@@ -312,19 +328,17 @@ async function toggleXdebug(on: boolean): Promise<void> {
   const withStaged = on && xdebugDirty.value;
   try {
     const r = withStaged
-      ? await setXdebug(props.version, true, [...xdebugModes.value], xdebugStart.value)
+      ? await setXdebug(props.version, true, ...editedXdebug())
       : await setXdebug(props.version, on);
     if (withStaged) seedXdebug(r.xdebug?.[props.version] ?? null);
-    toast.success(
-      `Xdebug ${on ? "on" : "off"} for PHP ${props.version}`,
-      "The pool restarts to apply the change.",
-    );
+    toast.success(`Xdebug ${on ? "on" : "off"} for PHP ${props.version}`, "Settings saved.");
     emit("updated", r);
   } catch (e) {
     toast.error(
       `Couldn't turn Xdebug ${on ? "on" : "off"} for PHP ${props.version}`,
       (e as IpcError).message,
     );
+    await reloadAfterFailure();
   } finally {
     busy.value = null;
   }
@@ -334,22 +348,17 @@ async function saveXdebug(): Promise<void> {
   if (isBusy.value) return;
   busy.value = "xdebug";
   try {
-    const r = await setXdebug(
-      props.version,
-      xdebugEnabled.value,
-      [...xdebugModes.value],
-      xdebugStart.value,
-    );
-    seedXdebug(r.xdebug?.[props.version] ?? null);
+    const r = await setXdebug(props.version, null, ...editedXdebug());
+    const saved = r.xdebug?.[props.version] ?? null;
+    seedXdebug(saved);
     toast.success(
-      `PHP ${props.version} Xdebug settings updated`,
-      xdebugEnabled.value
-        ? "The pool restarts to apply the change."
-        : "They apply the next time Xdebug is turned on.",
+      `PHP ${props.version} Xdebug settings saved`,
+      saved?.enabled ? undefined : "They apply the next time Xdebug is turned on.",
     );
     emit("updated", r);
   } catch (e) {
     toast.error(`Couldn't update PHP ${props.version} Xdebug settings`, (e as IpcError).message);
+    await reloadAfterFailure();
   } finally {
     busy.value = null;
   }
@@ -653,7 +662,7 @@ function discard(): void {
             :options="XDEBUG_START_OPTIONS"
             :disabled="isBusy || !xdebugAvailable"
             :aria-label="`Xdebug start for PHP ${version}`"
-            @update:model-value="(v: XdebugStart) => (xdebugStart = v)"
+            @update:model-value="(v: XdebugStart) => startField.edit(v)"
           />
           <Button
             size="sm"
@@ -845,6 +854,14 @@ function discard(): void {
           </Tooltip>
         </TooltipProvider>
       </div>
+
+      <p
+        v-if="xdebugEnabled"
+        class="mt-1 text-xs text-muted-foreground"
+        data-testid="xdebug-directives-hint"
+      >
+        {{ XDEBUG_DIRECTIVES_HINT }}
+      </p>
 
       <div v-if="directiveEntries.length" class="mt-2 flex flex-col gap-2">
         <template v-for="[name, value] in directiveEntries" :key="name">

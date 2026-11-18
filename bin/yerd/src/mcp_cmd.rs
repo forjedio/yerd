@@ -44,8 +44,9 @@ use crate::transport;
 const TOOL_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Ceiling for a `set_xdebug` exchange, which may download (manifest plus one
-/// `.so` of a few MB, each bounded by the daemon downloader's 30s connect and
-/// 60s read timeouts) and load-probe Xdebug before replying.
+/// `.so` of a few MB) and load-probe Xdebug before replying. The daemon bounds
+/// that work to 90s and commits nothing on expiry, so this ceiling only trips
+/// for a wedged daemon.
 const XDEBUG_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The exchange ceiling for a tool's daemon request.
@@ -758,7 +759,10 @@ mod tests {
         );
         assert!(matches!(
             fake.requests().first(),
-            Some(Request::SetXdebug { enabled: true, .. })
+            Some(Request::SetXdebug {
+                enabled: Some(true),
+                ..
+            })
         ));
         assert!(XDEBUG_EXCHANGE_TIMEOUT > TOOL_EXCHANGE_TIMEOUT);
     }

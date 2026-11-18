@@ -267,7 +267,7 @@ fn build_request(name: &'static str, args: &Value) -> Result<Request, ArgError> 
         }
         "set_xdebug" => Request::SetXdebug {
             version: opt_php(args, "version")?,
-            enabled: req_bool(args, "enabled")?,
+            enabled: Some(req_bool(args, "enabled")?),
             modes: opt_xdebug_modes(args, "modes")?,
             start: opt_mapped(
                 args,

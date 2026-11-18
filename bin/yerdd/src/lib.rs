@@ -406,8 +406,14 @@ async fn run_until_shutdown(
                 return;
             }
             let dl = crate::network::downloader(&state).await;
-            let (os, arch) = crate::ext_install::host_os_arch();
-            crate::xdebug::refresh_enabled(&state, &dl, os, arch).await;
+            crate::xdebug::refresh_enabled(
+                &state,
+                &dl,
+                &yerd_php::TokioCommandRunner,
+                crate::ext_install::host_os_arch(),
+                crate::xdebug::FETCH_DEADLINE,
+            )
+            .await;
         })
     };
 

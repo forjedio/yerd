@@ -344,7 +344,7 @@ fn xdebug_request(action: &crate::cli::XdebugAction) -> Result<Request, ClientEr
         XdebugAction::Status => Request::ListPhp,
         XdebugAction::Off { version: v } => Request::SetXdebug {
             version: version(v)?,
-            enabled: false,
+            enabled: Some(false),
             modes: None,
             start: None,
         },
@@ -374,7 +374,7 @@ fn xdebug_request(action: &crate::cli::XdebugAction) -> Result<Request, ClientEr
             };
             Request::SetXdebug {
                 version: version(v)?,
-                enabled: true,
+                enabled: Some(true),
                 modes,
                 start,
             }
@@ -1366,7 +1366,8 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
 
 /// Render the reply to `yerd xdebug on|off|status`: one row per installed PHP
 /// version (`on` with its modes and start, `off`, or `not available` where no
-/// Xdebug is published for that version on this host) and an IDE port hint.
+/// Xdebug is published for that version on this host; a version switched on
+/// but not available says it isn't loaded) and an IDE port hint.
 /// With `json`, or for any reply other than `PhpVersions` (an error), this is
 /// [`render`].
 #[must_use]
@@ -1402,18 +1403,20 @@ pub fn render_xdebug_status(resp: &Response, json: bool) -> Rendered {
     let width = labels.iter().map(String::len).max().unwrap_or(0);
     let mut out = String::new();
     for (v, label) in installed.iter().zip(&labels) {
+        let available = xdebug_versions.contains(v);
         let state = match xdebug.get(v) {
-            Some(s) if s.enabled => {
+            Some(s) if s.enabled && available => {
                 format!("on   modes: {}  start: {}", s.mode_value(), s.start)
             }
-            _ if xdebug_versions.contains(v) => "off".to_owned(),
+            Some(s) if s.enabled => "on (not available on this platform, not loaded)".to_owned(),
+            _ if available => "off".to_owned(),
             _ => "not available".to_owned(),
         };
         let _ = writeln!(out, "PHP {label:<width$}  {state}");
     }
     let _ = write!(
         out,
-        "\nYour IDE should listen on port {} (Xdebug 3 default).",
+        "\nYour IDE should listen on port {} by default (match any `xdebug.client_port` override).",
         yerd_core::php_xdebug::CLIENT_PORT
     );
     Rendered::ok(out)
@@ -5548,7 +5551,7 @@ mod tests {
                 &["yerd", "xdebug", "on"][..],
                 Request::SetXdebug {
                     version: None,
-                    enabled: true,
+                    enabled: Some(true),
                     modes: None,
                     start: None,
                 },
@@ -5565,7 +5568,7 @@ mod tests {
                 ][..],
                 Request::SetXdebug {
                     version: Some(PhpVersion::new(8, 4)),
-                    enabled: true,
+                    enabled: Some(true),
                     modes: Some(vec![XdebugMode::Debug, XdebugMode::Profile]),
                     start: Some(XdebugStart::Trigger),
                 },
@@ -5574,7 +5577,7 @@ mod tests {
                 &["yerd", "xdebug", "on", "--always"][..],
                 Request::SetXdebug {
                     version: None,
-                    enabled: true,
+                    enabled: Some(true),
                     modes: None,
                     start: Some(XdebugStart::Always),
                 },
@@ -5583,7 +5586,7 @@ mod tests {
                 &["yerd", "xdebug", "off"][..],
                 Request::SetXdebug {
                     version: None,
-                    enabled: false,
+                    enabled: Some(false),
                     modes: None,
                     start: None,
                 },
@@ -5592,7 +5595,7 @@ mod tests {
                 &["yerd", "xdebug", "off", "8.3"][..],
                 Request::SetXdebug {
                     version: Some(PhpVersion::new(8, 3)),
-                    enabled: false,
+                    enabled: Some(false),
                     modes: None,
                     start: None,
                 },
@@ -5663,7 +5666,33 @@ mod tests {
              PHP 8.2            off\n\
              PHP 8.4 (default)  on   modes: debug,profile  start: trigger\n\
              \n\
-             Your IDE should listen on port 9003 (Xdebug 3 default)."
+             Your IDE should listen on port 9003 by default (match any `xdebug.client_port` override)."
+        );
+    }
+
+    #[test]
+    fn xdebug_status_flags_an_enabled_version_that_is_not_available() {
+        let mut reply = xdebug_versions_reply();
+        if let Response::PhpVersions { xdebug, .. } = &mut reply {
+            xdebug.insert(
+                PhpVersion::new(7, 4),
+                yerd_core::XdebugSettings {
+                    enabled: true,
+                    ..yerd_core::XdebugSettings::default()
+                },
+            );
+        }
+        let r = render_xdebug_status(&reply, false);
+        assert!(
+            r.stdout
+                .contains("PHP 7.4            on (not available on this platform, not loaded)\n"),
+            "{}",
+            r.stdout
+        );
+        assert!(
+            r.stdout.contains("PHP 8.2            off\n"),
+            "{}",
+            r.stdout
         );
     }
 

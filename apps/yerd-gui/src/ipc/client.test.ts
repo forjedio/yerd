@@ -368,6 +368,17 @@ describe("client → command mapping", () => {
     });
   });
 
+  it("setXdebug sends a null enabled to keep the current state", async () => {
+    invokeMock.mockResolvedValue({ type: "php_versions", installed: ["8.4"], default: "8.4" });
+    await setXdebug("8.4", null, undefined, "trigger");
+    expect(invokeMock).toHaveBeenCalledWith("set_xdebug", {
+      version: "8.4",
+      enabled: null,
+      modes: null,
+      start: "trigger",
+    });
+  });
+
   it("resetDomains sends just the name", async () => {
     invokeMock.mockResolvedValue({ type: "ok" });
     await resetDomains("blog");

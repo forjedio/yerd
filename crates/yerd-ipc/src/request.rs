@@ -230,15 +230,17 @@ pub enum Request {
         settings: BTreeMap<String, String>,
     },
     /// Turn the bundled Xdebug on or off for one PHP version, optionally
-    /// changing its modes and start trigger. Absent `modes`/`start` keep the
-    /// version's current value (or the default). The reply is
-    /// [`crate::Response::PhpVersions`].
+    /// changing its modes and start trigger. Absent (or `null`)
+    /// `enabled`/`modes`/`start` keep the version's current value (or the
+    /// default). The reply is [`crate::Response::PhpVersions`].
     SetXdebug {
         /// The installed PHP version; `None` means the daemon's default PHP.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         version: Option<PhpVersion>,
-        /// Whether that version's FPM pool loads Xdebug.
-        enabled: bool,
+        /// Whether that version's FPM pool loads Xdebug; `None` keeps the
+        /// current state, so a settings-only edit can't race a toggle.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
         /// The `xdebug.mode` list; must be non-empty when present.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         modes: Option<Vec<XdebugMode>>,

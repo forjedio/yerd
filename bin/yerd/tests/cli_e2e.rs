@@ -757,9 +757,7 @@ mod tests {
             other => panic!("expected PhpVersions, got {other:?}"),
         }
         assert_eq!(map::render_xdebug_status(&resp, false).code, 0);
-        assert!(!std::fs::read_to_string(&cfg_path)
-            .unwrap_or_default()
-            .contains("xdebug"));
+        assert!(matches!(cfg_path.try_exists(), Ok(false)));
 
         shutdown_tx.send_replace(true);
         let _ = tokio::time::timeout(Duration::from_secs(5), ipc_task).await;

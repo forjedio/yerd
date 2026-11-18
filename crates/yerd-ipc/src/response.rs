@@ -737,6 +737,11 @@ pub enum ErrorCode {
     /// downloaded. Returned only for `SetXdebug`, so older clients never
     /// receive it.
     XdebugUnavailable,
+    /// A setting value was rejected by validation (for example an empty
+    /// Xdebug mode list). Distinct from [`Self::InvalidPath`], which is about
+    /// filesystem paths. Returned only for `SetXdebug`, so older clients
+    /// never receive it.
+    InvalidSetting,
     /// Catch-all for daemon-side failures that don't fit a typed code.
     /// Expand this enum rather than overloading `Internal`.
     Internal,
@@ -822,6 +827,7 @@ mod variant_name_pinning {
             ErrorCode::LanNotReady => {}
             ErrorCode::LegacyRestricted => {}
             ErrorCode::XdebugUnavailable => {}
+            ErrorCode::InvalidSetting => {}
             ErrorCode::Internal => {}
         }
     }
@@ -1191,6 +1197,7 @@ mod variant_name_pinning {
             ErrorCode::LanNotReady,
             ErrorCode::LegacyRestricted,
             ErrorCode::XdebugUnavailable,
+            ErrorCode::InvalidSetting,
             ErrorCode::Internal,
         ] {
             pin_code(c);

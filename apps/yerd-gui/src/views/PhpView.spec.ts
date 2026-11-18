@@ -54,6 +54,8 @@ function stubIpc(opts: {
           default: "8.4",
           settings: {},
         });
+      case "check_php_updates":
+        return Promise.resolve({ type: "php_versions", installed, default: "8.4", updates: [] });
       case "list_php_extensions":
         return Promise.resolve({ type: "php_extensions", by_version: extensions });
       case "available_php":
@@ -303,6 +305,43 @@ describe("PhpView per-version configuration", () => {
       wrapper.find('button[aria-label="Xdebug for PHP 8.4"]').attributes("aria-checked"),
     ).toBe("true");
     expect(wrapper.findAll('[data-testid="xdebug-unavailable"]')).toHaveLength(1);
+
+    const shownPanelFor = async (v: string) => {
+      const tab = wrapper.findAll('[role="tab"]').find((t) => t.text().includes(v));
+      await tab!.trigger("mousedown", { button: 0 });
+      await flushPromises();
+      const shown = wrapper
+        .findAll('[role="tabpanel"]')
+        .filter((p) => p.attributes("hidden") === undefined);
+      expect(shown).toHaveLength(1);
+      return shown[0];
+    };
+
+    const old = await shownPanelFor("8.1");
+    expect(old.find('[data-testid="xdebug-unavailable"]').exists()).toBe(true);
+    expect(
+      old.find('button[aria-label="Xdebug for PHP 8.1"]').attributes("disabled"),
+    ).toBeDefined();
+
+    const current = await shownPanelFor("8.3");
+    expect(current.find('[data-testid="xdebug-unavailable"]').exists()).toBe(false);
+    const sw = current.find('button[aria-label="Xdebug for PHP 8.3"]');
+    expect(sw.attributes("disabled")).toBeUndefined();
+    expect(sw.attributes("aria-checked")).toBe("false");
+  });
+
+  it("reloads the PHP state after an update check so Xdebug state stays current", async () => {
+    stubIpc({ installed: ["8.4"] });
+    const wrapper = await mountView();
+    const listCalls = () => invokeMock.mock.calls.filter(([c]) => c === "list_php").length;
+    const before = listCalls();
+
+    const refreshBtn = wrapper.findAll("button").find((b) => b.text().trim() === "Refresh");
+    await refreshBtn!.trigger("click");
+    await flushPromises();
+
+    expect(invokeMock).toHaveBeenCalledWith("check_php_updates", undefined);
+    expect(listCalls()).toBeGreaterThan(before);
   });
 
   it("has no per-version card when nothing is installed or registered", async () => {

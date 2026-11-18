@@ -647,7 +647,7 @@ fn set_xdebug_maps_to_its_request() {
         built("set_xdebug", json!({ "enabled": false })),
         Request::SetXdebug {
             version: None,
-            enabled: false,
+            enabled: Some(false),
             modes: None,
             start: None,
         }
@@ -664,7 +664,7 @@ fn set_xdebug_maps_to_its_request() {
         ),
         Request::SetXdebug {
             version: Some(PhpVersion::new(8, 4)),
-            enabled: true,
+            enabled: Some(true),
             modes: Some(vec![XdebugMode::Debug, XdebugMode::Profile]),
             start: Some(XdebugStart::Trigger),
         }

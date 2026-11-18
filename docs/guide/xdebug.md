@@ -25,7 +25,14 @@ restarts that version's pool with it. The installed-versions table then shows an
 
 The same section lets you pick the [modes](#modes) and choose whether Xdebug
 starts on **every request** or only **on a trigger**. Those are staged: change
-them, then press **Apply**.
+them, then press **Apply**. Apply saves only what you changed and leaves the
+switch as it is, so you can set up a version's modes while Xdebug is off. If
+you have unapplied edits when you turn the switch **on**, they're saved with it,
+no **Apply** needed. Turning it **off** leaves them staged.
+
+The first time you turn a version on, the download and load check can take a
+moment. If it hasn't finished within 90 seconds, Yerd gives up, tells you it
+timed out, and changes nothing; check your connection and try again.
 
 ### From the command line
 
@@ -54,7 +61,8 @@ Out of the box, turning Xdebug on gives you:
 | Logging | quiet (`xdebug.log_level = 0`) | No "Could not connect to debugging client" message on every request when your IDE isn't listening. |
 | JIT | disabled (`opcache.jit = disable`) | Xdebug and the OPcache JIT can't run together. OPcache itself stays on. |
 
-So the only thing left to do is tell your IDE to listen on port 9003.
+So the only thing left to do is tell your IDE to listen on port 9003 (or on
+your own `xdebug.client_port`, if you [override it](#changing-the-port-and-other-settings)).
 
 ::: tip Turn it off when you're done
 Even with nobody listening, Xdebug slows every request it's loaded into. Turn
@@ -117,11 +125,18 @@ yerd xdebug on 8.4 --trigger
 or choose the trigger option in the desktop app's Xdebug section and press
 **Apply**.
 
-The trigger is the `XDEBUG_SESSION` cookie. The easiest way to set it is an
-Xdebug helper extension for your browser (search your browser's extension store
-for "Xdebug helper"): click its icon, choose **Debug**, and reload. You can also
-add `?XDEBUG_SESSION=1` to a URL. Go back to every-request mode with
-`yerd xdebug on 8.4 --always`.
+The trigger is a cookie, query or POST parameter, and which one works depends
+on the mode:
+
+- **`XDEBUG_TRIGGER`** starts every mode: debugging, profiling and tracing. Add
+  `?XDEBUG_TRIGGER=1` to a URL, or set it as a cookie.
+- **`XDEBUG_SESSION`** only starts **step debugging**. It won't produce a
+  profile or a trace.
+
+The easiest way to set a trigger is an Xdebug helper extension for your browser
+(search your browser's extension store for "Xdebug helper"): click its icon,
+choose **Debug** (or **Profile** / **Trace**), and reload. Go back to
+every-request mode with `yerd xdebug on 8.4 --always`.
 
 ## Modes
 
@@ -135,7 +150,7 @@ checkboxes in the desktop app):
 | `coverage` | Code coverage, including branch and path coverage. |
 | `profile` | Writes a cachegrind profile per request. |
 | `trace` | Writes a function trace per request. |
-| `gcstats` | Garbage-collection statistics. |
+| `gcstats` | Garbage-collection statistics. Needs the start setting on every request: Xdebug never starts GC statistics from a trigger, so `gcstats` with trigger mode is rejected. |
 
 ```sh
 yerd xdebug on 8.4 --mode debug,develop
@@ -197,7 +212,12 @@ php8.4debug vendor/bin/phpunit --filter InvoiceTest
 - **`phpdebug`** runs your [default](./php-versions#the-global-default) PHP
   version with Xdebug loaded.
 - **`php<version>debug`** (for example `php8.4debug`) pins a version. There's one
-  for each installed version that Xdebug is available for.
+  for each installed version that Xdebug is published for on your platform, so
+  legacy versions and Intel Macs don't get one.
+
+If a file Yerd didn't create already sits at `{data}/bin/phpdebug` (or at a
+versioned debug alias), Yerd leaves it alone and logs a warning instead of
+replacing it. Rename or remove that file and restart Yerd to get the debug shim.
 
 They live in `{data}/bin` next to the `php` and `phpcover` shims, so once that
 folder is on your `PATH` they work everywhere. They use the same defaults as the
@@ -271,8 +291,11 @@ copy and its Xdebug settings.
   gets in the way. If your IDE runs somewhere else (a VM, a container, a remote
   machine), set `xdebug.client_host` to its address with `yerd php ini set` and
   allow inbound connections on 9003 in that machine's firewall.
-- To see what Xdebug is doing, raise its logging for a moment:
-  `yerd php ini set 8.4 xdebug.log_level 7` (and `unset` it afterwards).
+- To see what Xdebug is doing, point its log at a file you can write to and
+  raise the log level for a moment, then read that file after loading the page:
+  `yerd php ini set 8.4 xdebug.log /tmp/xdebug.log` and
+  `yerd php ini set 8.4 xdebug.log_level 7`. Setting only the level writes
+  nothing, because Xdebug has no log file by default. `unset` both afterwards.
 
 **Composer or a tool drops Xdebug when run under `phpdebug`.** Composer, PHPStan,
 Psalm and other tools use [`composer/xdebug-handler`](https://github.com/composer/xdebug-handler),
@@ -302,6 +325,11 @@ debugging.
 **"couldn't download Xdebug for PHP …".** The first `on` needs to download the
 extension. Check your connection, or your [outbound proxy](./corporate-networks)
 if you're behind one, and try again. Nothing is saved when the download fails.
+
+**Turning Xdebug on times out.** The download and load check have 90 seconds to
+finish. When they don't, Yerd stops with an `xdebug_unavailable` error saying it
+timed out, and nothing changes: Xdebug stays as it was. A slow or stalled
+connection is the usual cause; try again.
 
 **The page is slow even with no IDE open.** That's Xdebug starting a session on
 every request. Turn it off, or switch to [trigger mode](#trigger-mode).

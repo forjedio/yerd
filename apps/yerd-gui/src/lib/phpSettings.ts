@@ -88,7 +88,7 @@ export const XDEBUG_MODES: readonly { value: XdebugMode; label: string; note?: s
 
 export const XDEBUG_START_OPTIONS: readonly { value: XdebugStart; label: string }[] = [
   { value: "always", label: "On every request" },
-  { value: "trigger", label: "Only with a trigger (XDEBUG_SESSION)" },
+  { value: "trigger", label: "Only with a trigger (XDEBUG_TRIGGER)" },
 ];
 
 /** Built-in settings a version runs with when it has no `xdebug` entry. */
@@ -98,7 +98,13 @@ export const XDEBUG_DEFAULT: XdebugSettings = {
   start: "always",
 };
 
-export const XDEBUG_IDE_HINT = "Your IDE listens on port 9003.";
+export const XDEBUG_IDE_HINT =
+  "Your IDE listens on port 9003 by default; match any xdebug.client_port override.";
+
+/** Shown above the custom directives while this version's managed Xdebug is on. */
+export const XDEBUG_DIRECTIVES_HINT =
+  "While Xdebug is on, the Xdebug section above sets xdebug.mode and " +
+  "xdebug.start_with_request for the web pool, and opcache.jit is disabled.";
 
 export const XDEBUG_DOCS_URL = "https://yerd.app/guide/xdebug";
 

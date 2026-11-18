@@ -537,6 +537,7 @@ export type ErrorCode =
   | "extension_load_failed"
   | "legacy_restricted"
   | "xdebug_unavailable"
+  | "invalid_setting"
   | "internal";
 
 /** One whole-host reverse proxy (`{name}.{tld}` → `target`). Reply element of a

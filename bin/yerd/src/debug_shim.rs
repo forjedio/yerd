@@ -94,6 +94,11 @@ fn run(spec: &DebugSpec, forward: &[OsString]) -> ExitCode {
     fail(format!("failed to exec {}: {err}", php_bin.display()))
 }
 
+/// The error when Yerd's base CLI ini doesn't exist yet: the daemon writes it
+/// once it has started.
+const MISSING_CLI_INI: &str = "Yerd's CLI php.ini hasn't been written yet - start Yerd (open \
+     the app, or start its background service), wait for it to finish starting, then retry";
+
 /// The error for a missing `xdebug.so`: whether one is published for `minor` on
 /// this host decides between "not built here" and "run `yerd xdebug on` once".
 fn missing_so_message(available: bool, minor: &str) -> String {
@@ -126,10 +131,7 @@ fn prepare_debug_ini(dirs: &PlatformDirs, minor: &str) -> Result<PathBuf, String
         return Err(missing_so_message(available, minor));
     }
     if !dirs.data.join("php-cli.ini").is_file() {
-        return Err(
-            "Yerd's CLI php.ini hasn't been written yet - start Yerd (`yerd status`) and retry"
-                .to_owned(),
-        );
+        return Err(MISSING_CLI_INI.to_owned());
     }
     let base = match cli_phprc(dirs, minor) {
         Some(ini) => std::fs::read_to_string(&ini)
@@ -150,7 +152,7 @@ fn prepare_debug_ini(dirs: &PlatformDirs, minor: &str) -> Result<PathBuf, String
     }
     let Some(debug_ini) = php_xdebug::render_debug_ini(&base, &so) else {
         return Err(format!(
-            "cannot load Xdebug: {} isn't safe to use as an ini value (no control characters, `;`, or `#`, and it must be valid UTF-8) - move Yerd's data directory to a path without those",
+            "cannot load Xdebug: {} isn't safe to use as an ini value (it must be valid UTF-8 with no control characters) - move Yerd's data directory to a path without those",
             so.display()
         ));
     };
@@ -161,8 +163,10 @@ fn prepare_debug_ini(dirs: &PlatformDirs, minor: &str) -> Result<PathBuf, String
 }
 
 /// The name of an extension registered in `yerd.toml` for `minor` that is an
-/// Xdebug (by name or `.so` basename), matching the daemon's own check. A
-/// missing or unreadable config counts as none.
+/// Xdebug (by name or `.so` basename), matching the daemon's own check. Only an
+/// entry whose `.so` exists counts: the daemon leaves a missing file out of
+/// the CLI ini, so it can't clash. A missing or unreadable config counts as
+/// none.
 fn registered_xdebug(dirs: &PlatformDirs, minor: &str) -> Option<String> {
     let v = minor.parse::<PhpVersion>().ok()?;
     let cfg = yerd_config::Config::load(&dirs.config.join("yerd.toml")).ok()?;
@@ -170,7 +174,7 @@ fn registered_xdebug(dirs: &PlatformDirs, minor: &str) -> Option<String> {
         .extensions
         .get(&v)?
         .iter()
-        .find(|e| php_xdebug::is_xdebug_extension(&e.name, &e.path))
+        .find(|e| php_xdebug::is_xdebug_extension(&e.name, &e.path) && Path::new(&e.path).is_file())
         .map(|e| e.name.clone())
 }
 
@@ -289,6 +293,9 @@ mod tests {
         place_so(&dirs, "8.4");
         let err = prepare_debug_ini(&dirs, "8.4").unwrap_err();
         assert!(err.contains("start Yerd"), "got {err}");
+        assert!(err.contains("background service"), "got {err}");
+        assert!(err.contains("then retry"), "got {err}");
+        assert!(!err.contains("yerd status"), "got {err}");
     }
 
     #[test]
@@ -304,7 +311,7 @@ mod tests {
         );
         let ini = std::fs::read_to_string(&path).unwrap();
         assert!(
-            ini.contains(&format!("zend_extension = {}", so.display())),
+            ini.contains(&format!("zend_extension = \"{}\"", so.display())),
             "got {ini}"
         );
         assert!(ini.contains("xdebug.mode = debug"), "got {ini}");
@@ -362,11 +369,25 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_at(tmp.path());
         place_so(&dirs, "8.4");
-        write_base_ini(&dirs, "zend_extension = /opt/ext/debugger-3.4.so\n");
-        write_config_with_extension(&dirs, "xdebug", "/opt/ext/debugger-3.4.so");
+        let custom = tmp.path().join("debugger-3.4.so");
+        std::fs::write(&custom, b"so").unwrap();
+        let custom = custom.to_string_lossy().into_owned();
+        write_base_ini(&dirs, &format!("zend_extension = {custom}\n"));
+        write_config_with_extension(&dirs, "xdebug", &custom);
         let err = prepare_debug_ini(&dirs, "8.4").unwrap_err();
         assert!(err.contains("already loaded"), "got {err}");
         assert!(err.contains("yerd php ext remove 8.4 xdebug"), "got {err}");
+    }
+
+    #[test]
+    fn registered_xdebug_with_a_missing_file_is_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_at(tmp.path());
+        place_so(&dirs, "8.4");
+        write_base_ini(&dirs, "memory_limit = 512M\n");
+        let gone = tmp.path().join("gone").join("xdebug.so");
+        write_config_with_extension(&dirs, "xdebug", &gone.to_string_lossy());
+        assert!(prepare_debug_ini(&dirs, "8.4").is_ok());
     }
 
     #[test]

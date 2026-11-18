@@ -378,7 +378,7 @@ where
             }
         })?;
 
-        let env = env_scrub::allowlist(&std::env::vars().collect::<Vec<_>>());
+        let env = env_scrub::pool_env(&std::env::vars().collect::<Vec<_>>(), cfg.xdebug.is_some());
         let cmd_builder = || {
             build_cmd(
                 &binary,

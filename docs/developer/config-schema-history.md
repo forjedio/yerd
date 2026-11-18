@@ -43,7 +43,7 @@ The table loads **leniently**: an entry with an unparseable or empty mode list, 
 
 **Migration from v28:** bare version bump - the table defaults to empty when absent, so a v28 file needs no other change.
 
-**To downgrade to v28:** change `version = 29` to `version = 28` and delete any `[php.xdebug.*]` tables (a v28 daemon rejects the unknown table under `deny_unknown_fields`). Every pool then starts without Xdebug. The downloaded `{data}/php-ext/php-<version>/xdebug.so` and `debug.ini` files are inert leftovers you can delete.
+**To downgrade to v28:** change `version = 29` to `version = 28` and delete the `[php.xdebug]` table itself along with any `[php.xdebug.*]` tables (a v28 daemon rejects the unknown table under `deny_unknown_fields`, even an empty one). Every pool then starts without Xdebug. The downloaded `{data}/php-ext/php-<version>/xdebug.so` and `debug.ini` files are inert leftovers you can delete.
 
 ### v28
 

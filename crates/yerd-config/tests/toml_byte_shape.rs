@@ -793,3 +793,29 @@ fn populated_xdebug_emits_exact_table_and_round_trips() {
     let back = Config::from_toml(&s).unwrap();
     assert_eq!(back, c);
 }
+
+#[test]
+fn default_xdebug_entry_is_not_written() {
+    let mut c = Config::default();
+    c.php
+        .xdebug
+        .insert(PhpVersion::new(8, 3), yerd_core::XdebugSettings::default());
+    c.php.xdebug.insert(
+        PhpVersion::new(8, 4),
+        yerd_core::XdebugSettings {
+            enabled: true,
+            ..yerd_core::XdebugSettings::default()
+        },
+    );
+    let s = c.to_toml().unwrap();
+    assert!(!s.contains("[php.xdebug.\"8.3\"]"), "got: {s}");
+    assert!(s.contains("[php.xdebug.\"8.4\"]"), "got: {s}");
+
+    let mut only_default = Config::default();
+    only_default
+        .php
+        .xdebug
+        .insert(PhpVersion::new(8, 3), yerd_core::XdebugSettings::default());
+    let s = only_default.to_toml().unwrap();
+    assert!(!s.contains("xdebug"), "got: {s}");
+}

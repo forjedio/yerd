@@ -257,7 +257,8 @@ struct PhpSectionSer<'a> {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pool: BTreeMap<String, &'a BTreeMap<String, String>>,
     // Sub-tables keyed by version string (`[php.xdebug."8.4"]`). Skipped when
-    // empty for the same byte-stability reason.
+    // empty for the same byte-stability reason; entries equal to the default
+    // are never written, so a default entry can't leave an empty-looking table.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     xdebug: BTreeMap<String, &'a yerd_core::XdebugSettings>,
     // Array-of-tables keyed by version string (`[[php.extensions."8.5"]]`).
@@ -370,6 +371,7 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 .php
                 .xdebug
                 .iter()
+                .filter(|(_, s)| **s != yerd_core::XdebugSettings::default())
                 .map(|(v, s)| (v.to_string(), s))
                 .collect(),
             extensions: c

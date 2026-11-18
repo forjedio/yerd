@@ -31,8 +31,8 @@ version.
 
 | Flag | Description |
 | --- | --- |
-| `--mode <MODES>` | Comma-separated `xdebug.mode` list from `debug`, `develop`, `coverage`, `profile`, `trace`, `gcstats`. `off` is rejected (use `yerd xdebug off`), and so is an empty list. |
-| `--trigger` | Start a session only when a trigger is present (`xdebug.start_with_request = trigger`): an `XDEBUG_SESSION` or `XDEBUG_TRIGGER` cookie, query or POST parameter. |
+| `--mode <MODES>` | Comma-separated `xdebug.mode` list from `debug`, `develop`, `coverage`, `profile`, `trace`, `gcstats`. `off` is rejected (use `yerd xdebug off`), and so is an empty list. `gcstats` can't be combined with `--trigger`, because Xdebug only collects GC statistics when every request starts a session. |
+| `--trigger` | Start a session only when a trigger is present (`xdebug.start_with_request = trigger`), as a cookie, query or POST parameter. `XDEBUG_TRIGGER` starts every mode; `XDEBUG_SESSION` only starts step debugging (`debug`), not profiling or tracing. |
 | `--always` | Start a session on every request (`xdebug.start_with_request = yes`). Conflicts with `--trigger`. |
 
 A flag you leave out keeps the version's current value, so `yerd xdebug on`
@@ -59,7 +59,7 @@ and these directives on the command line:
 | `xdebug.mode` | the selected modes, comma-joined (default `debug`) |
 | `xdebug.start_with_request` | `yes` (`--always`) or `trigger` (`--trigger`) |
 | `xdebug.client_host` | `127.0.0.1` |
-| `xdebug.client_port` | `9003` |
+| `xdebug.client_port` | `9003` (the default; your IDE must match any override) |
 | `xdebug.log_level` | `0` (no "Could not connect to debugging client" noise when no IDE is listening) |
 | `opcache.jit` | `disable` (Xdebug and the JIT can't run together) |
 | `xdebug.output_dir` | `{data}/xdebug`, only when `profile` or `trace` is selected |
@@ -77,7 +77,11 @@ on.
   its modes or start while it's on, restarts that version's running pool and no
   other. A request that changes nothing doesn't save or restart anything.
   (In the desktop app you can change the modes of a version that is off; that
-  just saves them for next time.)
+  just saves them for next time. The app's **Apply** sends only the fields you
+  edited and never changes whether Xdebug is on.)
+- **Bounded wait.** The download and load-probe have 90 seconds. Past that the
+  daemon gives up with `xdebug_unavailable` ("timed out …") and nothing is
+  saved, restarted or replaced.
 - **Download and load-probe on first use.** The first `on` for a version
   downloads its `xdebug.so` from the
   [`forjedio/yerd-php-ext`](https://github.com/forjedio/yerd-php-ext) release,
@@ -113,7 +117,9 @@ on Intel Macs. `yerd xdebug status` shows those versions as `not available`.
 | No build for this version or platform | `xdebug_unavailable` - "Xdebug is not built for PHP … on …". |
 | The download failed (offline, proxy, release missing the file) | `xdebug_unavailable` - "couldn't download Xdebug for PHP …". Nothing is saved. |
 | A hand-registered Xdebug is loaded for that version | `already_exists` - remove it with `yerd php ext remove <version> <name>`. |
+| The download or load-probe takes longer than 90 seconds | `xdebug_unavailable`, saying it timed out. Nothing is saved. |
 | The downloaded `.so` fails to load | `extension_load_failed`. Nothing is saved. |
+| A setting the daemon rejects, such as an empty mode list | `invalid_setting`. Nothing is saved. |
 | `--mode off`, an unknown mode, or `--trigger` with `--always` | Usage error (exit code `2`), before contacting the daemon. |
 
 ## Debug shims: `phpdebug` and `php<version>debug`
@@ -122,8 +128,13 @@ The debug shims run one CLI command with Xdebug loaded, whatever the web toggle
 says. They sit in `{data}/bin` next to the `php` and `phpcover` shims:
 
 - **`phpdebug`** tracks your global default version.
-- **`php<version>debug`** (e.g. `php8.4debug`) exists for each installed,
-  non-legacy version.
+- **`php<version>debug`** (e.g. `php8.4debug`) exists for each installed
+  version that Xdebug is published for on this platform (not for legacy
+  versions or on Intel Macs).
+
+Yerd only manages shims it created. If `{data}/bin/phpdebug` (or a versioned
+alias) already exists and isn't a Yerd shim, Yerd leaves it in place and logs a
+warning rather than overwriting it.
 
 ```sh
 phpdebug artisan migrate                         # step-debug an artisan command

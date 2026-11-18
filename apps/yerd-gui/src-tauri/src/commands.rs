@@ -28,6 +28,11 @@ use crate::ipc::{exchange, exchange_timeout};
 /// of hanging. Heavy/mutating commands deliberately stay unbounded.
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Bound for `set_xdebug`: above the daemon's own 90s fetch-and-probe
+/// deadline, so a slow download normally comes back as a typed daemon error
+/// and this only trips for a wedged daemon.
+const XDEBUG_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Cached mail attachment files older than this are removed on the next save.
 const MAIL_ATTACHMENT_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -459,21 +464,26 @@ pub async fn set_php_pool_settings(
 }
 
 /// Turn the bundled Xdebug on or off for one PHP version (`None` means the
-/// default PHP). Absent `modes`/`start` keep the version's current values.
+/// default PHP). Absent `enabled`/`modes`/`start` keep the version's current
+/// values. Bounded by [`XDEBUG_TIMEOUT`]; on elapse the reply is an
+/// `unreachable` error and the frontend reloads PHP state.
 #[tauri::command]
 pub async fn set_xdebug(
     version: Option<PhpVersion>,
-    enabled: bool,
+    enabled: Option<bool>,
     modes: Option<Vec<XdebugMode>>,
     start: Option<XdebugStart>,
 ) -> Result<Response, GuiError> {
     finish(
-        exchange(&Request::SetXdebug {
-            version,
-            enabled,
-            modes,
-            start,
-        })
+        exchange_timeout(
+            &Request::SetXdebug {
+                version,
+                enabled,
+                modes,
+                start,
+            },
+            XDEBUG_TIMEOUT,
+        )
         .await?,
     )
 }
@@ -1521,6 +1531,12 @@ mod tests {
             uses_front_controller: false,
             is_laravel: false,
         }
+    }
+
+    #[test]
+    fn xdebug_timeout_outlasts_the_daemon_deadline() {
+        assert!(XDEBUG_TIMEOUT > Duration::from_secs(90));
+        assert!(XDEBUG_TIMEOUT > PROBE_TIMEOUT);
     }
 
     #[test]

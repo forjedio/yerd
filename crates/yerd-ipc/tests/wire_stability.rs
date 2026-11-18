@@ -1060,6 +1060,7 @@ fn response_error_each_code_byte_shape() {
         (ErrorCode::ExtensionLoadFailed, "extension_load_failed"),
         (ErrorCode::LegacyRestricted, "legacy_restricted"),
         (ErrorCode::XdebugUnavailable, "xdebug_unavailable"),
+        (ErrorCode::InvalidSetting, "invalid_setting"),
         (ErrorCode::Internal, "internal"),
     ] {
         let r = Response::Error {
@@ -1487,6 +1488,7 @@ fn error_code_each_variant_byte_shape() {
         (ErrorCode::LanNotReady, r#""lan_not_ready""#),
         (ErrorCode::LegacyRestricted, r#""legacy_restricted""#),
         (ErrorCode::XdebugUnavailable, r#""xdebug_unavailable""#),
+        (ErrorCode::InvalidSetting, r#""invalid_setting""#),
         (ErrorCode::Internal, r#""internal""#),
     ];
     for (code, expected) in cases {
@@ -3886,7 +3888,7 @@ fn request_set_xdebug_byte_shape() {
     use yerd_core::{XdebugMode, XdebugStart};
     let full = Request::SetXdebug {
         version: Some(PhpVersion::new(8, 4)),
-        enabled: true,
+        enabled: Some(true),
         modes: Some(vec![XdebugMode::Debug, XdebugMode::Profile]),
         start: Some(XdebugStart::Trigger),
     };
@@ -3897,15 +3899,35 @@ fn request_set_xdebug_byte_shape() {
     );
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), full);
 
-    let minimal = Request::SetXdebug {
+    let off = Request::SetXdebug {
         version: None,
-        enabled: false,
+        enabled: Some(false),
         modes: None,
         start: None,
     };
-    let s = serde_json::to_string(&minimal).unwrap();
+    let s = serde_json::to_string(&off).unwrap();
     assert_eq!(s, r#"{"type":"set_xdebug","enabled":false}"#);
-    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), minimal);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), off);
+
+    let keep = Request::SetXdebug {
+        version: Some(PhpVersion::new(8, 4)),
+        enabled: None,
+        modes: None,
+        start: Some(XdebugStart::Always),
+    };
+    let s = serde_json::to_string(&keep).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_xdebug","version":"8.4","start":"always"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), keep);
+    assert_eq!(
+        serde_json::from_str::<Request>(
+            r#"{"type":"set_xdebug","version":"8.4","enabled":null,"start":"always"}"#
+        )
+        .unwrap(),
+        keep
+    );
 }
 
 #[test]

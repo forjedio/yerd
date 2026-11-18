@@ -377,7 +377,10 @@ Per-site [response headers](../reference/cli/headers) follow the same pattern: `
 section and the MCP `set_xdebug` tool. `version` (skipped when `None`, meaning the
 daemon's default PHP), `modes` (a list of `debug` / `develop` / `coverage` /
 `profile` / `trace` / `gcstats`, never `off` or empty) and `start` (`"always"` or
-`"trigger"`) are all optional; `enabled` is required. The reply is the same
+`"trigger"`) are all optional, and so is `enabled`: an omitted or `null`
+`enabled` keeps the version's current on/off state, which is what the GUI's
+**Apply** sends (with only the fields the user edited), while the switch, the CLI
+and MCP send an explicit `true`/`false`. The reply is the same
 `PhpVersions` as `ListPhp`, which gained two boxed, skip-if-empty fields:
 `xdebug` (a version → `{enabled, modes, start}` map holding only the versions
 whose settings differ from the default; an absent version is off) and
@@ -386,8 +389,13 @@ host). Errors: `LegacyRestricted` for enabling on a legacy version,
 `XdebugUnavailable` when nothing is published for the version/platform or the
 download fails, `AlreadyExists` when a hand-registered Xdebug extension is
 loaded for that version, `ExtensionLoadFailed` when the load-probe fails,
-`NotFound` for a version that isn't installed, and `InvalidPath` for an empty
-mode list. A request that changes nothing replies without saving or restarting.
+`NotFound` for a version that isn't installed, and `InvalidSetting` for a
+rejected setting such as an empty mode list. The download and load-probe run
+under a 90-second deadline; on expiry the daemon replies `XdebugUnavailable`
+("timed out …, nothing changed") without saving, publishing or restarting
+anything. The desktop app's bridge waits up to 120 seconds for the reply and
+reloads the PHP state after a timeout. A request that changes nothing replies
+without saving or restarting.
 `AddPhpExtension` also refuses an Xdebug `.so` with `AlreadyExists` while that
 version's managed Xdebug is on. All additive, no `PROTOCOL_VERSION` bump.
 :::
@@ -406,7 +414,8 @@ pub enum ErrorCode {
     PortInUse,            // "port_in_use"
     ExtensionLoadFailed,  // "extension_load_failed" - a valid path whose .so failed its load-probe
     LegacyRestricted,     // "legacy_restricted" - a legacy version used somewhere it's disallowed
-    XdebugUnavailable,    // "xdebug_unavailable" - no bundled Xdebug for that version/platform, or its download failed
+    XdebugUnavailable,    // "xdebug_unavailable" - no bundled Xdebug for that version/platform, or its download failed or timed out
+    InvalidSetting,       // "invalid_setting" - a setting value failed validation (e.g. an empty Xdebug mode list)
     Internal,             // "internal" - catch-all; expand the enum, don't overload this
 }
 ```

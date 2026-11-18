@@ -36,7 +36,7 @@ fn assert_response_roundtrips(r: Response) {
 fn set_xdebug_request_roundtrips() {
     assert_request_roundtrips(Request::SetXdebug {
         version: Some(PhpVersion::new(8, 4)),
-        enabled: true,
+        enabled: Some(true),
         modes: Some(vec![
             yerd_core::XdebugMode::Coverage,
             yerd_core::XdebugMode::Gcstats,
@@ -45,8 +45,14 @@ fn set_xdebug_request_roundtrips() {
     });
     assert_request_roundtrips(Request::SetXdebug {
         version: None,
-        enabled: false,
+        enabled: Some(false),
         modes: None,
+        start: None,
+    });
+    assert_request_roundtrips(Request::SetXdebug {
+        version: None,
+        enabled: None,
+        modes: Some(vec![yerd_core::XdebugMode::Profile]),
         start: None,
     });
 }

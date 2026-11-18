@@ -21,7 +21,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::php::PhpVersion;
-use crate::php_settings::sanitize_ca_bundle_path;
 
 /// The host Xdebug connects to. Yerd is a local environment, so the IDE is on
 /// loopback.
@@ -63,7 +62,7 @@ pub enum XdebugMode {
     Profile,
     /// Function trace (writes trace files to the output dir).
     Trace,
-    /// Garbage-collection statistics.
+    /// Garbage-collection statistics (writes report files to the output dir).
     Gcstats,
 }
 
@@ -94,7 +93,7 @@ impl XdebugMode {
     /// True for the modes that write files to `xdebug.output_dir`.
     #[must_use]
     pub const fn writes_output(self) -> bool {
-        matches!(self, Self::Profile | Self::Trace)
+        matches!(self, Self::Profile | Self::Trace | Self::Gcstats)
     }
 }
 
@@ -200,7 +199,8 @@ impl XdebugSettings {
         self.modes.dedup();
     }
 
-    /// True when profile or trace is selected, so `xdebug.output_dir` matters.
+    /// True when profile, trace or gcstats is selected, so `xdebug.output_dir`
+    /// matters.
     #[must_use]
     pub fn writes_output(&self) -> bool {
         self.modes.iter().any(|m| m.writes_output())
@@ -228,26 +228,36 @@ pub fn validate(settings: &XdebugSettings) -> Result<(), XdebugError> {
     Ok(())
 }
 
-/// Apply a set-Xdebug request to the current settings. Absent `modes`/`start`
-/// keep the current value, or the default when there is none. The result is
-/// normalised and validated.
+/// Apply a set-Xdebug request to the current settings. Absent
+/// `enabled`/`modes`/`start` keep the current value, or the default when there
+/// is none. The result is normalised and validated.
+///
+/// Xdebug starts GC statistics only when `xdebug.start_with_request=yes` (its
+/// trigger check never covers `gcstats`), so a request that would leave
+/// `gcstats` with the trigger start is refused. This is a request-time check
+/// only: a hand-edited config with that pair still loads, it just collects no
+/// GC statistics.
 ///
 /// # Errors
-/// [`XdebugError::EmptyModes`] when the request supplies an empty mode list.
+/// [`XdebugError::EmptyModes`] when the request supplies an empty mode list;
+/// [`XdebugError::GcstatsNeedsAlways`] for `gcstats` with the trigger start.
 pub fn merge_request(
     current: Option<&XdebugSettings>,
-    enabled: bool,
+    enabled: Option<bool>,
     modes: Option<Vec<XdebugMode>>,
     start: Option<XdebugStart>,
 ) -> Result<XdebugSettings, XdebugError> {
     let base = current.cloned().unwrap_or_default();
     let mut merged = XdebugSettings {
-        enabled,
+        enabled: enabled.unwrap_or(base.enabled),
         modes: modes.unwrap_or(base.modes),
         start: start.unwrap_or(base.start),
     };
     merged.normalize();
     validate(&merged)?;
+    if merged.start == XdebugStart::Trigger && merged.modes.contains(&XdebugMode::Gcstats) {
+        return Err(XdebugError::GcstatsNeedsAlways);
+    }
     Ok(merged)
 }
 
@@ -272,7 +282,7 @@ pub fn is_managed_key(name: &str) -> bool {
 /// unlike `off` it can't be re-enabled at runtime. `xdebug.log_level=0`
 /// silences the "Could not connect to debugging client" error printed on every
 /// request when no IDE is listening. `xdebug.output_dir` is only emitted when
-/// profile or trace is selected.
+/// profile, trace or gcstats is selected.
 #[must_use]
 pub fn managed_directives(
     settings: &XdebugSettings,
@@ -296,7 +306,11 @@ pub fn managed_directives(
 }
 
 /// True if a hand-registered extension is an Xdebug: its name is `xdebug` or its
-/// path's basename is `xdebug.so`, compared case-insensitively.
+/// path's basename starts with `xdebug` (`xdebug.so`, `xdebug-3.4.so`,
+/// `xdebug_custom.so`), compared case-insensitively.
+///
+/// This is a heuristic: an Xdebug renamed to something unrelated isn't
+/// recognised, and an unrelated `.so` whose name starts with `xdebug` is.
 #[must_use]
 pub fn is_xdebug_extension(name: &str, path: &str) -> bool {
     if name.trim().eq_ignore_ascii_case("xdebug") {
@@ -305,11 +319,13 @@ pub fn is_xdebug_extension(name: &str, path: &str) -> bool {
     Path::new(path.trim())
         .file_name()
         .and_then(|f| f.to_str())
-        .is_some_and(|f| f.eq_ignore_ascii_case("xdebug.so"))
+        .and_then(|f| f.get(..6))
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("xdebug"))
 }
 
 /// True if any `extension = …` or `zend_extension = …` line in `ini` loads an
-/// Xdebug (per [`is_xdebug_extension`]). Quotes around the path are ignored.
+/// Xdebug (per [`is_xdebug_extension`]). Quotes around the path and a trailing
+/// `;` comment outside quotes are ignored.
 #[must_use]
 pub fn ini_loads_xdebug(ini: &str) -> bool {
     ini.lines().any(|line| {
@@ -320,20 +336,58 @@ pub fn ini_loads_xdebug(ini: &str) -> bool {
         if !(key.eq_ignore_ascii_case("extension") || key.eq_ignore_ascii_case("zend_extension")) {
             return false;
         }
-        let path = value.trim().trim_matches(|c| c == '"' || c == '\'');
+        let path = strip_ini_comment(value)
+            .trim()
+            .trim_matches(|c| c == '"' || c == '\'');
         is_xdebug_extension("", path)
     })
 }
 
-/// Render the debug-shim ini: `zend_extension = <so>` plus the managed
+/// `value` up to the first `;` that is outside single or double quotes.
+fn strip_ini_comment(value: &str) -> &str {
+    let mut quote: Option<char> = None;
+    for (i, c) in value.char_indices() {
+        match (quote, c) {
+            (None, ';') => return value.get(..i).unwrap_or(value),
+            (None, '"' | '\'') => quote = Some(c),
+            (Some(q), _) if q == c => quote = None,
+            _ => {}
+        }
+    }
+    value
+}
+
+/// `path` as a double-quoted ini string: `"`, `\` and `$` are backslash-escaped
+/// so the value survives PHP's ini scanner (which expands `${…}` inside double
+/// quotes). `None` for a non-UTF-8 path or one with a control character, which
+/// would break the line.
+fn quote_ini_path(path: &Path) -> Option<String> {
+    let s = path.to_str()?;
+    if s.chars().any(char::is_control) {
+        return None;
+    }
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        if matches!(c, '"' | '\\' | '$') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    Some(out)
+}
+
+/// Render the debug-shim ini: `zend_extension = "<so>"` plus the managed
 /// `xdebug.*` directives for the default settings, then `base` (the CLI ini) so
 /// the user's own per-version `xdebug.*` directives win, then
 /// `opcache.jit = disable` last so a per-version `opcache.jit` in `base` can't
-/// re-enable the JIT under Xdebug. Returns `None` if `so` is not safe to emit
-/// as an unquoted ini value.
+/// re-enable the JIT under Xdebug. The path is quoted (see [`quote_ini_path`])
+/// so characters such as `(`, `;` or `#` in it are safe. Returns `None` for a
+/// non-UTF-8 path or one with a control character.
 #[must_use]
 pub fn render_debug_ini(base: &str, so: &Path) -> Option<String> {
-    let path = sanitize_ca_bundle_path(so)?;
+    let path = quote_ini_path(so)?;
     let settings = XdebugSettings {
         enabled: true,
         ..XdebugSettings::default()
@@ -378,6 +432,10 @@ pub enum XdebugError {
     /// An unrecognised start value.
     #[error("unknown Xdebug start '{0}' (expected always or trigger)")]
     UnknownStart(String),
+    /// `gcstats` was combined with the trigger start, which Xdebug never uses
+    /// to start GC statistics.
+    #[error("Xdebug's gcstats mode only runs with the `always` start; it ignores triggers")]
+    GcstatsNeedsAlways,
 }
 
 #[cfg(test)]
@@ -467,7 +525,7 @@ mod tests {
 
     type MergeCase<'a> = (
         Option<&'a XdebugSettings>,
-        bool,
+        Option<bool>,
         Option<Vec<XdebugMode>>,
         Option<XdebugStart>,
         XdebugSettings,
@@ -480,10 +538,14 @@ mod tests {
             modes: vec![XdebugMode::Profile],
             start: XdebugStart::Trigger,
         };
-        let cases: [MergeCase<'_>; 4] = [
+        let on = XdebugSettings {
+            enabled: true,
+            ..XdebugSettings::default()
+        };
+        let cases: [MergeCase<'_>; 6] = [
             (
                 None,
-                true,
+                Some(true),
                 None,
                 None,
                 XdebugSettings {
@@ -493,7 +555,7 @@ mod tests {
             ),
             (
                 Some(&current),
-                true,
+                Some(true),
                 None,
                 None,
                 XdebugSettings {
@@ -504,7 +566,7 @@ mod tests {
             ),
             (
                 Some(&current),
-                false,
+                Some(false),
                 Some(vec![XdebugMode::Trace, XdebugMode::Debug]),
                 None,
                 XdebugSettings {
@@ -515,7 +577,7 @@ mod tests {
             ),
             (
                 Some(&current),
-                true,
+                Some(true),
                 None,
                 Some(XdebugStart::Always),
                 XdebugSettings {
@@ -524,14 +586,69 @@ mod tests {
                     start: XdebugStart::Always,
                 },
             ),
+            (
+                Some(&on),
+                None,
+                Some(vec![XdebugMode::Trace]),
+                None,
+                XdebugSettings {
+                    enabled: true,
+                    modes: vec![XdebugMode::Trace],
+                    start: XdebugStart::Always,
+                },
+            ),
+            (
+                None,
+                None,
+                None,
+                Some(XdebugStart::Trigger),
+                XdebugSettings {
+                    start: XdebugStart::Trigger,
+                    ..XdebugSettings::default()
+                },
+            ),
         ];
         for (cur, enabled, modes, start, want) in cases {
             assert_eq!(merge_request(cur, enabled, modes, start).unwrap(), want);
         }
         assert_eq!(
-            merge_request(Some(&current), true, Some(Vec::new()), None),
+            merge_request(Some(&current), Some(true), Some(Vec::new()), None),
             Err(XdebugError::EmptyModes)
         );
+    }
+
+    #[test]
+    fn gcstats_with_trigger_is_refused() {
+        let trigger = XdebugSettings {
+            start: XdebugStart::Trigger,
+            ..XdebugSettings::default()
+        };
+        let always_gc = XdebugSettings {
+            modes: vec![XdebugMode::Gcstats],
+            ..XdebugSettings::default()
+        };
+        let cases = [
+            (Some(&trigger), Some(vec![XdebugMode::Gcstats]), None),
+            (
+                Some(&trigger),
+                Some(vec![XdebugMode::Debug, XdebugMode::Gcstats]),
+                None,
+            ),
+            (Some(&always_gc), None, Some(XdebugStart::Trigger)),
+            (
+                None,
+                Some(vec![XdebugMode::Gcstats]),
+                Some(XdebugStart::Trigger),
+            ),
+        ];
+        for (cur, modes, start) in cases {
+            assert_eq!(
+                merge_request(cur, Some(true), modes.clone(), start),
+                Err(XdebugError::GcstatsNeedsAlways),
+                "{modes:?} {start:?}"
+            );
+        }
+        assert!(merge_request(Some(&always_gc), Some(true), None, None).is_ok());
     }
 
     #[test]
@@ -589,11 +706,11 @@ mod tests {
     }
 
     #[test]
-    fn output_dir_only_for_profile_or_trace() {
+    fn output_dir_only_for_output_writing_modes() {
         let cases = [
             (vec![XdebugMode::Debug], false),
             (vec![XdebugMode::Develop, XdebugMode::Coverage], false),
-            (vec![XdebugMode::Gcstats], false),
+            (vec![XdebugMode::Gcstats], true),
             (vec![XdebugMode::Profile], true),
             (vec![XdebugMode::Debug, XdebugMode::Trace], true),
         ];
@@ -620,8 +737,12 @@ mod tests {
             ("dbg", "/opt/ext/xdebug.so", true),
             ("dbg", "/opt/ext/XDEBUG.SO", true),
             ("dbg", "xdebug.so", true),
-            ("dbg", "/opt/ext/xdebug-3.so", false),
+            ("dbg", "/opt/ext/xdebug-3.4.so", true),
+            ("dbg", "/opt/ext/xdebug_custom.so", true),
+            ("dbg", "/opt/ext/XDebug-3.so", true),
             ("pcov", "/opt/ext/pcov.so", false),
+            ("dbg", "/opt/xdebug/pcov.so", false),
+            ("dbg", "/opt/ext/xdbg.so", false),
             ("xdebugger", "/opt/ext/x.so", false),
         ];
         for (name, path, want) in cases {
@@ -639,6 +760,10 @@ mod tests {
             ("extension = /x/pcov.so\n", false),
             ("xdebug.mode = debug\n", false),
             ("; zend_extension = /x/xdebug.so\n", false),
+            ("zend_extension = /x/xdebug.so ; loaded by hand\n", true),
+            ("zend_extension = /x/xdebug.so;comment\n", true),
+            ("zend_extension = \"/x/a;b/xdebug.so\" ; c\n", true),
+            ("extension = /x/pcov.so ; xdebug.so\n", false),
             ("", false),
         ];
         for (ini, want) in cases {
@@ -659,7 +784,7 @@ mod tests {
         for (base, body) in cases {
             let got = render_debug_ini(base, Path::new("/d/xdebug.so")).unwrap();
             let want = format!(
-                "zend_extension = /d/xdebug.so\n\
+                "zend_extension = \"/d/xdebug.so\"\n\
                  xdebug.mode = debug\n\
                  xdebug.start_with_request = yes\n\
                  xdebug.client_host = 127.0.0.1\n\
@@ -674,8 +799,30 @@ mod tests {
     }
 
     #[test]
-    fn render_debug_ini_rejects_unsafe_path() {
-        assert!(render_debug_ini("", Path::new("/d/x;y/xdebug.so")).is_none());
-        assert!(render_debug_ini("", Path::new("/d/x#y/xdebug.so")).is_none());
+    fn render_debug_ini_quotes_and_escapes_the_path() {
+        let cases = [
+            (
+                "/Users/me (work)/xdebug.so",
+                "zend_extension = \"/Users/me (work)/xdebug.so\"\n",
+            ),
+            (
+                "/d/x;y#z/xdebug.so",
+                "zend_extension = \"/d/x;y#z/xdebug.so\"\n",
+            ),
+            (
+                "/d/a\"b\\c$d/xdebug.so",
+                "zend_extension = \"/d/a\\\"b\\\\c\\$d/xdebug.so\"\n",
+            ),
+        ];
+        for (path, first) in cases {
+            let got = render_debug_ini("", Path::new(path)).unwrap();
+            assert!(got.starts_with(first), "{path}: {got}");
+        }
+    }
+
+    #[test]
+    fn render_debug_ini_rejects_control_characters() {
+        assert!(render_debug_ini("", Path::new("/d/x\ny/xdebug.so")).is_none());
+        assert!(render_debug_ini("", Path::new("/d/x\ty/xdebug.so")).is_none());
     }
 }

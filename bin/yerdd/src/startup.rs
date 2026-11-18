@@ -287,6 +287,7 @@ pub async fn bring_up_with_dirs(
             .collect(),
     );
     php_manager.set_xdebug(crate::xdebug::xdebug_load_map(&config, &dirs));
+    crate::xdebug::ensure_output_dir(&config, &dirs);
     php_manager.set_ca_bundle(php_ca_bundle.clone());
     let php_manager = Arc::new(Mutex::new(php_manager));
 

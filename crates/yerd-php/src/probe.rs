@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::pure::ext_probe::{ffi_listed, interpret_probe, ExtLoadError};
+use crate::pure::ext_probe::{ffi_listed, interpret_probe, require_zend_module, ExtLoadError};
 
 /// Upper bound on one `php -n -m` FFI probe. A cold first run (macOS
 /// Gatekeeper) takes about a second; anything past this is treated as unknown.
@@ -85,6 +85,35 @@ pub async fn probe_extension(
     ext_path: &Path,
     zend: bool,
 ) -> Result<(), ExtLoadError> {
+    let out = run_probe(runner, php_bin, ext_path, zend).await?;
+    let diagnostics = format!("{}{}", out.stdout, out.stderr);
+    interpret_probe(out.status_ok, &diagnostics)
+}
+
+/// Load-probe a Zend extension positively: the same run as
+/// [`probe_extension`] with `zend_extension=`, which must also list `module`
+/// (for example `Xdebug`) under `[Zend Modules]`. A probe that merely shows no
+/// failure marker is not enough.
+///
+/// # Errors
+/// [`ExtLoadError::SpawnFailed`] if the probe could not run; otherwise the
+/// classification from [`require_zend_module`].
+pub async fn probe_zend_module(
+    runner: &dyn CommandRunner,
+    php_bin: &Path,
+    ext_path: &Path,
+    module: &str,
+) -> Result<(), ExtLoadError> {
+    let out = run_probe(runner, php_bin, ext_path, true).await?;
+    require_zend_module(out.status_ok, &out.stdout, &out.stderr, module)
+}
+
+async fn run_probe(
+    runner: &dyn CommandRunner,
+    php_bin: &Path,
+    ext_path: &Path,
+    zend: bool,
+) -> Result<ProbeOutput, ExtLoadError> {
     let directive = if zend { "zend_extension" } else { "extension" };
     let mut cmd = Command::new(php_bin);
     cmd.arg("-n")
@@ -94,12 +123,7 @@ pub async fn probe_extension(
         .arg(format!("{directive}={}", ext_path.display()))
         .arg("-m")
         .stdin(Stdio::null());
-    let out = runner
-        .run(cmd)
-        .await
-        .map_err(|_| ExtLoadError::SpawnFailed)?;
-    let diagnostics = format!("{}{}", out.stdout, out.stderr);
-    interpret_probe(out.status_ok, &diagnostics)
+    runner.run(cmd).await.map_err(|_| ExtLoadError::SpawnFailed)
 }
 
 /// Whether the PHP build at `php_bin` includes the FFI extension, by running
@@ -221,6 +245,31 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(e, ExtLoadError::SpawnFailed);
+    }
+
+    #[tokio::test]
+    async fn probe_zend_module_requires_the_module_listed() {
+        let listed = FakeRunner {
+            status_ok: true,
+            stdout: "[PHP Modules]\nCore\n\n[Zend Modules]\nXdebug\n".to_owned(),
+            stderr: String::new(),
+        };
+        let silent = FakeRunner {
+            status_ok: true,
+            stdout: "[PHP Modules]\nCore\n\n[Zend Modules]\n".to_owned(),
+            stderr: String::new(),
+        };
+        let php = Path::new("/php");
+        let so = Path::new("/a/xdebug.so");
+        probe_zend_module(&listed, php, so, "Xdebug").await.unwrap();
+        assert_eq!(
+            probe_zend_module(&silent, php, so, "Xdebug").await,
+            Err(ExtLoadError::NotListed)
+        );
+        assert_eq!(
+            probe_zend_module(&FailingRunner, php, so, "Xdebug").await,
+            Err(ExtLoadError::SpawnFailed)
+        );
     }
 
     #[tokio::test]

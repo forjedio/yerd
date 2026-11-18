@@ -495,13 +495,16 @@ export async function setPhpPoolSettings(
 }
 
 /**
- * Turn the bundled Xdebug on or off for one version, optionally changing its
- * modes and start trigger. An omitted `modes`/`start` keeps the version's
- * current value; an omitted version means the default PHP.
+ * Change the bundled Xdebug for one version: turn it on or off, and optionally
+ * change its modes and start trigger. A `null` `enabled` and an omitted
+ * `modes`/`start` keep the version's current value; a `null` version means the
+ * default PHP. The bridge gives up after 120s; the daemon itself gives up on a
+ * stuck download or probe after 90s and reports `xdebug_unavailable` with
+ * nothing changed.
  */
 export async function setXdebug(
   version: PhpVersion | null,
-  enabled: boolean,
+  enabled: boolean | null,
   modes?: XdebugMode[],
   start?: XdebugStart,
 ): Promise<PhpVersionsResponse> {

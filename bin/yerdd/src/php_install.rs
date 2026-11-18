@@ -578,23 +578,38 @@ fn managed_shim_version(name: &str) -> Option<PhpVersion> {
 /// `yerd_bin`): the wrapper reads `argv[0]`, resolves the target PHP + minor, and
 /// points `PHPRC` at that version's generated ini before `exec`ing PHP. So:
 ///
-/// * for each installed `v`: `php<v>` → `yerd_bin`, and `php<v>cover` /
-///   `php<v>debug` → `yerd_bin` except for legacy (`< 8.2`) versions, which get
-///   neither because pcov and Xdebug are never built for them (the cover and
-///   debug shims reject them regardless, so this keeps `{data}/bin` honest);
+/// * for each installed `v`: `php<v>` → `yerd_bin`; `php<v>cover` → `yerd_bin`
+///   except for legacy (`< 8.2`) versions, because pcov is never built for them;
+///   `php<v>debug` → `yerd_bin` only where a bundled Xdebug is published for
+///   `v` on this host ([`yerd_core::php_xdebug::is_available`]);
 /// * `phpcover` and `phpdebug` → `yerd_bin`;
 /// * `php` → `yerd_bin` when at least one version is installed (the wrapper
 ///   resolves the default from `config.php.default` at run time);
-/// * prune managed `php<X.Y>`/`php<X.Y>cover`/`php<X.Y>debug` symlinks whose
-///   version is no longer installed, plus any legacy cover or debug shim (e.g.
-///   `php7.4cover`) left by an older Yerd, which must go even when that legacy
-///   version is still installed.
+/// * prune managed `php<X.Y>`/`php<X.Y>cover`/`php<X.Y>debug` links whose
+///   version is no longer installed, plus any legacy cover shim (e.g.
+///   `php7.4cover`) or a debug shim for a version without a bundled Xdebug,
+///   which must go even when that version is still installed.
+///
+/// Only Yerd's own links are ever replaced or pruned (see [`is_yerd_link`]): a
+/// regular file, or a link the user pointed somewhere else, under a managed
+/// name is left alone with a warning and the reconcile carries on.
 ///
 /// A **single** `discover_bundled` snapshot drives both create and prune. Callers
 /// must serialize invocations (the daemon holds a dedicated mutex) so the
 /// scan→prune can't race a concurrent install's create. Unix-only; no-op elsewhere.
 #[cfg(unix)]
 pub fn reconcile_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), PhpError> {
+    reconcile_shims_for_host(dirs, yerd_bin, crate::ext_install::host_os_arch())
+}
+
+/// [`reconcile_shims`] with the host `(os, arch)` injected so tests don't
+/// depend on the CI host.
+#[cfg(unix)]
+fn reconcile_shims_for_host(
+    dirs: &PlatformDirs,
+    yerd_bin: &Path,
+    (os, arch): (&str, &str),
+) -> Result<(), PhpError> {
     let bin = shim_dir(dirs);
     fs_ctx(std::fs::create_dir_all(&bin), &bin)?;
 
@@ -609,21 +624,21 @@ pub fn reconcile_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), PhpEr
         .map(|(v, _)| v)
         .collect();
 
+    let debug_available = |v: PhpVersion| yerd_core::php_xdebug::is_available(v, os, arch);
     for &v in &installed {
-        place_symlink(&bin.join(versioned_shim_name(v, ShimKind::Clean)), yerd_bin)?;
+        place_managed(&bin.join(versioned_shim_name(v, ShimKind::Clean)), yerd_bin);
         if !v.is_legacy() {
-            place_symlink(&bin.join(versioned_shim_name(v, ShimKind::Cover)), yerd_bin)?;
-            place_symlink(&bin.join(versioned_shim_name(v, ShimKind::Debug)), yerd_bin)?;
+            place_managed(&bin.join(versioned_shim_name(v, ShimKind::Cover)), yerd_bin);
+        }
+        if debug_available(v) {
+            place_managed(&bin.join(versioned_shim_name(v, ShimKind::Debug)), yerd_bin);
         }
     }
-    place_symlink(&bin.join("phpcover"), yerd_bin)?;
-    place_symlink(&bin.join("phpdebug"), yerd_bin)?;
+    place_managed(&bin.join("phpcover"), yerd_bin);
+    place_managed(&bin.join("phpdebug"), yerd_bin);
 
     if !installed.is_empty() {
-        let php = bin.join("php");
-        if std::fs::read_link(&php).ok().as_deref() != Some(yerd_bin) {
-            place_symlink(&php, yerd_bin)?;
-        }
+        place_managed(&bin.join("php"), yerd_bin);
     }
 
     let entries = match std::fs::read_dir(&bin) {
@@ -640,19 +655,57 @@ pub fn reconcile_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), PhpEr
         let Some(v) = managed_shim_version(name) else {
             continue;
         };
-        let stale_legacy_extra = (name.ends_with(ShimKind::Cover.suffix())
-            || name.ends_with(ShimKind::Debug.suffix()))
-            && v.is_legacy();
-        if installed.contains(&v) && !stale_legacy_extra {
+        let stale_cover = name.ends_with(ShimKind::Cover.suffix()) && v.is_legacy();
+        let stale_debug = name.ends_with(ShimKind::Debug.suffix()) && !debug_available(v);
+        if installed.contains(&v) && !stale_cover && !stale_debug {
             continue;
         }
         let path = entry.path();
-        let is_link = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink());
-        if is_link {
+        if is_yerd_link(&path, yerd_bin) {
             let _ = std::fs::remove_file(&path);
+        } else if std::fs::symlink_metadata(&path).is_ok() {
+            tracing::warn!(path = %path.display(), "not pruning a shim Yerd didn't create");
         }
     }
     Ok(())
+}
+
+/// True if `path` is a link a shim reconcile placed and may replace or prune:
+/// it points at `yerd_bin`, at another binary with the same file name (an older
+/// install location of the Yerd wrapper), or at nothing (dangling).
+#[cfg(unix)]
+fn is_yerd_link(path: &Path, yerd_bin: &Path) -> bool {
+    let Ok(target) = std::fs::read_link(path) else {
+        return false;
+    };
+    target == yerd_bin
+        || (target.file_name().is_some() && target.file_name() == yerd_bin.file_name())
+        || !path.exists()
+}
+
+/// Point the managed shim `link` at `yerd_bin` when it is missing or one of
+/// Yerd's own links ([`is_yerd_link`]); otherwise leave the user's file alone.
+/// Failures only warn so one bad entry never stops the rest of the reconcile.
+#[cfg(unix)]
+fn place_managed(link: &Path, yerd_bin: &Path) {
+    let owned = match std::fs::symlink_metadata(link) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(e) => {
+            tracing::warn!(path = %link.display(), error = %e, "can't inspect shim, skipping it");
+            return;
+        }
+        Ok(_) => is_yerd_link(link, yerd_bin),
+    };
+    if !owned {
+        tracing::warn!(path = %link.display(), "leaving a file Yerd didn't create in place of its shim");
+        return;
+    }
+    if std::fs::read_link(link).ok().as_deref() == Some(yerd_bin) {
+        return;
+    }
+    if let Err(e) = place_symlink(link, yerd_bin) {
+        tracing::warn!(path = %link.display(), error = %e, "failed to place shim");
+    }
 }
 
 #[cfg(not(unix))]
@@ -1236,7 +1289,7 @@ mod tests {
         std::os::unix::fs::symlink(&yerd_bin, bin.join("php8.2debug")).unwrap();
         std::fs::write(bin.join("keep.txt"), b"user file").unwrap();
 
-        reconcile_shims(&dirs, &yerd_bin).unwrap();
+        reconcile_shims_for_host(&dirs, &yerd_bin, HOST).unwrap();
 
         assert!(bin.join("php8.4cover").exists());
         assert!(bin.join("phpcover").exists());
@@ -1278,7 +1331,7 @@ mod tests {
         std::os::unix::fs::symlink(&yerd_bin, bin.join("php7.4cover")).unwrap();
         std::os::unix::fs::symlink(&yerd_bin, bin.join("php7.4debug")).unwrap();
 
-        reconcile_shims(&dirs, &yerd_bin).unwrap();
+        reconcile_shims_for_host(&dirs, &yerd_bin, HOST).unwrap();
 
         assert!(
             bin.join("php7.4").exists(),
@@ -1297,6 +1350,87 @@ mod tests {
     }
 
     #[cfg(unix)]
+    const HOST: (&str, &str) = ("macos", "aarch64");
+
+    #[cfg(unix)]
+    fn mk_install(dirs: &PlatformDirs, v: PhpVersion) {
+        let base = dirs
+            .data
+            .join("php")
+            .join(format!("php-{}.{}", v.major, v.minor));
+        std::fs::create_dir_all(base.join("bin")).unwrap();
+        std::fs::create_dir_all(base.join("sbin")).unwrap();
+        std::fs::write(base.join("bin").join("php"), b"cli").unwrap();
+        std::fs::write(base.join("sbin").join("php-fpm"), b"fpm").unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_never_replaces_or_prunes_files_yerd_did_not_create() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let yerd_bin = tmp.path().join("yerd");
+        std::fs::write(&yerd_bin, b"#!fake").unwrap();
+        let other = tmp.path().join("my-php");
+        std::fs::write(&other, b"#!mine").unwrap();
+        mk_install(&dirs, PhpVersion::new(8, 4));
+
+        let bin = shim_dir(&dirs);
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("php8.4"), b"user script").unwrap();
+        std::os::unix::fs::symlink(&other, bin.join("phpdebug")).unwrap();
+        std::fs::write(bin.join("php8.3"), b"stale user script").unwrap();
+        std::os::unix::fs::symlink(&other, bin.join("php8.2cover")).unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("gone"), bin.join("php8.1")).unwrap();
+        let old_install = tmp.path().join("old").join("yerd");
+        std::fs::create_dir_all(old_install.parent().unwrap()).unwrap();
+        std::fs::write(&old_install, b"#!old").unwrap();
+        std::os::unix::fs::symlink(&old_install, bin.join("php8.4cover")).unwrap();
+
+        reconcile_shims_for_host(&dirs, &yerd_bin, HOST).unwrap();
+
+        assert_eq!(std::fs::read(bin.join("php8.4")).unwrap(), b"user script");
+        assert_eq!(std::fs::read_link(bin.join("phpdebug")).unwrap(), other);
+        assert_eq!(
+            std::fs::read(bin.join("php8.3")).unwrap(),
+            b"stale user script"
+        );
+        assert_eq!(std::fs::read_link(bin.join("php8.2cover")).unwrap(), other);
+        assert!(std::fs::symlink_metadata(bin.join("php8.1")).is_err());
+        assert_eq!(
+            std::fs::read_link(bin.join("php8.4cover")).unwrap(),
+            yerd_bin
+        );
+        assert_eq!(
+            std::fs::read_link(bin.join("php8.4debug")).unwrap(),
+            yerd_bin
+        );
+        assert_eq!(std::fs::read_link(bin.join("php")).unwrap(), yerd_bin);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_places_debug_shims_only_where_xdebug_is_published() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let yerd_bin = tmp.path().join("yerd");
+        std::fs::write(&yerd_bin, b"#!fake").unwrap();
+        mk_install(&dirs, PhpVersion::new(8, 4));
+        let bin = shim_dir(&dirs);
+
+        reconcile_shims_for_host(&dirs, &yerd_bin, HOST).unwrap();
+        assert!(bin.join("php8.4debug").exists());
+
+        reconcile_shims_for_host(&dirs, &yerd_bin, ("macos", "x86_64")).unwrap();
+        assert!(std::fs::symlink_metadata(bin.join("php8.4debug")).is_err());
+        assert!(
+            bin.join("php8.4cover").exists(),
+            "cover shims are unchanged"
+        );
+        assert!(bin.join("phpdebug").exists());
+    }
+
+    #[cfg(unix)]
     #[test]
     fn reconcile_points_php_at_wrapper_regardless_of_config_default() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1309,7 +1443,7 @@ mod tests {
         std::fs::write(base.join("bin").join("php"), b"cli").unwrap();
         std::fs::write(base.join("sbin").join("php-fpm"), b"fpm").unwrap();
 
-        reconcile_shims(&dirs, &yerd_bin).unwrap();
+        reconcile_shims_for_host(&dirs, &yerd_bin, HOST).unwrap();
 
         assert_eq!(
             std::fs::read_link(shim_dir(&dirs).join("php")).unwrap(),

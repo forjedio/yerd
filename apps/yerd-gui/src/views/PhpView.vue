@@ -280,6 +280,7 @@ async function refreshUpdates(): Promise<void> {
         ? { ...cur, installed: r.installed, default: r.default, updates: r.updates ?? [] }
         : { ...r, updates: r.updates ?? [] },
     );
+    void reloadPhp({ force: true });
     toast.success(
       "Update check complete",
       r.updates?.length ? `${r.updates.length} update(s) available` : "All up to date",
