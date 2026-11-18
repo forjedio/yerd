@@ -23,6 +23,8 @@ the first time, Yerd downloads Xdebug for that version, checks it loads, and
 restarts that version's pool with it. The installed-versions table then shows an
 **Xdebug on** badge next to the version.
 
+<ThemedImage light="/images/xdebug-settings-light.png" dark="/images/xdebug-settings-dark.png" alt="The Xdebug section of PHP 8.5's per-version configuration: the on/off switch, mode checkboxes with Step debugging selected, the On every request start option with an Apply button, and the IDE port hint" />
+
 The same section lets you pick the [modes](#modes) and choose whether Xdebug
 starts on **every request** or only **on a trigger**. Those are staged: change
 them, then press **Apply**. Apply saves only what you changed and leaves the
