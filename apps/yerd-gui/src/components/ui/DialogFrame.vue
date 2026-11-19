@@ -22,8 +22,8 @@ withDefaults(
   defineProps<{
     open: boolean;
     title: string;
-    /** 440px (`md`) or 572px (`lg`), as drawn. */
-    width?: "md" | "lg";
+    /** 440px (`md`) or 572px (`lg`), as drawn; `xl` (760px) for log output. */
+    width?: "md" | "lg" | "xl";
   }>(),
   { width: "lg" },
 );
@@ -40,7 +40,9 @@ const emit = defineEmits<{ "update:open": [boolean] }>();
         :class="
           cn(
             'fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100%-2rem)] w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-lg animate-fade-in focus:outline-none',
-            width === 'md' ? 'max-w-[440px]' : 'max-w-[572px]',
+            width === 'md' && 'max-w-[440px]',
+            width === 'lg' && 'max-w-[572px]',
+            width === 'xl' && 'max-w-[760px]',
           )
         "
       >

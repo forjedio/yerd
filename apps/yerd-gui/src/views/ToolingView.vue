@@ -1,144 +1,207 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
-import { Download, RefreshCw, Trash2 } from "lucide-vue-next";
+import { computed, onUnmounted, ref, watch } from "vue";
+import { CheckCircle2, Folder, RefreshCw, Trash2, Wrench } from "lucide-vue-next";
 
 import PageHeader from "@/components/PageHeader.vue";
-import Badge from "@/components/ui/Badge.vue";
+import AvailableToolCard from "@/components/tooling/AvailableToolCard.vue";
+import ToolInstallLogDialog from "@/components/tooling/ToolInstallLogDialog.vue";
 import Button from "@/components/ui/Button.vue";
-import Card from "@/components/ui/Card.vue";
-import CardContent from "@/components/ui/CardContent.vue";
-import CardDescription from "@/components/ui/CardDescription.vue";
-import CardHeader from "@/components/ui/CardHeader.vue";
-import CardTitle from "@/components/ui/CardTitle.vue";
-import Modal from "@/components/ui/Modal.vue";
+import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
+import EmptyState from "@/components/ui/EmptyState.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
+import { useOperations } from "@/composables/useOperations";
+import { useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
 import {
   installToolStreamed,
   IpcError,
   listTools,
+  openPath,
   pollJobToEnd,
   uninstallTool,
 } from "@/ipc/client";
 import type { ToolStatus } from "@/ipc/types";
+import {
+  commandList,
+  needsComposer,
+  onPathNote,
+  splitTools,
+  statusText,
+  toolDescription,
+} from "@/lib/tooling";
 
 const toast = useToast();
-const { refresh } = useDaemon();
+const { refresh: refreshDaemon } = useDaemon();
+const operations = useOperations();
 
-const tools = ref<ToolStatus[]>([]);
-const loading = ref(true);
-// Which tool has a long-running op in flight, e.g. "install:node".
+const { data, loading, error, refresh: reload } = useResource("tools", listTools);
+
+watch(error, (e) => {
+  if (e && !data.value) toast.error("Couldn't load tools", e.message);
+});
+
+const all = computed<ToolStatus[]>(() => data.value ?? []);
+const split = computed(() => splitTools(all.value));
+
+const OP_PREFIX = "tool-install:";
+
+const installingIds = computed(() =>
+  operations.active.value
+    .filter((o) => o.id.startsWith(OP_PREFIX))
+    .map((o) => o.id.slice(OP_PREFIX.length)),
+);
+
+/** `uninstall:<id>` while an uninstall is in flight. */
 const busy = ref<string | null>(null);
 
-/** Node has its own page (versions, defaults, updates), so it is not listed here. */
-const NODE_TOOL = "node";
+/** Every mutating action waits for a running install and for an uninstall. */
+const locked = computed(() => installingIds.value.length > 0 || busy.value !== null);
 
-/** Short description per tool, keyed by wire id. */
-const TOOL_HINTS: Record<string, string> = {
-  composer: "PHP dependency manager.",
-  bun: "Fast all-in-one JavaScript runtime and package manager.",
-  pnpm: "Fast, disk-efficient JavaScript package manager (pnpm, pnpx). Needs Node to run scripts.",
-  laravel: "The laravel new installer for scaffolding new Laravel apps. Needs Composer.",
-  "wp-cli": "The wp command for managing WordPress installs from the terminal. Needs Composer.",
-};
+const logs = ref<Record<string, string[]>>({});
+const failures = ref<Record<string, string>>({});
+const titles = ref<Record<string, string>>({});
 
-// Managed-only: building these managed installers (the Laravel installer,
-// WP-CLI) requires Yerd's own Composer (an external Composer can't build
-// them), so this gate ignores `external`.
-const composerInstalled = computed(() =>
-  tools.value.some((t) => t.id === "composer" && t.installed),
-);
+const logOpen = ref(false);
+const logToolId = ref<string | null>(null);
+
+const logTool = computed(() => all.value.find((t) => t.id === logToolId.value));
+
+const logPhase = computed<"running" | "done" | "error">(() => {
+  const id = logToolId.value;
+  if (id && installingIds.value.includes(id)) return "running";
+  if (id && failures.value[id] !== undefined) return "error";
+  return "done";
+});
+
+const logTitle = computed(() => {
+  const id = logToolId.value;
+  if (!id) return "";
+  return titles.value[id] ?? `Installing ${logTool.value?.display_name ?? id}`;
+});
+
+const logLines = computed<string[]>(() => {
+  const id = logToolId.value;
+  if (!id) return [];
+  const lines = logs.value[id] ?? [];
+  if (lines.length) return lines;
+  const detail = operations.get(OP_PREFIX + id)?.detail;
+  return detail ? [detail] : [];
+});
+
+/** The latest streamed line for a card, falling back to the operation's detail after a remount. */
+function detailFor(id: string): string | undefined {
+  const lines = logs.value[id] ?? [];
+  return lines[lines.length - 1] ?? operations.get(OP_PREFIX + id)?.detail;
+}
+
+function cardState(id: string): "idle" | "installing" | "failed" {
+  if (installingIds.value.includes(id)) return "installing";
+  if (failures.value[id] !== undefined) return "failed";
+  return "idle";
+}
 
 const COMPOSER_REQUIRED_HINT =
   "Yerd's own Composer is required to build this tool - install Yerd's Composer first.";
 
-/** The Laravel installer and WP-CLI are built via Composer, so they can't install without it. */
-function blockedNoComposer(t: ToolStatus): boolean {
-  return (t.id === "laravel" || t.id === "wp-cli") && !composerInstalled.value;
+function updateTitle(t: ToolStatus): string {
+  if (needsComposer(t, all.value)) return COMPOSER_REQUIRED_HINT;
+  return t.update_available ? `Update to ${t.update_available}` : "Up to date";
 }
 
-/** Explains an External tool: your copy is fine, but Yerd's own is still
- *  installable - some managed tools are built with Yerd's Composer, so hiding
- *  Install here used to leave no way to get it. Yerd's {data}/bin is prepended
- *  to PATH, so its copy wins once installed - say so rather than implying the
- *  two sit side by side. */
-function externalHint(t: ToolStatus): string {
-  const found = t.external_path
-    ? `Already on your PATH at ${t.external_path}`
-    : "Already on your PATH from another install";
-  return `${found} - Yerd isn't managing that copy. Installing Yerd's own will take precedence over it on your PATH.`;
+/**
+ * Install (or, for an installed tool with a known update, update) `t` as a
+ * streamed job tracked in the global operations registry. The poll runs to the
+ * job's end even after the log closes or the view unmounts, so the toast and
+ * the shared list refresh still happen.
+ */
+async function install(t: ToolStatus, update: boolean): Promise<void> {
+  if (locked.value) return;
+  const id = t.id;
+  const opId = OP_PREFIX + id;
+  const label = `${update ? "Updating" : "Installing"} ${t.display_name}`;
+  operations.begin({ id: opId, kind: "tool-install", label });
+  failures.value = Object.fromEntries(
+    Object.entries(failures.value).filter(([k]) => k !== id),
+  );
+  logs.value = { ...logs.value, [id]: [] };
+  titles.value = { ...titles.value, [id]: label };
+  logToolId.value = id;
+  if (update) logOpen.value = true;
+  try {
+    const jobId = await installToolStreamed(id);
+    const final = await pollJobToEnd(
+      jobId,
+      (lines) => {
+        logs.value = { ...logs.value, [id]: [...(logs.value[id] ?? []), ...lines] };
+        const latest = lines
+          .map(statusText)
+          .filter((l): l is string => l !== null)
+          .pop();
+        if (latest) operations.update(opId, { detail: latest });
+      },
+      undefined,
+      500,
+      5,
+    );
+    if (final.state !== "succeeded") {
+      throw new IpcError(final.error || `install ${final.state}`);
+    }
+    await reload({ force: true });
+    const version = all.value.find((x) => x.id === id)?.version;
+    toast.success(
+      `${update ? "Updated" : "Installed"} ${t.display_name}${version ? ` ${version}` : ""}`,
+      onPathNote(t.binaries),
+    );
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    failures.value = { ...failures.value, [id]: message };
+    toast.error(`Install of ${t.display_name} failed`, message);
+  } finally {
+    operations.end(opId);
+    await Promise.all([reload({ force: true }), refreshDaemon()]);
+  }
+}
+
+function installComposer(): void {
+  const composer = all.value.find((t) => t.id === "composer");
+  if (composer) void install(composer, false);
+}
+
+function showLog(id: string): void {
+  logToolId.value = id;
+  logOpen.value = true;
+}
+
+async function reveal(path: string): Promise<void> {
+  try {
+    await openPath(path);
+  } catch (e) {
+    toast.error(`Couldn't reveal ${path}`, e instanceof Error ? e.message : String(e));
+  }
 }
 
 const uninstallOpen = ref(false);
 const uninstallTarget = ref<ToolStatus | null>(null);
 
-// Streamed install log.
-const logOpen = ref(false);
-const logTool = ref<ToolStatus | null>(null);
-const installLog = ref<string[]>([]);
-const logBox = ref<HTMLElement | null>(null);
-
-async function appendLog(lines: string[]): Promise<void> {
-  installLog.value.push(...lines);
-  await nextTick();
-  const el = logBox.value;
-  if (el) el.scrollTop = el.scrollHeight;
-}
-
-async function load(): Promise<void> {
-  loading.value = true;
-  try {
-    tools.value = (await listTools()).filter((t) => t.id !== NODE_TOOL);
-  } catch (e) {
-    toast.error("Couldn't load tools", (e as IpcError).message);
-  } finally {
-    loading.value = false;
-  }
-}
-
-async function doInstall(t: ToolStatus): Promise<void> {
-  busy.value = `install:${t.id}`;
-  const verb = t.installed ? "Updated" : "Installed";
-  logTool.value = t;
-  installLog.value = [];
-  logOpen.value = true;
-  try {
-    const jobId = await installToolStreamed(t.id);
-    const final = await pollJobToEnd(
-      jobId,
-      (lines) => void appendLog(lines),
-      () => logOpen.value,
-    );
-    await Promise.all([load(), refresh()]);
-    if (final.state === "succeeded") {
-      toast.success(`${verb} ${t.display_name}`);
-    } else if (final.state !== "running") {
-      // "running" = the log modal was closed early; the install continues detached.
-      toast.error(`Install of ${t.display_name} failed`, final.error ?? "install failed");
-    }
-  } catch (e) {
-    toast.error(`Install of ${t.display_name} failed`, (e as IpcError).message);
-  } finally {
-    busy.value = null;
-  }
-}
-
 function openUninstall(t: ToolStatus): void {
+  if (locked.value) return;
   uninstallTarget.value = t;
   uninstallOpen.value = true;
 }
 
-async function confirmUninstall(close: () => void): Promise<void> {
+async function confirmUninstall(): Promise<void> {
   const t = uninstallTarget.value;
-  if (!t) return;
+  if (!t || locked.value) return;
   busy.value = `uninstall:${t.id}`;
-  close();
   try {
     await uninstallTool(t.id);
-    toast.success(`Removed ${t.display_name}`);
-    await Promise.all([load(), refresh()]);
+    failures.value = Object.fromEntries(
+      Object.entries(failures.value).filter(([k]) => k !== t.id),
+    );
+    toast.success(`Removed ${t.display_name}`, "Its commands are off your PATH");
+    await Promise.all([reload({ force: true }), refreshDaemon()]);
   } catch (e) {
     toast.error(`Uninstall of ${t.display_name} failed`, (e as IpcError).message);
   } finally {
@@ -146,8 +209,14 @@ async function confirmUninstall(close: () => void): Promise<void> {
   }
 }
 
-onMounted(load);
-onUnmounted(registerViewActions({ refresh: () => void load() }));
+const LABEL = "text-[11px] font-semibold uppercase tracking-[0.6px] text-faint";
+const CHIP = "inline-flex h-5 shrink-0 items-center gap-1.5 rounded px-1.5 font-mono text-[11px] font-medium";
+const UPDATE_CHIP =
+  "inline-flex h-5 shrink-0 items-center rounded border border-warning/40 bg-warning/15 px-1.5 font-mono text-[11px] font-medium text-warning";
+const CMD =
+  "inline-flex h-[18px] items-center rounded bg-background px-1.5 font-mono text-[11px] text-muted-foreground";
+
+onUnmounted(registerViewActions({ refresh: () => void reload({ force: true }) }));
 </script>
 
 <template>
@@ -155,147 +224,150 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
     <PageHeader title="Tooling" docs="/guide/tooling" />
 
     <div class="flex-1 overflow-y-auto p-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Developer tools</CardTitle>
-          <CardDescription>
-            Each tool installs the latest release into Yerd's data directory
-            and exposes its commands on your PATH. Node.js is managed from the
-            Node page.
-          </CardDescription>
-        </CardHeader>
+      <div v-if="loading" class="flex justify-center py-12">
+        <Spinner class="size-6" />
+      </div>
 
-        <CardContent>
-          <div v-if="loading" class="flex justify-center py-12">
-            <Spinner class="size-6" />
+      <div
+        v-else
+        class="grid gap-7 xl:grid-cols-[minmax(0,1fr)_286px] xl:items-start xl:gap-5"
+      >
+        <section data-testid="tooling-installed">
+          <h2 :class="[LABEL, 'mb-3 flex gap-2']">
+            <span>Installed</span>
+            <span data-testid="tooling-installed-count">{{ split.installed.length }}</span>
+          </h2>
+
+          <div
+            v-if="split.installed.length"
+            class="divide-y overflow-hidden rounded-[10px] border bg-card"
+          >
+            <div
+              v-for="t in split.installed"
+              :key="t.id"
+              class="flex min-h-[88px] items-center gap-5 px-5 py-3"
+              :data-testid="`tool-row-${t.id}`"
+            >
+              <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="text-sm font-semibold">{{ t.display_name }}</span>
+                  <span :class="[CHIP, 'bg-success/15 text-success']">
+                    <span class="size-1.5 rounded-full bg-success" aria-hidden="true" />
+                    {{ t.version ?? "installed" }}
+                  </span>
+                  <span
+                    v-if="t.update_available"
+                    :class="UPDATE_CHIP"
+                    :title="`Version ${t.update_available} is available`"
+                    :data-testid="`tool-update-${t.id}`"
+                  >
+                    ↑ {{ t.update_available }}
+                  </span>
+                </div>
+                <p class="mt-1.5 text-xs text-muted-foreground">{{ toolDescription(t.id) }}</p>
+                <div v-if="t.binaries.length" class="mt-1.5 flex flex-wrap gap-1.5">
+                  <code v-for="b in t.binaries" :key="b" :class="CMD">{{ b }}</code>
+                </div>
+              </div>
+              <div class="flex shrink-0 items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  :disabled="locked || needsComposer(t, all) || !t.update_available"
+                  :title="updateTitle(t)"
+                  @click="install(t, true)"
+                >
+                  <Spinner v-if="installingIds.includes(t.id)" class="size-4" />
+                  <RefreshCw v-else /> Update
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  class="size-8"
+                  :disabled="locked"
+                  :aria-label="`Uninstall ${t.display_name}`"
+                  title="Uninstall"
+                  @click="openUninstall(t)"
+                >
+                  <Spinner v-if="busy === `uninstall:${t.id}`" class="size-4" />
+                  <Trash2 v-else class="!size-3.5" />
+                </Button>
+              </div>
+            </div>
           </div>
 
-          <table v-else class="w-full text-sm">
-            <thead>
-              <tr
-                class="border-b text-left text-xs uppercase text-muted-foreground"
-              >
-                <th class="py-2 pr-4 font-medium">Tool</th>
-                <th class="py-2 pr-4 font-medium">Status</th>
-                <th class="py-2 pl-4 text-right font-medium">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="t in tools"
-                :key="t.id"
-                class="border-b last:border-0"
-              >
-                <td class="py-3 pr-4">
-                  <div class="font-medium text-foreground">
-                    {{ t.display_name }}
-                  </div>
-                  <div v-if="TOOL_HINTS[t.id]" class="text-xs text-muted-foreground">
-                    {{ TOOL_HINTS[t.id] }}
-                  </div>
-                  <div class="text-xs text-muted-foreground/70">
-                    {{ t.binaries.join(", ") }}
-                  </div>
-                </td>
-                <td class="py-3 pr-4">
-                  <Badge v-if="t.installed" variant="secondary">
-                    {{ t.version ?? "installed" }}
-                  </Badge>
-                  <Badge
-                    v-else-if="t.external"
-                    variant="outline"
-                    class="cursor-help"
-                    :title="externalHint(t)"
-                  >
-                    External
-                  </Badge>
-                  <span v-else class="text-xs text-muted-foreground">
-                    Not installed
-                  </span>
-                </td>
-                <td class="py-3 pl-4">
-                  <div class="flex items-center justify-end gap-2">
-                    <Spinner
-                      v-if="busy?.endsWith(`:${t.id}`)"
-                      class="size-4"
-                    />
-                    <template v-else-if="t.installed">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        :disabled="busy !== null || blockedNoComposer(t)"
-                        :title="blockedNoComposer(t) ? COMPOSER_REQUIRED_HINT : ''"
-                        @click="doInstall(t)"
-                      >
-                        <RefreshCw class="mr-1.5 size-3.5" /> Update
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        :disabled="busy !== null"
-                        :aria-label="`Uninstall ${t.display_name}`"
-                        title="Uninstall"
-                        @click="openUninstall(t)"
-                      >
-                        <Trash2 class="size-3.5" />
-                      </Button>
-                    </template>
-                    <template v-else>
-                      <span
-                        v-if="t.external"
-                        class="cursor-help text-xs text-muted-foreground"
-                        :title="externalHint(t)"
-                      >
-                        Managed by you
-                      </span>
-                      <Button
-                        size="sm"
-                        :disabled="busy !== null || blockedNoComposer(t)"
-                        :title="blockedNoComposer(t) ? COMPOSER_REQUIRED_HINT : ''"
-                        @click="doInstall(t)"
-                      >
-                        <Download class="mr-1.5 size-3.5" /> Install
-                      </Button>
-                    </template>
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </CardContent>
-      </Card>
+          <EmptyState
+            v-else
+            :icon="Wrench"
+            title="No tools installed yet"
+            description="Pick one from Available and it goes on your PATH beside PHP."
+          />
+
+          <p class="mt-3 flex items-center gap-2 text-xs text-faint">
+            <Folder class="size-3.5 shrink-0" aria-hidden="true" />
+            Tools install into Yerd's data folder and go on your PATH beside PHP. Node.js is
+            managed from the Node page.
+          </p>
+        </section>
+
+        <section data-testid="tooling-available">
+          <h2 :class="[LABEL, 'mb-3 flex gap-2']">
+            <span>Available</span>
+            <span data-testid="tooling-available-count">{{ split.available.length }}</span>
+          </h2>
+
+          <div
+            v-if="split.available.length"
+            class="grid gap-3 md:grid-cols-2 md:items-start xl:grid-cols-1"
+          >
+            <AvailableToolCard
+              v-for="t in split.available"
+              :key="t.id"
+              :tool="t"
+              :state="cardState(t.id)"
+              :blocked="needsComposer(t, all)"
+              :locked="locked"
+              :detail="detailFor(t.id)"
+              :error="failures[t.id]"
+              @install="install(t, false)"
+              @install-composer="installComposer"
+              @show-log="showLog(t.id)"
+              @reveal="reveal"
+            />
+          </div>
+
+          <EmptyState
+            v-else
+            :icon="CheckCircle2"
+            title="Everything's installed"
+            description="New tools show up here when Yerd adds them."
+          />
+        </section>
+      </div>
     </div>
 
-    <Modal
+    <ToolInstallLogDialog
       v-model:open="logOpen"
-      :title="`Installing ${logTool?.display_name ?? 'tool'}`"
-      size="lg"
-    >
-      <pre
-        ref="logBox"
-        class="h-72 overflow-y-auto whitespace-pre-wrap rounded-lg bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-zinc-200"
-      >{{ installLog.join("\n") || "Starting…" }}</pre>
-      <template #footer="{ close }">
-        <Spinner v-if="busy?.startsWith('install:')" class="size-4" />
-        <Button :disabled="busy?.startsWith('install:')" @click="close">Done</Button>
-      </template>
-    </Modal>
+      :title="logTitle"
+      :phase="logPhase"
+      :lines="logLines"
+    />
 
-    <Modal
+    <ConfirmDialog
       v-model:open="uninstallOpen"
       :title="`Uninstall ${uninstallTarget?.display_name ?? 'tool'}?`"
+      confirm-label="Uninstall"
+      tone="danger"
+      :icon="Trash2"
+      @confirm="confirmUninstall"
     >
-      <p class="text-sm text-muted-foreground">
-        This removes {{ uninstallTarget?.display_name }} and its commands
-        ({{ uninstallTarget?.binaries.join(", ") }}) from your PATH. You can
-        reinstall it any time.
-      </p>
-      <template #footer="{ close }">
-        <Button variant="ghost" @click="close">Cancel</Button>
-        <Button variant="destructive" @click="confirmUninstall(close)">
-          Uninstall
-        </Button>
-      </template>
-    </Modal>
+      <span data-testid="tool-uninstall-body">
+        <code class="font-mono text-foreground">{{
+          commandList(uninstallTarget?.binaries ?? [])
+        }}</code>
+        {{ (uninstallTarget?.binaries.length ?? 0) > 1 ? "leave" : "leaves" }} your PATH. Your
+        projects aren't touched, and you can reinstall it any time.
+      </span>
+    </ConfirmDialog>
   </div>
 </template>

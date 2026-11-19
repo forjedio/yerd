@@ -59,6 +59,7 @@ apps/yerd-gui/
     │                       php/ (PhpVersionsList, PhpInspector, PhpSharedDefaults, PhpSettingsGrid,
     │                       InstallPhpDialog, InstallProgressDialog),
     │                       node/ (NodeInstallDialog, NodeInstallLogDialog, NodePickOrderCard, NodeOffDefaultCard),
+    │                       tooling/ (AvailableToolCard, ToolInstallLogDialog),
     │                       site-create/ (NewSiteDialog + ProjectStep, StarterPicker, LaravelOptionsStep,
     │                       WordPressOptionsStep, MissingToolsPanel, CreateProgress),
     │                       PhpVersionPanel, AddExtensionModal, ServiceOverridesModal, DaemonDownHero, DaemonDiagnosticsPanel,
@@ -72,6 +73,7 @@ apps/yerd-gui/
                             proxies (Proxies chips, sections, upstream labels and name/prefix checks),
                             php (PHP list order, status and update labels, banner, install choices
                             and the install-progress line),
+                            tooling (Tooling split, descriptions, Composer gate, PATH copy),
                             createSite (the New site command preview and durations),
                             siteFilter (match a query against a site's domains and path),
                             ideChoice (resolve "auto"/"system"/an id to a label), wpAdmin,
