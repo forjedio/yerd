@@ -638,6 +638,15 @@ pub enum Request {
         /// Site name.
         site: String,
     },
+    /// Report every site's effective Node version and its source in one call.
+    /// Returns [`super::Response::NodeSites`].
+    NodeSites,
+    /// Report the running release's notes and a few earlier stable releases.
+    /// Returns [`super::Response::ReleaseNotes`].
+    ReleaseNotes,
+    /// Report the human contributors to the Yerd repository.
+    /// Returns [`super::Response::Contributors`].
+    Contributors,
     /// Download + install a dev tool's latest release into yerd's data dir and
     /// expose its commands on `PATH`. Idempotent (reinstalls/updates to latest).
     InstallTool {
@@ -818,6 +827,15 @@ pub enum Request {
         site: String,
         /// The group to assign, or `None` to unassign.
         group: Option<String>,
+    },
+    /// Star or unstar a site in the GUI. `favourite: true` marks it, `false`
+    /// clears it; both are idempotent. Like [`Request::SetSiteGroup`] the name
+    /// is not validated against live sites. Replies [`super::Response::Ok`].
+    SetSiteFavourite {
+        /// The site name.
+        site: String,
+        /// Whether the site is a favourite.
+        favourite: bool,
     },
     /// Rename a site group, preserving its display position and moving every
     /// member with it. Replies [`super::Response::Ok`]. Rejected if `to` is
@@ -1053,6 +1071,9 @@ mod variant_name_pinning {
             Request::UninstallNode { .. } => {}
             Request::ClearNodeVersion { .. } => {}
             Request::NodeSite { .. } => {}
+            Request::NodeSites => {}
+            Request::ReleaseNotes => {}
+            Request::Contributors => {}
             Request::InstallTool { .. } => {}
             Request::UninstallTool { .. } => {}
             Request::InstallToolStreamed { .. } => {}
@@ -1081,6 +1102,7 @@ mod variant_name_pinning {
             Request::DeleteGroup { .. } => {}
             Request::SetGroupOrder { .. } => {}
             Request::SetSiteGroup { .. } => {}
+            Request::SetSiteFavourite { .. } => {}
             Request::RenameGroup { .. } => {}
             Request::SetSymlinkProtection { .. } => {}
             Request::SetFrontController { .. } => {}
@@ -1307,6 +1329,9 @@ mod variant_name_pinning {
         pin(Request::NodeSite {
             site: "blog".into(),
         });
+        pin(Request::NodeSites);
+        pin(Request::ReleaseNotes);
+        pin(Request::Contributors);
         pin(Request::InstallTool {
             tool: "node".into(),
         });
@@ -1381,6 +1406,10 @@ mod variant_name_pinning {
         pin(Request::SetSiteGroup {
             site: "app".into(),
             group: Some("Blog".into()),
+        });
+        pin(Request::SetSiteFavourite {
+            site: "app".into(),
+            favourite: true,
         });
         pin(Request::RenameGroup {
             from: "Blog".into(),

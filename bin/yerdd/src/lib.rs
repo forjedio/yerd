@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::doc_markdown)]
 
+pub mod about;
 pub mod ansi;
 pub mod args;
 pub mod backend_resolver;
@@ -27,6 +28,7 @@ pub mod ipc_server;
 pub mod jobs;
 pub mod lan_setup;
 pub mod laravel_detect;
+pub mod mail_site;
 pub mod mutate;
 pub mod network;
 pub mod node_updates;
@@ -42,6 +44,7 @@ pub mod single_instance;
 pub mod site_domains;
 pub mod startup;
 pub mod state;
+pub mod tool_updates;
 pub mod tools;
 pub mod tracing_init;
 pub mod tunnel;
@@ -331,6 +334,7 @@ async fn run_until_shutdown(
                                     yerd_update::PHP_LISTING_PUBLIC_KEY,
                                 ),
                                 crate::node_updates::poll_and_refresh(&state, &dl),
+                                crate::tool_updates::poll_and_refresh(&state, &dl),
                             )
                         };
                         tokio::select! {
@@ -358,7 +362,10 @@ async fn run_until_shutdown(
     let mail_handle = daemon.mail_listener.map(|listener| {
         let store = daemon.state.mail_store.clone();
         let mut rx = shutdown_rx.clone();
-        tokio::spawn(yerd_mail::serve(listener, store, async move {
+        let resolver = Arc::new(crate::mail_site::RouterSiteResolver {
+            router: daemon.state.router.clone(),
+        });
+        tokio::spawn(yerd_mail::serve(listener, store, resolver, async move {
             let _ = rx.changed().await;
         }))
     });

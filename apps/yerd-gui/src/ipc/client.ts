@@ -32,7 +32,10 @@ import type {
   NetworkSettings,
   NetworkTestResult,
   NodeRelease,
+  NodeSiteEntry,
   NodeSiteResponse,
+  ReleaseNotesResponse,
+  ContributorsResponse,
   OutboundProxyMode,
   AddableServiceType,
   PhpExtInfo,
@@ -183,6 +186,11 @@ export async function renameGroup(from: string, to: string): Promise<void> {
 /** Set or clear a site's group (`null` = Unallocated). */
 export async function setSiteGroup(site: string, group: string | null): Promise<void> {
   ensureOk(await call<Response>("set_site_group", { site, group }));
+}
+
+/** Star (`true`) or unstar (`false`) a site. Idempotent. */
+export async function setSiteFavourite(site: string, favourite: boolean): Promise<void> {
+  ensureOk(await call<Response>("set_site_favourite", { site, favourite }));
 }
 
 /**
@@ -678,6 +686,27 @@ export async function clearNodeVersion(site: string): Promise<void> {
 export async function nodeSite(site: string): Promise<NodeSiteResponse> {
   const r = ensureOk(await call<Response>("node_site", { site }));
   if (r.type !== "node_site") throw new IpcError("unexpected response to node_site");
+  return r;
+}
+
+/** Every site's Node resolution in one call, in router order. */
+export async function nodeSites(): Promise<NodeSiteEntry[]> {
+  const r = ensureOk(await call<Response>("node_sites"));
+  if (r.type !== "node_sites") throw new IpcError("unexpected response to node_sites");
+  return r.sites;
+}
+
+/** The running release's notes plus a few earlier stable releases. */
+export async function releaseNotes(): Promise<ReleaseNotesResponse> {
+  const r = ensureOk(await call<Response>("release_notes"));
+  if (r.type !== "release_notes") throw new IpcError("unexpected response to release_notes");
+  return r;
+}
+
+/** The human contributors to the Yerd repository, most contributions first. */
+export async function contributors(): Promise<ContributorsResponse> {
+  const r = ensureOk(await call<Response>("contributors"));
+  if (r.type !== "contributors") throw new IpcError("unexpected response to contributors");
   return r;
 }
 

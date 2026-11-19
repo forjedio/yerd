@@ -18,13 +18,14 @@ use std::path::PathBuf;
 
 use yerd_ipc::{
     types::{MajorLine, NodeSource, PhpVersion, Site},
-    AddableServiceType, CaStatus, Channel, CloudflaredSource, CloudflaredStatus, DatabaseSummary,
-    Diagnosis, DiagnosisCode, DumpCategory, DumpCounts, DumpEvent, DumpExtStatus, ErrorCode,
-    FixReport, FixResult, MailAttachment, MailDetail, MailHeader, MailStatus, MailSummary,
-    NamedTunnelMeta, NodePreferenceRef, NodeProjectFile, NodeRelease, PhpPoolStatus, PoolRunState,
-    PortRedirectTargets, PortStatus, ProxyEntry, ProxyRuleEntry, Request, Response,
-    ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts, SiteHostname,
-    StagedArtifact, StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState, UpdateSource,
+    AddableServiceType, CaStatus, Channel, CloudflaredSource, CloudflaredStatus, Contributor,
+    DatabaseSummary, Diagnosis, DiagnosisCode, DumpCategory, DumpCounts, DumpEvent, DumpExtStatus,
+    ErrorCode, FixReport, FixResult, MailAttachment, MailDetail, MailHeader, MailStatus,
+    MailSummary, NamedTunnelMeta, NodePreferenceRef, NodeProjectFile, NodeRelease, NodeSiteEntry,
+    PhpPoolStatus, PoolRunState, PortRedirectTargets, PortStatus, ProxyEntry, ProxyRuleEntry,
+    ReleaseNoteItem, ReleaseNotesEntry, Request, Response, ServiceAvailability, ServiceRunState,
+    ServiceStatus, Severity, SiteCounts, SiteHostname, StagedArtifact, StatusReport, ToolStatus,
+    TunnelInfo, TunnelKind, TunnelRunState, UpdateSource,
 };
 
 // ---------- Request ----------
@@ -551,6 +552,8 @@ fn plain(site: Site) -> yerd_ipc::SiteEntry {
         apex_shadowed_by: None,
         uses_front_controller: false,
         is_laravel: false,
+        favourite: false,
+        framework: None,
     }
 }
 
@@ -608,6 +611,8 @@ fn response_sites_wordpress_byte_shape() {
             apex_shadowed_by: None,
             uses_front_controller: false,
             is_laravel: false,
+            favourite: false,
+            framework: None,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -629,6 +634,8 @@ fn response_sites_customized_domains_byte_shape() {
             apex_shadowed_by: Some("shop".into()),
             uses_front_controller: false,
             is_laravel: false,
+            favourite: false,
+            framework: None,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -652,10 +659,38 @@ fn response_sites_wp_auto_login_byte_shape() {
             apex_shadowed_by: None,
             uses_front_controller: false,
             is_laravel: false,
+            favourite: false,
+            framework: None,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","wp_auto_login":true,"wp_auto_login_user":"admin","is_wordpress":true,"uses_front_controller":false}]}"#;
+    assert_eq!(s, expected);
+    let back: Response = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
+fn response_sites_favourite_byte_shape() {
+    let blog = Site::parked("blog", "/srv/blog", PhpVersion::new(8, 3)).unwrap();
+    let mut entry = plain(blog);
+    entry.favourite = true;
+    let r = Response::Sites { sites: vec![entry] };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","uses_front_controller":false,"favourite":true}]}"#;
+    assert_eq!(s, expected);
+    let back: Response = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
+fn response_sites_framework_byte_shape() {
+    let cms = Site::parked("cms", "/srv/cms", PhpVersion::new(8, 3)).unwrap();
+    let mut entry = plain(cms);
+    entry.framework = Some(yerd_ipc::types::SiteFramework::Statamic);
+    let r = Response::Sites { sites: vec![entry] };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"sites","sites":[{"name":"cms","document_root":"/srv/cms","php":"8.3","secure":false,"kind":"parked","uses_front_controller":false,"framework":"statamic"}]}"#;
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
@@ -2528,10 +2563,30 @@ fn response_mails_byte_shape() {
             subject: "Hi".into(),
             date_epoch: 1_700_000_000,
             read: false,
+            site: None,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = r#"{"type":"mails","mails":[{"id":"000001","from":"Example <hello@example.com>","to":["test@test.com"],"subject":"Hi","date_epoch":1700000000,"read":false}]}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_mails_with_site_byte_shape() {
+    let r = Response::Mails {
+        mails: vec![MailSummary {
+            id: "000001".into(),
+            from: "Example <hello@example.com>".into(),
+            to: vec!["test@test.com".into()],
+            subject: "Hi".into(),
+            date_epoch: 1_700_000_000,
+            read: true,
+            site: Some("blog".into()),
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"mails","mails":[{"id":"000001","from":"Example <hello@example.com>","to":["test@test.com"],"subject":"Hi","date_epoch":1700000000,"read":true,"site":"blog"}]}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
@@ -2747,6 +2802,7 @@ fn response_tools_byte_shape() {
             binaries: vec!["node".into(), "npm".into(), "npx".into()],
             external: false,
             external_path: None,
+            update_available: None,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -2766,10 +2822,31 @@ fn response_tools_external_byte_shape() {
             binaries: vec!["node".into(), "npm".into(), "npx".into()],
             external: true,
             external_path: Some("/opt/homebrew/bin/node".into()),
+            update_available: None,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = r#"{"type":"tools","tools":[{"id":"node","display_name":"Node.js","installed":false,"version":null,"binaries":["node","npm","npx"],"external":true,"external_path":"/opt/homebrew/bin/node"}]}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_tools_update_available_byte_shape() {
+    let r = Response::Tools {
+        tools: vec![ToolStatus {
+            id: "composer".into(),
+            display_name: "Composer".into(),
+            installed: true,
+            version: Some("2.8.1".into()),
+            binaries: vec!["composer".into()],
+            external: false,
+            external_path: None,
+            update_available: Some("2.8.12".into()),
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"tools","tools":[{"id":"composer","display_name":"Composer","installed":true,"version":"2.8.1","binaries":["composer"],"update_available":"2.8.12"}]}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
@@ -3051,6 +3128,115 @@ fn request_node_site_scoped_variants_byte_shape() {
             site: "blog".into(),
         },
         r#"{"type":"node_site","site":"blog"}"#,
+    );
+}
+
+#[test]
+fn request_node_sites_byte_shape() {
+    assert_request(&Request::NodeSites, r#"{"type":"node_sites"}"#);
+}
+
+#[test]
+fn response_node_sites_byte_shape() {
+    assert_response(
+        &Response::NodeSites {
+            sites: vec![
+                NodeSiteEntry {
+                    site: "blog".into(),
+                    preference: None,
+                    project_file: Some(Box::new(NodeProjectFile {
+                        kind: NodeSource::Nvmrc,
+                        selector: "22".into(),
+                    })),
+                    effective: Some("22.9.0".into()),
+                    source: Some(NodeSource::Nvmrc),
+                    error: None,
+                    missing: None,
+                },
+                NodeSiteEntry {
+                    site: "shop".into(),
+                    preference: None,
+                    project_file: None,
+                    effective: None,
+                    source: None,
+                    error: Some("Node 18 is not installed".into()),
+                    missing: Some("18".into()),
+                },
+            ],
+        },
+        r#"{"type":"node_sites","sites":[{"site":"blog","project_file":{"kind":"nvmrc","selector":"22"},"effective":"22.9.0","source":"nvmrc"},{"site":"shop","error":"Node 18 is not installed","missing":"18"}]}"#,
+    );
+    assert_response(
+        &Response::NodeSites { sites: vec![] },
+        r#"{"type":"node_sites","sites":[]}"#,
+    );
+}
+
+#[test]
+fn request_release_notes_byte_shape() {
+    assert_request(&Request::ReleaseNotes, r#"{"type":"release_notes"}"#);
+}
+
+#[test]
+fn request_contributors_byte_shape() {
+    assert_request(&Request::Contributors, r#"{"type":"contributors"}"#);
+}
+
+#[test]
+fn response_release_notes_byte_shape() {
+    let entry = |version: &str, prerelease: bool| ReleaseNotesEntry {
+        version: version.into(),
+        tag: format!("v{version}"),
+        published_at: "2026-11-18T16:34:09Z".into(),
+        prerelease,
+        summary: "Support xdebug".into(),
+        features: vec![ReleaseNoteItem {
+            title: "Support xdebug".into(),
+            author: Some("RichardAnderson".into()),
+            url: Some("https://github.com/forjedio/yerd/pull/268".into()),
+        }],
+        fixes: vec![ReleaseNoteItem {
+            title: "Bare".into(),
+            author: None,
+            url: None,
+        }],
+        others: vec![],
+    };
+    assert_response(
+        &Response::ReleaseNotes {
+            current: Some(Box::new(entry("2.1.0-rc.3", true))),
+            earlier: vec![entry("2.0.4", false)],
+        },
+        r#"{"type":"release_notes","current":{"version":"2.1.0-rc.3","tag":"v2.1.0-rc.3","published_at":"2026-11-18T16:34:09Z","prerelease":true,"summary":"Support xdebug","features":[{"title":"Support xdebug","author":"RichardAnderson","url":"https://github.com/forjedio/yerd/pull/268"}],"fixes":[{"title":"Bare"}],"others":[]},"earlier":[{"version":"2.0.4","tag":"v2.0.4","published_at":"2026-11-18T16:34:09Z","prerelease":false,"summary":"Support xdebug","features":[{"title":"Support xdebug","author":"RichardAnderson","url":"https://github.com/forjedio/yerd/pull/268"}],"fixes":[{"title":"Bare"}],"others":[]}]}"#,
+    );
+    assert_response(
+        &Response::ReleaseNotes {
+            current: None,
+            earlier: vec![],
+        },
+        r#"{"type":"release_notes","earlier":[]}"#,
+    );
+}
+
+#[test]
+fn response_contributors_byte_shape() {
+    assert_response(
+        &Response::Contributors {
+            contributors: vec![Contributor {
+                login: "RichardAnderson".into(),
+                avatar_url: "https://avatars.githubusercontent.com/u/1?v=4".into(),
+                commits: 240,
+            }],
+            total: 1,
+        },
+        r#"{"type":"contributors","contributors":[{"login":"RichardAnderson","avatar_url":"https://avatars.githubusercontent.com/u/1?v=4","commits":240}],"total":1}"#,
+    );
+    assert_response(
+        &Response::Contributors {
+            contributors: vec![],
+            total: 0,
+        },
+        r#"{"type":"contributors","contributors":[],"total":0}"#,
     );
 }
 
@@ -3385,6 +3571,7 @@ fn response_tunnels_byte_shape() {
             version: Some("2026.6.1".into()),
             source: Some(CloudflaredSource::Managed),
             logged_in: false,
+            update_available: None,
         },
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -3413,6 +3600,7 @@ fn response_tunnels_named_and_empty_byte_shape() {
             version: None,
             source: Some(CloudflaredSource::System),
             logged_in: true,
+            update_available: None,
         },
     };
     let s = serde_json::to_string(&named).unwrap();
@@ -3429,6 +3617,7 @@ fn response_tunnels_named_and_empty_byte_shape() {
             version: None,
             source: None,
             logged_in: false,
+            update_available: None,
         },
     };
     let s = serde_json::to_string(&empty).unwrap();
@@ -3437,6 +3626,24 @@ fn response_tunnels_named_and_empty_byte_shape() {
         r#"{"type":"tunnels","tunnels":[],"cloudflared":{"installed":false,"logged_in":false}}"#
     );
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), empty);
+}
+
+#[test]
+fn response_tunnels_cloudflared_update_byte_shape() {
+    let r = Response::Tunnels {
+        tunnels: vec![],
+        cloudflared: CloudflaredStatus {
+            installed: true,
+            version: Some("2025.6.1".into()),
+            source: Some(CloudflaredSource::Managed),
+            logged_in: false,
+            update_available: Some("2025.11.1".into()),
+        },
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"tunnels","tunnels":[],"cloudflared":{"installed":true,"version":"2025.6.1","source":"managed","logged_in":false,"update_available":"2025.11.1"}}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
 
 #[test]
@@ -3475,6 +3682,7 @@ fn response_tunnels_with_error_protected_and_warnings_byte_shape() {
             version: None,
             source: None,
             logged_in: false,
+            update_available: None,
         },
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -3747,6 +3955,20 @@ fn request_set_site_group_byte_shape() {
     let s = serde_json::to_string(&none).unwrap();
     assert_eq!(s, r#"{"type":"set_site_group","site":"app","group":null}"#);
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), none);
+}
+
+#[test]
+fn request_set_site_favourite_byte_shape() {
+    let r = Request::SetSiteFavourite {
+        site: "blog".into(),
+        favourite: true,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_site_favourite","site":"blog","favourite":true}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
 }
 
 #[test]

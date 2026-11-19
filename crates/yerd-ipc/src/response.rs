@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use yerd_core::{PhpVersion, Site, XdebugSettings};
+use yerd_core::{PhpVersion, Site, SiteFramework, XdebugSettings};
 
 use crate::dump::{DumpCounts, DumpEvent, DumpExtStatus};
 use crate::status::{
@@ -366,6 +366,29 @@ pub enum Response {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         missing: Option<String>,
     },
+    /// Reply to [`crate::Request::NodeSites`]: one entry per routed site, in
+    /// router order. Per-site failures are carried in each entry's `error`.
+    NodeSites {
+        /// Every site's Node resolution.
+        sites: Vec<crate::NodeSiteEntry>,
+    },
+    /// Reply to [`crate::Request::ReleaseNotes`]. `current` is absent when the
+    /// running release has no published notes file.
+    ReleaseNotes {
+        /// The running release's notes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        current: Option<Box<crate::ReleaseNotesEntry>>,
+        /// Earlier stable releases, newest first.
+        earlier: Vec<crate::ReleaseNotesEntry>,
+    },
+    /// Reply to [`crate::Request::Contributors`], in GitHub's order (most
+    /// contributions first), bots excluded.
+    Contributors {
+        /// The human contributors.
+        contributors: Vec<crate::Contributor>,
+        /// How many contributors are listed.
+        total: u32,
+    },
     /// Reply to [`crate::Request::GetNetworkSettings`] and
     /// [`crate::Request::SetNetworkSettings`].
     NetworkSettings {
@@ -525,6 +548,7 @@ pub struct PhpExtInfo {
 /// and re-statting every site's marker files on each poll doesn't scale with
 /// site count.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct SiteEntry {
     /// The site itself - unchanged shape, still exactly what `Site`'s own
     /// serde impl produces.
@@ -564,6 +588,14 @@ pub struct SiteEntry {
     /// daemons and when the site is not Laravel.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_laravel: bool,
+    /// Whether the user starred this site in the GUI. Omitted when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub favourite: bool,
+    /// The framework detected at the site's project root, served from the same
+    /// rebuild-refreshed daemon cache as `is_wordpress`. Omitted when none was
+    /// recognised.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub framework: Option<SiteFramework>,
 }
 
 /// One whole-host reverse proxy (reply element of [`Response::Proxies`]).
@@ -795,6 +827,9 @@ mod variant_name_pinning {
             Response::NodeVersions { .. } => {}
             Response::AvailableNode { .. } => {}
             Response::NodeSite { .. } => {}
+            Response::NodeSites { .. } => {}
+            Response::ReleaseNotes { .. } => {}
+            Response::Contributors { .. } => {}
             Response::NetworkSettings { .. } => {}
             Response::NetworkTest { .. } => {}
             Response::JobStarted { .. } => {}
@@ -1012,6 +1047,7 @@ mod variant_name_pinning {
                 subject: "Hi".into(),
                 date_epoch: 1_700_000_000,
                 read: false,
+                site: None,
             }],
         });
         pin_response(Response::Mail {
@@ -1039,6 +1075,7 @@ mod variant_name_pinning {
                 binaries: vec!["node".into(), "npm".into(), "npx".into()],
                 external: false,
                 external_path: None,
+                update_available: None,
             }],
         });
         pin_response(Response::NodeVersions {
@@ -1075,6 +1112,15 @@ mod variant_name_pinning {
             source: Some(yerd_core::node::NodeSource::Nvmrc),
             error: None,
             missing: None,
+        });
+        pin_response(Response::NodeSites { sites: vec![] });
+        pin_response(Response::ReleaseNotes {
+            current: None,
+            earlier: vec![],
+        });
+        pin_response(Response::Contributors {
+            contributors: vec![],
+            total: 0,
         });
         pin_response(Response::NetworkSettings {
             settings: Box::new(crate::NetworkSettings {
@@ -1137,6 +1183,7 @@ mod variant_name_pinning {
                 version: Some("2026.6.1".into()),
                 source: Some(crate::status::CloudflaredSource::Managed),
                 logged_in: false,
+                update_available: None,
             },
         });
         pin_response(Response::NamedTunnels {

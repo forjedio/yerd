@@ -222,6 +222,8 @@ fn encode_then_decode_response_roundtrip() {
             apex_shadowed_by: None,
             uses_front_controller: false,
             is_laravel: false,
+            favourite: false,
+            framework: None,
         }],
     });
     assert_response_roundtrips(Response::Sites {
@@ -233,6 +235,8 @@ fn encode_then_decode_response_roundtrip() {
             apex_shadowed_by: Some("shop".into()),
             uses_front_controller: true,
             is_laravel: false,
+            favourite: false,
+            framework: None,
         }],
     });
     for code in [

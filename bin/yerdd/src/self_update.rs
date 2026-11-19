@@ -30,6 +30,8 @@ use yerd_update::{
 use crate::ipc_server::internal;
 use crate::state::DaemonState;
 
+/// The Yerd CDN origin that serves the release manifests and notes files.
+pub(crate) const CDN_BASE: &str = "https://files.yerd.app";
 /// The signed release manifest the daemon reads to learn about releases. Its
 /// body is a [`LatestManifest`] (latest stable + RC); it is verified against
 /// [`yerd_update::UPDATE_PUBLIC_KEY`] before it is trusted.

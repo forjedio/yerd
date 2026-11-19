@@ -147,6 +147,9 @@ struct Wire {
     // v28: optional `[network]` table; absent in v27 and earlier → system mode.
     #[serde(default)]
     network: NetworkSectionWire,
+    // v30: optional `[favourites]` table; absent in v29 and earlier → empty.
+    #[serde(default)]
+    favourites: FavouritesSectionWire,
 }
 
 /// One `[[proxies]]` table: a whole-host proxy's name, upstream, and HTTPS flag.
@@ -258,6 +261,15 @@ struct GroupsSectionWire {
     order: Vec<String>,
     #[serde(default)]
     members: BTreeMap<String, String>,
+}
+
+/// The `[favourites]` table. `sites` defaults to empty, so an absent table
+/// parses to [`crate::schema::FavouritesSection::default`].
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FavouritesSectionWire {
+    #[serde(default)]
+    sites: BTreeSet<String>,
 }
 
 /// The `[tunnel]` table. All maps default to empty, so an absent table parses
@@ -695,6 +707,9 @@ impl TryFrom<Wire> for Config {
             route_rules,
             response_headers,
             network,
+            favourites: crate::schema::FavouritesSection {
+                sites: w.favourites.sites,
+            },
         })
     }
 }
@@ -1566,7 +1581,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 29,
+                current: 30,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -1680,6 +1695,28 @@ mod tests {
     fn groups_absent_table_is_empty_and_migrates() {
         let c = Config::from_toml("version = 8\n").unwrap();
         assert!(c.groups.is_empty());
+    }
+
+    #[test]
+    fn favourites_absent_table_is_empty_and_v29_migrates() {
+        let c = Config::from_toml("version = 29\n").unwrap();
+        assert!(c.favourites.is_empty());
+    }
+
+    #[test]
+    fn favourites_section_parses_and_round_trips() {
+        let s = "version = 30\n[favourites]\nsites = [\"api\", \"blog\"]\n";
+        let c = Config::from_toml(s).unwrap();
+        assert_eq!(
+            c.favourites
+                .sites
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["api", "blog"]
+        );
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
     }
 
     #[test]

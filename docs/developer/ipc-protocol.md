@@ -224,6 +224,10 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `UninstallNode { version }` | `{"type":"uninstall_node","version":"22.9.0"}` (one exact release; replies `NodeVersions`) |
 | `ClearNodeVersion { site }` | `{"type":"clear_node_version","site":"blog"}` (removes the saved preference; idempotent; replies `Ok`) |
 | `NodeSite { site }` | `{"type":"node_site","site":"blog"}` (replies `NodeSite`) |
+| `NodeSites` | `{"type":"node_sites"}` (replies `NodeSites { sites }`, one entry per routed site) |
+| `ReleaseNotes` | `{"type":"release_notes"}` (replies `ReleaseNotes`; the running release's notes plus up to 5 earlier stable releases, read from the CDN `release-notes/<tag>.json` files and cached for 6 hours; a failed refresh serves the stale value, and `internal` is returned only with nothing cached) |
+| `Contributors` | `{"type":"contributors"}` (replies `Contributors`; GitHub contributors with bots removed, cached for 24 hours, stale on failure like `ReleaseNotes`) |
+| `SetSiteFavourite { site, favourite }` | `{"type":"set_site_favourite","site":"blog","favourite":true}` (stars or unstars a site in the GUI; idempotent, not validated against live sites; replies `Ok`) |
 | `CreateSite { spec }` | `{"type":"create_site","spec":{"name":"blog","parent_dir":"/srv","php":"8.3","secure":false,"framework":{"framework":"wordpress",…}}}` (replies `JobStarted`; poll `JobStatus`) |
 | `AvailableWordpressVersions` | `{"type":"available_wordpress_versions"}` |
 | `MintWordpressLoginToken { site }` | `{"type":"mint_wordpress_login_token","site":"blog"}` |
@@ -283,6 +287,9 @@ pub enum Response {
     NodeVersions { installed: Vec<NodeRelease> },  // ListNode / UninstallNode
     AvailableNode { majors: Vec<MajorLine> },     // newest major first
     NodeSite { preference, project_file, effective, source, error },
+    NodeSites { sites: Vec<NodeSiteEntry> },      // NodeSite fields plus `site`, router order
+    ReleaseNotes { current: Option<Box<ReleaseNotesEntry>>, earlier: Vec<ReleaseNotesEntry> }, // `current` skipped when absent
+    Contributors { contributors: Vec<Contributor>, total: u32 }, // GitHub order, bots excluded
     WordpressVersions { versions: Vec<WordPressVersionInfo> },
     WordpressLoginToken { token: String },
     WordpressAdminUsers { users: Vec<WordPressAdminUser> },
@@ -321,8 +328,24 @@ pub enum Response {
 The multi-domain feature adds three more `SiteEntry` fields alongside `is_wordpress`: `primary_domain: Option<String>` (the canonical FQDN, populated only when it differs from the default `{name}.{tld}` apex), `domains: Vec<String>` (the full routable set, populated only for a customized site), and `apex_shadowed_by: Option<String>` (the other site claiming this apex, if any). All three are skipped when default/empty, so a default site's `Response::Sites` bytes are byte-identical to before - same additive, no-bump pattern as `web_subpath`. Separately, `StatusReport` gained `shadows: Vec<DomainShadow>` (skipped when empty): one `DomainShadow { site, shadowed_by }` per site that lost a domain to another when the router was built, which `yerd doctor` surfaces as a `DomainShadowed` warning. The four domain mutators (`AddDomain` / `RemoveDomain` / `SetPrimaryDomain` / `ResetDomains`) reply with the generic `Ok`.
 :::
 
+::: info Favourites on `SiteEntry`
+`SiteEntry` gained `favourite: bool` (last field, skipped when `false`): whether the user starred the site in the GUI, read from the config's `[favourites]` table. The matching mutator is `Request::SetSiteFavourite { site, favourite }`, which replies `Ok`. Same additive, no-bump pattern as `web_subpath`.
+:::
+
+::: info Framework on `SiteEntry`
+`SiteEntry` gained `framework: Option<SiteFramework>` (after `favourite`, skipped when `None`): the framework detected at the site's project root, one of `"laravel"`, `"wordpress"`, `"symfony"`, `"statamic"`, `"craft"` or `"drupal"`. It is served from a daemon cache refreshed on every router rebuild, like `is_wordpress`, and a `WordPress` site always reports `"wordpress"`. A newer daemon may add values, so a strict older client decoding this enum fails closed; the GUI, CLI and daemon ship together.
+:::
+
+::: info Update availability on `ToolStatus` and `CloudflaredStatus`
+`ToolStatus` (in `Response::Tools`) gained `update_available: Option<String>` (last field, skipped when `None`): the newer published version of a Yerd-managed, installed tool, matching `PhpPoolStatus::update_available`. Separately, the `cloudflared` status carried by `Response::Tunnels` (`CloudflaredStatus`) gained the same `update_available` field, set only for the Yerd-managed binary; a `cloudflared` found on `PATH` always omits it. Both are served from a daemon cache that a notify-only poll refreshes every 12 hours, so `ListTools` and `TunnelStatus` never touch the network. Same additive, no-bump pattern as `external_path`.
+:::
+
 ::: info The mail payloads gained read/unread fields additively
 For read/unread tracking, `MailSummary` gained a `read: bool` (last field) and `MailStatus` gained an `unread: u32` (last field), both `#[serde(default)]`. A missing key decodes to `false`/`0`, so old daemons and old clients interoperate without a `PROTOCOL_VERSION` bump; the goldens grew a `,"read":false` / `,"unread":0` suffix. The matching mutator is the additive `Request::MarkMailsRead { ids }`.
+:::
+
+::: info Mail attribution on `MailSummary`
+`MailSummary` gained `site: Option<String>` (last field, skipped when `None`): the site the mail was attributed to from the host the sender announced in SMTP `EHLO`/`HELO`, resolved through the daemon's live router exactly like an HTTP `Host:` header. It is absent when the host does not match a site, for example a mailer that sends `[127.0.0.1]`. The value is stored in the capture store's `index.json`, so older indexes decode it as absent. Same additive, no-bump pattern as `read`.
 :::
 
 ::: info `AvailablePhp` and `DumpExtStatus` gained a `legacy` field additively

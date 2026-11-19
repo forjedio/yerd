@@ -101,6 +101,15 @@ struct WireSer<'a> {
     // byte shape is untouched. `None` (skipped) when the section is default.
     #[serde(skip_serializing_if = "Option::is_none")]
     network: Option<NetworkSectionSer<'a>>,
+    // v30: optional `[favourites]` table, emitted after `[network]` so an
+    // existing config's byte shape is untouched. `None` (skipped) when empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    favourites: Option<FavouritesSectionSer<'a>>,
+}
+
+#[derive(Serialize)]
+struct FavouritesSectionSer<'a> {
+    sites: &'a BTreeSet<String>,
 }
 
 #[derive(Serialize)]
@@ -532,6 +541,13 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 no_proxy: &c.network.no_proxy,
             })
         },
+        favourites: if c.favourites.is_empty() {
+            None
+        } else {
+            Some(FavouritesSectionSer {
+                sites: &c.favourites.sites,
+            })
+        },
     };
     toml::to_string_pretty(&w).map_err(Into::into)
 }
@@ -645,8 +661,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 29\n"),
-            "expected `version = 29` first line; got: {s}"
+            s.starts_with("version = 30\n"),
+            "expected `version = 30` first line; got: {s}"
         );
     }
 

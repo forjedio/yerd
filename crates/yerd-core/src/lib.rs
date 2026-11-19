@@ -49,7 +49,7 @@ pub const PROXY_SERVER_ID: &str = "yerd";
 /// value means re-generating existing users' CAs, so treat it as frozen.
 pub const CA_COMMON_NAME: &str = "Yerd Local CA";
 
-pub use detect::{detect, Detection, ProjectSignals};
+pub use detect::{detect, detect_framework, Detection, ProjectSignals, SiteFramework};
 pub use domain::{choose_primary, effective_domains, Domain};
 pub use error::{
     CoreError, DomainErrorReason, PhpVersionErrorReason, ProxyNameErrorReason,

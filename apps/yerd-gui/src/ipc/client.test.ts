@@ -12,6 +12,7 @@ import {
   availableNode,
   clearMails,
   clearNodeVersion,
+  contributors,
   deleteMails,
   getMail,
   IpcError,
@@ -24,6 +25,8 @@ import {
   listRoutes,
   listSites,
   nodeSite,
+  nodeSites,
+  releaseNotes,
   removeDomain,
   removeResponseHeader,
   removeRouteRule,
@@ -37,6 +40,7 @@ import {
   setPhpVersionSettings,
   setPrimaryDomain,
   setResponseHeader,
+  setSiteFavourite,
   setSymlinkProtection,
   setMcpEnabled,
   setXdebug,
@@ -101,12 +105,14 @@ describe("client → command mapping", () => {
           to: ["d@e.f"],
           subject: "Hi",
           date_epoch: 1700000000,
+          site: "blog",
         },
       ],
     });
     const r = await listMails();
     expect(r).toHaveLength(1);
     expect(r[0].subject).toBe("Hi");
+    expect(r[0].site).toBe("blog");
     expect(invokeMock).toHaveBeenCalledWith("list_mails", undefined);
   });
 
@@ -270,6 +276,17 @@ describe("client → command mapping", () => {
   it("setFrontController rejects on a non-ok response", async () => {
     invokeMock.mockResolvedValue({ type: "error", code: "internal", message: "boom" });
     await expect(setFrontController("blog", false)).rejects.toThrow("boom");
+  });
+
+  it("setSiteFavourite sends site + favourite and rejects on error", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await setSiteFavourite("blog", true);
+    expect(invokeMock).toHaveBeenCalledWith("set_site_favourite", {
+      site: "blog",
+      favourite: true,
+    });
+    invokeMock.mockResolvedValue({ type: "error", code: "internal", message: "boom" });
+    await expect(setSiteFavourite("blog", false)).rejects.toBeInstanceOf(IpcError);
   });
 
   it("addDomain / removeDomain / setPrimaryDomain send name + domain", async () => {
@@ -521,6 +538,56 @@ describe("node commands", () => {
     expect(r.effective).toBe("22.12.0");
     expect(r.source).toBe("default");
     expect(r.preference).toBeUndefined();
+  });
+
+  it("nodeSites returns every entry and rejects an unexpected reply", async () => {
+    invokeMock.mockResolvedValue({
+      type: "node_sites",
+      sites: [
+        { site: "blog", effective: "22.12.0", source: "nvmrc" },
+        { site: "shop", error: "Node 18 is not installed", missing: "18" },
+      ],
+    });
+    const sites = await nodeSites();
+    expect(invokeMock).toHaveBeenCalledWith("node_sites", undefined);
+    expect(sites.map((s) => s.site)).toEqual(["blog", "shop"]);
+    expect(sites[1].missing).toBe("18");
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await expect(nodeSites()).rejects.toBeInstanceOf(IpcError);
+  });
+
+  it("releaseNotes passes current and earlier through and rejects an unexpected reply", async () => {
+    const entry = {
+      version: "2.0.4",
+      tag: "v2.0.4",
+      published_at: "2026-07-25T15:49:58Z",
+      prerelease: false,
+      summary: "Support xdebug",
+      features: [{ title: "Support xdebug", author: "dev", url: "https://x.test/1" }],
+      fixes: [],
+      others: [],
+    };
+    invokeMock.mockResolvedValue({ type: "release_notes", earlier: [entry] });
+    const r = await releaseNotes();
+    expect(invokeMock).toHaveBeenCalledWith("release_notes", undefined);
+    expect(r.current).toBeUndefined();
+    expect(r.earlier[0].features[0].author).toBe("dev");
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await expect(releaseNotes()).rejects.toBeInstanceOf(IpcError);
+  });
+
+  it("contributors returns the list and total and rejects an unexpected reply", async () => {
+    invokeMock.mockResolvedValue({
+      type: "contributors",
+      contributors: [{ login: "totov", avatar_url: "https://a.test/1", commits: 12 }],
+      total: 1,
+    });
+    const r = await contributors();
+    expect(invokeMock).toHaveBeenCalledWith("contributors", undefined);
+    expect(r.total).toBe(1);
+    expect(r.contributors[0].login).toBe("totov");
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await expect(contributors()).rejects.toBeInstanceOf(IpcError);
   });
 
   it("listNode rejects an unexpected response type", async () => {

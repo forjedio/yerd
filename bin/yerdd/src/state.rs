@@ -85,6 +85,16 @@ pub struct DaemonState {
     /// Installed Node releases with a newer patch in `node_updates`, kept by
     /// `node_updates::recount` so `Status` never touches the disk for it.
     pub node_update_count: std::sync::atomic::AtomicU32,
+    /// Tool update cache: tool id (or `cloudflared`) to the newest published
+    /// version at the last `tool_updates` poll. Served (no network) on
+    /// `ListTools` and `TunnelStatus`.
+    pub tool_updates: RwLock<std::collections::BTreeMap<String, String>>,
+    /// Release-notes cache: when it was filled and the reply payload. Served
+    /// while fresh, and as a stale fallback when a refresh fails.
+    pub release_notes_cache: RwLock<Option<(Instant, crate::about::ReleaseNotesPayload)>>,
+    /// Contributors cache: when it was filled and the human contributors.
+    /// Served while fresh, and as a stale fallback when a refresh fails.
+    pub contributors_cache: RwLock<Option<(Instant, Vec<yerd_ipc::Contributor>)>>,
     /// Yerd self-update cache: the releases seen at the last GitHub poll. Empty
     /// until the first successful fetch. Populated by the periodic checker /
     /// `CheckUpdate` and served (no network) when a live fetch fails.
@@ -251,6 +261,14 @@ pub struct DaemonState {
     /// on the same router-rebuild hook as `wordpress_sites` rather than detected
     /// on every `ListSites` poll - see [`crate::laravel_detect`].
     pub laravel_sites: Arc<RwLock<HashMap<String, bool>>>,
+    /// In-memory cache of each site's detected framework (site name →
+    /// framework, recognised sites only), refreshed on the same router-rebuild
+    /// hook as `wordpress_sites`.
+    pub framework_sites: Arc<RwLock<HashMap<String, yerd_core::SiteFramework>>>,
+    /// Favourite (starred) site names, lowercased: a copy of the config's
+    /// `[favourites]` refreshed after each `SetSiteFavourite` save, so
+    /// `ListSites` never takes the config mutex.
+    pub favourite_sites: RwLock<std::collections::BTreeSet<String>>,
     /// The host's LAN IPv4 discovered **once at startup** when LAN mode is on
     /// (the same value baked into the bootstrap TLS cert's iPAddress SAN). All
     /// runtime consumers (`DaemonInfo`, status, `remote-setup` URL) read this

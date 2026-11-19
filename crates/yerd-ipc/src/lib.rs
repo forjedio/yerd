@@ -20,6 +20,7 @@
 //! protocol against an older daemon surfaces as [`IpcError::Decode`]
 //! when an unknown `type` tag arrives.
 
+mod about;
 mod create;
 mod dump;
 mod error;
@@ -39,6 +40,7 @@ mod transport;
 /// add a handshake before doing so.
 pub const PROTOCOL_VERSION: u32 = 1;
 
+pub use about::{Contributor, ReleaseNoteItem, ReleaseNotesEntry};
 pub use create::{
     AuthProvider, CreateSiteSpec, Database, Framework, JobId, JobState, JsRuntime, LaravelOptions,
     StarterKit, Testing, WordPressDatabase, WordPressDbEngine, WordPressOptions,
@@ -48,7 +50,7 @@ pub use error::{FrameError, IpcError, IpcErrorKind};
 pub use frame::{encode_frame, FrameDecoder, DEFAULT_MAX_FRAME};
 pub use message::{decode_message, encode_message};
 pub use network::{EffectiveProxy, NetworkSettings, NetworkTestResult};
-pub use node::{NodePreferenceRef, NodeProjectFile, NodeRelease};
+pub use node::{NodePreferenceRef, NodeProjectFile, NodeRelease, NodeSiteEntry};
 pub use request::Request;
 pub use response::{
     ErrorCode, PhpExtInfo, PhpUpdate, ProxyEntry, ProxyRuleEntry, Response, ResponseHeaderEntry,
@@ -69,7 +71,7 @@ pub use update::{Channel, StagedArtifact, UpdateSource};
 /// instead of depending on `yerd-core` directly.
 pub mod types {
     pub use yerd_core::node::{MajorLine, NodeSource};
-    pub use yerd_core::{PhpVersion, Site, SiteKind};
+    pub use yerd_core::{PhpVersion, Site, SiteFramework, SiteKind};
 }
 
 #[cfg(feature = "transport")]

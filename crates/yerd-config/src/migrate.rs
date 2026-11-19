@@ -53,6 +53,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v26_to_v27,
     migrate_v27_to_v28,
     migrate_v28_to_v29,
+    migrate_v29_to_v30,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -294,6 +295,13 @@ fn migrate_v28_to_v29(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 29)
 }
 
+/// `v29 → v30`: bump the version. v30 added the optional `[favourites]` table,
+/// which defaults to empty when absent, so an in-place version bump is the
+/// entire migration.
+fn migrate_v29_to_v30(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 30)
+}
+
 /// Set the top-level `version` key, erroring if the root is not a table.
 fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
     let table = value.as_table_mut().ok_or(ConfigError::Migration {
@@ -363,7 +371,7 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 29);
+        assert_eq!(crate::CURRENT_VERSION, 30);
     }
 
     #[test]
@@ -459,6 +467,14 @@ mod tests {
         let mut v: Value = toml::from_str("version = 28\n[php]\ndefault = \"8.4\"\n").unwrap();
         migrate_v28_to_v29(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 29);
+        assert_eq!(v["php"]["default"].as_str(), Some("8.4"));
+    }
+
+    #[test]
+    fn v29_to_v30_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 29\n[php]\ndefault = \"8.4\"\n").unwrap();
+        migrate_v29_to_v30(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 30);
         assert_eq!(v["php"]["default"].as_str(), Some("8.4"));
     }
 

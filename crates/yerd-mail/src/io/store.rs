@@ -66,12 +66,12 @@ impl Store {
         })
     }
 
-    /// Capture a raw message: write its `.eml`, record its summary, and evict the
-    /// oldest entries beyond the cap.
+    /// Capture a raw message: write its `.eml`, record its summary (attributed
+    /// to `site` when known), and evict the oldest entries beyond the cap.
     ///
     /// # Errors
     /// [`MailError::Io`] / [`MailError::Index`] on a filesystem or serialise failure.
-    pub async fn append(&self, raw: &[u8]) -> Result<(), MailError> {
+    pub async fn append(&self, raw: &[u8], site: Option<String>) -> Result<(), MailError> {
         let mut inner = self.inner.lock().await;
         let id = format!("{:06}", inner.next_id);
         inner.next_id += 1;
@@ -81,7 +81,9 @@ impl Store {
             .await
             .map_err(|source| MailError::Io { path: eml, source })?;
 
-        inner.entries.push(mime::summary(&id, raw));
+        let mut summary = mime::summary(&id, raw);
+        summary.site = site;
+        inner.entries.push(summary);
 
         let evict = retention::evict_count(inner.entries.len(), self.cap);
         for old in inner.entries.drain(0..evict).collect::<Vec<_>>() {
@@ -265,8 +267,8 @@ mod tests {
     async fn append_list_get_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
-        store.append(&msg("First")).await.unwrap();
-        store.append(&msg("Second")).await.unwrap();
+        store.append(&msg("First"), None).await.unwrap();
+        store.append(&msg("Second"), None).await.unwrap();
 
         let list = store.list().await;
         assert_eq!(list.len(), 2);
@@ -283,10 +285,10 @@ mod tests {
     async fn clear_empties_but_keeps_id_monotonic() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
-        store.append(&msg("A")).await.unwrap();
+        store.append(&msg("A"), None).await.unwrap();
         store.clear().await.unwrap();
         assert_eq!(store.count().await, 0);
-        store.append(&msg("B")).await.unwrap();
+        store.append(&msg("B"), None).await.unwrap();
         assert_eq!(store.list().await[0].id, "000001");
     }
 
@@ -295,7 +297,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
         for s in ["a", "b", "c"] {
-            store.append(&msg(s)).await.unwrap();
+            store.append(&msg(s), None).await.unwrap();
         }
         store
             .delete_many(&["000000".to_string(), "000002".to_string()])
@@ -316,7 +318,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open_with_cap(dir.path().to_path_buf(), 2).unwrap();
         for s in ["one", "two", "three"] {
-            store.append(&msg(s)).await.unwrap();
+            store.append(&msg(s), None).await.unwrap();
         }
         let list = store.list().await;
         assert_eq!(list.len(), 2);
@@ -326,17 +328,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn site_attribution_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = Store::open(dir.path().to_path_buf()).unwrap();
+            store
+                .append(&msg("Attributed"), Some("blog".to_string()))
+                .await
+                .unwrap();
+            store.append(&msg("Unknown"), None).await.unwrap();
+        }
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let list = store.list().await;
+        assert_eq!(list[0].subject, "Unknown");
+        assert_eq!(list[0].site, None);
+        assert_eq!(list[1].subject, "Attributed");
+        assert_eq!(list[1].site.as_deref(), Some("blog"));
+    }
+
+    #[tokio::test]
     async fn reopen_loads_existing_index() {
         let dir = tempfile::tempdir().unwrap();
         {
             let store = Store::open(dir.path().to_path_buf()).unwrap();
-            store.append(&msg("Persisted")).await.unwrap();
+            store.append(&msg("Persisted"), None).await.unwrap();
         }
         let store = Store::open(dir.path().to_path_buf()).unwrap();
         let list = store.list().await;
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].subject, "Persisted");
-        store.append(&msg("Next")).await.unwrap();
+        store.append(&msg("Next"), None).await.unwrap();
         assert_eq!(store.list().await[0].id, "000001");
     }
 
@@ -345,7 +366,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("000007.eml"), msg("orphan")).unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
-        store.append(&msg("fresh")).await.unwrap();
+        store.append(&msg("fresh"), None).await.unwrap();
         assert_eq!(store.list().await[0].id, "000008");
     }
 
@@ -357,7 +378,7 @@ mod tests {
         for i in 0..20 {
             let s = store.clone();
             handles.push(tokio::spawn(async move {
-                s.append(&msg(&format!("m{i}"))).await.unwrap();
+                s.append(&msg(&format!("m{i}")), None).await.unwrap();
             }));
         }
         for h in handles {
@@ -370,8 +391,8 @@ mod tests {
     async fn append_starts_unread() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
-        store.append(&msg("A")).await.unwrap();
-        store.append(&msg("B")).await.unwrap();
+        store.append(&msg("A"), None).await.unwrap();
+        store.append(&msg("B"), None).await.unwrap();
         assert!(store.list().await.iter().all(|e| !e.read));
         assert_eq!(store.counts().await, (2, 2));
     }
@@ -381,9 +402,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         {
             let store = Store::open(dir.path().to_path_buf()).unwrap();
-            store.append(&msg("a")).await.unwrap();
-            store.append(&msg("b")).await.unwrap();
-            store.append(&msg("c")).await.unwrap();
+            store.append(&msg("a"), None).await.unwrap();
+            store.append(&msg("b"), None).await.unwrap();
+            store.append(&msg("c"), None).await.unwrap();
             store
                 .mark_read(&["000000".to_string(), "000002".to_string()])
                 .await
@@ -403,7 +424,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
         for s in ["a", "b", "c"] {
-            store.append(&msg(s)).await.unwrap();
+            store.append(&msg(s), None).await.unwrap();
         }
         assert_eq!(store.counts().await, (3, 3));
         store.mark_read(&["000001".to_string()]).await.unwrap();
@@ -414,7 +435,7 @@ mod tests {
     async fn mark_read_unknown_ids_ignored() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
-        store.append(&msg("a")).await.unwrap();
+        store.append(&msg("a"), None).await.unwrap();
         store.mark_read(&["999999".to_string()]).await.unwrap();
         assert_eq!(store.counts().await, (1, 1));
     }
@@ -423,7 +444,7 @@ mod tests {
     async fn mark_read_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
-        store.append(&msg("a")).await.unwrap();
+        store.append(&msg("a"), None).await.unwrap();
         store.mark_read(&["000000".to_string()]).await.unwrap();
         store.mark_read(&["000000".to_string()]).await.unwrap();
         assert_eq!(store.counts().await, (1, 0));
