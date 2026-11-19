@@ -12,15 +12,16 @@ If you live in the terminal, the [CLI](../reference/cli/) is a first-class alter
 
 ## The window at a glance
 
-The sidebar opens on **Overview** and groups the rest:
+The window controls sit at the top-left of the sidebar, above the Yerd logo and a status line showing whether the daemon is running (and its version). The sidebar opens on **Overview** and lists the pages in one flat list:
 
-| Group | Pages |
-| --- | --- |
-| General | **Overview** - a live dashboard of what's running · **About** |
-| Environment | **Sites** · **PHP** · **Node** · **Services** |
-| Developer | **Tooling** · **Proxies** · **Mail** · **Dumps** |
-| Integrations | **Share** - publish a site over a public URL ([guide](./sharing)) |
-| System | **Settings** · **Doctor** |
+- **Overview** - a live dashboard of what's running
+- **Sites** · **Proxies** · **PHP** · **Node** · **Tooling** · **Services** · **Mail** · **Dumps**
+- **Share** - publish a site over a public URL ([guide](./sharing))
+- Pinned at the bottom: **Doctor** · **Settings**
+
+Some rows carry a badge: Sites shows your site count, PHP and Node their available updates, Mail its unread count (click it to open the Mail viewer), Share how many sites are shared, Dumps whether interception is on or off, Doctor an amber dot when a system privilege needs elevating, and Settings a badge when a Yerd update is available.
+
+Each page opens with a toolbar: the page title, a search box that opens the [command palette](#keyboard-shortcuts), a **Docs** link, and the page's own actions. Drag the window by the toolbar or the top of the sidebar; double-click either to zoom.
 
 ### Overview
 
@@ -38,7 +39,14 @@ App- and daemon-level settings (one of the pages that stays usable when the daem
 - **Application Ports** (while the daemon is running). Editable HTTP/HTTPS (the rootless fallback ports used when 80/443 need elevation), DNS, mail-capture, and dumps ports. If a port is in use elsewhere the page flags it here (site serving or `.test` resolution shows as unbound) so you can pick a free one. Change a value and **Save & restart** validates it, saves, restarts the daemon, and rechecks. HTTP/HTTPS are locked while ports are elevated - un-elevate them on the Doctor page first.
 - **Start at login.** Three toggles - start the daemon at login, start the app at login, and start the app minimized (hidden to the tray). The daemon-at-login toggle is disabled where no per-user service manager is available.
 - **Terminal CLI** (macOS and Linux). Installs `yerd` - and your installed tools (`php`, `composer`, ...) - onto your shell `PATH`. On a packaged Linux install `yerd` itself is already on `PATH`, so this is mainly how Linux users get the PHP/tool shims on `PATH` too.
-- **Appearance.** A System / Light / Dark theme selector; a **Tray icon** selector (Automatic, Light Y, Dark Y, Full icon) for the menu bar / system tray icon; a **Title bar** selector (Automatic, macOS, Linux, Linux (Reversed), Windows) that forces a window-control style regardless of host platform; and a **Preferred editor** selector (macOS and Linux) choosing which editor the Open-in-editor button uses - Auto-detect, any detected editor (VS Code, VSCodium, Cursor, Zed, Sublime Text, PhpStorm, Windsurf), or System default (open folder). Auto-detect picks the highest-ranked editor you have installed, preferring a dedicated PHP IDE over a general editor. **Rescan** re-runs detection if you install an editor while Yerd is open. All apply live and are remembered across launches.
+- **Appearance.** A System / Light / Dark theme selector; a **Tray icon** selector (Automatic, Light Y, Dark Y, Full icon) for the menu bar / system tray icon; a **Title bar** selector (Automatic, macOS, Linux, Windows) that forces a window-control style regardless of host platform (the controls always sit on the left); and a **Preferred editor** selector (macOS and Linux) choosing which editor the Open-in-editor button uses - Auto-detect, any detected editor (VS Code, VSCodium, Cursor, Zed, Sublime Text, PhpStorm, Windsurf), or System default (open folder). Auto-detect picks the highest-ranked editor you have installed, preferring a dedicated PHP IDE over a general editor. **Rescan** re-runs detection if you install an editor while Yerd is open. All apply live and are remembered across launches.
+- **About.** The app, daemon, and negotiated IPC protocol versions, links to the project site and repository, and the licence.
+- **Updates.** A release-channel selector (Stable / Edge pre-releases), a **Check now** button, and the last-checked status (current version, latest stable/edge, and how long ago it checked). When an update is available, an **Apply update** button downloads, verifies, and installs it, restarting the app.
+- **Troubleshooting.** **Logs** opens a dialog tailing the GUI's own session log (`yerd-gui.log`) alongside the daemon log, tab-switchable, with a copy button. **Diagnostics** gathers a shareable text snapshot of app/daemon state with its own copy button - useful when reporting a problem.
+
+<ThemedImage light="/images/yerd-logs-light.png" dark="/images/yerd-logs-dark.png" alt="The Logs dialog, tailing the GUI session log" />
+
+<ThemedImage light="/images/yerd-diagnostics-light.png" dark="/images/yerd-diagnostics-dark.png" alt="The Diagnostics dialog, a copyable JSON snapshot of app/daemon state" />
 
 ### PHP
 
@@ -155,19 +163,6 @@ The Fix buttons run the audited `yerd elevate` helper under an OS prompt; the GU
 On macOS, fixing Privileged ports from the app also removes any `pf` LAN redirect left by an older Yerd, without a message. If you use [LAN access](../reference/cli/lan), run `sudo yerd elevate lan` from a terminal afterwards.
 :::
 
-### About
-
-<ThemedImage light="/images/about-light.png" dark="/images/about-dark.png" alt="About page" />
-
-Shows the app, daemon, and negotiated IPC protocol versions, plus your local environment: the TLD (`.test`), the DNS responder address, and the local CA certificate path and fingerprint (both copyable, with reveal-in-finder). It also links to the project repository.
-
-- **Updates.** A release-channel selector (Stable / Edge pre-releases), a **Check now** button, and the last-checked status (current version, latest stable/edge, and how long ago it checked). When an update is available, an **Apply update** button downloads, verifies, and installs it, restarting the app.
-- **Troubleshooting.** **Logs** opens a dialog tailing the GUI's own session log (`yerd-gui.log`) alongside the daemon log, tab-switchable, with a copy button. **Diagnostics** gathers a shareable text snapshot of app/daemon state with its own copy button - useful when reporting a problem.
-
-<ThemedImage light="/images/yerd-logs-light.png" dark="/images/yerd-logs-dark.png" alt="The Logs dialog, tailing the GUI session log" />
-
-<ThemedImage light="/images/yerd-diagnostics-light.png" dark="/images/yerd-diagnostics-dark.png" alt="The Diagnostics dialog, a copyable JSON snapshot of app/daemon state" />
-
 ## Keyboard shortcuts
 
 The window is fully keyboard-driven. Shortcuts follow each platform's convention: where macOS uses **Cmd** (`⌘`), Linux uses **Ctrl** with the same letter. Two of them are all you need to remember - the **command palette** (`⌘K` / `Ctrl+K`) jumps to any page or runs any action by typing, and the **shortcuts** overlay (`⌘/` / `Ctrl+/`) lists everything below in the app itself.
@@ -197,7 +192,7 @@ The command palette also lists your sites at the bottom (grouped by domain): **O
 | Close window | `⌘W` | `Ctrl+W` | Hide the window to the tray |
 | Close dialog | `Esc` | `Esc` | Dismiss the open modal |
 
-`⌘1`…`⌘9` are: **1** Overview, **2** PHP, **3** Sites, **4** Tooling, **5** Services, **6** Mail, **7** Dumps, **8** Settings, **9** Doctor. Node, Proxies, and About have no digit - reach them from the sidebar or the command palette.
+`⌘1`…`⌘9` are: **1** Overview, **2** PHP, **3** Sites, **4** Tooling, **5** Services, **6** Mail, **7** Dumps, **8** Settings, **9** Doctor. Node, Proxies, and Share have no digit - reach them from the sidebar or the command palette.
 
 ::: info Quitting the app
 There's no Quit shortcut: closing the window (`⌘W` / `Ctrl+W`) hides it to the tray and leaves the daemon running, by design. Quit from the tray menu, or on macOS with the standard `⌘Q`.

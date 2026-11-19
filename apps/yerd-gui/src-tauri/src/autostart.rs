@@ -41,8 +41,10 @@ pub(crate) enum TitleBarStyle {
     #[default]
     Auto,
     Macos,
+    /// The alias keeps settings files written before the mirrored
+    /// `"linux-reversed"` style was removed loading as `Linux`.
+    #[serde(alias = "linux-reversed")]
     Linux,
-    LinuxReversed,
     Windows,
 }
 
@@ -1849,13 +1851,27 @@ mod tests {
             "\"linux\""
         );
         assert_eq!(
-            serde_json::to_string(&TitleBarStyle::LinuxReversed).unwrap(),
-            "\"linux-reversed\""
-        );
-        assert_eq!(
             serde_json::to_string(&TitleBarStyle::Windows).unwrap(),
             "\"windows\""
         );
+    }
+
+    #[test]
+    fn title_bar_style_reads_removed_linux_reversed_as_linux() {
+        let style: TitleBarStyle = serde_json::from_str("\"linux-reversed\"").unwrap();
+        assert_eq!(style, TitleBarStyle::Linux);
+        assert_eq!(serde_json::to_string(&style).unwrap(), "\"linux\"");
+    }
+
+    #[test]
+    fn gui_settings_with_linux_reversed_keeps_other_preferences() {
+        let s: GuiSettings = serde_json::from_str(
+            r#"{"title_bar_style":"linux-reversed","gui_maximized":true,"tray_icon_variant":"dark-y"}"#,
+        )
+        .unwrap();
+        assert_eq!(s.title_bar_style, TitleBarStyle::Linux);
+        assert!(s.gui_maximized);
+        assert_eq!(s.tray_icon_variant, TrayIconVariant::DarkY);
     }
 
     /// `daemon_self_repair_busy` round-trips the flag it reads; false by

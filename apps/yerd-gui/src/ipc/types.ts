@@ -1090,7 +1090,7 @@ export type TrayIconVariant = "auto" | "light-y" | "dark-y" | "full";
  * resolved client-side from `host_platform`. Drawn entirely by the frontend -
  * the Rust side only persists the preference.
  */
-export type TitleBarStyle = "auto" | "macos" | "linux" | "linux-reversed" | "windows";
+export type TitleBarStyle = "auto" | "macos" | "linux" | "windows";
 
 /**
  * Why the daemon isn't up (host command `daemon_diagnostics`). Gathered when a
@@ -1138,7 +1138,7 @@ export interface SetupState {
 }
 
 /**
- * The GUI diagnostic logs surfaced in About → GUI Logs (host command
+ * The GUI diagnostic logs surfaced in Settings → GUI Logs (host command
  * `get_gui_logs`): the per-session GUI host log plus a tail of the daemon's own
  * rolling log. Paths are shown so the dialog can say where each lives.
  */

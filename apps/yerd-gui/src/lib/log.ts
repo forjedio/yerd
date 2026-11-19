@@ -1,6 +1,6 @@
 /**
  * Fire-and-forget frontend logger. Pushes a line into the GUI host's per-session
- * log file (`{cache}/yerd-gui.log`) via the `gui_log` command, so the About →
+ * log file (`{cache}/yerd-gui.log`) via the `gui_log` command, so the Settings →
  * GUI Logs dialog shows frontend phase transitions and caught errors interleaved
  * with the Rust-side daemon install/upgrade/start trail.
  *

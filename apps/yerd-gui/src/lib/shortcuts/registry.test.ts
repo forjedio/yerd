@@ -26,7 +26,7 @@ function fakeCtx(view: ViewActions = {}): ShortcutCtx {
 }
 
 describe("VIEW_TARGETS", () => {
-  it("covers the main views in sidebar order, About excluded", () => {
+  it("covers the main views as palette navigation targets", () => {
     expect(VIEW_TARGETS).toHaveLength(12);
     expect(VIEW_TARGETS[0]?.path).toBe("/overview");
     expect(VIEW_TARGETS[VIEW_TARGETS.length - 1]?.path).toBe("/doctor");

@@ -37,6 +37,8 @@ export interface UseShortcuts {
   commands: Command[];
   /** Execute a command against the wired context. */
   run: (cmd: Command) => void;
+  /** Open the command palette (closing the cheat-sheet), as the ⌘K chord does. */
+  openPalette: () => void;
 }
 
 export function useShortcuts(scope: WindowScope): UseShortcuts {
@@ -130,5 +132,6 @@ export function useShortcuts(scope: WindowScope): UseShortcuts {
     cheatSheetOpen,
     commands,
     run: (cmd: Command) => cmd.run(ctx),
+    openPalette: ctx.openPalette,
   };
 }

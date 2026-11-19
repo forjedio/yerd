@@ -358,11 +358,7 @@ onUnmounted(
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader
-      title="Proxies"
-      subtitle="Reverse-proxy .test domains and site paths to local upstreams"
-      docs="/guide/proxies"
-    >
+    <PageHeader title="Proxies" docs="/guide/proxies">
       <template #actions>
         <DropdownMenu>
           <DropdownMenuTrigger as-child>

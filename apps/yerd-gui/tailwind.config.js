@@ -14,12 +14,11 @@ export default {
     extend: {
       fontFamily: {
         // Forjed brand display face (Outage Cut), self-hosted via @font-face in
-        // style.css. Used for the "YERD" wordmark and the nav section headings;
+        // style.css. Used for the "YERD" wordmark and card/dialog headings;
         // it's a single heavy all-caps weight, so set font-weight: normal.
         display: ['"Outage Cut"', "sans-serif"],
-        // Pin a crisp, native UI stack (SF Pro on macOS) rather than relying on
-        // the bare default; "Inter" leads the fallbacks so a self-hosted copy is
-        // picked up automatically if we ever bundle one.
+        // Inter is bundled (@font-face in style.css); the native stack behind it
+        // only covers the moment before the face loads.
         sans: [
           "Inter",
           "-apple-system",
@@ -31,10 +30,12 @@ export default {
           "Arial",
           "sans-serif",
         ],
+        // JetBrains Mono is bundled (@font-face in style.css) for anything a
+        // developer types: domains, paths, ports, versions.
         mono: [
+          '"JetBrains Mono"',
           "ui-monospace",
           '"SF Mono"',
-          '"JetBrains Mono"',
           "Menlo",
           "Consolas",
           "monospace",
@@ -74,7 +75,7 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
-        // Brand indigo (from the logo), the single accent. See style.css.
+        // Draft accent blue, the single accent. See style.css.
         brand: {
           DEFAULT: "hsl(var(--brand))",
           foreground: "hsl(var(--brand-foreground))",
@@ -88,6 +89,11 @@ export default {
           DEFAULT: "hsl(var(--warning))",
           foreground: "hsl(var(--warning-foreground))",
         },
+        // Shell tokens from the draft with no shadcn equivalent: sidebar
+        // background, active nav row, and the quietest text.
+        sidebar: "hsl(var(--sidebar))",
+        selected: "hsl(var(--selected))",
+        faint: "hsl(var(--faint))",
       },
       borderRadius: {
         lg: "var(--radius)",

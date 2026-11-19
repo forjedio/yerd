@@ -5,7 +5,6 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 
 import logoUrl from "@/assets/logo.svg";
 import mdbinMarkUrl from "@/assets/mdbin-mark.svg";
-import PageHeader from "@/components/PageHeader.vue";
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
 import CardContent from "@/components/ui/CardContent.vue";
@@ -261,238 +260,234 @@ async function copyDiagnostics(): Promise<void> {
 </script>
 
 <template>
-  <div class="flex h-full flex-col">
-    <PageHeader title="About" subtitle="Build info and links" />
-
-    <div class="flex-1 space-y-6 overflow-y-auto p-6">
-      <!-- Identity + build: the wordmark and the version list share one line,
-           split by a hairline; both stack on a narrow window. -->
-      <Card class="p-6 sm:p-8">
-        <div
-          class="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between lg:gap-10"
-        >
-          <div class="flex items-center gap-4">
-            <img :src="logoUrl" alt="" class="size-16 shrink-0" />
-            <div>
-              <p class="pt-2 font-display text-3xl font-normal leading-none tracking-wide">
-                YERD
-              </p>
-              <p class="mt-0.5 text-sm text-muted-foreground">
-                Local PHP, without the friction.
-              </p>
-            </div>
-          </div>
-
-          <dl
-            class="space-y-2 border-t pt-6 text-sm lg:min-w-[15rem] lg:border-l lg:border-t-0 lg:pl-10 lg:pt-0"
-          >
-            <div class="flex items-center justify-between gap-8 whitespace-nowrap">
-              <dt class="text-muted-foreground">App version</dt>
-              <dd class="font-mono">{{ appVersion || "-" }}</dd>
-            </div>
-            <div class="flex items-center justify-between gap-8 whitespace-nowrap">
-              <dt class="text-muted-foreground">Daemon version</dt>
-              <dd class="font-mono">{{ daemonVersion || "unknown" }}</dd>
-            </div>
-            <div class="flex items-center justify-between gap-8 whitespace-nowrap">
-              <dt class="text-muted-foreground">IPC protocol</dt>
-              <dd class="font-mono">{{ protocol ?? "-" }}</dd>
-            </div>
-          </dl>
-        </div>
-
-        <div
-          class="mt-6 flex flex-col gap-3 border-t pt-4 text-sm sm:flex-row sm:items-center sm:justify-between"
-        >
-          <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
-            <button class="text-brand hover:underline" @click="openInBrowser('https://yerd.app')">
-              yerd.app
-            </button>
-            <button
-              class="text-brand hover:underline"
-              @click="openInBrowser('https://github.com/forjedio/yerd')"
-            >
-              GitHub
-            </button>
-          </div>
-          <p class="text-xs text-muted-foreground">Licensed under MIT.</p>
-        </div>
-      </Card>
-
-      <!-- Maker: developed by Forjed, with a call to action to the studio site,
-           plus a short cross-promo for another free Forjed tool. -->
-      <Card class="space-y-5 border-brand/30 bg-brand/5 dark:bg-brand/10">
-        <div
-          class="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between sm:gap-6"
-        >
+  <div class="space-y-4">
+    <!-- Identity + build: the wordmark and the version list share one line,
+         split by a hairline; both stack on a narrow window. -->
+    <Card class="p-6 sm:p-8">
+      <div
+        class="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between lg:gap-10"
+      >
+        <div class="flex items-center gap-4">
+          <img :src="logoUrl" alt="" class="size-16 shrink-0" />
           <div>
-            <p class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Created by
+            <p class="pt-2 font-display text-3xl font-normal leading-none tracking-wide">
+              YERD
             </p>
-            <p class="font-display text-2xl font-normal leading-tight tracking-wide">FORJED</p>
-            <p class="text-sm text-muted-foreground">
-              The independent studio behind Yerd.
+            <p class="mt-0.5 text-sm text-muted-foreground">
+              Local PHP, without the friction.
             </p>
           </div>
-          <Button class="shrink-0" @click="openInBrowser('https://forjed.io')">
-            Visit forjed.io
-            <ArrowUpRight class="opacity-80" />
+        </div>
+
+        <dl
+          class="space-y-2 border-t pt-6 text-sm lg:min-w-[15rem] lg:border-l lg:border-t-0 lg:pl-10 lg:pt-0"
+        >
+          <div class="flex items-center justify-between gap-8 whitespace-nowrap">
+            <dt class="text-muted-foreground">App version</dt>
+            <dd class="font-mono">{{ appVersion || "-" }}</dd>
+          </div>
+          <div class="flex items-center justify-between gap-8 whitespace-nowrap">
+            <dt class="text-muted-foreground">Daemon version</dt>
+            <dd class="font-mono">{{ daemonVersion || "unknown" }}</dd>
+          </div>
+          <div class="flex items-center justify-between gap-8 whitespace-nowrap">
+            <dt class="text-muted-foreground">IPC protocol</dt>
+            <dd class="font-mono">{{ protocol ?? "-" }}</dd>
+          </div>
+        </dl>
+      </div>
+
+      <div
+        class="mt-6 flex flex-col gap-3 border-t pt-4 text-sm sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
+          <button class="text-brand hover:underline" @click="openInBrowser('https://yerd.app')">
+            yerd.app
+          </button>
+          <button
+            class="text-brand hover:underline"
+            @click="openInBrowser('https://github.com/forjedio/yerd')"
+          >
+            GitHub
+          </button>
+        </div>
+        <p class="text-xs text-muted-foreground">Licensed under MIT.</p>
+      </div>
+    </Card>
+
+    <!-- Maker: developed by Forjed, with a call to action to the studio site,
+         plus a short cross-promo for another free Forjed tool. -->
+    <Card class="space-y-5 border-brand/30 bg-brand/5 dark:bg-brand/10">
+      <div
+        class="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between sm:gap-6"
+      >
+        <div>
+          <p class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Created by
+          </p>
+          <p class="font-display text-2xl font-normal leading-tight tracking-wide">FORJED</p>
+          <p class="text-sm text-muted-foreground">
+            The independent studio behind Yerd.
+          </p>
+        </div>
+        <Button class="shrink-0" @click="openInBrowser('https://forjed.io')">
+          Visit forjed.io
+          <ArrowUpRight class="opacity-80" />
+        </Button>
+      </div>
+
+      <!-- Cross-promo for mdbin, the studio's other free tool. Its own brand
+           mark and wordmark (lowercase, mono) rather than ours, so it reads as
+           a product being recommended and not another Yerd feature. -->
+      <div class="border-t border-brand/20 pt-5">
+        <p class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Also from Forjed
+        </p>
+
+        <div class="mt-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-4">
+          <img
+            :src="mdbinMarkUrl"
+            alt=""
+            aria-hidden="true"
+            class="size-9 shrink-0 rounded-lg"
+          />
+
+          <div class="min-w-0 flex-1">
+            <p class="font-mono text-lg font-extrabold leading-none tracking-tight">mdbin</p>
+            <p class="mt-1.5 text-sm font-medium">Share Markdown with a link.</p>
+            <p class="mt-1 text-sm text-muted-foreground">
+              Paste a README, a deploy note, an RFC - publish it and send the URL. Code is
+              highlighted, Mermaid diagrams render themselves, and anyone can comment on a
+              line or fork the doc to suggest an edit. No account needed.
+            </p>
+
+            <ul class="mt-3 flex flex-wrap gap-1.5">
+              <li
+                v-for="feature in mdbinFeatures"
+                :key="feature"
+                class="rounded-full border border-brand/20 bg-background/60 px-2.5 py-0.5 text-[11px] text-muted-foreground"
+              >
+                {{ feature }}
+              </li>
+            </ul>
+
+            <div class="mt-4 flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                @click="openInBrowser('https://mdbin.app/new?utm=yerdapp')"
+              >
+                Create a document
+                <ArrowUpRight class="opacity-80" />
+              </Button>
+              <button
+                class="rounded-md px-2 py-1 text-sm text-muted-foreground hover:text-foreground"
+                @click="openInBrowser('https://mdbin.app/?utm=yerdapp')"
+              >
+                mdbin.app
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Card>
+
+    <!-- Updates -->
+    <Card>
+      <CardHeader>
+        <CardTitle>Updates</CardTitle>
+        <CardDescription>
+          Keep Yerd up to date. Choose a release channel and check for new
+          versions.
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="space-y-4">
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <p class="text-sm font-medium">Release channel</p>
+            <p class="text-xs text-muted-foreground">
+              Stable tracks final releases; Edge opts in to pre-releases and
+              release candidates.
+            </p>
+          </div>
+          <Select
+            :model-value="updateChannel"
+            :options="channelOptions"
+            aria-label="Update channel"
+            :disabled="!running"
+            @update:model-value="(v: UpdateChannel) => onUpdateChannelChange(v)"
+          />
+        </div>
+
+        <div class="flex items-center justify-between gap-4">
+          <div class="min-w-0 text-sm">
+            <template
+              v-if="
+                updateStatus &&
+                (updateStatus.checked_at_epoch || updateStatus.latest_stable || updateStatus.latest_edge)
+              "
+            >
+              <p class="font-medium">{{ updateSummary }}</p>
+              <p class="text-xs text-muted-foreground">
+                Current {{ updateStatus.current }} · stable
+                {{ updateStatus.latest_stable ?? "-" }} · edge
+                {{ updateStatus.latest_edge ?? "-" }}
+              </p>
+              <p v-if="lastCheckedAgo" class="text-xs text-muted-foreground">
+                Last checked {{ lastCheckedAgo }}.
+              </p>
+            </template>
+            <p v-else class="text-xs text-muted-foreground">
+              {{ running ? "Not checked yet." : "Start the daemon to check for updates." }}
+            </p>
+          </div>
+          <Button variant="outline" :disabled="!running || checkingUpdates" @click="runUpdateCheck(true)">
+            <Spinner v-if="checkingUpdates" class="size-4" />
+            <RefreshCw v-else class="size-4" />
+            Check now
           </Button>
         </div>
 
-        <!-- Cross-promo for mdbin, the studio's other free tool. Its own brand
-             mark and wordmark (lowercase, mono) rather than ours, so it reads as
-             a product being recommended and not another Yerd feature. -->
-        <div class="border-t border-brand/20 pt-5">
-          <p class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Also from Forjed
+        <div
+          v-if="updateStatus?.available"
+          class="flex items-center justify-between gap-4 rounded-lg border border-success/40 bg-success/10 p-3"
+        >
+          <p class="text-sm">
+            <template v-if="applyingUpdate">
+              Updating to <strong>{{ updateStatus.target }}</strong> - Yerd will restart…
+            </template>
+            <template v-else>
+              Yerd <strong>{{ updateStatus.target }}</strong> is available.
+            </template>
           </p>
-
-          <div class="mt-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-4">
-            <img
-              :src="mdbinMarkUrl"
-              alt=""
-              aria-hidden="true"
-              class="size-9 shrink-0 rounded-lg"
-            />
-
-            <div class="min-w-0 flex-1">
-              <p class="font-mono text-lg font-extrabold leading-none tracking-tight">mdbin</p>
-              <p class="mt-1.5 text-sm font-medium">Share Markdown with a link.</p>
-              <p class="mt-1 text-sm text-muted-foreground">
-                Paste a README, a deploy note, an RFC - publish it and send the URL. Code is
-                highlighted, Mermaid diagrams render themselves, and anyone can comment on a
-                line or fork the doc to suggest an edit. No account needed.
-              </p>
-
-              <ul class="mt-3 flex flex-wrap gap-1.5">
-                <li
-                  v-for="feature in mdbinFeatures"
-                  :key="feature"
-                  class="rounded-full border border-brand/20 bg-background/60 px-2.5 py-0.5 text-[11px] text-muted-foreground"
-                >
-                  {{ feature }}
-                </li>
-              </ul>
-
-              <div class="mt-4 flex flex-wrap items-center gap-2">
-                <Button
-                  variant="outline"
-                  @click="openInBrowser('https://mdbin.app/new?utm=yerdapp')"
-                >
-                  Create a document
-                  <ArrowUpRight class="opacity-80" />
-                </Button>
-                <button
-                  class="rounded-md px-2 py-1 text-sm text-muted-foreground hover:text-foreground"
-                  @click="openInBrowser('https://mdbin.app/?utm=yerdapp')"
-                >
-                  mdbin.app
-                </button>
-              </div>
-            </div>
-          </div>
+          <Button :disabled="!running || applyingUpdate" @click="onUpdateNow">
+            <Spinner v-if="applyingUpdate" class="size-4" />
+            <Download v-else class="size-4" />
+            {{ applyingUpdate ? "Updating…" : "Update" }}
+          </Button>
         </div>
-      </Card>
+      </CardContent>
+    </Card>
 
-      <!-- Updates -->
-      <Card>
-        <CardHeader>
-          <CardTitle>Updates</CardTitle>
-          <CardDescription>
-            Keep Yerd up to date. Choose a release channel and check for new
-            versions.
-          </CardDescription>
-        </CardHeader>
-        <CardContent class="space-y-4">
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium">Release channel</p>
-              <p class="text-xs text-muted-foreground">
-                Stable tracks final releases; Edge opts in to pre-releases and
-                release candidates.
-              </p>
-            </div>
-            <Select
-              :model-value="updateChannel"
-              :options="channelOptions"
-              aria-label="Update channel"
-              :disabled="!running"
-              @update:model-value="(v: UpdateChannel) => onUpdateChannelChange(v)"
-            />
-          </div>
-
-          <div class="flex items-center justify-between gap-4">
-            <div class="min-w-0 text-sm">
-              <template
-                v-if="
-                  updateStatus &&
-                  (updateStatus.checked_at_epoch || updateStatus.latest_stable || updateStatus.latest_edge)
-                "
-              >
-                <p class="font-medium">{{ updateSummary }}</p>
-                <p class="text-xs text-muted-foreground">
-                  Current {{ updateStatus.current }} · stable
-                  {{ updateStatus.latest_stable ?? "-" }} · edge
-                  {{ updateStatus.latest_edge ?? "-" }}
-                </p>
-                <p v-if="lastCheckedAgo" class="text-xs text-muted-foreground">
-                  Last checked {{ lastCheckedAgo }}.
-                </p>
-              </template>
-              <p v-else class="text-xs text-muted-foreground">
-                {{ running ? "Not checked yet." : "Start the daemon to check for updates." }}
-              </p>
-            </div>
-            <Button variant="outline" :disabled="!running || checkingUpdates" @click="runUpdateCheck(true)">
-              <Spinner v-if="checkingUpdates" class="size-4" />
-              <RefreshCw v-else class="size-4" />
-              Check now
-            </Button>
-          </div>
-
-          <div
-            v-if="updateStatus?.available"
-            class="flex items-center justify-between gap-4 rounded-lg border border-success/40 bg-success/10 p-3"
-          >
-            <p class="text-sm">
-              <template v-if="applyingUpdate">
-                Updating to <strong>{{ updateStatus.target }}</strong> - Yerd will restart…
-              </template>
-              <template v-else>
-                Yerd <strong>{{ updateStatus.target }}</strong> is available.
-              </template>
-            </p>
-            <Button :disabled="!running || applyingUpdate" @click="onUpdateNow">
-              <Spinner v-if="applyingUpdate" class="size-4" />
-              <Download v-else class="size-4" />
-              {{ applyingUpdate ? "Updating…" : "Update" }}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      <!-- Troubleshooting -->
-      <Card>
-        <CardHeader><CardTitle>Troubleshooting</CardTitle></CardHeader>
-        <CardContent class="space-y-3">
-          <p class="text-sm text-muted-foreground">
-            The GUI logs everything it does this session - including the daemon
-            install, upgrade, and start steps. Open the logs to see what
-            happened, or generate a diagnostics snapshot to share when reporting
-            a problem.
-          </p>
-          <div class="flex flex-wrap justify-end gap-2">
-            <Button variant="outline" @click="openLogs">
-              <FileText class="size-4" /> Logs
-            </Button>
-            <Button variant="outline" @click="openDiagnostics">
-              <Stethoscope class="size-4" /> Diagnostics
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
+    <!-- Troubleshooting -->
+    <Card>
+      <CardHeader><CardTitle>Troubleshooting</CardTitle></CardHeader>
+      <CardContent class="space-y-3">
+        <p class="text-sm text-muted-foreground">
+          The GUI logs everything it does this session - including the daemon
+          install, upgrade, and start steps. Open the logs to see what
+          happened, or generate a diagnostics snapshot to share when reporting
+          a problem.
+        </p>
+        <div class="flex flex-wrap justify-end gap-2">
+          <Button variant="outline" @click="openLogs">
+            <FileText class="size-4" /> Logs
+          </Button>
+          <Button variant="outline" @click="openDiagnostics">
+            <Stethoscope class="size-4" /> Diagnostics
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
 
     <Modal
       v-model:open="logsOpen"

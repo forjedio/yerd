@@ -252,11 +252,7 @@ onUnmounted(
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader
-      title="Node"
-      subtitle="Installed Node.js versions, updates, and the global default"
-      docs="/guide/node"
-    />
+    <PageHeader title="Node" docs="/guide/node" />
 
     <div class="flex-1 space-y-8 overflow-y-auto p-6">
       <InfoBanner data-testid="node-shim-note">

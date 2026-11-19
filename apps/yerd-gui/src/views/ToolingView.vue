@@ -152,11 +152,7 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader
-      title="Tooling"
-      subtitle="Install developer tools - bundled, self-contained, and added to your PATH alongside PHP."
-      docs="/guide/tooling"
-    />
+    <PageHeader title="Tooling" docs="/guide/tooling" />
 
     <div class="flex-1 overflow-y-auto p-6">
       <Card>

@@ -1520,13 +1520,13 @@ export async function guiLog(level: string, message: string): Promise<void> {
   await call<void>("gui_log", { level, message });
 }
 
-/** The GUI session log + a tail of the daemon's own rolling log (About → Logs). */
+/** The GUI session log + a tail of the daemon's own rolling log (Settings → Logs). */
 export async function getGuiLogs(): Promise<GuiLogs> {
   return call<GuiLogs>("get_gui_logs");
 }
 
 /** A pretty-printed JSON diagnostics snapshot (paths, service config, ERROR
- * lines from the logs) for the About → Diagnostics button. */
+ * lines from the logs) for the Settings → Diagnostics button. */
 export async function getDiagnostics(): Promise<string> {
   return call<string>("get_diagnostics");
 }

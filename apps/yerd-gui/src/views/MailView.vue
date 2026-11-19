@@ -112,11 +112,7 @@ async function copyEnv(): Promise<void> {
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader
-      title="Mail"
-      subtitle="Capture and inspect emails your apps send during development"
-      docs="/guide/mail"
-    />
+    <PageHeader title="Mail" docs="/guide/mail" />
 
     <div class="flex-1 space-y-4 overflow-y-auto p-6">
       <Card>

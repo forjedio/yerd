@@ -784,11 +784,7 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader
-      title="Services"
-      subtitle="Databases, caches, search, and per-site app servers Yerd supervises"
-      docs="/guide/services"
-    >
+    <PageHeader title="Services" docs="/guide/services">
       <template #actions>
         <Button size="sm" :disabled="busy?.startsWith('add:')" @click="openAdd">
           <Plus class="size-4" /> Add Service

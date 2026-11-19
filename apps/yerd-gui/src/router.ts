@@ -20,68 +20,55 @@ export const router = createRouter({
       name: "general",
       component: () => import("@/views/GeneralView.vue"),
     },
-    // `title`/`subtitle` mirror each view's own PageHeader so the daemon-down
-    // screen (rendered by AppShell when the socket is unreachable) shows the same
-    // page header - without the view's action buttons.
+    // `title` mirrors each view's own PageHeader so the daemon-down screen
+    // (rendered by AppShell when the socket is unreachable) shows the same
+    // toolbar title - without the view's action buttons.
     {
       path: "/php",
       name: "php",
-      meta: { title: "PHP", subtitle: "Installed versions, updates, and the global default" },
+      meta: { title: "PHP" },
       component: () => import("@/views/PhpView.vue"),
     },
     {
       path: "/node",
       name: "node",
-      meta: {
-        title: "Node",
-        subtitle: "Installed Node.js versions, updates, and the global default",
-      },
+      meta: { title: "Node" },
       component: () => import("@/views/NodeView.vue"),
     },
     {
       path: "/sites",
       name: "sites",
-      meta: { title: "Sites", subtitle: "Parked and linked .test sites" },
+      meta: { title: "Sites" },
       component: () => import("@/views/SitesView.vue"),
     },
     {
       path: "/tooling",
       name: "tooling",
-      meta: {
-        title: "Tooling",
-        subtitle:
-          "Install developer tools - bundled, self-contained, and added to your PATH alongside PHP.",
-      },
+      meta: { title: "Tooling" },
       component: () => import("@/views/ToolingView.vue"),
     },
     {
       path: "/services",
       name: "services",
-      meta: { title: "Services", subtitle: "Databases and caches Yerd supervises" },
+      meta: { title: "Services" },
       component: () => import("@/views/ServicesView.vue"),
     },
     {
       path: "/proxies",
       name: "proxies",
-      meta: {
-        title: "Proxies",
-        subtitle: "Reverse-proxy .test domains and site paths to local upstreams",
-      },
+      meta: { title: "Proxies" },
       component: () => import("@/views/ProxiesView.vue"),
     },
     {
       path: "/dumps",
       name: "dumps",
-      meta: { title: "Dumps", subtitle: "Intercept dump() calls and Laravel telemetry" },
+      meta: { title: "Dumps" },
       component: () => import("@/views/LaravelDumpsView.vue"),
     },
     {
       path: "/integrations",
       name: "integrations",
-      meta: {
-        title: "Share",
-        subtitle: "Publish a local site to the internet over a secure public URL",
-      },
+      meta: { title: "Share" },
       component: () => import("@/views/IntegrationsView.vue"),
     },
     {
@@ -93,7 +80,7 @@ export const router = createRouter({
     {
       path: "/mail",
       name: "mail",
-      meta: { title: "Mail", subtitle: "Capture and inspect emails your apps send during development" },
+      meta: { title: "Mail" },
       component: () => import("@/views/MailView.vue"),
     },
     {
@@ -107,13 +94,11 @@ export const router = createRouter({
     {
       path: "/doctor",
       name: "doctor",
-      meta: { title: "Doctor", subtitle: "Health checks and safe one-click fixes" },
+      meta: { title: "Doctor" },
       component: () => import("@/views/DoctorView.vue"),
     },
-    {
-      path: "/about",
-      name: "about",
-      component: () => import("@/views/AboutView.vue"),
-    },
+    // The About page moved into Settings; the tray's About and "Update…" items
+    // still navigate to /about, so land them on Settings.
+    { path: "/about", redirect: "/general" },
   ],
 });

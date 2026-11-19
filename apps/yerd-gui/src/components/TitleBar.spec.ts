@@ -43,6 +43,8 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
 }));
 
+import { useTitleBarStyle } from "@/lib/titleBarStyle";
+
 import TitleBar from "./TitleBar.vue";
 
 /** The debounce window in `TitleBar.vue`, mirrored here so the boundary
@@ -113,8 +115,22 @@ beforeEach(() => {
 afterEach(() => {
   wrapper?.unmount();
   wrapper = null;
+  useTitleBarStyle().style.value = "auto";
   vi.useRealTimers();
 });
+
+/** Aria labels of the window-control buttons, in DOM order. */
+function controlLabels(w: ReturnType<typeof mount>): string[] {
+  return w
+    .findAll("button")
+    .map((b) => b.attributes("aria-label") ?? "")
+    .filter((l) => ["Close", "Minimize", "Maximize", "Restore", "Zoom"].includes(l));
+}
+
+/** True when `a` comes before `b` in document order. */
+function precedes(a: Element, b: Element): boolean {
+  return (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+}
 
 describe("TitleBar resize debounce", () => {
   it("collapses an edge-drag's event storm into one isMaximized() read", async () => {
@@ -226,6 +242,106 @@ describe("TitleBar zoom gesture", () => {
     } finally {
       document.removeEventListener("mousedown", record);
       document.removeEventListener("mouseup", record);
+    }
+  });
+});
+
+describe("TitleBar left-hand controls", () => {
+  it("renders Linux controls close, minimize, maximize before the title", async () => {
+    const w = await mountOn("linux");
+
+    expect(controlLabels(w)).toEqual(["Close", "Minimize", "Maximize"]);
+    const title = w.get("span.pointer-events-none").element;
+    for (const button of w.findAll("button")) {
+      expect(precedes(button.element, title)).toBe(true);
+    }
+  });
+
+  it("renders Windows controls minimize, maximize, close on the left with no logo", async () => {
+    useTitleBarStyle().style.value = "windows";
+    const w = await mountOn("linux");
+
+    expect(controlLabels(w)).toEqual(["Minimize", "Maximize", "Close"]);
+    const title = w.get("span.pointer-events-none").element;
+    for (const button of w.findAll("button")) {
+      expect(precedes(button.element, title)).toBe(true);
+    }
+    expect(w.find("img").exists()).toBe(false);
+  });
+
+  it("keeps every control ahead of the actions slot", async () => {
+    mocks.hostPlatform.mockResolvedValue("linux");
+    wrapper = mount(TitleBar, {
+      slots: { actions: '<button type="button" data-testid="action">Clear</button>' },
+    });
+    await flushMicrotasks();
+
+    const action = wrapper.get('[data-testid="action"]').element;
+    const controls = wrapper.findAll("button").filter((b) => b.element !== action);
+    expect(controls).toHaveLength(3);
+    for (const button of controls) {
+      expect(precedes(button.element, action)).toBe(true);
+    }
+  });
+
+  it("skips the state refresh when the maximize toggle fails", async () => {
+    const w = await mountTitleBar();
+    mocks.toggleMaximize.mockRejectedValue(new Error("no window"));
+
+    await w.get('button[aria-label="Maximize"]').trigger("click");
+    await flushMicrotasks();
+
+    expect(mocks.toggleMaximize).toHaveBeenCalledOnce();
+    expect(mocks.isMaximized).not.toHaveBeenCalled();
+  });
+});
+
+describe("TitleBar sidebar variant", () => {
+  async function mountSidebar(platform: string) {
+    mocks.hostPlatform.mockResolvedValue(platform);
+    wrapper = mount(TitleBar, {
+      props: { variant: "sidebar", title: "Hidden title" },
+      slots: { default: '<div data-testid="brand">Brand</div>' },
+      attachTo: document.body,
+    });
+    await flushMicrotasks();
+    return wrapper;
+  }
+
+  it("renders the controls and slot content in a deep drag region, without a title", async () => {
+    const w = await mountSidebar("macos");
+
+    expect(controlLabels(w)).toEqual(["Close", "Minimize", "Zoom"]);
+    expect(w.find('[data-testid="brand"]').exists()).toBe(true);
+    expect(w.text()).not.toContain("Hidden title");
+    expect(w.find("header").exists()).toBe(false);
+    expect(w.attributes("data-tauri-drag-region")).toBe("deep");
+  });
+
+  it("zooms on a double click on the slot content, but not on a control", async () => {
+    const w = await mountSidebar("macos");
+
+    await w.get('[data-testid="brand"]').trigger("dblclick");
+    await flushMicrotasks();
+    expect(mocks.toggleWindowZoom).toHaveBeenCalledOnce();
+
+    await w.get('button[aria-label="Close"]').trigger("dblclick");
+    await flushMicrotasks();
+    expect(mocks.toggleWindowZoom).toHaveBeenCalledOnce();
+  });
+
+  it("hides a double click's press on the slot content from the drag region", async () => {
+    const w = await mountSidebar("macos");
+    const seen: number[] = [];
+    const record = (e: Event) => seen.push((e as MouseEvent).detail);
+    document.addEventListener("mousedown", record);
+
+    try {
+      const brand = w.get('[data-testid="brand"]').element;
+      brand.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, detail: 2 }));
+      expect(seen).toEqual([]);
+    } finally {
+      document.removeEventListener("mousedown", record);
     }
   });
 });

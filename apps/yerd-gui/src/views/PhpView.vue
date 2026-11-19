@@ -524,11 +524,7 @@ onUnmounted(
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader
-      title="PHP"
-      subtitle="Installed versions, updates, and the global default"
-      docs="/guide/php-versions"
-    />
+    <PageHeader title="PHP" docs="/guide/php-versions" />
 
     <div class="flex-1 overflow-y-auto p-6">
       <!-- Installed versions -->

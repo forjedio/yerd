@@ -43,20 +43,21 @@ apps/yerd-gui/
 └── src/                    Vue FRONTEND
     ├── main.ts             createApp + router; initTheme(); initDesktopChrome()
     ├── App.vue             AppShell + Toaster; shared daemon poller; first-run daemon start
-    ├── router.ts           hash router: /overview (default) /general /php /sites /tooling /services /proxies /dumps /integrations /mail /doctor /about (+ /dumps-window, /mails-viewer standalone routes)
+    ├── router.ts           hash router: /overview (default) /general /php /sites /tooling /services /proxies /dumps /integrations /mail /doctor (+ /dumps-window, /mails-viewer standalone routes; a legacy route redirects to /general for the tray)
     ├── ipc/
     │   ├── types.ts        TypeScript mirror of the yerd-ipc wire JSON
     │   ├── client.ts       typed wrappers around invoke() + IpcError
     │   └── client.test.ts  command-mapping + error-categorisation tests
     ├── composables/        useDaemon (singleton poller), usePoll, useToast, useIdes
-    ├── components/         AppShell, SideNav, NavLink, TitleBar, StatusPill, ComingSoon, EnvironmentCard,
+    ├── components/         AppShell, SideNav, NavLink, TitleBar, PageHeader, AboutSection, StatusPill, ComingSoon, EnvironmentCard,
     │                       SiteCard, SiteDetailsSidebar (+ SiteDomainsPanel / SiteRoutesPanel / SiteHeadersPanel / SiteNodePanel),
     │                       PhpVersionPanel, ServiceOverridesModal, ui/ (incl. AsyncState, EmptyState, InfoBanner)
-    ├── views/              OverviewView, GeneralView, PhpView, NodeView, SitesView, ProxiesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView, AboutView
+    ├── views/              OverviewView, GeneralView, PhpView, NodeView, SitesView, ProxiesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView
     └── lib/                utils (cn, humanisers), theme, desktop chrome, domainValidation,
                             siteFilter (match a query against every domain a site answers),
                             ideChoice (resolve "auto"/"system"/an id to a label), wpAdmin,
-                            phpSettings (client-side pool/setting shape checks), windowState
+                            phpSettings (client-side pool/setting shape checks), windowState,
+                            windowZoom (double-click-to-zoom shared by TitleBar and PageHeader)
 ```
 
 ## The Rust bridge (`src-tauri`)
@@ -142,7 +143,7 @@ Three commands are **host-only helpers** with no daemon IPC:
 
 | Command | Returns | Purpose |
 | --- | --- | --- |
-| `protocol_version` | `u32` (`yerd_ipc::PROTOCOL_VERSION`) | the negotiated IPC protocol version, for the About view |
+| `protocol_version` | `u32` (`yerd_ipc::PROTOCOL_VERSION`) | the negotiated IPC protocol version, for the Settings page |
 | `host_platform` | `&'static str` (`std::env::consts::OS`) | `"linux"` / `"macos"` / `"windows"` to gate platform UI |
 | `elevate` / `unelevate` | `()` | run `yerd elevate <target>` / `yerd unelevate <target>` under OS elevation (see below) |
 
@@ -289,15 +290,20 @@ The window itself (`tauri.conf.json`) is **decorationless and transparent**
 (`"decorations": false`, `"transparent": true`, `macOSPrivateApi: true`), which
 is why the frontend ships a custom `TitleBar.vue`. Its control layout isn't
 hardcoded to the host OS - it's a user preference. `lib/titleBarStyle.ts` holds
-a `TitleBarStyle` (`"auto" | "macos" | "linux" | "linux-reversed" | "windows"`),
+a `TitleBarStyle` (`"auto" | "macos" | "linux" | "windows"`),
 persisted host-side in `gui-settings.json` via the `get_title_bar_style` /
 `set_title_bar_style` commands (mirroring the tray icon variant setting) and
 broadcast to every open window so the main, mails, and dumps windows switch in
 lockstep. `"auto"` (the default) resolves from `host_platform`; any other value
 forces that layout regardless of the actual host, driving which controls
-`TitleBar.vue` renders on which side (macOS traffic lights; Linux close-left,
-minimize/maximize-right; Linux Reversed the mirror of that; Windows
-minimize/maximize/close all on the right). The CSP is locked down to
+`TitleBar.vue` renders (macOS traffic lights; Linux close/minimize/maximize;
+Windows minimize/maximize/close). Every style renders on the left: the main
+window draws them at the top of the sidebar (`TitleBar variant="sidebar"`,
+whose slot holds the brand block), and the secondary windows in their own
+32px bar. A settings file written by an older build with the removed mirrored
+Linux style still loads as `"linux"` (a serde alias). In the main window each page's
+`PageHeader` toolbar is the other drag region, sharing the double-click zoom
+in `lib/windowZoom.ts`. The CSP is locked down to
 `default-src 'self'` (plus inline styles and `data:` images). Bundle targets are
 `deb` and `app` - the macOS `.dmg` is **not** a Tauri bundle target; it's built
 as a separate headless step (`apps/yerd-gui/scripts/build-macos-dmg.sh`, via
@@ -521,7 +527,10 @@ palette without a digit), **SitesView**, **ToolingView** (`/tooling`; Node is
 not listed there, it has its own page), **ServicesView**,
 **LaravelDumpsView** (`/dumps`), **MailView** (`/mail`), **DoctorView** (which
 also hosts the OS-privileges **EnvironmentCard** - CA trust / resolver / ports),
-**AboutView** - plus two **standalone** routes that the auxiliary windows load:
+and **IntegrationsView** (`/integrations`, Share). `/about` redirects to
+`/general` (the tray's About and Update items still navigate there; the build
+info, updates and troubleshooting cards now live at the end of Settings in
+`AboutSection.vue`). Plus two **standalone** routes that the auxiliary windows load:
 
 - **DumpsWindowView** (`/dumps-window`) - the live Laravel Dumps viewer that
   fills the separate `dumps` window: tabbed by `DumpCategory`, incrementally
@@ -564,7 +573,7 @@ stubs are gone now that their IPC exists).
 When the socket is unreachable, `AppShell.vue` replaces the route view with a
 "Daemon not running" panel offering **Start** (which launches `yerdd` through
 the per-user service via the `start_daemon` host command) and **Retry**; the
-Overview, Settings, and About routes stay reachable while down (`DAEMON_FREE`).
+Overview and Settings routes stay reachable while down (`DAEMON_FREE`).
 The app can drive the daemon's *lifecycle* but never reimplements its runtime
 logic - the daemon stays the single source of truth - and it expects the `yerd`
 CLI installed **beside** it for the elevation path.

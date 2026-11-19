@@ -544,11 +544,7 @@ onUnmounted(registerViewActions({ refresh: () => void reload() }));
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader
-      title="Share"
-      subtitle="Publish a local site to the internet over a secure public URL"
-      docs="/guide/sharing"
-    />
+    <PageHeader title="Share" docs="/guide/sharing" />
 
     <div class="flex-1 space-y-6 overflow-y-auto p-6">
       <Card>

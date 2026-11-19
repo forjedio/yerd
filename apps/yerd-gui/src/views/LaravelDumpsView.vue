@@ -14,6 +14,7 @@ import CardTitle from "@/components/ui/CardTitle.vue";
 import Switch from "@/components/ui/Switch.vue";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { usePoll } from "@/composables/usePoll";
+import { invalidate } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
 import {
   dumpsStatus,
@@ -51,6 +52,7 @@ const hasLegacy = computed(() => extensions.value.some((e) => e.legacy));
 async function toggleEnabled(next: boolean): Promise<void> {
   try {
     await setDumpsEnabled(next);
+    void invalidate("dumps-status");
     await refresh();
   } catch (e) {
     toast.error("Couldn't toggle interception", (e as IpcError).message);
@@ -80,11 +82,7 @@ async function openViewer(): Promise<void> {
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader
-      title="Dumps"
-      subtitle="Intercept dump() calls and Laravel telemetry"
-      docs="/guide/laravel-dumps"
-    />
+    <PageHeader title="Dumps" docs="/guide/laravel-dumps" />
 
     <div class="flex-1 space-y-6 overflow-y-auto p-6">
       <Card>

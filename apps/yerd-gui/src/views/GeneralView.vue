@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 
+import AboutSection from "@/components/AboutSection.vue";
 import NetworkProxyCard from "@/components/NetworkProxyCard.vue";
 import PageHeader from "@/components/PageHeader.vue";
 import Button from "@/components/ui/Button.vue";
@@ -75,7 +76,6 @@ const titleBarStyleOptions = [
   { value: "auto", label: "Automatic" },
   { value: "macos", label: "macOS" },
   { value: "linux", label: "Linux" },
-  { value: "linux-reversed", label: "Linux (Reversed)" },
   { value: "windows", label: "Windows" },
 ] as const;
 
@@ -539,7 +539,7 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader title="Settings" subtitle="Ports, startup, and appearance" />
+    <PageHeader title="Settings" />
 
     <div class="flex-1 space-y-4 overflow-y-auto p-6">
       <!-- macOS: registered via SMAppService but awaiting Login-Items approval. -->
@@ -971,6 +971,9 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
           </div>
         </CardContent>
       </Card>
+
+      <!-- Build info, links, updates and troubleshooting. -->
+      <AboutSection />
 
     </div>
 
