@@ -64,6 +64,7 @@ apps/yerd-gui/
     │                       WordPressOptionsStep, MissingToolsPanel, CreateProgress),
     │                       services/ (ServicesList, ServiceInspector, ServiceDatabasesCard, ServiceConnectCard,
     │                       ServiceOverridesCard, AddServiceDialog, ServiceLogsDialog, ServiceIcon),
+    │                       mail/ (MailInbox, MailReader, MailSetupDialog),
     │                       PhpVersionPanel, AddExtensionModal, DaemonDownHero, DaemonDiagnosticsPanel,
     │                       overview/ (status, favourites, setup checklist, release notes and contributors cards),
     │                       ui/ (incl. AsyncState, EmptyState, InfoBanner, ConfirmDialog, DialogFrame,
@@ -74,6 +75,7 @@ apps/yerd-gui/
                             sites (Sites list sections, chips, warnings and inspector labels),
                             proxies (Proxies chips, sections, upstream labels and name/prefix checks),
                             services (Services sections, status lines, test-copy grouping, .env snippets),
+                            mail (app labels, time labels, capture state, Laravel .env),
                             php (PHP list order, status and update labels, banner, install choices
                             and the install-progress line),
                             tooling (Tooling split, descriptions, Composer gate, PATH copy),
@@ -564,14 +566,18 @@ info, updates and troubleshooting cards now live at the end of Settings in
   `dumpsStatus` / `setDumpsEnabled` / `setDumpsPort` / `setDumpFeature` and shows
   per-PHP-version extension presence, with a "Show Dumps" button that opens the
   standalone window via `showDumpsWindow`.
-- **MailsViewerView** (`/mails-viewer`, `meta.standalone`) - the captured-mail
-  inbox that fills the separate `mails` window: lists `listMails`, loads a
-  selected message with `getMail`, renders the HTML body in a **sandboxed iframe**
-  (strict child CSP, no scripts, no same-origin), groups by sending application,
-  and supports clear/delete. `MailView` (the in-shell `/mail` page) is the
-  settings surface - it reads mail status off the shared `status` poll, drives
-  `setMailEnabled` / `setMailPort`, and opens the viewer window via
-  `showMailsWindow`.
+- **MailsViewerView** (`/mails-viewer`, `meta.standalone`) and **MailView**
+  (the in-shell `/mail` page) both compose `components/mail/` (`MailInbox`,
+  `MailReader`) over the `useMailbox` composable, which polls `listMails`, keeps
+  the app filter (grouped by sender name, then the attributed site), loads the
+  selected message with `getMail` (a user's pick is marked read with
+  `markMailsRead`; the automatic first pick is not) and deletes or clears.
+  `MailReader` renders the HTML body, sanitized with DOMPurify, into a **Shadow
+  DOM** (remote content blocked until **Load**), with Text and Headers tabs and
+  attachments. `MailView` adds the toolbar: the capture pill from the shared
+  `status` poll, **Setup** (`MailSetupDialog`, driving `setMailEnabled`; the port
+  is edited in Settings ▸ Application Ports) and a pop-out button that opens the
+  viewer window via `showMailsWindow`.
 
 Components are split into app components (`AppShell`, `SideNav`, `TitleBar`,
 `StatusPill`, `PageHeader`, `ComingSoon`) and hand-rolled

@@ -1,76 +1,103 @@
-<script setup lang="ts">
-import { Copy } from "lucide-vue-next";
-import { computed, onUnmounted, ref, watch } from "vue";
+<script lang="ts">
+import { ref } from "vue";
 
+/** The daemon boot in which capture was last toggled. Module scope, so the
+ *  "Restart Yerd to apply" pill survives leaving and reopening the screen. */
+const pendingBoot = ref<number | null>(null);
+</script>
+
+<script setup lang="ts">
+import { AppWindow, SlidersHorizontal, TriangleAlert } from "lucide-vue-next";
+import { computed, onUnmounted, watch } from "vue";
+import { useRouter } from "vue-router";
+
+import MailInbox from "@/components/mail/MailInbox.vue";
+import MailReader from "@/components/mail/MailReader.vue";
+import MailSetupDialog from "@/components/mail/MailSetupDialog.vue";
 import PageHeader from "@/components/PageHeader.vue";
-import StatusPill from "@/components/StatusPill.vue";
-import type { Tone } from "@/components/StatusPill.vue";
 import Button from "@/components/ui/Button.vue";
-import Card from "@/components/ui/Card.vue";
-import CardContent from "@/components/ui/CardContent.vue";
-import CardDescription from "@/components/ui/CardDescription.vue";
-import CardHeader from "@/components/ui/CardHeader.vue";
-import CardTitle from "@/components/ui/CardTitle.vue";
-import Input from "@/components/ui/Input.vue";
-import Switch from "@/components/ui/Switch.vue";
-import { registerViewActions } from "@/lib/shortcuts/useViewActions";
+import InspectorFrame from "@/components/ui/InspectorFrame.vue";
 import { useDaemon } from "@/composables/useDaemon";
+import { useMailbox } from "@/composables/useMailbox";
 import { useToast } from "@/composables/useToast";
+import { useWideLayout } from "@/composables/useWideLayout";
 import { IpcError, setMailEnabled, showMailsWindow } from "@/ipc/client";
+import { captureStatus, laravelEnv } from "@/lib/mail";
+import { registerViewActions } from "@/lib/shortcuts/useViewActions";
+import { cn } from "@/lib/utils";
 
 const toast = useToast();
+const router = useRouter();
 const { report, refresh } = useDaemon();
+const wide = useWideLayout();
+const box = useMailbox({ autoSelect: () => wide.value });
+const { app, busy, detail, filtered, list, loadingDetail, now, selectedId } = box;
 
-// Live mail status comes from the shared 4s status poll (no extra loop).
-const mail = computed(() => report.value?.mail ?? null);
-
-onUnmounted(registerViewActions({ refresh: () => void refresh() }));
-
-// Local editable copy of the enable toggle, seeded from the live status. The
-// mail *port* is now edited centrally on the Settings ▸ Application Ports page.
-const enabled = ref(false);
-const busy = ref(false);
-
-watch(
-  mail,
-  (m) => {
-    if (!m) return;
-    enabled.value = m.enabled;
-  },
-  { immediate: true },
+onUnmounted(
+  registerViewActions({
+    refresh: () => {
+      void refresh();
+      void box.refresh();
+    },
+  }),
 );
 
-const statusTone = computed<Tone>(() => {
-  const m = mail.value;
-  if (!m || !m.enabled) return "muted";
-  return m.listening ? "ok" : "warn";
+/** Live mail status from the shared 4s status poll (no extra loop). */
+const mail = computed(() => report.value?.mail ?? null);
+
+const capture = computed(() => {
+  const boot = report.value?.boot_id ?? null;
+  return captureStatus(mail.value, pendingBoot.value != null && pendingBoot.value === boot);
 });
 
-const statusLabel = computed(() => {
-  const m = mail.value;
-  if (!m) return "Unknown";
-  if (!m.enabled) return "Disabled";
-  return m.listening ? "Running" : "Enabled - port unavailable";
-});
+const pillClass = computed(() =>
+  cn(
+    "inline-flex h-7 shrink-0 items-center gap-2 rounded-full px-3 text-xs font-semibold",
+    capture.value.tone === "ok" && "bg-success/15 text-success",
+    capture.value.tone === "warn" && "bg-warning/15 text-warning",
+    (capture.value.tone === "off" || capture.value.tone === "pending") && "border bg-muted text-muted-foreground",
+  ),
+);
 
-async function onToggleEnabled(next: boolean): Promise<void> {
-  busy.value = true;
+const setupOpen = ref(false);
+const toggling = ref(false);
+
+async function toggleCapture(next: boolean): Promise<void> {
+  if (toggling.value) return;
+  toggling.value = true;
   try {
     await setMailEnabled(next);
-    enabled.value = next;
-    toast.success(
-      next ? "Mail capture enabled" : "Mail capture disabled",
-      "Takes effect after the daemon restarts.",
-    );
+    pendingBoot.value = report.value?.boot_id ?? null;
+    toast.success(next ? "Mail capture turned on" : "Mail capture turned off", "Applies when Yerd restarts");
     await refresh();
   } catch (e) {
     toast.error("Couldn't update mail capture", (e as IpcError).message);
   } finally {
-    busy.value = false;
+    toggling.value = false;
   }
 }
 
-async function onShowMails(): Promise<void> {
+const fromName = ref("");
+const fromAddress = ref("");
+const envText = computed(() =>
+  laravelEnv({ port: mail.value?.port ?? 2525, fromName: fromName.value, fromAddress: fromAddress.value }),
+);
+
+async function copyEnv(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(envText.value);
+    toast.success("Copied to clipboard", "Paste these into your Laravel .env");
+  } catch {
+    toast.error("Couldn't copy");
+  }
+}
+
+function changePort(): void {
+  setupOpen.value = false;
+  void router.push("/general");
+}
+
+async function openWindow(): Promise<void> {
   try {
     await showMailsWindow();
   } catch (e) {
@@ -78,154 +105,109 @@ async function onShowMails(): Promise<void> {
   }
 }
 
-// ── Laravel .env snippet ──
-// Sensible Laravel defaults; the "From name" follows the Laravel idiom of
-// referencing the app's APP_NAME, and the port tracks the live mail server.
-const fromName = ref("");
-const fromAddress = ref("");
-const mailPort = computed(() => mail.value?.port ?? 2525);
+const drawerOpen = ref(false);
 
-const envSnippet = computed(() => {
-  const name = fromName.value.trim() || "${APP_NAME}";
-  const address = fromAddress.value.trim() || "hello@example.com";
-  return [
-    "MAIL_MAILER=smtp",
-    "MAIL_HOST=127.0.0.1",
-    `MAIL_PORT=${mailPort.value}`,
-    "MAIL_USERNAME=null",
-    "MAIL_PASSWORD=null",
-    "MAIL_ENCRYPTION=null",
-    `MAIL_FROM_ADDRESS="${address}"`,
-    `MAIL_FROM_NAME="${name}"`,
-  ].join("\n");
+watch(wide, (isWide) => {
+  if (isWide) drawerOpen.value = false;
 });
 
-async function copyEnv(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(envSnippet.value);
-    toast.success("Copied to clipboard", "Paste these into your Laravel .env file.");
-  } catch {
-    toast.error("Couldn't copy");
-  }
+watch(selectedId, (id) => {
+  if (!id) drawerOpen.value = false;
+});
+
+function onSelect(id: string): void {
+  void box.select(id, true);
+  if (!wide.value) drawerOpen.value = true;
 }
 </script>
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader title="Mail" docs="/guide/mail" />
+    <PageHeader title="Mail" docs="/guide/mail">
+      <template #actions>
+        <span :class="pillClass" :title="capture.title" data-testid="capture-pill">
+          <TriangleAlert v-if="capture.tone === 'warn'" class="size-3.5" aria-hidden="true" />
+          <span
+            v-else
+            :class="cn('size-[7px] rounded-full', capture.tone === 'ok' ? 'bg-success' : 'bg-faint')"
+            aria-hidden="true"
+          />
+          {{ capture.label }}
+        </span>
+        <Button variant="outline" size="sm" @click="setupOpen = true">
+          <SlidersHorizontal />
+          Setup
+        </Button>
+        <Button
+          variant="outline"
+          size="icon"
+          class="size-8"
+          aria-label="Open in a separate window"
+          title="Open in a separate window"
+          @click="openWindow"
+        >
+          <AppWindow />
+        </Button>
+      </template>
+    </PageHeader>
 
-    <div class="flex-1 space-y-4 overflow-y-auto p-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Mail Server</CardTitle>
-          <CardDescription>
-            Yerd runs a local SMTP server that captures every outgoing email so
-            you can preview it here. Point your app's mailer at
-            <code>127.0.0.1</code> on the port below.
-          </CardDescription>
-        </CardHeader>
-        <CardContent class="space-y-5">
-          <!-- Status -->
-          <div class="flex items-center justify-between border-b pb-4">
-            <div>
-              <p class="text-sm font-medium">Mail server status</p>
-              <p class="text-xs text-muted-foreground">
-                {{ mail?.count ?? 0 }} captured email(s)
-              </p>
-            </div>
-            <StatusPill
-              :tone="statusTone"
-              :label="statusLabel"
-              :pulse="statusTone === 'ok'"
-            />
-          </div>
+    <div class="flex min-h-0 flex-1" :data-layout="wide ? 'wide' : 'compact'">
+      <div :class="wide ? 'flex w-[360px] shrink-0 flex-col pl-4 pt-2.5' : 'flex min-w-0 flex-1 flex-col pl-4 pt-2.5'">
+        <MailInbox
+          v-model:app="app"
+          class="flex-1"
+          :layout="wide ? 'list' : 'table'"
+          :mails="filtered"
+          :total="list.length"
+          :unread="box.unread.value"
+          :apps="box.apps.value"
+          :selected="selectedId"
+          :now="now"
+          :loading="box.loading.value"
+          :error="box.error.value"
+          :clearing="busy === 'clear'"
+          :capture="mail"
+          @select="onSelect"
+          @clear-all="box.clearAll"
+          @retry="box.refresh"
+          @copy-env="copyEnv"
+          @turn-on="toggleCapture(true)"
+        />
+      </div>
 
-          <!-- Enable toggle -->
-          <div class="flex items-center justify-between">
-            <div>
-              <p class="text-sm font-medium">Enabled</p>
-              <p class="text-xs text-muted-foreground">
-                Start the capture server when the daemon boots.
-              </p>
-            </div>
-            <Switch
-              :model-value="enabled"
-              :disabled="busy"
-              aria-label="Enable mail capture"
-              @update:model-value="onToggleEnabled"
-            />
-          </div>
-
-          <!-- Port (read-only; edited centrally on Settings ▸ Application Ports) -->
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium">Mail server port</p>
-              <p class="text-xs text-muted-foreground">
-                Change it in Settings ▸ Application Ports.
-              </p>
-            </div>
-            <span class="font-mono text-sm">{{ mailPort }}</span>
-          </div>
-
-          <!-- Actions -->
-          <div class="flex items-center justify-end border-t pt-4">
-            <Button @click="onShowMails">Show Mails</Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      <!-- Laravel .env configuration -->
-      <Card>
-        <CardHeader>
-          <CardTitle>Laravel configuration</CardTitle>
-          <CardDescription>
-            Add these to your Laravel app's <code>.env</code> to route its mail
-            through Yerd's capture server.
-          </CardDescription>
-        </CardHeader>
-        <CardContent class="space-y-4">
-          <div class="grid gap-3 sm:grid-cols-2">
-            <div>
-              <label class="text-sm font-medium" for="mail-from-name">From name</label>
-              <Input
-                id="mail-from-name"
-                v-model="fromName"
-                class="mt-1.5"
-                placeholder="${APP_NAME}"
-              />
-              <p class="mt-1 text-xs text-muted-foreground">
-                Defaults to your app's <code>APP_NAME</code>.
-              </p>
-            </div>
-            <div>
-              <label class="text-sm font-medium" for="mail-from-address">From address</label>
-              <Input
-                id="mail-from-address"
-                v-model="fromAddress"
-                class="mt-1.5"
-                placeholder="hello@example.com"
-              />
-              <p class="mt-1 text-xs text-muted-foreground">
-                Capture accepts any address - nothing is actually delivered.
-              </p>
-            </div>
-          </div>
-
-          <div class="relative">
-            <pre class="overflow-x-auto rounded-md border bg-muted/50 p-3 pr-12 font-mono text-xs leading-relaxed text-foreground">{{ envSnippet }}</pre>
-            <Button
-              variant="ghost"
-              size="icon"
-              class="absolute right-1.5 top-1.5"
-              aria-label="Copy .env configuration"
-              title="Copy"
-              @click="copyEnv"
-            >
-              <Copy class="size-4" />
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+      <div :class="wide ? 'min-w-0 flex-1 border-l' : 'hidden'" data-testid="reader-column">
+        <InspectorFrame
+          :mode="wide ? 'panel' : 'drawer'"
+          :shown="wide ? list.length > 0 : drawerOpen && !!selectedId"
+          label="Message"
+          testid="mail-reader"
+          backdrop-class="mail-reader-backdrop"
+          wide-drawer
+          @close="drawerOpen = false"
+        >
+          <MailReader
+            :detail="detail"
+            :loading="loadingDetail"
+            :now="now"
+            :deleting="busy === 'delete'"
+            :closable="!wide"
+            @delete="box.deleteMail"
+            @close="drawerOpen = false"
+          />
+        </InspectorFrame>
+      </div>
     </div>
+
+    <MailSetupDialog
+      v-model:open="setupOpen"
+      v-model:from-name="fromName"
+      v-model:from-address="fromAddress"
+      :capture="mail"
+      :env-text="envText"
+      :toggling="toggling"
+      @toggle="toggleCapture"
+      @copy="copyEnv"
+      @change-port="changePort"
+    />
   </div>
 </template>

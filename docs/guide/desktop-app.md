@@ -129,7 +129,7 @@ The **Config overrides** card lists the engine's stored [configuration overrides
 
 <ThemedImage light="/images/mail-light.png" dark="/images/mail-dark.png" alt="Mail capture page" />
 
-The built-in SMTP **mail capture** server - point your app's mailer at `127.0.0.1` on the shown port and every outgoing email is captured for preview instead of being sent. Toggle capture, set the port, and open the separate **Mails** viewer with Show Mails. A **Laravel configuration** card emits the `.env` mail keys (`MAIL_HOST`, `MAIL_PORT`, …) to paste into your app, with editable From name/address. Captured mail is tracked read/unread: the sidebar **Mail** item shows an unread-count pill (click it to jump straight to the viewer), and opening a message marks it read. See [Mail Capture](./mail).
+The built-in SMTP **mail capture** server - point your app's mailer at `127.0.0.1` on the shown port and every outgoing email is captured for preview instead of being sent. The page is an inbox: the messages beside a reader with **Preview**, **Text** and **Headers** tabs, remote images blocked until you **Load** them, attachments and **Delete** (a table and a drawer in a narrow window). An **All apps** menu filters by sending app and the trash button clears the mailbox. The toolbar shows whether capture is running, **Setup** toggles capture, links to the port in Settings ▸ Application Ports and emits the Laravel `.env` mail keys (`MAIL_HOST`, `MAIL_PORT`, …) with editable From name/address, and the pop-out button opens the same inbox in the separate **Mails** window. Captured mail is tracked read/unread: the sidebar **Mail** item shows an unread-count pill (click it to open the Mails window), and opening a message marks it read. See [Mail Capture](./mail).
 
 ### Dumps
 
