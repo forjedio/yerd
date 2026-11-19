@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Copy, TriangleAlert } from "lucide-vue-next";
+import { ChevronDown, Copy, TriangleAlert } from "lucide-vue-next";
 import { computed } from "vue";
 
 import Button from "@/components/ui/Button.vue";
@@ -20,6 +20,13 @@ const hasRaw = computed(
     props.diagnostics.spawnLogTail.length > 0 ||
     props.diagnostics.repairLogTail.length > 0,
 );
+
+/** The last two daemon log lines (else spawn log lines), shown inline as the likely cause. */
+const excerpt = computed(() => {
+  const d = props.diagnostics;
+  const source = d.logTail.length > 0 ? d.logTail : d.spawnLogTail;
+  return source.slice(-2);
+});
 
 /** A flat, paste-able plain-text dump of the whole diagnostics struct. */
 function asText(): string {
@@ -56,65 +63,86 @@ async function copy(): Promise<void> {
 </script>
 
 <template>
-  <div class="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm">
-    <div class="flex items-start gap-2">
-      <TriangleAlert class="mt-0.5 size-4 shrink-0 text-destructive" />
-      <div class="min-w-0 flex-1">
-        <p class="font-medium">The daemon didn't come up</p>
+  <div class="rounded-[10px] border border-destructive/40 bg-destructive/5 p-4 text-[13px]">
+    <div class="flex items-center gap-2">
+      <TriangleAlert class="size-4 shrink-0 text-destructive" aria-hidden="true" />
+      <p class="font-semibold">The daemon didn't come up</p>
+    </div>
 
-        <!-- Actionable verdict first. -->
-        <ul
-          v-if="diagnostics.hints.length"
-          class="mt-1 list-disc space-y-1 pl-4 text-muted-foreground"
+    <ul
+      v-if="diagnostics.hints.length"
+      class="mt-2 list-disc space-y-1 pl-5 text-muted-foreground"
+    >
+      <li v-for="(hint, i) in diagnostics.hints" :key="i">{{ hint }}</li>
+    </ul>
+    <p v-else class="mt-2 text-muted-foreground">
+      We couldn't determine the cause automatically. Open the details below
+      and copy them when reporting the problem.
+    </p>
+
+    <div
+      v-if="excerpt.length"
+      data-testid="diagnostics-excerpt"
+      class="mt-3 rounded-md bg-card px-3 py-2.5 font-mono text-xs dark:bg-background"
+    >
+      <p v-for="(line, i) in excerpt" :key="i" class="truncate text-destructive" :title="line">
+        {{ line }}
+      </p>
+      <p v-if="diagnostics.logPath" class="mt-0.5 truncate text-faint" :title="diagnostics.logPath">
+        {{ diagnostics.logPath }}
+      </p>
+    </div>
+
+    <div class="mt-3 flow-root">
+      <Button variant="outline" size="sm" class="float-left mr-2" @click="copy">
+        <Copy /> Copy diagnostics
+      </Button>
+
+      <details v-if="hasRaw" class="group">
+        <summary
+          class="cursor-pointer list-none select-none focus-visible:outline-none [&::-webkit-details-marker]:hidden [&:focus-visible>span]:ring-1 [&:focus-visible>span]:ring-ring"
         >
-          <li v-for="(hint, i) in diagnostics.hints" :key="i">{{ hint }}</li>
-        </ul>
-        <p v-else class="mt-1 text-muted-foreground">
-          We couldn't determine the cause automatically. Open the details below
-          and copy them when reporting the problem.
-        </p>
-
-        <!-- Raw details for support. -->
-        <details v-if="hasRaw" class="mt-2">
-          <summary class="cursor-pointer select-none text-xs text-muted-foreground">
+          <span
+            class="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          >
             Show technical details
-          </summary>
-          <div class="mt-2 space-y-3">
-            <div v-if="diagnostics.serviceStatus">
-              <p class="text-xs font-medium text-muted-foreground">Service status</p>
-              <pre
-                class="mt-1 max-h-40 overflow-auto rounded bg-muted p-2 font-mono text-xs"
-              >{{ diagnostics.serviceStatus }}</pre>
-            </div>
-            <div v-if="diagnostics.logTail.length">
-              <p class="text-xs font-medium text-muted-foreground">
-                Daemon log - {{ diagnostics.logPath }}
-              </p>
-              <pre
-                class="mt-1 max-h-40 overflow-auto rounded bg-muted p-2 font-mono text-xs"
-              >{{ diagnostics.logTail.join("\n") }}</pre>
-            </div>
-            <div v-if="diagnostics.spawnLogTail.length">
-              <p class="text-xs font-medium text-muted-foreground">Spawn log</p>
-              <pre
-                class="mt-1 max-h-40 overflow-auto rounded bg-muted p-2 font-mono text-xs"
-              >{{ diagnostics.spawnLogTail.join("\n") }}</pre>
-            </div>
-            <div v-if="diagnostics.repairLogTail.length">
-              <p class="text-xs font-medium text-muted-foreground">
-                Daemon re-registration log
-              </p>
-              <pre
-                class="mt-1 max-h-40 overflow-auto rounded bg-muted p-2 font-mono text-xs"
-              >{{ diagnostics.repairLogTail.join("\n") }}</pre>
-            </div>
+            <ChevronDown
+              class="size-3.5 transition-transform group-open:rotate-180"
+              aria-hidden="true"
+            />
+          </span>
+        </summary>
+        <div class="clear-left space-y-3 pt-3">
+          <div v-if="diagnostics.serviceStatus">
+            <p class="text-xs font-medium text-muted-foreground">Service status</p>
+            <pre
+              class="mt-1 max-h-40 overflow-auto rounded-md bg-card p-2 font-mono text-xs dark:bg-background"
+            >{{ diagnostics.serviceStatus }}</pre>
           </div>
-        </details>
-
-        <Button variant="outline" size="sm" class="mt-2" @click="copy">
-          <Copy class="size-4" /> Copy diagnostics
-        </Button>
-      </div>
+          <div v-if="diagnostics.logTail.length">
+            <p class="text-xs font-medium text-muted-foreground">
+              Daemon log - {{ diagnostics.logPath }}
+            </p>
+            <pre
+              class="mt-1 max-h-40 overflow-auto rounded-md bg-card p-2 font-mono text-xs dark:bg-background"
+            >{{ diagnostics.logTail.join("\n") }}</pre>
+          </div>
+          <div v-if="diagnostics.spawnLogTail.length">
+            <p class="text-xs font-medium text-muted-foreground">Spawn log</p>
+            <pre
+              class="mt-1 max-h-40 overflow-auto rounded-md bg-card p-2 font-mono text-xs dark:bg-background"
+            >{{ diagnostics.spawnLogTail.join("\n") }}</pre>
+          </div>
+          <div v-if="diagnostics.repairLogTail.length">
+            <p class="text-xs font-medium text-muted-foreground">
+              Daemon re-registration log
+            </p>
+            <pre
+              class="mt-1 max-h-40 overflow-auto rounded-md bg-card p-2 font-mono text-xs dark:bg-background"
+            >{{ diagnostics.repairLogTail.join("\n") }}</pre>
+          </div>
+        </div>
+      </details>
     </div>
   </div>
 </template>

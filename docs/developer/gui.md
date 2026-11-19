@@ -51,9 +51,12 @@ apps/yerd-gui/
     ├── composables/        useDaemon (singleton poller), usePoll, useToast, useIdes
     ├── components/         AppShell, SideNav, NavLink, TitleBar, PageHeader, AboutSection, StatusPill, ComingSoon, EnvironmentCard,
     │                       SiteCard, SiteDetailsSidebar (+ SiteDomainsPanel / SiteRoutesPanel / SiteHeadersPanel / SiteNodePanel),
-    │                       PhpVersionPanel, ServiceOverridesModal, ui/ (incl. AsyncState, EmptyState, InfoBanner)
+    │                       PhpVersionPanel, ServiceOverridesModal, DaemonDownHero, DaemonDiagnosticsPanel,
+    │                       overview/ (status, favourites, setup checklist, release notes and contributors cards),
+    │                       ui/ (incl. AsyncState, EmptyState, InfoBanner, ConfirmDialog)
     ├── views/              OverviewView, GeneralView, PhpView, NodeView, SitesView, ProxiesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView
     └── lib/                utils (cn, humanisers), theme, desktop chrome, domainValidation,
+                            overview (status, health-row and favourites derivations for the Overview),
                             siteFilter (match a query against every domain a site answers),
                             ideChoice (resolve "auto"/"system"/an id to a label), wpAdmin,
                             phpSettings (client-side pool/setting shape checks), windowState,
@@ -520,7 +523,7 @@ the daemon when the window is hidden to the tray - a real cost, since each
 
 The hash router (`createWebHashHistory`, because the webview loads from a
 file/asset origin) maps the in-shell routes - **OverviewView** (`/overview`, the
-default landing dashboard), **GeneralView** (`/general`, the **Settings** page),
+default landing dashboard: status, favourites, release notes and contributors), **GeneralView** (`/general`, the **Settings** page),
 **PhpView**, **NodeView** (`/node`, installed releases, an Install dialog picking from the upstream releases list,
 streamed installs, Update, uninstall, and the global default; in the command
 palette without a digit), **SitesView**, **ToolingView** (`/tooling`; Node is
