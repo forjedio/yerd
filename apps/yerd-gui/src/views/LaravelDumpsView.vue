@@ -1,77 +1,60 @@
 <script setup lang="ts">
-import { ExternalLink } from "lucide-vue-next";
-import { computed, onUnmounted } from "vue";
+import { AppWindow, Pause, Play, SlidersHorizontal } from "lucide-vue-next";
+import { computed, onUnmounted, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 
+import DumpsCapturePill from "@/components/dumps/DumpsCapturePill.vue";
+import DumpsRequestDetail from "@/components/dumps/DumpsRequestDetail.vue";
+import DumpsRequestList from "@/components/dumps/DumpsRequestList.vue";
+import DumpsSetupDialog from "@/components/dumps/DumpsSetupDialog.vue";
 import PageHeader from "@/components/PageHeader.vue";
-import StatusPill from "@/components/StatusPill.vue";
-import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
-import Card from "@/components/ui/Card.vue";
-import CardContent from "@/components/ui/CardContent.vue";
-import CardDescription from "@/components/ui/CardDescription.vue";
-import CardHeader from "@/components/ui/CardHeader.vue";
-import CardTitle from "@/components/ui/CardTitle.vue";
-import Switch from "@/components/ui/Switch.vue";
-import { registerViewActions } from "@/lib/shortcuts/useViewActions";
-import { usePoll } from "@/composables/usePoll";
-import { invalidate } from "@/composables/useResource";
+import InspectorFrame from "@/components/ui/InspectorFrame.vue";
+import Spinner from "@/components/ui/Spinner.vue";
+import { useDumps } from "@/composables/useDumps";
 import { useToast } from "@/composables/useToast";
-import {
-  dumpsStatus,
-  IpcError,
-  setDumpFeature,
-  setDumpsEnabled,
-  showDumpsWindow,
-} from "@/ipc/client";
-import type { DumpsStatusResponse } from "@/ipc/types";
+import { useWideLayout } from "@/composables/useWideLayout";
+import { IpcError, showDumpsWindow } from "@/ipc/client";
+import { registerViewActions } from "@/lib/shortcuts/useViewActions";
+import { cn } from "@/lib/utils";
 
 const toast = useToast();
-const { data: status, refresh } = usePoll<DumpsStatusResponse>(dumpsStatus, 2500);
+const router = useRouter();
+const wide = useWideLayout();
+const dumps = useDumps({ pollWhileHidden: false, follow: () => wide.value });
+const { busy, category, query, requests, selected, selectedKey, status, visible } = dumps;
 
-onUnmounted(registerViewActions({ refresh: () => void refresh() }));
+onUnmounted(registerViewActions({ refresh: () => void dumps.refresh() }));
 
-const FEATURES: { key: string; label: string }[] = [
-  { key: "dumps", label: "Dumps (dump / dd)" },
-  { key: "queries", label: "Eloquent queries" },
-  { key: "jobs", label: "Dispatched jobs" },
-  { key: "views", label: "Blade views" },
-  { key: "requests", label: "Incoming requests" },
-  { key: "logs", label: "Log writes" },
-  { key: "cache", label: "Cache events" },
-  { key: "http", label: "Outgoing HTTP (curl / Guzzle)" },
-];
-
-const running = computed(() => status.value?.running ?? false);
 const enabled = computed(() => status.value?.enabled ?? false);
-const extensions = computed(() => status.value?.extensions ?? []);
-const hasLegacy = computed(() => extensions.value.some((e) => e.legacy));
+const listed = computed(() => (wide.value ? visible.value : requests.value));
 
-// The dump server *port* is now edited centrally on Settings ▸ Application Ports;
-// this page shows it read-only via `status.port`.
+const setupOpen = ref(false);
+const drawerOpen = ref(false);
 
-async function toggleEnabled(next: boolean): Promise<void> {
-  try {
-    await setDumpsEnabled(next);
-    void invalidate("dumps-status");
-    await refresh();
-  } catch (e) {
-    toast.error("Couldn't toggle interception", (e as IpcError).message);
-  }
+watch(wide, (isWide) => {
+  if (isWide) drawerOpen.value = false;
+});
+
+watch(selectedKey, (key) => {
+  if (!key) drawerOpen.value = false;
+});
+
+watch(drawerOpen, (open) => {
+  if (!open && !wide.value) query.value = "";
+});
+
+function onSelect(key: string): void {
+  dumps.select(key);
+  if (!wide.value) drawerOpen.value = true;
 }
 
-function featureOn(key: string): boolean {
-  return status.value?.features?.[key] ?? true;
-}
-async function toggleFeature(key: string, next: boolean): Promise<void> {
-  try {
-    await setDumpFeature(key, next);
-    await refresh();
-  } catch (e) {
-    toast.error("Couldn't update feature", (e as IpcError).message);
-  }
+function changePort(): void {
+  setupOpen.value = false;
+  void router.push("/general");
 }
 
-async function openViewer(): Promise<void> {
+async function openWindow(): Promise<void> {
   try {
     await showDumpsWindow();
   } catch (e) {
@@ -82,141 +65,101 @@ async function openViewer(): Promise<void> {
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader title="Dumps" docs="/guide/laravel-dumps" />
-
-    <div class="flex-1 space-y-6 overflow-y-auto p-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Dump interception</CardTitle>
-          <CardDescription>
-            Yerd can automatically intercept dump calls in your code and display them in a
-            separate window - no codebase changes. Capture runs through a native PHP
-            extension loaded into each site's PHP.
-          </CardDescription>
-        </CardHeader>
-        <CardContent class="space-y-5">
-          <!-- Server status -->
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium">Dump server status</p>
-              <p class="text-xs text-muted-foreground">
-                The loopback server that receives telemetry from PHP.
-              </p>
-            </div>
-            <StatusPill
-              :tone="running ? 'ok' : 'bad'"
-              :label="running ? 'Running' : 'Stopped'"
-              :pulse="running"
-            />
-          </div>
-
-          <!-- Antenna toggle -->
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium">Enable interception</p>
-              <p class="text-xs text-muted-foreground">
-                The “antenna”. When on, captured dumps stream to the viewer.
-              </p>
-            </div>
-            <Switch
-              :model-value="enabled"
-              aria-label="Enable dump interception"
-              @update:model-value="toggleEnabled"
-            />
-          </div>
-
-          <!-- Port (read-only; edited centrally on Settings ▸ Application Ports) -->
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium">Dump server port</p>
-              <p class="text-xs text-muted-foreground">
-                Change it in Settings ▸ Application Ports.
-              </p>
-            </div>
-            <span class="font-mono text-sm">{{ status?.port ?? "-" }}</span>
-          </div>
-
-          <div class="flex justify-end border-t pt-4">
-            <Button @click="openViewer">
-              <ExternalLink class="size-4" /> Show Dumps
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      <!-- Per-feature toggles -->
-      <Card>
-        <CardHeader>
-          <CardTitle>Captured signals</CardTitle>
-          <CardDescription>
-            {{ enabled
-              ? "Choose which telemetry to record."
-              : "Enable interception above to record these signals." }}
-          </CardDescription>
-        </CardHeader>
-        <CardContent
-          class="space-y-3 transition-opacity"
-          :class="{ 'opacity-50': !enabled }"
+    <PageHeader title="Dumps" docs="/guide/laravel-dumps">
+      <template #actions>
+        <DumpsCapturePill :status="status" :compact="!wide" />
+        <Button
+          variant="outline"
+          :size="wide ? 'sm' : 'icon'"
+          :class="cn(!wide && 'size-8')"
+          :disabled="!status || busy === 'enabled'"
+          :aria-label="enabled ? 'Pause' : 'Resume'"
+          :title="enabled ? 'Pause interception' : 'Resume interception'"
+          data-testid="pause-resume"
+          @click="dumps.setEnabled(!enabled)"
         >
-          <div
-            v-for="f in FEATURES"
-            :key="f.key"
-            class="flex items-center justify-between gap-4"
-          >
-            <p class="text-sm">{{ f.label }}</p>
-            <Switch
-              :model-value="featureOn(f.key)"
-              :disabled="!enabled"
-              :aria-label="f.label"
-              @update:model-value="(v: boolean) => toggleFeature(f.key, v)"
-            />
-          </div>
-        </CardContent>
-      </Card>
+          <Spinner v-if="busy === 'enabled'" class="text-current" />
+          <Pause v-else-if="enabled" />
+          <Play v-else />
+          <span v-if="wide">{{ enabled ? "Pause" : "Resume" }}</span>
+        </Button>
+        <Button
+          variant="outline"
+          :size="wide ? 'sm' : 'icon'"
+          :class="cn(!wide && 'size-8')"
+          aria-label="Setup"
+          title="Dump setup"
+          @click="setupOpen = true"
+        >
+          <SlidersHorizontal />
+          <span v-if="wide">Setup</span>
+        </Button>
+        <Button
+          variant="outline"
+          size="icon"
+          class="size-8"
+          aria-label="Open in window"
+          title="Open in a separate window"
+          @click="openWindow"
+        >
+          <AppWindow />
+        </Button>
+      </template>
+    </PageHeader>
 
-      <!-- Legacy PHP warning -->
+    <div class="flex min-h-0 flex-1" :data-layout="wide ? 'wide' : 'compact'">
       <div
-        v-if="hasLegacy"
-        data-testid="dumps-legacy-banner"
-        class="rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm"
+        :class="
+          wide && requests.length > 0
+            ? 'flex w-[360px] shrink-0 flex-col pl-4 pt-2.5'
+            : 'flex min-w-0 flex-1 flex-col pl-4 pt-2.5'
+        "
       >
-        One or more installed PHP versions are legacy (&lt; 8.2). Dumps are never captured for
-        legacy versions - the <code>yerd-dump</code> extension isn't built for out-of-support PHP.
+        <DumpsRequestList
+          class="flex-1"
+          :layout="wide ? 'list' : 'table'"
+          :requests="listed"
+          :total="requests.length"
+          :selected="selectedKey"
+          :status="status"
+          :busy="busy"
+          :query="query"
+          :category="category"
+          @select="onSelect"
+          @toggle-persist="dumps.setPersist"
+          @clear="dumps.clear"
+          @resume="dumps.setEnabled(true)"
+          @clear-filter="dumps.clearFilter"
+        />
       </div>
 
-      <!-- Extension presence -->
-      <Card>
-        <CardHeader>
-          <CardTitle>PHP extension</CardTitle>
-          <CardDescription>
-            Telemetry is captured by the <code>yerd-dump</code> extension, installed per PHP
-            version. Versions without it simply produce no dumps. Legacy PHP versions (&lt; 8.2)
-            never capture dumps - the extension isn't built for them.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p v-if="extensions.length === 0" class="text-sm text-muted-foreground">
-            No PHP versions installed.
-          </p>
-          <table v-else class="w-full text-sm">
-            <tbody>
-              <tr
-                v-for="ext in extensions"
-                :key="ext.version"
-                class="border-b last:border-0"
-              >
-                <td class="py-2 font-mono">PHP {{ ext.version }}</td>
-                <td class="py-2 text-right">
-                  <Badge v-if="ext.legacy" variant="warning">Unsupported (no dumps)</Badge>
-                  <Badge v-else :variant="ext.present ? 'success' : 'warning'">
-                    {{ ext.present ? "Installed" : "Not installed" }}
-                  </Badge>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </CardContent>
-      </Card>
+      <div :class="wide && requests.length > 0 ? 'min-w-0 flex-1 border-l' : 'hidden'" data-testid="detail-column">
+        <InspectorFrame
+          :mode="wide ? 'panel' : 'drawer'"
+          :shown="wide ? requests.length > 0 : drawerOpen && !!selected"
+          label="Request"
+          testid="dumps-detail"
+          wide-drawer
+          @close="drawerOpen = false"
+        >
+          <DumpsRequestDetail
+            v-model:category="category"
+            v-model:query="query"
+            :request="selected"
+            :closable="!wide"
+            @close="drawerOpen = false"
+          />
+        </InspectorFrame>
+      </div>
     </div>
+
+    <DumpsSetupDialog
+      v-model:open="setupOpen"
+      :status="status"
+      :busy="busy"
+      @set-enabled="dumps.setEnabled"
+      @set-feature="dumps.setFeature"
+      @change-port="changePort"
+    />
   </div>
 </template>

@@ -65,6 +65,8 @@ apps/yerd-gui/
     │                       services/ (ServicesList, ServiceInspector, ServiceDatabasesCard, ServiceConnectCard,
     │                       ServiceOverridesCard, AddServiceDialog, ServiceLogsDialog, ServiceIcon),
     │                       mail/ (MailInbox, MailReader, MailSetupDialog),
+    │                       dumps/ (DumpsRequestList, DumpsRequestDetail, DumpsEventCard, DumpsCapturePill,
+    │                       DumpsSetupDialog),
     │                       PhpVersionPanel, AddExtensionModal, DaemonDownHero, DaemonDiagnosticsPanel,
     │                       overview/ (status, favourites, setup checklist, release notes and contributors cards),
     │                       ui/ (incl. AsyncState, EmptyState, InfoBanner, ConfirmDialog, DialogFrame,
@@ -76,6 +78,8 @@ apps/yerd-gui/
                             proxies (Proxies chips, sections, upstream labels and name/prefix checks),
                             services (Services sections, status lines, test-copy grouping, .env snippets),
                             mail (app labels, time labels, capture state, Laravel .env),
+                            dumps (merging dump pages, grouping by request, event tags and bodies,
+                            capture pill, follow-newest selection), dumpLog,
                             php (PHP list order, status and update labels, banner, install choices
                             and the install-progress line),
                             tooling (Tooling split, descriptions, Composer gate, PATH copy),
@@ -363,7 +367,7 @@ shown:
   statically.
 - **`dumps`** - the live Laravel Dumps viewer (`#/dumps-window`). It is also
   declared statically, but `main.rs`'s `show_dumps` helper *lazily (re)creates* it
-  if it has been destroyed, so the "Show Dumps" path is robust either way.
+  if it has been destroyed, so opening it from the Dumps page is robust either way.
 
 The auxiliary windows are **shown, not spawned**: `mail_window::show_mails_window`
 and `show_dumps_window` just `get_webview_window(label)` then `show()` + focus.
@@ -558,14 +562,17 @@ and **IntegrationsView** (`/integrations`, Share). `/about` redirects to
 info, updates and troubleshooting cards now live at the end of Settings in
 `AboutSection.vue`). Plus two **standalone** routes that the auxiliary windows load:
 
-- **DumpsWindowView** (`/dumps-window`) - the live Laravel Dumps viewer that
-  fills the separate `dumps` window: tabbed by `DumpCategory`, incrementally
-  paging the daemon's ring via `listDumps({ since_id })`, with search, persist
-  and always-on-top toggles, and an "open in editor" jump. `LaravelDumpsView`
-  (the in-shell `/dumps` page) is the *settings* surface - it drives
-  `dumpsStatus` / `setDumpsEnabled` / `setDumpsPort` / `setDumpFeature` and shows
-  per-PHP-version extension presence, with a "Show Dumps" button that opens the
-  standalone window via `showDumpsWindow`.
+- **DumpsWindowView** (`/dumps-window`) and **LaravelDumpsView** (the in-shell
+  `/dumps` page) both compose `components/dumps/` (`DumpsRequestList`,
+  `DumpsRequestDetail`, `DumpsEventCard`, `DumpsCapturePill`) over the
+  `useDumps` composable, which pages the daemon's ring incrementally with
+  `listDumps(since)` (reconciled by `mergePage` in `lib/dumps.ts`), polls
+  `dumpsStatus`, groups events by request, follows the newest request, and
+  drives `setDumpsEnabled` / `setDumpsPersist` / `setDumpFeature` /
+  `clearDumps`. The page adds `DumpsSetupDialog` (interception, signals,
+  per-PHP-version extension presence, a link to the port in Settings) and an
+  open-in-window button (`showDumpsWindow`); the window adds always-on-top and
+  keeps streaming while hidden.
 - **MailsViewerView** (`/mails-viewer`, `meta.standalone`) and **MailView**
   (the in-shell `/mail` page) both compose `components/mail/` (`MailInbox`,
   `MailReader`) over the `useMailbox` composable, which polls `listMails`, keeps

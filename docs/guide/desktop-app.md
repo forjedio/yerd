@@ -135,7 +135,7 @@ The built-in SMTP **mail capture** server - point your app's mailer at `127.0.0.
 
 <ThemedImage light="/images/dumps-light.png" dark="/images/dumps-dark.png" alt="Dumps page" />
 
-Laravel telemetry interception - `dump()`/`dd()` plus queries, jobs, views, requests, logs, cache, and outgoing HTTP - streamed to a separate viewer window with no code changes, captured by a per-version PHP extension. Enable interception, pick which signals to record, set the port, and open the viewer with Show Dumps. See [Laravel ▸ Dumps](./laravel-dumps).
+Laravel telemetry interception - `dump()`/`dd()` plus queries, jobs, views, requests, logs, cache, and outgoing HTTP - captured by a per-version PHP extension with no code changes. The page lists captured requests beside the selected request's events, with category chips, an event filter and clickable callers (a table and a drawer in a narrow window); **Keep history** keeps older requests and the trash button clears the buffer. The toolbar shows whether capture is live, **Pause / Resume** toggles it, **Setup** holds the interception switch, the captured signals, the per-version extension status and a link to the port in Settings ▸ Application Ports, and the pop-out button opens the same list and detail in the separate **Dumps** window (with pin on top). See [Laravel ▸ Dumps](./laravel-dumps).
 
 ### Share
 
@@ -174,7 +174,7 @@ The command palette also lists your sites at the bottom (grouped by domain): **O
 | Shortcuts | `⌘/` | `Ctrl+/` | Show this list inside the app |
 | Go to a page | `⌘1` … `⌘9` | `Ctrl+1` … `Ctrl+9` | Jump straight to a sidebar page (see order below) |
 | Settings | `⌘,` | `Ctrl+,` | Open the Settings page |
-| Find | `⌘F` | `Ctrl+F` | Focus the page's filter box (Sites, Dumps) |
+| Find | `⌘F` | `Ctrl+F` | Focus the page's filter box (Sites, the Dumps window's event filter) |
 | New | `⌘N` | `Ctrl+N` | Start the page's primary action (Add site, Install PHP) |
 | Refresh | `⌘R` | `Ctrl+R` | Re-fetch the current page's data |
 | Restart daemon | `⇧⌘R` | `Ctrl+Shift+R` | Restart `yerdd` |
@@ -183,7 +183,7 @@ The command palette also lists your sites at the bottom (grouped by domain): **O
 | Open Dumps viewer | `⇧⌘D` | `Ctrl+Shift+D` | Open the standalone Dumps telemetry window |
 | Link Site | `⇧⌘N` | `Ctrl+Shift+N` | Open the Link-site dialog on the Sites page |
 | Park Folder | `⇧⌘P` | `Ctrl+Shift+P` | Open the park-folder picker on the Sites page |
-| Cycle Dumps tabs | `⌃⇥` / `⌃⇧⇥` | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Move between categories in the Dumps viewer |
+| Cycle Dumps categories | `⌃⇥` / `⌃⇧⇥` | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Move between category chips in the Dumps window |
 | Close window | `⌘W` | `Ctrl+W` | Hide the window to the tray |
 | Close dialog | `Esc` | `Esc` | Dismiss the open modal |
 
