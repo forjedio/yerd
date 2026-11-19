@@ -1,31 +1,562 @@
-import { flushPromises, mount } from "@vue/test-utils";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
+import { nextTick } from "vue";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 
-import SitesView from "./SitesView.vue";
-import SiteCard from "@/components/SiteCard.vue";
-import { resetResourceCache } from "@/composables/useResource";
-import type { SiteEntry } from "@/ipc/types";
+const openUrl = vi.fn();
+const revealItemInDir = vi.fn();
+vi.mock("@tauri-apps/plugin-opener", () => ({
+  openUrl: (...args: unknown[]) => openUrl(...args),
+  revealItemInDir: (...args: unknown[]) => revealItemInDir(...args),
+  openPath: vi.fn(),
+}));
 
-function wpSite(name: string, overrides: Partial<SiteEntry> = {}): SiteEntry {
+const dialogOpen = vi.fn();
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: (...args: unknown[]) => dialogOpen(...args),
+  save: vi.fn(),
+}));
+
+const push = vi.fn();
+vi.mock("vue-router", () => ({
+  useRouter: () => ({ push }),
+}));
+
+vi.mock("@/composables/useDaemon", async () => {
+  const { ref } = await import("vue");
+  const state = { report: ref(null), connected: ref(true), refresh: vi.fn() };
+  return { useDaemon: () => state };
+});
+
+import SitesView from "./SitesView.vue";
+import LinkFolderDialog from "@/components/sites/LinkFolderDialog.vue";
+import SiteInspector from "@/components/sites/SiteInspector.vue";
+import { useDaemon } from "@/composables/useDaemon";
+import { resetResourceCache } from "@/composables/useResource";
+import { resetSitesGroupState } from "@/lib/sitesGroupState";
+import type { GroupsState, SiteEntry, StatusReport } from "@/ipc/types";
+
+function report(overrides: Partial<StatusReport> = {}): StatusReport {
+  return {
+    tld: "test",
+    resolver_installed: true,
+    http: { requested: 80, bound: 80, fell_back: false },
+    https: { requested: 443, bound: 443, fell_back: false },
+    ca: { path: "", fingerprint: "", trusted_system: true },
+    default_php: "8.4",
+    php: [{ version: "8.3" }, { version: "8.4" }],
+    ...overrides,
+  } as StatusReport;
+}
+
+function site(name: string, overrides: Partial<SiteEntry> = {}): SiteEntry {
   return {
     name,
     document_root: `/srv/${name}`,
-    php: "8.3",
+    php: "8.4",
     secure: false,
-    kind: "linked",
-    is_wordpress: true,
-    wp_auto_login: true,
+    kind: "parked",
     ...overrides,
   };
 }
 
-/** Deferred promise, so a test can control exactly when a given site's
- *  `wordpress_admin_users` call resolves. */
+function wpSite(name: string, overrides: Partial<SiteEntry> = {}): SiteEntry {
+  return site(name, {
+    kind: "linked",
+    document_root: `/code/${name}`,
+    is_wordpress: true,
+    framework: "wordpress",
+    wp_auto_login: true,
+    ...overrides,
+  });
+}
+
+type Handler = (args?: Record<string, unknown>) => unknown;
+
+interface World {
+  sites: SiteEntry[];
+  parked?: string[];
+  groups?: GroupsState;
+  routes?: Record<string, Handler>;
+}
+
+function serve(world: World): void {
+  const routes: Record<string, Handler> = {
+    list_sites: () => ({ type: "sites", sites: world.sites }),
+    list_parked: () => ({ type: "parked", paths: world.parked ?? [] }),
+    list_groups: () => ({ type: "groups", ...(world.groups ?? { order: [], members: {} }) }),
+    node_sites: () => ({ type: "node_sites", sites: [] }),
+    node_site: () => ({ type: "node_site" }),
+    list_node: () => ({ type: "node_versions", installed: [] }),
+    host_platform: () => "macos",
+    get_installed_ides: () => [],
+    get_preferred_ide: () => null,
+    get_site_ide_overrides: () => ({}),
+    ...world.routes,
+  };
+  invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+    const handler = routes[cmd];
+    return handler
+      ? Promise.resolve(handler(args))
+      : Promise.reject(new Error(`unexpected invoke ${cmd}`));
+  });
+}
+
+function calls(cmd: string): unknown[] {
+  return invokeMock.mock.calls.filter((c) => c[0] === cmd).map((c) => c[1]);
+}
+
+let wideMode = false;
+
+function setWide(wide: boolean): void {
+  wideMode = wide;
+  globalThis.matchMedia = vi.fn(() => ({
+    matches: wide,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  })) as unknown as typeof globalThis.matchMedia;
+}
+
+const Pass = { template: "<div><slot /></div>" };
+const mounted: VueWrapper[] = [];
+
+async function mountSites() {
+  const wrapper = mount(SitesView, {
+    attachTo: document.body,
+    global: {
+      stubs: {
+        teleport: !wideMode,
+        DialogPortal: Pass,
+        AlertDialogPortal: Pass,
+        ComboboxPortal: Pass,
+      },
+    },
+  });
+  mounted.push(wrapper);
+  await flushPromises();
+  return wrapper;
+}
+
+type Sites = Awaited<ReturnType<typeof mountSites>>;
+
+function row(w: Sites, name: string) {
+  return w.get(`[data-site="${name}"]`);
+}
+
+function rowNames(w: Sites): string[] {
+  return w.findAll("[data-site]").map((r) => r.attributes("data-site") ?? "");
+}
+
+function button(w: Sites, text: string) {
+  const b = w.findAll("button").find((x) => x.text().includes(text));
+  if (!b) throw new Error(`no "${text}" button`);
+  return b;
+}
+
+async function filter(w: Sites, query: string) {
+  await w.get('input[aria-label="Filter sites"]').setValue(query);
+  await flushPromises();
+}
+
+async function key(w: Sites, init: KeyboardEventInit) {
+  await w.get('[data-testid="sites-list"]').trigger("keydown", init);
+  await flushPromises();
+}
+
+beforeEach(() => {
+  invokeMock.mockReset();
+  openUrl.mockReset().mockResolvedValue(undefined);
+  revealItemInDir.mockReset().mockResolvedValue(undefined);
+  dialogOpen.mockReset();
+  push.mockReset();
+  resetResourceCache();
+  resetSitesGroupState();
+  setWide(false);
+  useDaemon().report.value = report();
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: vi.fn().mockResolvedValue(undefined) },
+  });
+});
+
+afterEach(() => {
+  mounted.splice(0).forEach((w) => w.unmount());
+  document.body.innerHTML = "";
+});
+
+describe("SitesView list", () => {
+  const world = (): World => ({
+    sites: [
+      site("alpha", { framework: "laravel", secure: true }),
+      site("beta", { php: "8.3" }),
+      site("lnk", { kind: "linked", document_root: "/elsewhere/lnk" }),
+      site("member"),
+    ],
+    parked: ["/srv"],
+    groups: { order: ["Work"], members: { member: "Work" } },
+  });
+
+  it("orders the sections group, folder, Linked, with their counts", async () => {
+    serve(world());
+    const w = await mountSites();
+    const sections = w.findAll("[data-section]");
+    expect(sections.map((s) => s.attributes("data-section"))).toEqual([
+      "Work",
+      "dir:/srv",
+      ":linked",
+    ]);
+    expect(sections[1]?.text()).toContain("/srv");
+    expect(sections[1]?.find("button").text()).toMatch(/2$/);
+    expect(rowNames(w)).toEqual(["member", "alpha", "beta", "lnk"]);
+  });
+
+  it("counts the chips and filters by one", async () => {
+    serve(world());
+    const w = await mountSites();
+    const chips = w.findAll("[data-chip]").map((c) => c.text().replace(/\s+/g, " "));
+    expect(chips).toEqual(["All 4", "HTTPS 1", "Linked 1", "Laravel 1", "Not on 8.4 1"]);
+    await w.get('[data-chip="https"]').trigger("click");
+    expect(rowNames(w)).toEqual(["alpha"]);
+    expect(w.find('[data-section="Work"]').exists()).toBe(false);
+  });
+
+  it("filters by path", async () => {
+    serve(world());
+    const w = await mountSites();
+    await filter(w, "/elsewhere");
+    expect(rowNames(w)).toEqual(["lnk"]);
+  });
+
+  it("drops empty groups and folders under a chip alone", async () => {
+    serve({ ...world(), groups: { order: ["Work", "Empty"], members: { member: "Work" } } });
+    const w = await mountSites();
+    expect(w.find('[data-section="Empty"]').exists()).toBe(true);
+    await w.get('[data-chip="linked"]').trigger("click");
+    expect(w.findAll("[data-section]").map((s) => s.attributes("data-section"))).toEqual([":linked"]);
+  });
+
+  it("hides group controls while filtering", async () => {
+    serve(world());
+    const w = await mountSites();
+    expect(w.find('[aria-label="Move Work up"]').exists()).toBe(true);
+    await filter(w, "mem");
+    expect(w.find('[aria-label="Move Work up"]').exists()).toBe(false);
+  });
+
+  it("cuts a long folder and expands it", async () => {
+    const many = Array.from({ length: 12 }, (_, i) => site(`s${String(i).padStart(2, "0")}`));
+    serve({ sites: many, parked: ["/srv"] });
+    const w = await mountSites();
+    expect(rowNames(w)).toHaveLength(10);
+    await button(w, "+ 2 more in /srv").trigger("click");
+    expect(rowNames(w)).toHaveLength(12);
+  });
+
+  it("remembers a collapsed section", async () => {
+    serve(world());
+    const w = await mountSites();
+    await w.get('[data-section="dir:/srv"] button').trigger("click");
+    expect(rowNames(w)).not.toContain("alpha");
+    w.unmount();
+    mounted.splice(0);
+    const again = await mountSites();
+    expect(rowNames(again)).not.toContain("alpha");
+    expect(rowNames(again)).toContain("lnk");
+  });
+
+  it("shows the Node column from node_sites in the table", async () => {
+    serve({
+      ...world(),
+      routes: {
+        node_sites: () => ({
+          type: "node_sites",
+          sites: [{ site: "alpha", effective: "22.12.0", source: "default" }],
+        }),
+      },
+    });
+    const w = await mountSites();
+    expect(w.find('[data-layout="compact"]').exists()).toBe(true);
+    expect(row(w, "alpha").get('[data-testid="row-node"]').text()).toBe("22.12.0");
+    expect(row(w, "beta").get('[data-testid="row-node"]').text()).toBe("—");
+  });
+
+  it("lays out list and inspector side by side when wide", async () => {
+    setWide(true);
+    serve(world());
+    const w = await mountSites();
+    expect(w.find('[data-layout="wide"]').exists()).toBe(true);
+    expect(w.find('[data-testid="inspector-column"]').text()).toContain("member.test");
+    expect(row(w, "member").attributes("aria-selected")).toBe("true");
+    expect(w.find('[data-testid="row-node"]').exists()).toBe(false);
+  });
+});
+
+describe("SitesView folder sections", () => {
+  const world = (): World => ({ sites: [site("a"), site("b")], parked: ["/srv"] });
+
+  it("reveals a parked folder", async () => {
+    serve(world());
+    const w = await mountSites();
+    await w.get('[aria-label="Reveal /srv"]').trigger("click");
+    await flushPromises();
+    expect(revealItemInDir).toHaveBeenCalledWith("/srv");
+  });
+
+  it("unparks a folder after confirming, and not on Cancel", async () => {
+    serve({ ...world(), routes: { unpark: () => ({ type: "ok" }) } });
+    const w = await mountSites();
+    await w.get('[aria-label="Unpark /srv"]').trigger("click");
+    await flushPromises();
+    const dialog = w.get('[role="alertdialog"]');
+    expect(dialog.text()).toContain("Unpark /srv?");
+    expect(dialog.text()).toContain("2 sites in this folder stop being served.");
+    await button(w, "Cancel").trigger("click");
+    await flushPromises();
+    expect(calls("unpark")).toEqual([]);
+
+    await w.get('[aria-label="Unpark /srv"]').trigger("click");
+    await flushPromises();
+    await button(w, "Unpark 2 sites").trigger("click");
+    await flushPromises();
+    expect(calls("unpark")).toEqual([{ path: "/srv" }]);
+  });
+});
+
+describe("SitesView keyboard", () => {
+  it("moves the selection and opens, opens a terminal and copies the URL", async () => {
+    setWide(true);
+    serve({
+      sites: [site("alpha"), site("beta", { secure: true })],
+      parked: ["/srv"],
+      routes: { open_terminal: () => undefined },
+    });
+    const w = await mountSites();
+    expect(row(w, "alpha").attributes("aria-selected")).toBe("true");
+    await key(w, { key: "ArrowDown" });
+    expect(row(w, "beta").attributes("aria-selected")).toBe("true");
+    await key(w, { key: "ArrowUp" });
+    await key(w, { key: "ArrowDown" });
+    await key(w, { key: "Enter" });
+    expect(openUrl).toHaveBeenCalledWith("https://beta.test");
+    await key(w, { key: "t", metaKey: true });
+    expect(calls("open_terminal")).toEqual([{ path: "/srv/beta" }]);
+    await key(w, { key: "c", metaKey: true });
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("https://beta.test");
+  });
+});
+
+describe("SitesView states", () => {
+  it("offers to park, create or link when there is nothing yet", async () => {
+    serve({ sites: [], routes: { park: () => ({ type: "ok" }) } });
+    dialogOpen.mockResolvedValue("/srv/new");
+    const w = await mountSites();
+    expect(w.text()).toContain("Serve your first site");
+    await button(w, "Choose folder").trigger("click");
+    await flushPromises();
+    expect(calls("park")).toEqual([{ path: "/srv/new" }]);
+  });
+
+  it("offers Create from a query with no match, and Clear filter resets", async () => {
+    serve({ sites: [site("alpha")], parked: ["/srv"] });
+    const w = await mountSites();
+    await w.get('[data-chip="all"]').trigger("click");
+    await filter(w, "Invo");
+    const empty = w.get('[data-testid="sites-no-match"]');
+    expect(empty.text()).toContain("Nothing matches “Invo”");
+    await button(w, "Create invo.test").trigger("click");
+    await flushPromises();
+    expect((w.get("#ns-name").element as HTMLInputElement).value).toBe("invo");
+    await button(w, "Clear filter").trigger("click");
+    expect(rowNames(w)).toEqual(["alpha"]);
+    expect(w.get('[data-chip="all"]').attributes("aria-pressed")).toBe("true");
+  });
+
+  it.each([
+    [
+      "ports",
+      {
+        http: { requested: 80, bound: 8080, fell_back: true },
+        https: { requested: 443, bound: 8443, fell_back: true },
+        foreign_web_listener: true,
+      },
+      "Run Doctor",
+    ],
+    ["ca", { ca: { path: "", fingerprint: "", trusted_system: false } }, "Trust now"],
+  ] as const)("shows the %s strip and routes to Doctor", async (key, overrides, action) => {
+    useDaemon().report.value = report(overrides as Partial<StatusReport>);
+    serve({ sites: [site("alpha")], parked: ["/srv"] });
+    const w = await mountSites();
+    const strip = w.get(`[data-warning="${key}"]`);
+    await strip.findAll("button").find((b) => b.text().includes(action))?.trigger("click");
+    expect(push).toHaveBeenCalledWith("/doctor");
+  });
+
+  it("shows no strip for a healthy report", async () => {
+    serve({ sites: [site("alpha")], parked: ["/srv"] });
+    const w = await mountSites();
+    expect(w.find("[data-warning]").exists()).toBe(false);
+  });
+});
+
+describe("SitesView inspector wiring", () => {
+  async function openDrawer(w: Sites, name: string) {
+    await row(w, name).trigger("click");
+    await flushPromises();
+    return w.findComponent(SiteInspector);
+  }
+
+  it("removes a linked site after confirming", async () => {
+    serve({
+      sites: [site("lnk", { kind: "linked", document_root: "/code/lnk" })],
+      routes: { unlink: () => ({ type: "ok" }) },
+    });
+    const w = await mountSites();
+    await openDrawer(w, "lnk");
+    await w.get('[data-testid="inspector-footer-action"]').trigger("click");
+    await flushPromises();
+    const dialog = w.get('[role="alertdialog"]');
+    expect(dialog.text()).toContain("Remove lnk.test?");
+    expect(dialog.text()).toContain("/code/lnk is not deleted.");
+    await dialog.findAll("button").find((b) => b.text() === "Remove site")?.trigger("click");
+    await flushPromises();
+    expect(calls("unlink")).toEqual([{ name: "lnk" }]);
+  });
+
+  it("stars a site", async () => {
+    serve({ sites: [site("alpha")], parked: ["/srv"], routes: { set_site_favourite: () => ({ type: "ok" }) } });
+    const w = await mountSites();
+    await openDrawer(w, "alpha");
+    await w.get('[aria-label="Star alpha"]').trigger("click");
+    await flushPromises();
+    expect(calls("set_site_favourite")).toEqual([{ site: "alpha", favourite: true }]);
+  });
+
+  it("stars a site from its row star without opening it", async () => {
+    serve({ sites: [site("alpha")], parked: ["/srv"], routes: { set_site_favourite: () => ({ type: "ok" }) } });
+    const w = await mountSites();
+    await row(w, "alpha").get('[data-testid="row-star"]').trigger("click");
+    await flushPromises();
+    expect(calls("set_site_favourite")).toEqual([{ site: "alpha", favourite: true }]);
+    expect(document.body.querySelector('[data-testid="site-inspector"]')).toBeNull();
+  });
+
+  it("does not paint the selected row in the compact table outside keyboard focus", async () => {
+    serve({ sites: [site("alpha")], parked: ["/srv"] });
+    const w = await mountSites();
+    await openDrawer(w, "alpha");
+    const cls = row(w, "alpha").classes();
+    expect(cls).not.toContain("bg-brand/25");
+    expect(cls).toContain("group-focus-visible/list:bg-brand/25");
+  });
+
+  it("refetches the Node column when the inspector changes a site's Node", async () => {
+    serve({ sites: [site("alpha")], parked: ["/srv"] });
+    const w = await mountSites();
+    const inspector = await openDrawer(w, "alpha");
+    const before = calls("node_sites").length;
+    inspector.vm.$emit("nodeChanged");
+    await flushPromises();
+    expect(calls("node_sites").length).toBe(before + 1);
+  });
+
+  it("creates a group and moves the site into it", async () => {
+    serve({
+      sites: [site("alpha")],
+      parked: ["/srv"],
+      routes: { create_group: () => ({ type: "ok" }), set_site_group: () => ({ type: "ok" }) },
+    });
+    const w = await mountSites();
+    const inspector = await openDrawer(w, "alpha");
+    inspector.vm.$emit("createGroupAndMove", site("alpha"), "Clients");
+    await flushPromises();
+    expect(invokeMock.mock.calls.map((c) => c[0]).filter((c) => c.includes("group"))).toEqual(
+      expect.arrayContaining(["create_group", "set_site_group"]),
+    );
+    expect(calls("create_group")).toEqual([{ name: "Clients" }]);
+    expect(calls("set_site_group")).toEqual([{ site: "alpha", group: "Clients" }]);
+  });
+
+  it("creates an empty group from the toolbar and rejects a duplicate name", async () => {
+    serve({
+      sites: [site("alpha")],
+      parked: ["/srv"],
+      groups: { order: ["Clients"], members: {} },
+      routes: { create_group: () => ({ type: "ok" }) },
+    });
+    const w = await mountSites();
+    const newGroup = w.findAll("button").find((b) => b.text().includes("New group"));
+    await newGroup?.trigger("click");
+    await flushPromises();
+    const input = () => w.get("#newgroupname");
+    const create = () => w.findAll("button").find((b) => b.text() === "Create");
+    await input().setValue("clients");
+    await flushPromises();
+    expect(create()?.attributes("disabled")).toBeDefined();
+    await input().setValue("Personal");
+    await flushPromises();
+    expect(create()?.attributes("disabled")).toBeUndefined();
+    await create()?.trigger("click");
+    await flushPromises();
+    expect(calls("create_group")).toEqual([{ name: "Personal" }]);
+  });
+});
+
+describe("SitesView link", () => {
+  function linkWorld(after: Partial<SiteEntry> = {}) {
+    const linked: SiteEntry[] = [];
+    serve({
+      sites: linked,
+      parked: ["/srv"],
+      routes: {
+        link: (args) => {
+          linked.push(site(String(args?.name), { kind: "linked", document_root: String(args?.path), ...after }));
+          return { type: "ok" };
+        },
+        set_php: () => ({ type: "ok" }),
+        set_secure: () => ({ type: "ok" }),
+      },
+    });
+  }
+
+  function writes(): string[] {
+    return invokeMock.mock.calls
+      .map((c) => c[0] as string)
+      .filter((c) => ["link", "set_php", "set_secure"].includes(c));
+  }
+
+  it("only links when the dialog's choices match what the daemon assigned", async () => {
+    linkWorld();
+    const w = await mountSites();
+    w.findComponent(LinkFolderDialog).vm.$emit("link", {
+      name: "app",
+      path: "/code/app",
+      php: "8.4",
+      secure: false,
+    });
+    await flushPromises();
+    expect(writes()).toEqual(["link"]);
+  });
+
+  it("links, then sets PHP and HTTPS in order when they differ", async () => {
+    linkWorld();
+    const w = await mountSites();
+    w.findComponent(LinkFolderDialog).vm.$emit("link", {
+      name: "app",
+      path: "/code/app",
+      php: "8.3",
+      secure: true,
+    });
+    await flushPromises();
+    expect(writes()).toEqual(["link", "set_php", "set_secure"]);
+    expect(calls("set_php")).toEqual([{ name: "app", version: "8.3" }]);
+    expect(calls("set_secure")).toEqual([{ name: "app", secure: true }]);
+  });
+});
+
 function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
   let resolve!: (v: T) => void;
   const promise = new Promise<T>((r) => {
@@ -41,128 +572,75 @@ function usersEnvelope(logins: string[]) {
   };
 }
 
-async function mountSites() {
-  const wrapper = mount(SitesView, {
-    global: { stubs: { teleport: true, RouterLink: true } },
-  });
-  await flushPromises();
-  return wrapper;
-}
-
-async function openEditFor(wrapper: Awaited<ReturnType<typeof mountSites>>, site: SiteEntry) {
-  const cards = wrapper.findAllComponents(SiteCard);
-  const card = cards.find((c) => c.props("site").name === site.name);
-  if (!card) throw new Error(`no SiteCard rendered for ${site.name}`);
-  await card.vm.$emit("edit", site);
-  await flushPromises();
-}
-
 describe("SitesView WordPress auto-login controls", () => {
   beforeEach(() => {
-    invokeMock.mockReset();
-    resetResourceCache();
+    setWide(true);
   });
 
-  it("loads the admin-user picker for the site the sidebar was opened for", async () => {
-    const alpha = wpSite("alpha");
-    invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
-      if (cmd === "list_sites") return Promise.resolve({ type: "sites", sites: [alpha] });
-      if (cmd === "list_parked") return Promise.resolve({ type: "parked", paths: [] });
-      if (cmd === "list_groups")
-        return Promise.resolve({ type: "groups", order: [], members: {} });
-      if (cmd === "wordpress_admin_users" && args?.site === "alpha") {
-        return Promise.resolve(usersEnvelope(["editor"]));
-      }
-      return Promise.reject(new Error(`unexpected invoke ${cmd}`));
+  it("loads the admin-user picker for the selected site", async () => {
+    serve({
+      sites: [wpSite("alpha")],
+      routes: { wordpress_admin_users: () => usersEnvelope(["editor"]) },
     });
-
-    const wrapper = await mountSites();
-    await openEditFor(wrapper, alpha);
-
-    const select = wrapper.find("#site-wp-admin-user");
-    expect(select.exists()).toBe(true);
+    const w = await mountSites();
+    const select = w.get("#site-wp-admin-user");
     expect(select.attributes("disabled")).toBeUndefined();
-    const labels = select.findAll("option").map((o) => o.text());
-    expect(labels).toEqual(["Earliest admin (default)", "editor"]);
+    expect(select.findAll("option").map((o) => o.text())).toEqual([
+      "Earliest admin (default)",
+      "editor",
+    ]);
   });
 
-  it("does not let a slow response for a previously-opened site overwrite the currently-open site's picker", async () => {
-    const alpha = wpSite("alpha");
-    const beta = wpSite("beta");
+  it("does not let a slow response for a previously selected site overwrite the current one", async () => {
     const alphaUsers = deferred<unknown>();
     const betaUsers = deferred<unknown>();
-
-    invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
-      if (cmd === "list_sites") return Promise.resolve({ type: "sites", sites: [alpha, beta] });
-      if (cmd === "list_parked") return Promise.resolve({ type: "parked", paths: [] });
-      if (cmd === "list_groups")
-        return Promise.resolve({ type: "groups", order: [], members: {} });
-      if (cmd === "wordpress_admin_users" && args?.site === "alpha") return alphaUsers.promise;
-      if (cmd === "wordpress_admin_users" && args?.site === "beta") return betaUsers.promise;
-      return Promise.reject(new Error(`unexpected invoke ${cmd}`));
+    serve({
+      sites: [wpSite("alpha"), wpSite("beta")],
+      routes: {
+        wordpress_admin_users: (args) =>
+          args?.site === "alpha" ? alphaUsers.promise : betaUsers.promise,
+      },
     });
-
-    const wrapper = await mountSites();
-
-    await openEditFor(wrapper, alpha);
-    await openEditFor(wrapper, beta);
-
+    const w = await mountSites();
+    await row(w, "beta").trigger("click");
+    await flushPromises();
     betaUsers.resolve(usersEnvelope(["beta-editor"]));
     await flushPromises();
     alphaUsers.resolve(usersEnvelope(["alpha-editor"]));
     await flushPromises();
-
-    const select = wrapper.find("#site-wp-admin-user");
-    const labels = select.findAll("option").map((o) => o.text());
-    expect(labels).toEqual(["Earliest admin (default)", "beta-editor"]);
+    expect(w.get("#site-wp-admin-user").findAll("option").map((o) => o.text())).toEqual([
+      "Earliest admin (default)",
+      "beta-editor",
+    ]);
   });
 
   it("withholds the picker until the admin list arrives, then selects the configured admin", async () => {
-    const alpha = wpSite("alpha", { wp_auto_login_user: "editor" });
     const pending = deferred<unknown>();
-    invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
-      if (cmd === "list_sites") return Promise.resolve({ type: "sites", sites: [alpha] });
-      if (cmd === "list_parked") return Promise.resolve({ type: "parked", paths: [] });
-      if (cmd === "list_groups")
-        return Promise.resolve({ type: "groups", order: [], members: {} });
-      if (cmd === "wordpress_admin_users" && args?.site === "alpha") return pending.promise;
-      return Promise.reject(new Error(`unexpected invoke ${cmd}`));
+    serve({
+      sites: [wpSite("alpha", { wp_auto_login_user: "editor" })],
+      routes: { wordpress_admin_users: () => pending.promise },
     });
-
-    const wrapper = await mountSites();
-    await openEditFor(wrapper, alpha);
-
-    expect(wrapper.find("#site-wp-admin-user").exists()).toBe(false);
-
+    const w = await mountSites();
+    expect(w.find("#site-wp-admin-user").exists()).toBe(false);
     pending.resolve(usersEnvelope(["editor"]));
     await flushPromises();
-    const settled = wrapper.find<HTMLSelectElement>("#site-wp-admin-user");
-    expect(settled.element.value).toBe("editor");
+    await nextTick();
+    expect(w.get<HTMLSelectElement>("#site-wp-admin-user").element.value).toBe("editor");
   });
 
   it("locks auto-login and hides the picker when the fetch fails", async () => {
-    const alpha = wpSite("alpha");
-    invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
-      if (cmd === "list_sites") return Promise.resolve({ type: "sites", sites: [alpha] });
-      if (cmd === "list_parked") return Promise.resolve({ type: "parked", paths: [] });
-      if (cmd === "list_groups")
-        return Promise.resolve({ type: "groups", order: [], members: {} });
-      if (cmd === "wordpress_admin_users" && args?.site === "alpha") {
-        return Promise.reject(new Error("boom"));
-      }
-      if (cmd === "set_wordpress_auto_login") return Promise.resolve({ type: "ok" });
-      return Promise.reject(new Error(`unexpected invoke ${cmd}`));
+    serve({
+      sites: [wpSite("alpha")],
+      routes: {
+        wordpress_admin_users: () => Promise.reject(new Error("boom")),
+        set_wordpress_auto_login: () => ({ type: "ok" }),
+      },
     });
-
-    const wrapper = await mountSites();
-    await openEditFor(wrapper, alpha);
+    const w = await mountSites();
     await flushPromises();
-
-    expect(wrapper.find("#site-wp-admin-user").exists()).toBe(false);
-    expect(invokeMock).toHaveBeenCalledWith("set_wordpress_auto_login", {
-      name: "alpha",
-      enabled: false,
-      user: null,
-    });
+    expect(w.find("#site-wp-admin-user").exists()).toBe(false);
+    expect(calls("set_wordpress_auto_login")).toEqual([
+      { name: "alpha", enabled: false, user: null },
+    ]);
   });
 });

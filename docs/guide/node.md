@@ -46,11 +46,11 @@ Open the **Node** page from the sidebar (under **Environment**):
 
 ## Per-site versions
 
-<ThemedImage light="/images/node-site-selectversion-light.png" dark="/images/node-site-selectversion-dark.png" alt="A site's details sidebar with the Node version row set to Default" />
-
-Each site's details sidebar has a **Node** row: pick a saved preference, or
-**Default** to clear it (the project file, then the global default, decide). A
-warning shows when a project file takes precedence over the saved preference.
+Each site's inspector on the Sites page has a **Node version** row in its
+Environment card: pick a saved preference, or **Default** to clear it (the
+project file, then the global default, decide). The line under it says which
+release builds use and why, and a warning shows when a project file takes
+precedence over the saved preference.
 `node` and `npm` on your PATH still use the global default; run `yerd exec node …`
 or `yerd exec npm …` in the project folder to use the site's version. Nothing installs
 automatically: when the project file or saved preference names a version that

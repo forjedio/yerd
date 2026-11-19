@@ -1167,6 +1167,17 @@ export async function hostPlatform(): Promise<string> {
 
 // ── host helpers (Tauri plugins, NOT daemon IPC) ───────────────────────────
 
+/** The user's home directory, for showing paths as `~/…`. Resolves `null` when
+ *  the path API is unavailable, so callers fall back to absolute paths. */
+export async function homeDirectory(): Promise<string | null> {
+  try {
+    const { homeDir } = await import("@tauri-apps/api/path");
+    return await homeDir();
+  } catch {
+    return null;
+  }
+}
+
 export async function openInBrowser(url: string): Promise<void> {
   const { openUrl } = await import("@tauri-apps/plugin-opener");
   await openUrl(url);

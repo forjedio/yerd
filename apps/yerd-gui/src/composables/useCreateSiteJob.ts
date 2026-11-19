@@ -35,7 +35,7 @@ export interface CreateSiteJobOptions {
 
 /**
  * A site-create job: start it, poll its progress and log, cancel it. Polling
- * carries on while the wizard is closed so the site list still refreshes when
+ * carries on while the dialog is closed so the site list still refreshes when
  * the job lands, and a job that finishes unseen is announced with a toast. It
  * stops for good once the owning component unmounts.
  */
@@ -49,6 +49,10 @@ export function useCreateSiteJob(opts: CreateSiteJobOptions) {
   const cancelRequested = ref(false);
   const started = ref(false);
   const jobId = ref<string | null>(null);
+  /** Epoch ms when `start()` ran, for the elapsed clock; null before a start. */
+  const startedAt = ref<number | null>(null);
+  /** Epoch ms when the job was first seen finished (any terminal state). */
+  const finishedAt = ref<number | null>(null);
   let cursor = 0;
   let pollTimer: number | null = null;
   let unmounted = false;
@@ -75,6 +79,12 @@ export function useCreateSiteJob(opts: CreateSiteJobOptions) {
     log.value = [];
     error.value = null;
     cancelRequested.value = false;
+    startedAt.value = null;
+    finishedAt.value = null;
+  }
+
+  function markFinished(): void {
+    if (finishedAt.value === null) finishedAt.value = Date.now();
   }
 
   function announceUnseen(final: JobState, message: string | null): void {
@@ -100,12 +110,14 @@ export function useCreateSiteJob(opts: CreateSiteJobOptions) {
           if (!unmounted) pollTimer = window.setTimeout(poll, 600);
           return;
         }
+        markFinished();
         if (r.state === "succeeded") opts.onCreated();
         if (!opts.isOpen()) announceUnseen(r.state, r.error);
       } catch (e) {
         if (jobId.value !== id) return;
         state.value = "failed";
         error.value = (e as IpcError).message;
+        markFinished();
         if (!opts.isOpen()) announceUnseen("failed", error.value);
       }
     })();
@@ -115,6 +127,7 @@ export function useCreateSiteJob(opts: CreateSiteJobOptions) {
     reset();
     const gen = generation;
     started.value = true;
+    startedAt.value = Date.now();
     try {
       const id = await createSite(spec);
       if (gen !== generation || unmounted) return;
@@ -124,6 +137,7 @@ export function useCreateSiteJob(opts: CreateSiteJobOptions) {
       if (gen !== generation) return;
       state.value = "failed";
       error.value = (e as IpcError).message;
+      markFinished();
       if (!opts.isOpen()) announceUnseen("failed", error.value);
     }
   }
@@ -139,5 +153,18 @@ export function useCreateSiteJob(opts: CreateSiteJobOptions) {
     stop();
   });
 
-  return { state, phase, log, error, cancelRequested, inFlight, start, cancel, reset, stop };
+  return {
+    state,
+    phase,
+    log,
+    error,
+    cancelRequested,
+    inFlight,
+    startedAt,
+    finishedAt,
+    start,
+    cancel,
+    reset,
+    stop,
+  };
 }

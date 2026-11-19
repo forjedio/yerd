@@ -152,7 +152,7 @@ describe("SiteHeadersPanel", () => {
     );
   });
 
-  it("refetches when the sidebar swaps to a different site", async () => {
+  it("refetches when the inspector swaps to a different site", async () => {
     const wrapper = await mountPanel();
     expect(listResponseHeaders).toHaveBeenCalledTimes(1);
 

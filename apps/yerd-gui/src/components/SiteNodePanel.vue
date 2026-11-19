@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 
 import Button from "@/components/ui/Button.vue";
 import InfoBanner from "@/components/ui/InfoBanner.vue";
+import SegmentedControl from "@/components/ui/SegmentedControl.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { useOperations } from "@/composables/useOperations";
@@ -19,9 +20,18 @@ import {
 } from "@/ipc/client";
 import type { NodeSiteResponse, NodeSource, SiteEntry } from "@/ipc/types";
 
+/**
+ * The inspector's Node version row: a segmented "Default" plus the installed
+ * releases (a select when there are many, or when the saved preference is not
+ * an installed release), with the precedence banner, the missing-release error
+ * and install progress beneath it. Emits `changed` after a successful change or
+ * install so the list's Node column can refresh.
+ */
 const props = defineProps<{
   site: SiteEntry;
 }>();
+
+const emit = defineEmits<{ changed: [] }>();
 
 const toast = useToast();
 const router = useRouter();
@@ -132,6 +142,7 @@ async function installMissing(): Promise<void> {
       operations.update(opId, { detail: latest });
     });
     toast.success(`Installed Node ${version}`);
+    emit("changed");
   } catch (e) {
     toast.error(`Install of Node ${version} failed`, (e as IpcError).message);
   } finally {
@@ -154,6 +165,7 @@ async function change(version: string): Promise<void> {
       toast.success(`${name} now prefers Node ${version}`);
     }
     await reload();
+    emit("changed");
   } catch (e) {
     selectKey.value += 1;
     toast.error("Couldn't change the Node version", (e as IpcError).message);
@@ -161,38 +173,96 @@ async function change(version: string): Promise<void> {
     busy.value = false;
   }
 }
+
+/** Above this many releases the segmented control would overflow the row. */
+const SEGMENTED_MAX_RELEASES = 4;
+
+/** The segmented control's stand-in for "no preference" (reka radios need a non-empty value). */
+const DEFAULT_SEGMENT = "default";
+
+const installedVersions = computed(() => (releases.value ?? []).map((r) => r.version));
+
+const useSelect = computed(() => {
+  const pref = status.value?.preference;
+  return (
+    installedVersions.value.length > SEGMENTED_MAX_RELEASES ||
+    (!!pref && !installedVersions.value.includes(pref))
+  );
+});
+
+/** Majors when they are unambiguous ("18 20 22", as drawn), else full versions. */
+const segments = computed(() => {
+  const majors = installedVersions.value.map((v) => v.split(".")[0] ?? v);
+  const unique = new Set(majors).size === majors.length;
+  return [
+    { value: DEFAULT_SEGMENT, label: "Default" },
+    ...installedVersions.value.map((v, i) => ({ value: v, label: unique ? (majors[i] ?? v) : v })),
+  ];
+});
+
+function changeSegment(value: string): void {
+  void change(value === DEFAULT_SEGMENT ? "" : value);
+}
+
+const subtitle = computed(() => {
+  if (noneInstalled.value) return "No Node release installed";
+  const s = status.value;
+  if (!s?.effective) return "";
+  const builds = `builds use Node ${s.effective}`;
+  if (s.source === "site") return `Saved preference · ${builds}`;
+  if (s.source === "nvmrc" || s.source === "node-version") {
+    return `Project file ${projectFileName.value} · ${builds}`;
+  }
+  return `Global default · ${builds}`;
+});
+
+const HINT =
+  "node and npm use the global default; run yerd exec node … or yerd exec npm … in the project folder to use this site's version.";
 </script>
 
 <template>
-  <div
-    class="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-2 px-3 py-3"
-    data-testid="site-node-panel"
-  >
-    <dt class="text-sm font-medium">Node version</dt>
-    <dd class="flex min-w-0 items-center justify-end gap-2">
-      <Spinner v-if="loading || busy" class="size-4" />
-      <Select
-        :key="selectKey"
-        :model-value="status?.preference ?? ''"
-        :options="options"
-        aria-label="Site Node version"
-        :disabled="busy || installing || (noneInstalled && !status?.preference)"
-        @update:model-value="change"
-      />
-    </dd>
+  <div class="px-4 py-2.5" data-testid="site-node-panel">
+    <div class="flex min-h-9 items-center justify-between gap-4">
+      <div class="min-w-0" :title="HINT" data-testid="site-node-hint">
+        <p class="text-[13px] font-semibold">Node version</p>
+        <p class="truncate text-[11px] text-faint" data-testid="site-node-subtitle">
+          {{ subtitle }}
+        </p>
+      </div>
+      <div class="flex shrink-0 items-center gap-2">
+        <Spinner v-if="loading || busy" class="size-4" />
+        <Select
+          v-if="useSelect"
+          :key="selectKey"
+          :model-value="status?.preference ?? ''"
+          :options="options"
+          aria-label="Site Node version"
+          :disabled="busy || installing || (noneInstalled && !status?.preference)"
+          @update:model-value="change"
+        />
+        <SegmentedControl
+          v-else
+          :key="selectKey"
+          :model-value="status?.preference || DEFAULT_SEGMENT"
+          :options="segments"
+          aria-label="Site Node version"
+          :disabled="busy || installing || noneInstalled"
+          @update:model-value="changeSegment"
+        />
+      </div>
+    </div>
 
-    <dd class="col-span-2 space-y-2">
-      <p v-if="noneInstalled" class="text-xs text-muted-foreground">
-        No Node release is installed yet.
-      </p>
-
+    <div
+      v-if="shadowed || status?.error"
+      class="mt-2 space-y-2"
+    >
       <InfoBanner v-if="shadowed" variant="warning" data-testid="site-node-precedence">
         This project's <code>{{ projectFileName }}</code> ({{ status?.project_file?.selector }})
         takes precedence over the saved preference ({{ status?.preference }}).
       </InfoBanner>
 
       <div v-if="status?.error" class="space-y-1" data-testid="site-node-error">
-        <p class="text-sm text-destructive">{{ status.error }}</p>
+        <p class="text-xs text-destructive">{{ status.error }}</p>
         <div class="flex flex-wrap items-center gap-2">
           <Button
             v-if="missingSelector"
@@ -212,12 +282,6 @@ async function change(version: string): Promise<void> {
           {{ installProgress }}
         </p>
       </div>
-
-      <p class="text-xs text-muted-foreground" data-testid="site-node-hint">
-        <code>node</code> and <code>npm</code> use the global default; run
-        <code>yerd exec node …</code> or <code>yerd exec npm …</code> in the project folder to use
-        this site's version.
-      </p>
-    </dd>
+    </div>
   </div>
 </template>

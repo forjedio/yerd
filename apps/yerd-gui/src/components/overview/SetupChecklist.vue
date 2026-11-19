@@ -83,7 +83,7 @@ async function onPark(): Promise<void> {
       <h3 class="text-[15px] font-semibold">Let's get you set up</h3>
     </div>
     <p class="mt-2 text-[13px] text-muted-foreground">
-      Two quick steps and your projects are live on
+      Three quick steps and your projects are live on
       <span class="font-mono">.{{ report.tld }}</span>.
     </p>
 

@@ -28,7 +28,7 @@ vi.mock("@/ipc/client", () => ({
 }));
 
 // The row actions live in a reka-ui dropdown, which needs a real pointer stack
-// to open; stub the parts so the items render inline (as SiteCard.spec does).
+// to open; stub the parts so the items render inline.
 const DropdownStub = { template: "<div><slot /></div>" };
 const dropdownStubs = {
   DropdownMenu: DropdownStub,

@@ -23,7 +23,9 @@ describe("matchesSiteFilter", () => {
     { query: "admin.", expected: true, why: "an added subdomain" },
     { query: "shop.example.test", expected: true, why: "a whole added domain" },
     { query: "*.staging", expected: true, why: "a wildcard domain" },
-    { query: "blog", expected: false, why: "no domain contains it" },
+    { query: "blog", expected: false, why: "no domain or path contains it" },
+    { query: "/SRV/code", expected: true, why: "the project path, case-insensitively" },
+    { query: "/opt/", expected: false, why: "a path fragment the site isn't under" },
   ];
 
   const configured = site({
@@ -36,6 +38,14 @@ describe("matchesSiteFilter", () => {
       expect(matchesSiteFilter(configured, "test", query)).toBe(expected);
     });
   }
+
+  it("matches the path as shown, with the home directory as ~", () => {
+    const homed = site({ document_root: "/home/alice/clients/codestash" });
+    expect(matchesSiteFilter(homed, "test", "alice", "/home/alice")).toBe(false);
+    expect(matchesSiteFilter(homed, "test", "clients/", "/home/alice")).toBe(true);
+    expect(matchesSiteFilter(homed, "test", "~/clients", "/home/alice")).toBe(true);
+    expect(matchesSiteFilter(homed, "test", "alice", null)).toBe(true);
+  });
 
   it("falls back to the default apex for a site with no configured domains", () => {
     expect(matchesSiteFilter(site(), "test", "codestash.test")).toBe(true);

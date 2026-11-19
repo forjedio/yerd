@@ -259,7 +259,7 @@ pub trait TerminalLauncher {
 }
 ```
 
-Opens a terminal with `path` as its working directory - what the site details sidebar's **Terminal** button drives. macOS is one line (`/usr/bin/open -a Terminal <path>`); Linux is where the work is, and its decision half lives in the table-tested `pure/terminal_spec.rs`.
+Opens a terminal with `path` as its working directory - what the Sites inspector's **Terminal** button drives. macOS is one line (`/usr/bin/open -a Terminal <path>`); Linux is where the work is, and its decision half lives in the table-tested `pure/terminal_spec.rs`.
 
 `TERMINAL_SPECS` pairs each terminal we know how to launch with the flags that set its working directory (`gnome-terminal --working-directory`, `konsole --workdir`, `kitty --directory`, `wezterm start --cwd`, …). Two matching rules matter:
 

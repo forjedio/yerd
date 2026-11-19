@@ -5,6 +5,10 @@ const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
+const homeDirMock = vi.fn();
+vi.mock("@tauri-apps/api/path", () => ({
+  homeDir: (...args: unknown[]) => homeDirMock(...args),
+}));
 
 import {
   addDomain,
@@ -15,6 +19,7 @@ import {
   contributors,
   deleteMails,
   getMail,
+  homeDirectory,
   IpcError,
   installNodeStreamed,
   installNodeWithProgress,
@@ -612,5 +617,17 @@ describe("IpcError categorisation", () => {
 
   it("the explicit unreachable code sets the flag", () => {
     expect(new IpcError("x", "unreachable").unreachable).toBe(true);
+  });
+});
+
+describe("homeDirectory", () => {
+  it("returns the host's home directory", async () => {
+    homeDirMock.mockResolvedValue("/Users/a");
+    await expect(homeDirectory()).resolves.toBe("/Users/a");
+  });
+
+  it("resolves null when the path API fails", async () => {
+    homeDirMock.mockRejectedValue(new Error("no path api"));
+    await expect(homeDirectory()).resolves.toBeNull();
   });
 });

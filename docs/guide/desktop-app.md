@@ -79,33 +79,26 @@ Manages your installed [Node.js versions](./node):
 
 <ThemedImage light="/images/sites-light.png" dark="/images/sites-dark.png" alt="Sites page" />
 
-The home base for [managing sites](./sites). Polls the daemon every 5 seconds while running, so sites added or changed elsewhere show up without a manual refresh. Two cards:
+The home base for [managing sites](./sites). Polls the daemon every 5 seconds while running, so sites added or changed elsewhere show up without a manual refresh.
 
-Parked folders. Each parked directory shows a count of the `.test` sites it produces (one per child directory). Park folder opens a native directory picker; each row's menu offers Reveal folder or Un-park (with confirmation).
+The toolbar has **Park folder** (a native directory picker) and **New site**, which opens one two-step dialog, **Project** then **Options**, for Laravel, WordPress, Slim, CodeIgniter or CakePHP, or links an **Existing folder**. It runs one create at a time: closing the dialog leaves it running, and reopening **New site** shows its progress. See [Create a new site](./sites#create-a-new-site).
 
-Sites. Every parked and linked site is a card: the `name.test` URL (click to open in your browser), the document root, and badges for kind (`parked`/`linked`), PHP version, HTTPS/HTTP, and the [served web root](./sites#web-root-the-served-directory) when it isn't the project root. A `+N` badge appears when the site answers extra domains beyond its apex, and an amber warning shows when another site claims this site's apex. A WordPress site with one-click login enabled also gets a small chip that signs you straight into `wp-admin`.
+An amber strip under the toolbar flags busy or unforwarded web ports and an untrusted local CA; its action opens the **Doctor** page, where one click runs the fix. See [HTTPS & Certificates](./https).
 
-The card itself keeps only the inline shortcuts - open, the HTTPS lock, and that WordPress chip. **Everything else about a site lives in its details sidebar**, which the card's pencil button slides in from the right.
+The list is grouped: your [groups](./sites#site-groups), then each parked folder (a folder's header can reveal or un-park it), then **Linked**. Each row shows the `name.test` domain, its path, a `+N alias` count when it answers extra domains, a lock for HTTPS, and its PHP version (amber when it isn't the default). **Filter chips** narrow the list by HTTPS, linked, framework or "not on the default PHP", and the filter field matches names, paths and **any** domain a site answers - typing `admin.` finds `codestash.test` when its only match is an added `admin.codestash.test`. With the list focused, ↑/↓ select, Return opens the site, ⌘E / Ctrl+E opens your editor, ⌘T / Ctrl+T a terminal, and ⌘C / Ctrl+C copies the URL.
 
-The filter box above the list matches **any** domain a site answers, not just its name - typing `admin.` finds `codestash.test` when its only match is an added `admin.codestash.test`.
+#### The site inspector
 
-Sites can also be organized into named, reorderable groups shown as collapsible sections on this page; see [Sites](./sites) for the full walkthrough. The **Create** menu at the top of the page offers New Laravel site…, New WordPress site…, New CodeIgniter site…, New CakePHP site…, New Slim site…, Link existing site, Park folder, and New group….
+The selected site's details sit beside the list in a wide window, or slide in from the right when you click a row at the default size:
 
-#### The site details sidebar
+- **Actions.** **Open site**, a star that adds it to the Overview's favourites, the **Editor** button (macOS and Linux), **Terminal** (opens your terminal in the project directory) and **Finder** / **Files**, plus the site's URL with a copy button.
+- **Environment.** PHP version; **Node** (**Default** or a release, a warning when a project file overrides the saved preference, an **Install Node X** button when the requested version isn't installed, and a tooltip reminding you to run `yerd exec node …` / `yerd exec npm …` in the project for the site's version); the **HTTPS** switch; **WordPress auto-login** with an admin picker on WordPress sites; the detected framework and how requests reach PHP; and whether the site is parked or linked.
+- **Domains.** Every domain the site answers. Clicking one, or **Add domain**, opens a dialog to set the primary domain and add or remove aliases, subdomains, and wildcards. See [Domains](../reference/cli/domains).
+- **Unpark site…** or, for a linked site, **Remove site…**, each with a confirmation. Your files are never deleted.
 
-Five tabs, covering everything Yerd knows about one site:
+The **⋯** menu holds the rest: **Copy URL**; **Share publicly…** (a [Cloudflare Quick Tunnel](#share)); **Change web root…** (blank means auto-detect); **Move to group**, including **New group…**; **Routing rules…**, with the **Route through front controller** switch (on: everything funnels through `index.php`, as Laravel and Symfony want; off: named `.php` files execute directly) above the per-prefix [routing rules](../reference/cli/routes) that carve exceptions out of that default; **Response headers…**, custom [response headers](../reference/cli/headers) such as `Access-Control-Allow-Origin`; **Editor**, the editor used for this site; **WP Admin** or the **Dumps viewer**; and **Unpark** or **Remove site…**.
 
-- **General.** An **Open site** button, then a row of actions - **Terminal** (opens your terminal in the project directory), the **editor** button (macOS and Linux), **Dumps** or **WP Admin** depending on the site, and **Share publicly…** (a [Cloudflare Quick Tunnel](#share)). Below them: PHP version, **Node** (a saved preference you can set, or **Default** to clear it, a warning when a project file overrides the saved preference, an **Install Node X** button when the requested version isn't installed, and a reminder to run `yerd exec node …` / `yerd exec npm …` in the project for the site's version), the **Editor** used for this site, the path (with reveal), the served web root (blank means auto-detect), the URL, the **HTTPS** toggle, **WordPress Auto Admin Login** with an admin picker on WordPress sites, its [group](./sites#site-groups), and - for a linked site only - **Unlink**. Parked sites have no destructive action here; remove them by un-parking their folder, or they'd reappear.
-- **Domains.** Set the primary domain and add or remove aliases, subdomains, and wildcards. See [Domains](../reference/cli/domains).
-- **Routing.** The **Route through front controller** switch (on: everything funnels through `index.php`, as Laravel and Symfony want; off: named `.php` files execute directly), and beneath it the per-prefix [routing rules](../reference/cli/routes) that carve exceptions out of that default - a nested `api/index.php`, or `index.html` for an SPA.
-- **Headers.** Custom [response headers](../reference/cli/headers) added to every response the site serves, such as `Access-Control-Allow-Origin` for CORS. Set a name and value, or remove one with its trash button.
-- **Information.** A read-only summary: detected application, every domain the site answers, web root, kind, protocol, front-controller mode, and WordPress auto-login state.
-
-The **Editor** row defaults to the Preferred editor set in [Settings](#settings), shown as `Use default (…)`; pick a specific editor to override it for that one site, and the choice is remembered.
-
-::: tip Untrusted CA banner
-If your local CA isn't trusted in the system store, the Sites view shows a banner (browsers will warn on HTTPS sites until fixed). It links to the **Doctor** page's Environment panel, where one click runs the fix. See [HTTPS & Certificates](./https).
-:::
+The **Editor** submenu defaults to the Preferred editor set in [Settings](#settings), shown as `Use default (…)`; pick a specific editor to override it for that one site, and the choice is remembered.
 
 ### Tooling
 

@@ -59,6 +59,12 @@ function select(wrapper: Awaited<ReturnType<typeof mountPanel>>) {
   return wrapper.get('select[aria-label="Site Node version"]');
 }
 
+function segment(wrapper: Awaited<ReturnType<typeof mountPanel>>, label: string) {
+  const radio = wrapper.findAll('[role="radio"]').find((r) => r.text() === label);
+  if (!radio) throw new Error(`no ${label} segment`);
+  return radio;
+}
+
 beforeEach(() => {
   resetResourceCache();
   nodeSite.mockReset().mockResolvedValue(reply());
@@ -82,7 +88,35 @@ describe("SiteNodePanel", () => {
     const wrapper = await mountPanel();
     expect(nodeSite).toHaveBeenCalledWith("blog");
     expect(wrapper.text()).not.toContain("Effective");
-    expect(wrapper.get('[data-testid="site-node-hint"]').text()).toContain("yerd exec npm");
+    expect(wrapper.get('[data-testid="site-node-hint"]').attributes("title")).toContain(
+      "yerd exec npm",
+    );
+  });
+
+  it.each([
+    [{ preference: "22.9.0", effective: "22.9.0", source: "site" }, "Saved preference · builds use Node 22.9.0"],
+    [
+      { project_file: { kind: "nvmrc", selector: "20" }, effective: "20.18.0", source: "nvmrc" },
+      "Project file .nvmrc · builds use Node 20.18.0",
+    ],
+    [{ effective: "22.9.0", source: "default" }, "Global default · builds use Node 22.9.0"],
+    [{ error: "Node 18 is not installed" }, ""],
+  ] as const)("subtitles %o as %s", async (fields, expected) => {
+    nodeSite.mockResolvedValue(reply(fields as Omit<NodeSiteResponse, "type">));
+    const wrapper = await mountPanel();
+    expect(wrapper.get('[data-testid="site-node-subtitle"]').text()).toBe(expected);
+  });
+
+  it("offers Default and each release's major as segments", async () => {
+    const wrapper = await mountPanel();
+    expect(wrapper.findAll('[role="radio"]').map((r) => r.text())).toEqual(["Default", "22", "20"]);
+    expect(wrapper.find("select").exists()).toBe(false);
+  });
+
+  it("falls back to a select above four releases", async () => {
+    listNode.mockResolvedValue(["24.1.0", "22.9.0", "20.18.0", "18.20.4", "16.20.2"].map(release));
+    const wrapper = await mountPanel();
+    expect(select(wrapper).findAll("option")).toHaveLength(6);
   });
 
   it("shows the precedence banner only when a project file and a preference both exist", async () => {
@@ -113,22 +147,33 @@ describe("SiteNodePanel", () => {
   it("sets a preference for this site and reloads", async () => {
     const wrapper = await mountPanel();
     expect(nodeSite).toHaveBeenCalledTimes(1);
-    await select(wrapper).setValue("20.18.0");
+    await segment(wrapper, "20").trigger("click");
     await flushPromises();
     expect(setNodeVersion).toHaveBeenCalledWith("20.18.0", "blog");
     expect(clearNodeVersion).not.toHaveBeenCalled();
     expect(nodeSite).toHaveBeenCalledTimes(2);
     expect(toastSuccess).toHaveBeenCalled();
+    expect(wrapper.emitted("changed")).toHaveLength(1);
+  });
+
+  it("emits no change when the write fails", async () => {
+    setNodeVersion.mockRejectedValue(new Error("nope"));
+    const wrapper = await mountPanel();
+    await segment(wrapper, "20").trigger("click");
+    await flushPromises();
+    expect(toastError).toHaveBeenCalledWith("Couldn't change the Node version", "nope");
+    expect(wrapper.emitted("changed")).toBeUndefined();
   });
 
   it("clears the preference when the default option is picked", async () => {
     nodeSite.mockResolvedValue(reply({ preference: "22.9.0", effective: "22.9.0", source: "site" }));
     const wrapper = await mountPanel();
-    expect((select(wrapper).element as HTMLSelectElement).value).toBe("22.9.0");
-    await select(wrapper).setValue("");
+    expect(segment(wrapper, "22").attributes("aria-checked")).toBe("true");
+    await segment(wrapper, "Default").trigger("click");
     await flushPromises();
     expect(clearNodeVersion).toHaveBeenCalledWith("blog");
     expect(setNodeVersion).not.toHaveBeenCalled();
+    expect(wrapper.emitted("changed")).toHaveLength(1);
   });
 
   it("offers a saved preference that is not an installed release", async () => {
@@ -156,17 +201,17 @@ describe("SiteNodePanel", () => {
     expect(wrapper.find('[data-testid="site-node-error"]').exists()).toBe(false);
   });
 
-  it("disables the select while a Node install runs", async () => {
+  it("disables the picker while a Node install runs", async () => {
     useOperations().begin({ id: "node-install:22", kind: "tool-install", label: "Installing" });
     const wrapper = await mountPanel();
-    expect(select(wrapper).attributes("disabled")).toBeDefined();
+    expect(segment(wrapper, "20").attributes("disabled")).toBeDefined();
   });
 
-  it("disables the select with a note when no release is installed", async () => {
+  it("disables the picker with a note when no release is installed", async () => {
     listNode.mockResolvedValue([]);
     const wrapper = await mountPanel();
-    expect(select(wrapper).attributes("disabled")).toBeDefined();
-    expect(wrapper.text()).toContain("No Node release is installed yet.");
+    expect(segment(wrapper, "Default").attributes("disabled")).toBeDefined();
+    expect(wrapper.text()).toContain("No Node release installed");
   });
 
   it("ignores a stale response after a quick site switch", async () => {
@@ -203,6 +248,7 @@ describe("SiteNodePanel", () => {
     await flushPromises();
     expect(installNodeWithProgress.mock.calls[0]?.slice(0, 2)).toEqual(["18", false]);
     expect(toastSuccess).toHaveBeenCalledWith("Installed Node 18");
+    expect(wrapper.emitted("changed")).toHaveLength(1);
     expect(wrapper.find('[data-testid="site-node-error"]').exists()).toBe(false);
   });
 

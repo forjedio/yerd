@@ -3,7 +3,8 @@ import { ArrowRight, ArrowUpRight, Lock, LockOpen, Star } from "lucide-vue-next"
 import { computed } from "vue";
 import { RouterLink } from "vue-router";
 
-import { openInBrowser } from "@/ipc/client";
+import { useToast } from "@/composables/useToast";
+import { IpcError, openInBrowser } from "@/ipc/client";
 import type { SiteEntry, StatusReport } from "@/ipc/types";
 import { favouriteSites, siteSubtitle } from "@/lib/overview";
 import { openTitle, siteHost, siteUrl } from "@/lib/siteUrl";
@@ -21,8 +22,14 @@ const props = defineProps<{
 
 const favourites = computed(() => favouriteSites(props.sites));
 
-function open(site: SiteEntry): void {
-  void openInBrowser(siteUrl(site, props.report));
+const toast = useToast();
+
+async function open(site: SiteEntry): Promise<void> {
+  try {
+    await openInBrowser(siteUrl(site, props.report));
+  } catch (e) {
+    toast.error("Couldn't open site", (e as IpcError).message);
+  }
 }
 </script>
 
