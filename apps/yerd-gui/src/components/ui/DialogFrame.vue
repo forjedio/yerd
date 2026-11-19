@@ -15,7 +15,9 @@ import { cn } from "@/lib/utils";
  * The draft's larger dialog chrome (New site, Link an existing folder): a title
  * row with room for a stepper, a scrolling body, and a footer band with a hint
  * on the left and the actions on the right. Built on reka-ui's Dialog for the
- * focus trap, Escape and outside-click dismissal. Small utility dialogs keep
+ * focus trap, Escape and outside-click dismissal; `aria-modal` marks it as a
+ * modal layer so an inspector drawer beneath leaves Escape to it (reka sets
+ * only `role="dialog"`). Small utility dialogs keep
  * `Modal.vue`, whose look this deliberately does not change.
  */
 withDefaults(
@@ -37,6 +39,7 @@ const emit = defineEmits<{ "update:open": [boolean] }>();
       <DialogOverlay class="fixed inset-0 z-50 rounded-[10px] bg-black/50 animate-fade-in" />
       <DialogContent
         :aria-describedby="undefined"
+        aria-modal="true"
         :class="
           cn(
             'fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100%-2rem)] w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-lg animate-fade-in focus:outline-none',

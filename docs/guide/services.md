@@ -48,28 +48,42 @@ Service support follows the same model as [PHP versions](./php-versions):
 ## In the desktop app
 
 The [desktop app](./desktop-app) surfaces every engine on its **Services** page,
-under the **Developer** group in the sidebar. Install a version, then Start /
-Stop / Restart it inline - no terminal needed. The daemon auto-starts every
-installed engine on boot, so what you install stays running across reboots.
+under the **Developer** group in the sidebar. **Add service** opens a one-step
+dialog: pick a tile (installed engines read *Added*), then the version (or, for
+Reverb, the Laravel site), the port (the next free one is filled in) and whether
+it starts with Yerd. The daemon auto-starts every engine set to start with Yerd,
+so what you install stays running across reboots.
 
 <ThemedImage light="/images/services-light.png" dark="/images/services-dark.png" alt="The Services page in the Yerd desktop app" />
 
-Each installed engine's `⋯` menu offers:
+The list groups services under **Databases**, **Cache & search** and
+**Per-site**, each row showing its version, state, port and (for a running SQL
+engine) how many databases it holds. Selecting one opens its inspector:
 
-- **Configuration** - copies a ready-made Laravel `.env` for that engine, with a
-  database picker that pre-fills `DB_DATABASE` for the SQL engines.
-- **Edit port** - change the loopback port (applies on next start).
-- **View logs** - tail the service log.
-- **Override settings** - add your own engine config directives (config-backed
-  engines only; see [below](#service-configuration-overrides)).
-- **Manage databases** - create, drop, back up, and restore databases (SQL
-  engines only).
-- **Change version** - upgrade in place, keeping your data.
-- **Uninstall** - remove the engine.
+- **Logs** opens a live tail of the service log (the last 500 lines, refreshed
+  every two seconds, with Copy). **Start**, **Restart** and **Stop** appear when
+  they apply.
+- The `···` menu holds **Uninstall** for an engine, with an *Also delete the
+  stored data* option (without it your data stays on disk for a reinstall), or
+  **Remove this instance** for a per-site Reverb.
+- The facts strip shows the **Address** with **Edit port** (applies on next
+  start), the **Version** with **Change** (upgrade in place, keeping your data)
+  or, for Reverb, the **Site** with **Open**, and the **Start with Yerd** switch.
+- **Databases** (SQL engines): **New database**, a filter, and **Hide test
+  copies**, which folds Laravel's parallel-testing copies (`app_test_1`, …)
+  under the database they came from. Each row's `···` menu offers **Back up to
+  file…**, **Restore from file…**, **Use in Connect** and **Delete database**;
+  delete and restore confirm in the row itself.
+- **Connect a Laravel app**: the ready-made `.env` block for the engine, with a
+  database picker that fills in `DB_DATABASE` for SQL engines, and **Copy for
+  .env**. A Reverb instance shows its server and browser (Echo) halves side by
+  side.
+- **Config overrides**: your own engine config directives (config-backed engines
+  only; see [below](#service-configuration-overrides)). They apply on the next
+  restart.
 
-<ThemedImage light="/images/database-configuration-light.png" dark="/images/database-configuration-dark.png" alt="The Configuration dialog for a MySQL database, with copyable .env values" />
-
-<ThemedImage light="/images/manage-databases-light.png" dark="/images/manage-databases-dark.png" alt="The Manage databases dialog, creating and listing MySQL databases" />
+In a narrow window the list becomes a table (version, port, status, details)
+and the inspector slides in as a drawer when you click a row.
 
 ## From the command line
 
@@ -238,8 +252,8 @@ precedence comes from.
 `mysql`, `mariadb`, `postgres`, and `redis`. Meilisearch takes its settings from
 command-line flags and environment variables rather than a config file, so it
 refuses with `does not support configuration overrides` (the same goes for
-per-site app servers such as Reverb). In the desktop app the **Override
-settings** item simply doesn't appear for them.
+per-site app servers such as Reverb). In the desktop app the **Config
+overrides** card simply doesn't appear for them.
 :::
 
 ### Setting an override
@@ -263,7 +277,7 @@ yerd service restart mysql
 `yerd service unset mysql sql_mode` drops one again. Each override is stored in
 `yerd.toml` (so it survives a restart, an upgrade, and a `change-version`) and
 rendered into `10-yerd.cnf` on every start. The desktop app has the same thing
-under **Override settings** in a service's `⋯` menu.
+in the **Config overrides** card of a service's inspector.
 
 ::: warning Restart to apply
 Setting an override never restarts anything, exactly like

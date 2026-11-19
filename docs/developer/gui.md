@@ -62,7 +62,9 @@ apps/yerd-gui/
     │                       tooling/ (AvailableToolCard, ToolInstallLogDialog),
     │                       site-create/ (NewSiteDialog + ProjectStep, StarterPicker, LaravelOptionsStep,
     │                       WordPressOptionsStep, MissingToolsPanel, CreateProgress),
-    │                       PhpVersionPanel, AddExtensionModal, ServiceOverridesModal, DaemonDownHero, DaemonDiagnosticsPanel,
+    │                       services/ (ServicesList, ServiceInspector, ServiceDatabasesCard, ServiceConnectCard,
+    │                       ServiceOverridesCard, AddServiceDialog, ServiceLogsDialog, ServiceIcon),
+    │                       PhpVersionPanel, AddExtensionModal, DaemonDownHero, DaemonDiagnosticsPanel,
     │                       overview/ (status, favourites, setup checklist, release notes and contributors cards),
     │                       ui/ (incl. AsyncState, EmptyState, InfoBanner, ConfirmDialog, DialogFrame,
     │                       SegmentedControl, SuffixInput, FilterChips, InspectorFrame)
@@ -71,6 +73,7 @@ apps/yerd-gui/
                             overview (status, health-row and favourites derivations for the Overview),
                             sites (Sites list sections, chips, warnings and inspector labels),
                             proxies (Proxies chips, sections, upstream labels and name/prefix checks),
+                            services (Services sections, status lines, test-copy grouping, .env snippets),
                             php (PHP list order, status and update labels, banner, install choices
                             and the install-progress line),
                             tooling (Tooling split, descriptions, Composer gate, PATH copy),
@@ -474,7 +477,7 @@ behind `SiteNodePanel.vue`, `listNode` / `availableNode` /
 `installNodeWithProgress` / `uninstallNode` behind `NodeView.vue`,
 `setPhpPoolSettings` behind
 `PhpVersionPanel.vue`, and `serviceOverrides` / `setServiceOverride` behind
-`ServiceOverridesModal.vue`. A low-level `call` normalises every rejection into an
+`services/ServiceOverridesCard.vue`. A low-level `call` normalises every rejection into an
 `IpcError`, and `ensureOk` defensively throws if a `type:"error"` ever slips
 through:
 

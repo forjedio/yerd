@@ -24,6 +24,8 @@ const props = defineProps<{
   /** Whether a menu or popover inside the content owns Escape right now. A
    *  getter rather than a boolean, so opening a menu doesn't re-render the frame. */
   layerOpen?: () => boolean;
+  /** A 760px drawer for inspectors with two columns, as the Services draft draws. */
+  wideDrawer?: boolean;
 }>();
 
 const emit = defineEmits<{ close: [] }>();
@@ -31,18 +33,15 @@ const emit = defineEmits<{ close: [] }>();
 const drawer = computed(() => props.mode === "drawer");
 const panel = ref<HTMLElement | null>(null);
 
-/** Whether another modal layer sits above the drawer. Dialogs opened from inside
- *  it and the owning view's confirms teleport into `<body>` after the drawer, so
- *  a later dialog in document order sits on top and owns Escape: without this
- *  both listeners fire and one keypress dismisses the pair. A drawer that isn't
- *  in the document (a detached test mount) has index -1, so any other open
- *  dialog counts as being above it. */
+/** Whether another modal layer is open. The drawer sits at `z-[45]`, under every
+ *  dialog's `z-50`, so any other open dialog paints above it and owns Escape:
+ *  without this both listeners fire and one keypress dismisses the pair. Stacking
+ *  by z-index rather than document order matters because a drawer mounted after
+ *  the view's dialogs (a cold load, or a resize into the compact layout) has its
+ *  teleport anchors later in `<body>`. */
 function hasDialogAbove(): boolean {
-  const dialogs = Array.from(
-    document.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"]'),
-  );
-  const own = panel.value ? dialogs.indexOf(panel.value) : -1;
-  return dialogs.some((dialog, index) => dialog !== panel.value && index > own);
+  const dialogs = document.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"]');
+  return Array.from(dialogs).some((dialog) => dialog !== panel.value);
 }
 
 function onKeydown(event: KeyboardEvent): void {
@@ -77,7 +76,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
     <div
       :class="
         drawer
-          ? 'pointer-events-none fixed inset-0 z-50 overflow-hidden rounded-[10px] [html.window-maximized_&]:rounded-none'
+          ? 'pointer-events-none fixed inset-0 z-[45] overflow-hidden rounded-[10px] [html.window-maximized_&]:rounded-none'
           : 'h-full'
       "
     >
@@ -89,8 +88,9 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
             cn(
               'flex flex-col overflow-y-auto bg-background',
               drawer
-                ? 'pointer-events-auto absolute inset-y-0 right-0 w-[628px] max-w-full border-l shadow-2xl'
+                ? 'pointer-events-auto absolute inset-y-0 right-0 max-w-full border-l shadow-2xl'
                 : 'h-full',
+              drawer && (wideDrawer ? 'w-[760px]' : 'w-[628px]'),
             )
           "
           :aria-label="label"
