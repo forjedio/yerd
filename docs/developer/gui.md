@@ -58,6 +58,7 @@ apps/yerd-gui/
     │                       proxies/ (ProxiesList, ProxyInspector, NewProxyDialog, ProxiesEmptyState),
     │                       php/ (PhpVersionsList, PhpInspector, PhpSharedDefaults, PhpSettingsGrid,
     │                       InstallPhpDialog, InstallProgressDialog),
+    │                       node/ (NodeInstallDialog, NodeInstallLogDialog, NodePickOrderCard, NodeOffDefaultCard),
     │                       site-create/ (NewSiteDialog + ProjectStep, StarterPicker, LaravelOptionsStep,
     │                       WordPressOptionsStep, MissingToolsPanel, CreateProgress),
     │                       PhpVersionPanel, AddExtensionModal, ServiceOverridesModal, DaemonDownHero, DaemonDiagnosticsPanel,

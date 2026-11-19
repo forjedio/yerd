@@ -12,14 +12,24 @@ Open the **Node** page from the sidebar (under **Environment**):
 
 <ThemedImage light="/images/node-versions-light.png" dark="/images/node-versions-dark.png" alt="The Node page listing Node 26.13.1 (the default) and Node 24.22.3 with their LTS codenames" />
 
-- **Installed versions** lists each release with its LTS codename and a star on
-  the global default. Each row offers **Set default**, **Uninstall**, and
-  **Update** when a newer patch of that major exists. The daemon checks for
+- **Refresh** and **Install** sit in the page toolbar. A banner notes that bare
+  `node`, `npm` and `npx` always use the global default.
+- **Installed versions** lists each release with chips: a star on the global
+  default, its LTS codename, and **Current** or **EOL** once the release index
+  has been loaded this session (by **Install** or **Refresh**). **Used by**
+  counts the sites that resolve to that release, and **Update** shows a pending
+  newer patch of that major. Each row's `⋯` menu offers **Update to …**,
+  **Make default** and **Uninstall…**. The daemon checks for
   newer patches every 12 hours alongside the PHP update check (only while a
   Node release is installed; notify-only, nothing is downloaded but the
   release index). Pending updates show as a count on the sidebar's **Node**
   item, a red dot on the tray icon, and an **Update Node** tray item that
   opens this page. **Refresh** checks immediately.
+- **How a site picks its Node** shows the resolution order (`.nvmrc`,
+  `.node-version`, the saved preference, then the global default), and **Sites
+  not on the default** lists every site whose Node differs from the default,
+  with where it came from. Sites whose file or preference names a release that
+  isn't installed are listed with a red chip.
 - **Install** opens a dialog with a dropdown of the release lines you don't
   have yet, newest first, each showing its newest patch, LTS codename, and an
   **EOL** badge for end-of-life majors; the newest supported LTS is preselected.
@@ -30,8 +40,8 @@ Open the **Node** page from the sidebar (under **Environment**):
 
 <ThemedImage light="/images/node-install-light.png" dark="/images/node-install-dark.png" alt="The Install a Node version dialog, with the exact-version and end-of-life switches and Node 22 preselected" />
 
-- Installs run in the background with a live log you can close; the operations
-  indicator keeps tracking them. Other version actions are disabled until the
+- Installs run in the background with a live log; **Hide** closes it while the
+  install keeps going, and the operations indicator keeps tracking it. Other version actions are disabled until the
   install finishes. The first install becomes the global default.
 - **Update** installs the newest patch of that major alongside the old one. The
   global default moves to it only when the default currently resolves to an
