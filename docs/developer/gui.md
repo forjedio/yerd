@@ -56,9 +56,11 @@ apps/yerd-gui/
     │                       sites/ (SitesList, SiteFilterChips, SitesWarningStrip, SitesEmptyState, SiteInspector,
     │                       SiteActionsMenu, SiteEnvironmentCard, SiteDomainsCard, WebRootDialog, LinkFolderDialog),
     │                       proxies/ (ProxiesList, ProxyInspector, NewProxyDialog, ProxiesEmptyState),
+    │                       php/ (PhpVersionsList, PhpInspector, PhpSharedDefaults, PhpSettingsGrid,
+    │                       InstallPhpDialog, InstallProgressDialog),
     │                       site-create/ (NewSiteDialog + ProjectStep, StarterPicker, LaravelOptionsStep,
     │                       WordPressOptionsStep, MissingToolsPanel, CreateProgress),
-    │                       PhpVersionPanel, ServiceOverridesModal, DaemonDownHero, DaemonDiagnosticsPanel,
+    │                       PhpVersionPanel, AddExtensionModal, ServiceOverridesModal, DaemonDownHero, DaemonDiagnosticsPanel,
     │                       overview/ (status, favourites, setup checklist, release notes and contributors cards),
     │                       ui/ (incl. AsyncState, EmptyState, InfoBanner, ConfirmDialog, DialogFrame,
     │                       SegmentedControl, SuffixInput, FilterChips, InspectorFrame)
@@ -67,6 +69,8 @@ apps/yerd-gui/
                             overview (status, health-row and favourites derivations for the Overview),
                             sites (Sites list sections, chips, warnings and inspector labels),
                             proxies (Proxies chips, sections, upstream labels and name/prefix checks),
+                            php (PHP list order, status and update labels, banner, install choices
+                            and the install-progress line),
                             createSite (the New site command preview and durations),
                             siteFilter (match a query against a site's domains and path),
                             ideChoice (resolve "auto"/"system"/an id to a label), wpAdmin,

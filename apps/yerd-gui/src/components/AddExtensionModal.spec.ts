@@ -1,5 +1,5 @@
-import { mount } from "@vue/test-utils";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mount, type VueWrapper } from "@vue/test-utils";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import AddExtensionModal from "./AddExtensionModal.vue";
 
@@ -14,11 +14,17 @@ vi.mock("@/ipc/client", () => ({
 
 const SO = "/opt/homebrew/lib/php/pecl/20250925/scrypt.so";
 
+const Pass = { template: "<div><slot /></div>" };
+const mounted: VueWrapper[] = [];
+
 function mountModal() {
-  return mount(AddExtensionModal, {
+  const w = mount(AddExtensionModal, {
+    attachTo: document.body,
     props: { open: true, version: "8.4" },
-    global: { stubs: { teleport: true } },
+    global: { stubs: { DialogPortal: Pass } },
   });
+  mounted.push(w);
+  return w;
 }
 
 function byText(w: ReturnType<typeof mountModal>, text: string) {
@@ -31,11 +37,22 @@ describe("AddExtensionModal", () => {
     pickExtensionFile.mockReset();
   });
 
+  afterEach(() => {
+    mounted.forEach((w) => w.unmount());
+    mounted.length = 0;
+    document.body.innerHTML = "";
+  });
+
+  it("titles the dialog with the version", () => {
+    const w = mountModal();
+    expect(w.text()).toContain("Add an extension to PHP 8.4");
+  });
+
   it("fills the path from the native picker", async () => {
     pickExtensionFile.mockResolvedValue(SO);
     const w = mountModal();
 
-    await byText(w, "Browse…")!.trigger("click");
+    await byText(w, "Choose")!.trigger("click");
     await vi.waitFor(() =>
       expect((w.find("#ext-path").element as HTMLInputElement).value).toBe(SO),
     );
@@ -46,7 +63,7 @@ describe("AddExtensionModal", () => {
     const w = mountModal();
     await w.find("#ext-path").setValue(SO);
 
-    await byText(w, "Browse…")!.trigger("click");
+    await byText(w, "Choose")!.trigger("click");
     await vi.waitFor(() => expect(pickExtensionFile).toHaveBeenCalled());
     expect((w.find("#ext-path").element as HTMLInputElement).value).toBe(SO);
   });
