@@ -312,7 +312,7 @@ yerd domain remove blog blog.test      # drop a domain (a site keeps >=1 exact)
 yerd domain reset blog                 # back to the default apex only
 ```
 
-For a WordPress site, changing the primary domain also rewrites its `siteurl`/`home`. In the desktop app the same lives under a site's **⋯ → Manage domains…**. See the [domains reference](../reference/cli/domains) for the full command surface and rules.
+For a WordPress site, changing the primary domain also rewrites its `siteurl`/`home`. In the desktop app the same lives in the site inspector's **Domains** card. See the [domains reference](../reference/cli/domains) for the full command surface and rules.
 
 ### Document roots and the served web root
 

@@ -2,19 +2,21 @@
 import { Plus } from "lucide-vue-next";
 import { computed, nextTick, ref } from "vue";
 
-import SiteDomainsPanel from "@/components/SiteDomainsPanel.vue";
+import SiteDomainsPanel, { type DomainsTarget } from "@/components/SiteDomainsPanel.vue";
 import Modal from "@/components/ui/Modal.vue";
-import type { SiteEntry } from "@/ipc/types";
 
 /**
- * The inspector's DOMAINS card: a read view of every domain the site answers on,
- * tagged primary or wildcard. Any row, or Add domain, opens the shared
+ * The DOMAINS card of the site and proxy inspectors: a read view of every domain
+ * the site or proxy answers on, tagged primary or wildcard (and alias, when
+ * `aliasTag` is set). Any row, or Add domain, opens the shared
  * `SiteDomainsPanel` in a dialog, where adding, removing, making primary and
  * resetting all live unchanged.
  */
 const props = defineProps<{
-  site: SiteEntry;
+  site: DomainsTarget;
   tld: string;
+  /** Tag the other exact domains "alias" (as the Proxies inspector draws them). */
+  aliasTag?: boolean;
 }>();
 
 const emit = defineEmits<{ domainsChanged: [] }>();
@@ -55,6 +57,7 @@ function openPanel(): void {
         </span>
         <span v-if="d === primary" class="shrink-0 text-[11px] font-medium text-brand">primary</span>
         <span v-else-if="d.startsWith('*.')" class="shrink-0 text-[11px] text-faint">wildcard</span>
+        <span v-else-if="aliasTag" class="shrink-0 text-[11px] text-faint">alias</span>
       </button>
       <p
         v-if="site.apex_shadowed_by"

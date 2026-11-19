@@ -38,6 +38,7 @@ import { usePoll } from "@/composables/usePoll";
 import { useResource } from "@/composables/useResource";
 import { openSiteInEditor } from "@/composables/useSiteEditor";
 import { useToast } from "@/composables/useToast";
+import { useWideLayout } from "@/composables/useWideLayout";
 import {
   createGroup,
   deleteGroup,
@@ -89,14 +90,7 @@ const defaultPhp = computed(() => report.value?.default_php ?? "");
 const warnings = computed(() => siteWarnings(report.value));
 
 // ── layout: list + inspector side by side when wide, table + drawer otherwise ──
-const WIDE_QUERY = "(min-width: 1280px)";
-const media = globalThis.matchMedia?.(WIDE_QUERY) ?? null;
-const wide = ref(media?.matches ?? false);
-function onMediaChange(event: MediaQueryListEvent): void {
-  wide.value = event.matches;
-}
-media?.addEventListener?.("change", onMediaChange);
-onUnmounted(() => media?.removeEventListener?.("change", onMediaChange));
+const wide = useWideLayout();
 
 // ── Node column (table only): loaded when the table shows and after mutations ──
 const { data: nodeData, refresh: refreshNodeSites } = useResource("node-sites", nodeSites, {

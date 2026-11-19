@@ -9,7 +9,7 @@ import { useToast } from "@/composables/useToast";
 import { IpcError, wordpressAdminUsers } from "@/ipc/client";
 import type { SiteEntry, StatusReport } from "@/ipc/types";
 import { comparePhpVersions } from "@/lib/phpVersion";
-import { frameworkDetail, frameworkLabel, sourceDetail } from "@/lib/sites";
+import { frameworkDetail, frameworkLabel, httpsDetail, sourceDetail } from "@/lib/sites";
 
 /**
  * The inspector's ENVIRONMENT card: PHP and Node versions, HTTPS, WordPress
@@ -63,12 +63,7 @@ const phpSubtitle = computed(() => {
     : `Global default is ${props.defaultPhp}`;
 });
 
-const httpsSubtitle = computed(() => {
-  if (!props.site.secure) return "Served over plain HTTP";
-  const trusted = props.report?.ca.trusted_system;
-  const state = trusted === true ? "trusted" : trusted === false ? "not trusted" : "trust unknown";
-  return `Certificate issued by Yerd local CA · ${state}`;
-});
+const httpsSubtitle = computed(() => httpsDetail(props.site.secure, props.report?.ca.trusted_system));
 
 function changePhp(version: string): void {
   if (version !== props.site.php) emit("changePhp", props.site, version);

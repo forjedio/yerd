@@ -272,8 +272,15 @@ export function frameworkDetail(site: SiteEntry): string {
 }
 
 /** Domains served beyond the primary (0 for a default site). */
-export function aliasCount(site: SiteEntry): number {
+export function aliasCount(site: Pick<SiteEntry, "domains">): number {
   return site.domains && site.domains.length > 1 ? site.domains.length - 1 : 0;
+}
+
+/** The HTTPS row's subtitle in the site and proxy inspectors. */
+export function httpsDetail(secure: boolean, trusted: boolean | null | undefined): string {
+  if (!secure) return "Served over plain HTTP";
+  const state = trusted === true ? "trusted" : trusted === false ? "not trusted" : "trust unknown";
+  return `Certificate issued by Yerd local CA · ${state}`;
 }
 
 /** The inspector's status pill. */

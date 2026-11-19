@@ -59,7 +59,7 @@ yerd domain primary account-dev custom-domain.test
 
 `yerd proxy list` shows a customised proxy's domains beneath it and marks the
 primary; `yerd domain list` stays site-only. In the desktop app the same controls
-are the **Manage domains** button on the Proxies page.
+are the **Domains** card in a proxy's inspector on the Proxies page.
 
 A domain can only be claimed by one site or proxy. If two claim the same one,
 every **site** is considered before any proxy, and a domain added explicitly

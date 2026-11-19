@@ -1,4 +1,4 @@
-import { flushPromises, mount } from "@vue/test-utils";
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const invokeMock = vi.fn();
@@ -11,24 +11,35 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: (...args: unknown[]) => openUrlMock(...args),
 }));
 
+const push = vi.fn();
+vi.mock("vue-router", () => ({
+  useRouter: () => ({ push }),
+}));
+
+const toastSuccess = vi.fn();
+const toastError = vi.fn();
+vi.mock("@/composables/useToast", () => ({
+  useToast: () => ({ success: toastSuccess, error: toastError, info: vi.fn() }),
+}));
+
 import ProxiesView from "./ProxiesView.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { resetResourceCache } from "@/composables/useResource";
 import type { ProxyEntry, ProxyRuleEntry, SiteEntry, StatusReport } from "@/ipc/types";
 
-function site(name: string): SiteEntry {
+function site(name: string, secure = false): SiteEntry {
   return {
     name,
     document_root: `/srv/${name}`,
     php: "8.3",
-    secure: false,
+    secure,
     kind: "linked",
     is_wordpress: false,
   };
 }
 
-/** A minimal bound, resolver-installed daemon report - enough for the URL
- *  helpers, so a proxy's "Open" affordance is enabled (not unbound). */
+/** A minimal bound, resolver-installed daemon report: enough for the URL
+ *  helpers, so a proxy's Open action is enabled (not unbound). */
 function boundReport(overrides: Partial<StatusReport> = {}): StatusReport {
   return {
     tld: "test",
@@ -43,16 +54,19 @@ function boundReport(overrides: Partial<StatusReport> = {}): StatusReport {
 }
 
 /** A default mock: the given proxies/rules/sites, `ok` for every mutation, and a
- *  reject for anything unexpected so a wrong wire call is loud. */
+ *  reject for anything unexpected so a wrong wire call is loud. `failures` makes
+ *  the named commands reject. */
 function stubIpc(opts: {
   proxies?: ProxyEntry[];
   rules?: ProxyRuleEntry[];
   sites?: SiteEntry[];
+  failures?: string[];
 }) {
   const proxies = opts.proxies ?? [];
   const rules = opts.rules ?? [];
   const sites = opts.sites ?? [];
   invokeMock.mockImplementation((cmd: string) => {
+    if (opts.failures?.includes(cmd)) return Promise.reject(new Error(`${cmd} failed`));
     switch (cmd) {
       case "list_proxies":
         return Promise.resolve({ type: "proxies", proxies, rules });
@@ -78,25 +92,54 @@ function stubIpc(opts: {
   });
 }
 
-// Tracked so afterEach can unmount them: ProxiesView's usePoll leaves a live
-// timer + visibility listener until the component unmounts.
-const mounted: { unmount: () => void }[] = [];
+function setWide(wide: boolean | null): void {
+  globalThis.matchMedia = (
+    wide === null
+      ? undefined
+      : vi.fn(() => ({ matches: wide, addEventListener: vi.fn(), removeEventListener: vi.fn() }))
+  ) as unknown as typeof globalThis.matchMedia;
+}
+
+const Pass = { template: "<div><slot /></div>" };
+const mounted: VueWrapper[] = [];
 
 async function mountView() {
   const wrapper = mount(ProxiesView, {
-    global: { stubs: { teleport: true, RouterLink: true } },
+    attachTo: document.body,
+    global: {
+      stubs: { teleport: true, RouterLink: true, DialogPortal: Pass, AlertDialogPortal: Pass },
+    },
   });
   mounted.push(wrapper);
   await flushPromises();
   return wrapper;
 }
 
-function clickByText(wrapper: Awaited<ReturnType<typeof mountView>>, text: string) {
-  const btn = wrapper
-    .findAll("button")
-    .find((b) => b.text().includes(text) && b.attributes("disabled") === undefined);
-  if (!btn) throw new Error(`no enabled button with text "${text}"`);
-  return btn.trigger("click");
+type View = Awaited<ReturnType<typeof mountView>>;
+
+function button(w: View, text: string) {
+  const btn = w.findAll("button").find((b) => b.text().trim() === text);
+  if (!btn) throw new Error(`no button "${text}"`);
+  return btn;
+}
+
+async function click(w: View, text: string) {
+  await button(w, text).trigger("click");
+  await flushPromises();
+}
+
+function row(w: View, key: string) {
+  return w.get(`[data-key="${key}"]`);
+}
+
+async function openRow(w: View, key: string) {
+  await row(w, key).trigger("click");
+  await flushPromises();
+  return w.get('[data-testid="proxy-inspector"]');
+}
+
+async function openNew(w: View) {
+  await click(w, "New proxy");
 }
 
 /** The most recent invoke call for `cmd`, or undefined. */
@@ -106,269 +149,341 @@ function lastCall(cmd: string): Record<string, unknown> | undefined {
   return last?.[1] as Record<string, unknown> | undefined;
 }
 
-describe("ProxiesView", () => {
-  // The daemon store is a module singleton; reset it so a report set by one test
-  // doesn't leak into the next (which would flip unbound state).
-  beforeEach(() => {
-    invokeMock.mockReset();
-    openUrlMock.mockReset();
-    resetResourceCache();
-    useDaemon().report.value = null;
+function called(cmd: string): boolean {
+  return invokeMock.mock.calls.some((c) => c[0] === cmd);
+}
+
+const reverb = (): ProxyEntry => ({ name: "reverb", target: "http://localhost:9011", secure: false });
+const appRule = (): ProxyRuleEntry => ({ site: "app", prefix: "/app", target: "http://localhost:8080" });
+const dotted = (): ProxyEntry => ({
+  name: "api.account",
+  target: "http://127.0.0.1:9011",
+  secure: false,
+  primary_domain: "custom-domain.test",
+  domains: ["api.account.test", "custom-domain.test"],
+});
+
+beforeEach(() => {
+  invokeMock.mockReset();
+  openUrlMock.mockReset();
+  push.mockReset();
+  toastSuccess.mockReset();
+  toastError.mockReset();
+  resetResourceCache();
+  useDaemon().report.value = null;
+  setWide(null);
+});
+
+afterEach(() => {
+  mounted.forEach((w) => w.unmount());
+  mounted.length = 0;
+  document.body.innerHTML = "";
+});
+
+describe("ProxiesView list", () => {
+  it("renders whole-domain proxies and path rules in their sections", async () => {
+    stubIpc({ proxies: [reverb()], rules: [appRule()] });
+    const w = await mountView();
+    const sections = w.findAll("[data-section]");
+    expect(sections.map((s) => s.attributes("data-section"))).toEqual(["proxy", "rule"]);
+    expect(sections[0]?.text()).toContain("Whole domains");
+    expect(sections[0]?.text()).toContain("reverb.test");
+    expect(sections[0]?.text()).toContain("localhost:9011");
+    expect(sections[1]?.text()).toContain("Paths on sites");
+    expect(sections[1]?.text()).toContain("app.test/app");
+    expect(sections[1]?.text()).toContain("localhost:8080");
   });
 
-  afterEach(() => {
-    mounted.forEach((w) => w.unmount());
-    mounted.length = 0;
+  it("counts the chips and filters the sections", async () => {
+    stubIpc({ proxies: [reverb(), dotted()], rules: [appRule()] });
+    const w = await mountView();
+    const chip = (key: string) => w.get(`button[data-chip="${key}"]`);
+    expect(chip("all").text()).toBe("All 3");
+    expect(chip("domains").text()).toBe("Domains 2");
+    expect(chip("paths").text()).toBe("Paths 1");
+    await chip("paths").trigger("click");
+    expect(w.findAll("[data-section]").map((s) => s.attributes("data-section"))).toEqual(["rule"]);
+    await chip("domains").trigger("click");
+    expect(w.findAll("[data-section]").map((s) => s.attributes("data-section"))).toEqual(["proxy"]);
   });
 
-  it("renders whole-host proxies and path rules", async () => {
+  it("orders proxies by name and paths by site then prefix", async () => {
     stubIpc({
-      proxies: [{ name: "reverb", target: "http://localhost:9011", secure: false }],
-      rules: [{ site: "app", prefix: "/app", target: "http://localhost:8080" }],
+      proxies: [reverb(), dotted()],
+      rules: [appRule(), { site: "app", prefix: "/api", target: "http://x:1" }, { site: "a", prefix: "/z", target: "http://x:2" }],
     });
-    const wrapper = await mountView();
-    expect(wrapper.text()).toContain("reverb.test");
-    expect(wrapper.text()).toContain("http://localhost:9011");
-    expect(wrapper.text()).toContain("/app");
-    expect(wrapper.text()).toContain("http://localhost:8080");
+    const w = await mountView();
+    expect(w.findAll("[data-key]").map((r) => r.attributes("data-key"))).toEqual([
+      "proxy:api.account",
+      "proxy:reverb",
+      "rule:a/z",
+      "rule:app/api",
+      "rule:app/app",
+    ]);
   });
 
-  it("shows the empty state when there are no proxies or rules", async () => {
-    stubIpc({});
-    const wrapper = await mountView();
-    expect(wrapper.text()).toContain("No proxies yet");
+  it("shows extra domains in the table and the alias count in the wide list", async () => {
+    stubIpc({ proxies: [dotted(), reverb()] });
+    const compact = await mountView();
+    expect(row(compact, "proxy:api.account").get('[data-testid="row-domains"]').text()).toBe("api.account.test");
+    expect(row(compact, "proxy:reverb").get('[data-testid="row-domains"]').text()).toBe("—");
+
+    setWide(true);
+    const wide = await mountView();
+    expect(row(wide, "proxy:api.account").get('[data-testid="row-aliases"]').text()).toBe("+1");
+    expect(row(wide, "proxy:reverb").find('[data-testid="row-aliases"]').exists()).toBe(false);
   });
 
-  it("creates a whole-host proxy, normalizing the upstream URL", async () => {
+  it("shows the empty state, whose tiles open New proxy in their mode", async () => {
     stubIpc({ sites: [site("app")] });
-    const wrapper = await mountView();
-
-    await clickByText(wrapper, "New proxy");
+    const w = await mountView();
+    expect(w.text()).toContain("No proxies yet");
+    await w.get('[data-testid="empty-path"]').trigger("click");
     await flushPromises();
+    expect(w.get('[data-mode="path"]').attributes("data-state")).toBe("checked");
+    expect(w.find("#proxy-prefix").exists()).toBe(true);
+  });
 
-    await wrapper.find("#proxyname").setValue("mydockersite");
-    await wrapper.find("#proxyurl").setValue("http://localhost:9011/");
-    await clickByText(wrapper, "Add proxy");
+  it("disables the path tile without sites", async () => {
+    stubIpc({});
+    const w = await mountView();
+    expect(w.get('[data-testid="empty-path"]').attributes("disabled")).toBeDefined();
+  });
+});
+
+describe("ProxiesView layouts", () => {
+  it("selects the first proxy in the wide layout", async () => {
+    setWide(true);
+    stubIpc({ proxies: [reverb()], rules: [appRule()] });
+    const w = await mountView();
+    expect(w.get('[data-layout]').attributes("data-layout")).toBe("wide");
+    expect(row(w, "proxy:reverb").attributes("aria-selected")).toBe("true");
+    expect(w.get('[data-testid="proxy-title"]').text()).toBe("reverb.test");
+  });
+
+  it("opens the drawer from a compact row and closes it when the item vanishes", async () => {
+    let proxies = [reverb()];
+    stubIpc({ proxies });
+    const w = await mountView();
+    expect(w.find('[data-testid="proxy-inspector"]').exists()).toBe(false);
+    const drawer = await openRow(w, "proxy:reverb");
+    expect(drawer.attributes("role")).toBe("dialog");
+    expect(drawer.get('[data-testid="proxy-title"]').text()).toBe("reverb.test");
+
+    proxies = [];
+    stubIpc({ proxies, rules: [appRule()] });
+    await w.get('[data-testid="proxy-inspector"] [data-testid="inspector-footer-action"]').trigger("click");
     await flushPromises();
+    await click(w, "Remove proxy");
+    expect(w.find('[data-testid="proxy-inspector"]').exists()).toBe(false);
+  });
 
+  it("does not paint the selected compact row outside keyboard focus", async () => {
+    stubIpc({ proxies: [reverb()] });
+    const w = await mountView();
+    await openRow(w, "proxy:reverb");
+    const classes = row(w, "proxy:reverb").classes();
+    expect(classes).toContain("group-focus-visible/list:bg-brand/25");
+    expect(classes).not.toContain("bg-brand/[0.14]");
+  });
+});
+
+describe("ProxiesView CA strip", () => {
+  it.each([
+    ["a secure proxy and an untrusted CA", true, false, true],
+    ["an unknown trust", true, null, true],
+    ["a trusted CA", true, true, false],
+    ["no secure proxy", false, false, false],
+  ] as const)("with %s shows the strip: %s", async (_label, secure, trusted, shown) => {
+    stubIpc({ proxies: [{ ...reverb(), secure }] });
+    useDaemon().report.value = boundReport({ ca: { trusted_system: trusted } } as Partial<StatusReport>);
+    const w = await mountView();
+    expect(w.find('[data-warning="ca"]').exists()).toBe(shown);
+  });
+
+  it("routes Trust now to Doctor", async () => {
+    stubIpc({ proxies: [{ ...reverb(), secure: true }] });
+    useDaemon().report.value = boundReport({ ca: { trusted_system: false } } as Partial<StatusReport>);
+    const w = await mountView();
+    await w.get('[data-warning="ca"] button').trigger("click");
+    expect(push).toHaveBeenCalledWith("/doctor");
+  });
+});
+
+describe("ProxiesView new proxy", () => {
+  it("creates a whole-domain proxy, normalising the upstream URL", async () => {
+    stubIpc({ sites: [site("app")] });
+    const w = await mountView();
+    await openNew(w);
+    await w.get("#proxy-name").setValue("mydockersite");
+    await w.get("#proxy-url").setValue("http://localhost:9011/");
+    await click(w, "Add proxy");
     expect(lastCall("add_proxy")).toEqual({ name: "mydockersite", url: "http://localhost:9011" });
-    expect(invokeMock.mock.calls.some((c) => c[0] === "set_secure")).toBe(false);
+    expect(called("set_secure")).toBe(false);
+    expect(toastSuccess).toHaveBeenCalledWith("Added mydockersite.test", "Forwarding to localhost:9011");
   });
 
   it("prepends http:// when the scheme is omitted", async () => {
     stubIpc({});
-    const wrapper = await mountView();
-    await clickByText(wrapper, "New proxy");
-    await flushPromises();
-    await wrapper.find("#proxyname").setValue("bare");
-    await wrapper.find("#proxyurl").setValue("localhost:9011");
-    await clickByText(wrapper, "Add proxy");
-    await flushPromises();
+    const w = await mountView();
+    await openNew(w);
+    await w.get("#proxy-name").setValue("bare");
+    await w.get("#proxy-url").setValue("localhost:9011");
+    await click(w, "Add proxy");
     expect(lastCall("add_proxy")).toEqual({ name: "bare", url: "http://localhost:9011" });
   });
 
-  // set_secure must run after add_proxy: the proxy has to exist before it can be
-  // secured (the daemon starts new proxies on HTTP).
   it("enables HTTPS after creating when the switch is on", async () => {
     stubIpc({});
-    const wrapper = await mountView();
-    await clickByText(wrapper, "New proxy");
-    await flushPromises();
-
-    await wrapper.find("#proxyname").setValue("secureproxy");
-    await wrapper.find("#proxyurl").setValue("http://localhost:9011");
-    await wrapper.find('button[aria-label="HTTPS"]').trigger("click");
-    await clickByText(wrapper, "Add proxy");
-    await flushPromises();
-
+    const w = await mountView();
+    await openNew(w);
+    await w.get("#proxy-name").setValue("secureproxy");
+    await w.get("#proxy-url").setValue("http://localhost:9011");
+    await w.get('[role="dialog"] button[aria-label="HTTPS"]').trigger("click");
+    await click(w, "Add proxy");
     expect(lastCall("add_proxy")).toEqual({ name: "secureproxy", url: "http://localhost:9011" });
     expect(lastCall("set_secure")).toEqual({ name: "secureproxy", secure: true });
     const names = invokeMock.mock.calls.map((c) => c[0]);
     expect(names.indexOf("add_proxy")).toBeLessThan(names.indexOf("set_secure"));
   });
 
-  it("adds a path rule to a site", async () => {
-    stubIpc({ sites: [site("app")] });
-    const wrapper = await mountView();
-
-    await clickByText(wrapper, "New path rule");
-    await flushPromises();
-
-    await wrapper.find("#ruleprefix").setValue("/app");
-    await wrapper.find("#ruleurl").setValue("http://localhost:9011");
-    await clickByText(wrapper, "Add rule");
-    await flushPromises();
-
-    expect(lastCall("add_proxy_rule")).toEqual({
-      site: "app",
-      prefix: "/app",
-      url: "http://localhost:9011",
-    });
+  it("reports a proxy added on HTTP only when HTTPS fails", async () => {
+    stubIpc({ failures: ["set_secure"] });
+    const w = await mountView();
+    await openNew(w);
+    await w.get("#proxy-name").setValue("grafana");
+    await w.get("#proxy-url").setValue("localhost:3000");
+    await w.get('[role="dialog"] button[aria-label="HTTPS"]').trigger("click");
+    await click(w, "Add proxy");
+    expect(toastError).toHaveBeenCalledWith(
+      "Added grafana.test on HTTP only",
+      "Couldn't enable HTTPS: set_secure failed",
+    );
   });
 
-  it("toggles HTTPS on an existing proxy via set_secure", async () => {
-    stubIpc({ proxies: [{ name: "reverb", target: "http://localhost:9011", secure: false }] });
-    const wrapper = await mountView();
-
-    await clickByText(wrapper, "HTTP");
-    await flushPromises();
-
-    expect(lastCall("set_secure")).toEqual({ name: "reverb", secure: true });
-  });
-
-  it("removes a path rule", async () => {
-    stubIpc({ rules: [{ site: "app", prefix: "/app", target: "http://localhost:9011" }] });
-    const wrapper = await mountView();
-
-    const trash = wrapper
-      .findAll("button")
-      .find((b) => b.attributes("aria-label")?.startsWith("Remove rule"));
-    if (!trash) throw new Error("no remove-rule button");
-    await trash.trigger("click");
-    await flushPromises();
-
-    await clickByText(wrapper, "Remove");
-    await flushPromises();
-
-    expect(lastCall("remove_proxy_rule")).toEqual({ site: "app", prefix: "/app" });
-  });
-
-  it("opens a proxy's domain in the browser when DNS is bound", async () => {
-    stubIpc({ proxies: [{ name: "reverb", target: "http://localhost:9011", secure: false }] });
-    useDaemon().report.value = boundReport();
-    const wrapper = await mountView();
-
-    const domain = wrapper.findAll("button").find((b) => b.text() === "reverb.test");
-    if (!domain) throw new Error("no domain button");
-    expect(domain.attributes("disabled")).toBeUndefined();
-    await domain.trigger("click");
-    await flushPromises();
-
-    expect(openUrlMock).toHaveBeenCalledTimes(1);
-    expect(openUrlMock).toHaveBeenCalledWith("http://reverb.test");
-  });
-
-  it("disables the open affordance for a proxy in unbound (resolver-off) mode", async () => {
-    stubIpc({ proxies: [{ name: "reverb", target: "http://localhost:9011", secure: false }] });
-    useDaemon().report.value = boundReport({ resolver_installed: false });
-    const wrapper = await mountView();
-
-    const domain = wrapper.findAll("button").find((b) => b.text() === "reverb.test");
-    if (!domain) throw new Error("no domain button");
-    expect(domain.attributes("disabled")).toBeDefined();
-    await domain.trigger("click");
-    await flushPromises();
-    expect(openUrlMock).not.toHaveBeenCalled();
-  });
-
-  it("removes a proxy", async () => {
-    stubIpc({ proxies: [{ name: "reverb", target: "http://localhost:9011", secure: false }] });
-    const wrapper = await mountView();
-
-    const trash = wrapper
-      .findAll("button")
-      .find((b) => b.attributes("aria-label")?.startsWith("Remove proxy"));
-    if (!trash) throw new Error("no remove-proxy button");
-    await trash.trigger("click");
-    await flushPromises();
-
-    await clickByText(wrapper, "Remove");
-    await flushPromises();
-
-    expect(lastCall("remove_proxy")).toEqual({ name: "reverb" });
-  });
-});
-
-describe("ProxiesView — proxy domains", () => {
-  const dotted = (): ProxyEntry => ({
-    name: "api.account",
-    target: "http://127.0.0.1:9011",
-    secure: false,
-    primary_domain: "custom-domain.test",
-    domains: ["api.account.test", "custom-domain.test"],
-  });
-
-  beforeEach(() => {
-    invokeMock.mockReset();
-    openUrlMock.mockReset();
-    resetResourceCache();
-    useDaemon().report.value = null;
-  });
-
-  afterEach(() => {
-    mounted.forEach((w) => w.unmount());
-    mounted.length = 0;
-  });
-
-  it("accepts a dotted proxy name", async () => {
+  it("accepts a dotted name and drops a typed .test suffix", async () => {
     stubIpc({});
-    const wrapper = await mountView();
-    await clickByText(wrapper, "New proxy");
-    await flushPromises();
-
-    await wrapper.find("#proxyname").setValue("api.account");
-    await wrapper.find("#proxyurl").setValue("http://127.0.0.1:9011");
-    await clickByText(wrapper, "Add proxy");
-    await flushPromises();
-
+    const w = await mountView();
+    await openNew(w);
+    await w.get("#proxy-name").setValue("api.account.test");
+    await w.get("#proxy-url").setValue("http://127.0.0.1:9011");
+    await click(w, "Add proxy");
     expect(lastCall("add_proxy")).toEqual({ name: "api.account", url: "http://127.0.0.1:9011" });
   });
 
   it("keeps Add proxy disabled for a malformed name", async () => {
     stubIpc({});
-    const wrapper = await mountView();
-    await clickByText(wrapper, "New proxy");
-    await flushPromises();
-    await wrapper.find("#proxyurl").setValue("http://127.0.0.1:9011");
-    const addDisabled = () => {
-      const btn = wrapper.findAll("button").find((b) => b.text().includes("Add proxy"))!;
-      return (btn.element as HTMLButtonElement).disabled;
-    };
-
-    await wrapper.find("#proxyname").setValue("api..account");
-    expect(addDisabled()).toBe(true);
-
-    await wrapper.find("#proxyname").setValue("api account");
-    expect(addDisabled()).toBe(true);
-
-    await wrapper.find("#proxyname").setValue("api.account");
-    expect(addDisabled()).toBe(false);
+    const w = await mountView();
+    await openNew(w);
+    await w.get("#proxy-url").setValue("http://127.0.0.1:9011");
+    const disabled = () => button(w, "Add proxy").attributes("disabled") !== undefined;
+    for (const bad of ["api..account", "api account"]) {
+      await w.get("#proxy-name").setValue(bad);
+      expect(disabled()).toBe(true);
+    }
+    await w.get("#proxy-name").setValue("api.account");
+    expect(disabled()).toBe(false);
   });
 
-  it("hints the domain count and primary only for a customised proxy", async () => {
-    stubIpc({
-      proxies: [dotted(), { name: "reverb", target: "http://localhost:9011", secure: false }],
-    });
-    const wrapper = await mountView();
-    expect(wrapper.text()).toContain("2 domains · primary custom-domain.test");
-    expect(wrapper.text()).not.toContain("1 domain");
+  it("adds a path on a site", async () => {
+    stubIpc({ sites: [site("app")] });
+    const w = await mountView();
+    await openNew(w);
+    await w.get('[data-mode="path"]').trigger("click");
+    await flushPromises();
+    await w.get("#proxy-prefix").setValue("/app");
+    await w.get("#proxy-url").setValue("http://localhost:9011");
+    await click(w, "Add path");
+    expect(lastCall("add_proxy_rule")).toEqual({ site: "app", prefix: "/app", url: "http://localhost:9011" });
+    expect(toastSuccess).toHaveBeenCalledWith("Added app.test/app", "Forwarding to localhost:9011");
+  });
+});
+
+describe("ProxiesView inspector", () => {
+  it("toggles HTTPS on an existing proxy via set_secure", async () => {
+    stubIpc({ proxies: [reverb()] });
+    const w = await mountView();
+    const drawer = await openRow(w, "proxy:reverb");
+    await drawer.get('button[aria-label="HTTPS"]').trigger("click");
+    await flushPromises();
+    expect(lastCall("set_secure")).toEqual({ name: "reverb", secure: true });
+  });
+
+  it("opens a proxy in the browser when DNS is bound", async () => {
+    stubIpc({ proxies: [reverb()] });
+    useDaemon().report.value = boundReport();
+    const w = await mountView();
+    await openRow(w, "proxy:reverb");
+    await click(w, "Open");
+    expect(openUrlMock).toHaveBeenCalledTimes(1);
+    expect(openUrlMock).toHaveBeenCalledWith("http://reverb.test");
+  });
+
+  it("disables Open in unbound (resolver-off) mode", async () => {
+    stubIpc({ proxies: [reverb()] });
+    useDaemon().report.value = boundReport({ resolver_installed: false });
+    const w = await mountView();
+    await openRow(w, "proxy:reverb");
+    const open = button(w, "Open");
+    expect(open.attributes("disabled")).toBeDefined();
+    expect(open.attributes("title")).toBe("reverb.test is reachable only when .test DNS resolution is active");
+    await open.trigger("click");
+    await flushPromises();
+    expect(openUrlMock).not.toHaveBeenCalled();
   });
 
   it("opens a customised proxy at its primary domain", async () => {
     stubIpc({ proxies: [dotted()] });
     useDaemon().report.value = boundReport();
-    const wrapper = await mountView();
-
-    const domain = wrapper.findAll("button").find((b) => b.text() === "api.account.test")!;
-    await domain.trigger("click");
-    await flushPromises();
-
+    const w = await mountView();
+    const drawer = await openRow(w, "proxy:api.account");
+    expect(drawer.get('[data-testid="proxy-title"]').text()).toBe("custom-domain.test");
+    await click(w, "Open");
     expect(openUrlMock).toHaveBeenCalledWith("http://custom-domain.test");
+  });
+
+  it("removes a proxy after confirming, and not on Cancel", async () => {
+    stubIpc({ proxies: [reverb()] });
+    const w = await mountView();
+    await openRow(w, "proxy:reverb");
+    await w.get('[data-testid="inspector-footer-action"]').trigger("click");
+    await flushPromises();
+    const dialog = w.get('[role="alertdialog"]');
+    expect(dialog.text()).toContain("Remove reverb.test?");
+    expect(dialog.text()).toContain("Whatever runs on localhost:9011 keeps running.");
+    await click(w, "Cancel");
+    expect(called("remove_proxy")).toBe(false);
+
+    await w.get('[data-testid="inspector-footer-action"]').trigger("click");
+    await flushPromises();
+    await click(w, "Remove proxy");
+    expect(lastCall("remove_proxy")).toEqual({ name: "reverb" });
+  });
+
+  it("removes a path after confirming", async () => {
+    stubIpc({ rules: [appRule()] });
+    const w = await mountView();
+    const drawer = await openRow(w, "rule:app/app");
+    expect(drawer.text()).toContain("Path on a site · PHP serves the rest of app.test");
+    expect(drawer.find('[data-testid="domains-card"]').exists()).toBe(false);
+    await drawer.get('[data-testid="inspector-footer-action"]').trigger("click");
+    await flushPromises();
+    expect(w.get('[role="alertdialog"]').text()).toContain("Remove app.test/app?");
+    await click(w, "Remove path");
+    expect(lastCall("remove_proxy_rule")).toEqual({ site: "app", prefix: "/app" });
   });
 
   it("manages a proxy's domains through the shared panel and reloads on change", async () => {
     stubIpc({ proxies: [dotted()] });
-    const wrapper = await mountView();
-
-    await wrapper.find('[aria-label="Domains for api.account.test"]').trigger("click");
+    const w = await mountView();
+    const drawer = await openRow(w, "proxy:api.account");
+    await button(w, "Add domain").trigger("click");
     await flushPromises();
-    expect(wrapper.text()).toContain("custom-domain.test");
+    expect(drawer.text()).toContain("custom-domain.test");
 
     const before = invokeMock.mock.calls.filter((c) => c[0] === "list_proxies").length;
-    await wrapper.find("#add-domain").setValue("extra.test");
-    await clickByText(wrapper, "Add");
-    await flushPromises();
-
+    await w.get("#add-domain").setValue("extra.test");
+    await click(w, "Add");
     expect(lastCall("add_domain")).toEqual({ name: "api.account", domain: "extra.test" });
     const after = invokeMock.mock.calls.filter((c) => c[0] === "list_proxies").length;
     expect(after).toBeGreaterThan(before);

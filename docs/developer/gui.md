@@ -48,23 +48,25 @@ apps/yerd-gui/
     │   ├── types.ts        TypeScript mirror of the yerd-ipc wire JSON
     │   ├── client.ts       typed wrappers around invoke() + IpcError
     │   └── client.test.ts  command-mapping + error-categorisation tests
-    ├── composables/        useDaemon (singleton poller), usePoll, useToast, useIdes, useSiteEditor,
+    ├── composables/        useDaemon (singleton poller), usePoll, useToast, useWideLayout, useIdes, useSiteEditor,
     │                       useCreateSiteJob / useToolPrereqs / useSiteBasics and the starters
     │                       (useSiteStarters, useLaravelStarter, useWordPressStarter) behind New site
     ├── components/         AppShell, SideNav, NavLink, TitleBar, PageHeader, AboutSection, StatusPill, ComingSoon, EnvironmentCard,
     │                       SiteDomainsPanel / SiteRoutesPanel / SiteHeadersPanel / SiteNodePanel,
     │                       sites/ (SitesList, SiteFilterChips, SitesWarningStrip, SitesEmptyState, SiteInspector,
     │                       SiteActionsMenu, SiteEnvironmentCard, SiteDomainsCard, WebRootDialog, LinkFolderDialog),
+    │                       proxies/ (ProxiesList, ProxyInspector, NewProxyDialog, ProxiesEmptyState),
     │                       site-create/ (NewSiteDialog + ProjectStep, StarterPicker, LaravelOptionsStep,
     │                       WordPressOptionsStep, MissingToolsPanel, CreateProgress),
     │                       PhpVersionPanel, ServiceOverridesModal, DaemonDownHero, DaemonDiagnosticsPanel,
     │                       overview/ (status, favourites, setup checklist, release notes and contributors cards),
     │                       ui/ (incl. AsyncState, EmptyState, InfoBanner, ConfirmDialog, DialogFrame,
-    │                       SegmentedControl, SuffixInput)
+    │                       SegmentedControl, SuffixInput, FilterChips, InspectorFrame)
     ├── views/              OverviewView, GeneralView, PhpView, NodeView, SitesView, ProxiesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView
     └── lib/                utils (cn, humanisers), theme, desktop chrome, domainValidation,
                             overview (status, health-row and favourites derivations for the Overview),
                             sites (Sites list sections, chips, warnings and inspector labels),
+                            proxies (Proxies chips, sections, upstream labels and name/prefix checks),
                             createSite (the New site command preview and durations),
                             siteFilter (match a query against a site's domains and path),
                             ideChoice (resolve "auto"/"system"/an id to a label), wpAdmin,

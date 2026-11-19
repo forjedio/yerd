@@ -6,6 +6,7 @@ import {
   frameworkDetail,
   frameworkLabel,
   groupNameAvailable,
+  httpsDetail,
   matchesChip,
   OVERFLOW_LIMIT,
   servedPath,
@@ -18,7 +19,7 @@ import {
   visibleRows,
   type SiteSection,
 } from "./sites";
-import type { GroupsState, SiteEntry, StatusReport } from "@/ipc/types";
+import type { GroupsState, ProxyEntry, SiteEntry, StatusReport } from "@/ipc/types";
 
 function site(name: string, overrides: Partial<SiteEntry> = {}): SiteEntry {
   return {
@@ -275,6 +276,23 @@ describe("labels", () => {
     expect(aliasCount(site("x"))).toBe(0);
     expect(aliasCount(site("x", { domains: ["x.test"] }))).toBe(0);
     expect(aliasCount(site("x", { domains: ["x.test", "*.x.test"] }))).toBe(1);
+    const proxy: ProxyEntry = {
+      name: "p",
+      target: "http://localhost:1",
+      secure: false,
+      domains: ["p.test", "*.p.test", "docker.test"],
+    };
+    expect(aliasCount(proxy)).toBe(2);
+  });
+
+  it.each([
+    [false, true, "Served over plain HTTP"],
+    [true, true, "Certificate issued by Yerd local CA · trusted"],
+    [true, false, "Certificate issued by Yerd local CA · not trusted"],
+    [true, null, "Certificate issued by Yerd local CA · trust unknown"],
+    [true, undefined, "Certificate issued by Yerd local CA · trust unknown"],
+  ] as const)("httpsDetail(secure %s, trusted %s) is %s", (secure, trusted, expected) => {
+    expect(httpsDetail(secure, trusted)).toBe(expected);
   });
 
   it("derives the serving pill", () => {

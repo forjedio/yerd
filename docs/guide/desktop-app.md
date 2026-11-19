@@ -108,12 +108,14 @@ Installs self-contained developer tools - Composer, Bun, pnpm, the Laravel insta
 
 ### Proxies
 
-Puts a `.test` address in front of a service Yerd doesn't run itself. Two cards, matching the two shapes of [reverse proxy](./proxies):
+Puts a `.test` address in front of a service Yerd doesn't run itself. The list has two sections, matching the two shapes of [reverse proxy](./proxies), and **All / Domains / Paths** chips to filter them:
 
-- **Whole-host proxies** - `reverb.test` → an upstream URL. Each row opens in the browser, toggles HTTPS, and has a **Manage domains** button giving the proxy extra domains, subdomains, and wildcards exactly as a site gets them; a customised proxy shows a `N domains · primary …` hint. Proxy names may be **dotted**, so a proxy's own address can be a subdomain (`api.account.test`).
-- **Path rules** - one path on an existing site forwarded to a service (`myapp.test/app` → Reverb), keeping everything same-origin.
+- **Domains** - whole-domain proxies, `grafana.test` → an upstream URL. Selecting one opens its inspector: **Open** and **Copy URL**, a **Route** card with the upstream and an **HTTPS** switch, and a **Domains** card listing the proxy's primary, wildcard and alias domains. Click any domain or **Add domain** to give the proxy extra domains, subdomains and wildcards exactly as a site gets them. **Remove proxy…** asks before it removes. Proxy names may be **dotted**, so a proxy's own address can be a subdomain (`api.account.test`).
+- **Paths on sites** - one path on an existing site forwarded to a service (`myapp.test/app` → Reverb), keeping everything same-origin. Its inspector shows the upstream and **Remove path…**. A path's HTTPS follows its site.
 
-The **Add** menu creates either shape. See [Reverse Proxies](./proxies).
+**New proxy** opens one dialog with two modes. **A whole domain** takes the name (the `.test` suffix is added for you), the upstream (`http://` is assumed when you leave the scheme off) and whether to serve it over HTTPS. **A path on a site** takes the site, the path prefix (starting with `/`) and the upstream. An upstream can't be edited in place: remove the proxy and add it again.
+
+In a narrow window the list becomes a table (forwards to, extra domains, TLS) and the inspector slides in as a drawer when you click a row. See [Reverse Proxies](./proxies).
 
 ### Services
 
