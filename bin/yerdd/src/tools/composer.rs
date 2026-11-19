@@ -97,10 +97,15 @@ pub async fn install(dirs: &PlatformDirs, dl: &dyn Downloader) -> Result<(), Too
 }
 
 /// The Composer version an install would pick today, for the update poll.
+/// Fails like [`install`] when no managed PHP is installed.
 pub(crate) async fn latest(dirs: &PlatformDirs, dl: &dyn Downloader) -> Result<String, ToolError> {
+    let Some(host_id) = installed_versions(dirs).into_iter().map(version_id).max() else {
+        return Err(ToolError::UnsupportedHost(
+            "Composer (requires an installed PHP)",
+        ));
+    };
     let versions = fetch_versions(dl).await?;
-    let host_id = installed_versions(dirs).into_iter().map(version_id).max();
-    choose_version(&versions, host_id).ok_or(ToolError::Download(
+    choose_version(&versions, Some(host_id)).ok_or(ToolError::Download(
         "composer /versions: no stable version".to_owned(),
     ))
 }

@@ -669,6 +669,7 @@ mod tests {
     async fn latest_per_tool_from_fixtures() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = crate::test_support::dirs_in(tmp.path());
+        crate::test_support::fake_php(&dirs, "8.4");
         let dl = crate::test_support::UrlDl::default()
             .with(
                 "https://getcomposer.org/versions",
@@ -701,6 +702,20 @@ mod tests {
             );
         }
         assert!(latest(Tool::WpCli, &dirs, &dl).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn composer_latest_needs_an_installed_php() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = crate::test_support::dirs_in(tmp.path());
+        let dl = crate::test_support::UrlDl::default().with(
+            "https://getcomposer.org/versions",
+            r#"{"stable":[{"path":"/download/2.8.12/composer.phar","version":"2.8.12","min-php":70205}]}"#,
+        );
+        assert!(matches!(
+            latest(Tool::Composer, &dirs, &dl).await,
+            Err(ToolError::UnsupportedHost(_))
+        ));
     }
 
     #[test]

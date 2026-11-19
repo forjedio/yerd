@@ -100,6 +100,7 @@ mod tests {
     const CLOUDFLARED_RELEASE: &str = r#"{"tag_name":"2025.11.1","assets":[]}"#;
 
     fn mark_installed(state: &DaemonState, tool: Tool, version: &str) {
+        crate::test_support::fake_php(&state.dirs, "8.4");
         let dir = state.dirs.data.join("tools").join(tool.id());
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(".version"), version).unwrap();

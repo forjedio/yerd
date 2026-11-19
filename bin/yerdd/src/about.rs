@@ -133,25 +133,30 @@ async fn fetch_entry(dl: &dyn Downloader, tag: &str) -> Option<ReleaseNotesEntry
     to_entry(file)
 }
 
-async fn fetch_notes(dl: &dyn Downloader) -> Result<ReleaseNotesPayload, String> {
+/// Fetch the tag index and every notes file. The flag is `true` only when the
+/// running release's notes and every earlier release's notes were loaded.
+async fn fetch_notes(dl: &dyn Downloader) -> Result<(ReleaseNotesPayload, bool), String> {
     let url = format!("{CDN_BASE}/releases.json");
     let bytes = dl.download(&url).await.map_err(|e| e.to_string())?;
     let releases: Vec<ReleaseEntry> =
         serde_json::from_slice(&bytes).map_err(|e| format!("invalid releases.json: {e}"))?;
     let current = fetch_entry(dl, CURRENT_TAG).await;
+    let tags = earlier_tags(&releases, CURRENT_TAG, EARLIER_LIMIT);
     let mut earlier = Vec::new();
-    for tag in earlier_tags(&releases, CURRENT_TAG, EARLIER_LIMIT) {
-        if let Some(entry) = fetch_entry(dl, &tag).await {
+    for tag in &tags {
+        if let Some(entry) = fetch_entry(dl, tag).await {
             earlier.push(entry);
         }
     }
-    Ok((current, earlier))
+    let complete = current.is_some() && earlier.len() == tags.len();
+    Ok(((current, earlier), complete))
 }
 
 /// Serve the release notes from the cache, refreshing it through `dl` once it
-/// is older than [`NOTES_TTL`]. A refresh missing the running release's notes
-/// is never cached: the stale payload is served instead, or the partial one
-/// when nothing is cached, so the next call retries.
+/// is older than [`NOTES_TTL`]. Only a complete refresh is cached. An
+/// incomplete one (any notes file missing or unreadable) serves the stale
+/// payload instead, or the partial one when nothing is cached, so the next call
+/// retries.
 pub async fn release_notes_with(
     state: &DaemonState,
     dl: &dyn Downloader,
@@ -164,11 +169,11 @@ pub async fn release_notes_with(
         }
     }
     match fetch_notes(dl).await {
-        Ok(payload) if payload.0.is_none() => match cached {
+        Ok((payload, false)) => match cached {
             Some((_, old)) => notes_response(old),
             None => notes_response(payload),
         },
-        Ok(payload) => {
+        Ok((payload, true)) => {
             *state.release_notes_cache.write().await = Some((now, payload.clone()));
             notes_response(payload)
         }
@@ -373,6 +378,21 @@ mod tests {
         let first = release_notes_with(&state, &cdn(&[]), start).await;
         let later = start + NOTES_TTL + Duration::from_secs(1);
         let served = release_notes_with(&state, &cdn(&[CURRENT_TAG]), later).await;
+        assert_eq!(served, first);
+        assert_eq!(
+            state.release_notes_cache.read().await.as_ref().unwrap().0,
+            start
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_earlier_file_keeps_stale_payload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let start = Instant::now();
+        let first = release_notes_with(&state, &cdn(&[]), start).await;
+        let later = start + NOTES_TTL + Duration::from_secs(1);
+        let served = release_notes_with(&state, &cdn(&["v2.0.3"]), later).await;
         assert_eq!(served, first);
         assert_eq!(
             state.release_notes_cache.read().await.as_ref().unwrap().0,

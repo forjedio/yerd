@@ -708,7 +708,13 @@ impl TryFrom<Wire> for Config {
             response_headers,
             network,
             favourites: crate::schema::FavouritesSection {
-                sites: w.favourites.sites,
+                sites: w
+                    .favourites
+                    .sites
+                    .into_iter()
+                    .map(|name| name.trim().to_ascii_lowercase())
+                    .filter(|name| !name.is_empty())
+                    .collect(),
             },
         })
     }
@@ -1717,6 +1723,20 @@ mod tests {
         );
         let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
         assert_eq!(back, c);
+    }
+
+    #[test]
+    fn favourites_are_canonicalised_on_load() {
+        let s = "version = 30\n[favourites]\nsites = [\"Blog\", \" api \", \"blog\", \" \", \"gone\"]\n";
+        let c = Config::from_toml(s).unwrap();
+        assert_eq!(
+            c.favourites
+                .sites
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["api", "blog", "gone"]
+        );
     }
 
     #[test]

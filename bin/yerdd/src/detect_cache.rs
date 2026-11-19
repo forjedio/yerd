@@ -5,12 +5,14 @@
 //! *and* every filesystem-watcher tick, so without a cache an unrelated
 //! `yerd use`/`yerd secure` would re-read every project. This cache keys the
 //! gathered [`ProjectSignals`] on a cheap freshness
-//! stamp - `max(project-root dir mtime, composer.json mtime)` - so a rescan that
-//! finds nothing changed reuses the previous result after one or two `stat`s.
+//! stamp - the newest of the project-root dir, `composer.json` and `bin/` dir
+//! mtimes - so a rescan that finds nothing changed reuses the previous result
+//! after a few `stat`s.
 //!
-//! The stamp captures the two ways a project's web root can change: adding or
+//! The stamp captures the ways a project's signals can change: adding or
 //! removing a top-level entry (e.g. cloning in `public/`) bumps the directory
-//! mtime; editing `composer.json` in place bumps that file's mtime.
+//! mtime; editing `composer.json` in place bumps that file's mtime; adding a
+//! nested marker such as `bin/console` bumps the `bin/` dir mtime.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -70,18 +72,17 @@ impl DetectCache {
     }
 }
 
-/// `max(project-root dir mtime, composer.json mtime)`, or `None` if neither is
-/// stat-able (forces a fresh, uncached detection).
+/// The newest of the project-root dir, `composer.json` and `bin/` dir mtimes,
+/// or `None` if none is stat-able (forces a fresh, uncached detection).
 fn freshness_stamp(root: &Path) -> Option<SystemTime> {
-    let dir = std::fs::metadata(root).and_then(|m| m.modified()).ok();
-    let composer = std::fs::metadata(root.join("composer.json"))
-        .and_then(|m| m.modified())
-        .ok();
-    match (dir, composer) {
-        (Some(a), Some(b)) => Some(a.max(b)),
-        (Some(a), None) | (None, Some(a)) => Some(a),
-        (None, None) => None,
-    }
+    [
+        root.to_path_buf(),
+        root.join("composer.json"),
+        root.join("bin"),
+    ]
+    .iter()
+    .filter_map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+    .max()
 }
 
 #[cfg(test)]
@@ -120,6 +121,25 @@ mod tests {
             yerd_core::detect_framework(&first),
             Some(yerd_core::SiteFramework::Statamic)
         );
+    }
+
+    #[test]
+    fn nested_bin_marker_refreshes_cached_signals() {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let cache = DetectCache::new();
+        let past = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        for p in [dir.path(), bin.as_path()] {
+            fs::File::open(p).unwrap().set_modified(past).unwrap();
+        }
+        assert!(!cache.signals(dir.path()).markers.contains("bin/console"));
+        fs::write(bin.join("console"), b"").unwrap();
+        fs::File::open(dir.path())
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+        assert!(cache.signals(dir.path()).markers.contains("bin/console"));
     }
 
     #[test]

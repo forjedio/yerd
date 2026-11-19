@@ -75,6 +75,18 @@ pub fn dirs_in(tmp: &Path) -> PlatformDirs {
     }
 }
 
+/// Lay down a fake bundled PHP-FPM binary so `discover_bundled` reports
+/// `version` as installed.
+pub fn fake_php(dirs: &PlatformDirs, version: &str) {
+    let sbin = dirs
+        .data
+        .join("php")
+        .join(format!("php-{version}"))
+        .join("sbin");
+    std::fs::create_dir_all(&sbin).unwrap();
+    std::fs::write(sbin.join("php-fpm"), b"x").unwrap();
+}
+
 /// A fully-populated [`DaemonState`] for a daemon unit test: an empty router,
 /// a fresh `PhpManager` over `dirs_in(tmp)`, and every other field at its
 /// harmless default (no mail listening, no tunnels, an empty `wordpress_sites`
