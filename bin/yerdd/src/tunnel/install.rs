@@ -286,6 +286,15 @@ fn parse_cloudflared_version(text: &str) -> Option<(String, (u32, u32, u32))> {
     })
 }
 
+/// `latest` when it is a strictly newer `YYYY.MM.N` release than `installed`,
+/// for `CloudflaredStatus::update_available`. Either side failing to parse
+/// (by the same token rules as the `--version` probe) gives `None`.
+pub(crate) fn calver_newer(installed: &str, latest: &str) -> Option<String> {
+    let (_, current) = parse_cloudflared_version(installed)?;
+    let (tag, candidate) = parse_cloudflared_version(latest)?;
+    (candidate > current).then_some(tag)
+}
+
 /// Resolve which `cloudflared` binary Yerd should use: the managed copy if one
 /// is installed, otherwise a `PATH`-found binary that passes the
 /// minimum-version gate, otherwise `None` (nothing usable is available).
@@ -342,6 +351,18 @@ fn note(progress: Option<&ProgressTx>, msg: impl Into<String>) {
     if let Some(tx) = progress {
         let _ = tx.send(msg.into());
     }
+}
+
+/// The latest published `cloudflared` release tag, for the notify-only update
+/// poll. Installs nothing.
+pub(crate) async fn latest_tag(dl: &dyn Downloader) -> Result<String, CloudflaredInstallError> {
+    let meta = dl
+        .download(LATEST_RELEASE_API)
+        .await
+        .map_err(|e| CloudflaredInstallError::Download(format!("release metadata: {e}")))?;
+    let release: Release = serde_json::from_slice(&meta)
+        .map_err(|e| CloudflaredInstallError::Metadata(format!("parse release json: {e}")))?;
+    Ok(release.tag_name)
 }
 
 /// Download + install the latest `cloudflared` for the host. Idempotent
@@ -687,6 +708,37 @@ mod tests {
         async fn probe(&self, _binary: &Path) -> Option<String> {
             self.0.map(str::to_owned)
         }
+    }
+
+    #[test]
+    fn calver_newer_cases() {
+        let cases: &[(&str, &str, Option<&str>)] = &[
+            ("2024.6.1", "2024.12.0", Some("2024.12.0")),
+            ("2024.6.1", "2025.1.0", Some("2025.1.0")),
+            ("2024.12.0", "2024.12.0", None),
+            ("2025.1.0", "2024.12.0", None),
+            ("garbage", "2024.12.0", None),
+            ("2024.6.1", "garbage", None),
+            ("2024.6.1", "2024.6.1.1", None),
+        ];
+        for (installed, latest, want) in cases {
+            assert_eq!(
+                calver_newer(installed, latest).as_deref(),
+                *want,
+                "{installed} vs {latest}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn latest_tag_reads_release_tag_name() {
+        let dl = crate::test_support::UrlDl::default().with(
+            LATEST_RELEASE_API,
+            r#"{"tag_name":"2025.11.1","assets":[]}"#,
+        );
+        assert_eq!(latest_tag(&dl).await.unwrap(), "2025.11.1");
+        let offline = crate::test_support::UrlDl::default();
+        assert!(latest_tag(&offline).await.is_err());
     }
 
     #[test]

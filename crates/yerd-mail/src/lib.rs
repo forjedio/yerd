@@ -18,6 +18,6 @@ pub mod io;
 pub mod pure;
 
 pub use error::MailError;
-pub use io::server::{bind, serve};
+pub use io::server::{bind, serve, SiteResolver};
 pub use io::store::Store;
 pub use pure::smtp::RawMessage;

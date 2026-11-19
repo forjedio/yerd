@@ -2,17 +2,21 @@
 //!
 //! Thin I/O glue over the pure [`yerd_release_manifest`] crate: read the GitHub
 //! Releases API response and a CDN listing off disk, call the pure transforms,
-//! and write `latest.json` / `releases.json` / `plan.json`. All the decision
-//! logic (URL rewrite gating, stable/rc selection, the CDN<->GitHub diff) lives
-//! in the crate; this module never decides anything.
+//! and write `latest.json` / `releases.json` / `plan.json` / the per-release
+//! `<tag>.json` notes files. All the decision logic (URL rewrite gating,
+//! stable/rc selection, the CDN<->GitHub diff, notes parsing) lives in the
+//! crate; this module never decides anything.
 
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
-use yerd_release_manifest::{build_manifests, reconcile, CdnObject, ExpectedAsset, ReleaseEntry};
+use yerd_release_manifest::{
+    build_manifests, reconcile, release_notes, CdnObject, ExpectedAsset, GithubRelease,
+    ReleaseEntry,
+};
 
 /// One object from a CDN listing (`bunny-list.sh` output). Files only -
 /// directories are filtered out by the lister.
@@ -77,6 +81,42 @@ pub fn run_manifests(
     let (list, latest) = build_manifests(releases, cdn_base, &mirrored);
     write_pretty(out_dir, "releases.json", &list)?;
     write_pretty(out_dir, "latest.json", &latest)?;
+    Ok(())
+}
+
+/// `cdn-release-notes`: write one `<tag>.json` notes file per published release
+/// into `out_dir`.
+///
+/// With `tag`, only that release is written, and the run fails if it is missing,
+/// a draft, or otherwise unpublishable. Without it, every published release is
+/// written (the backfill).
+pub fn run_release_notes(releases_json: &Path, out_dir: &Path, tag: Option<&str>) -> Result<()> {
+    let bytes =
+        fs::read(releases_json).with_context(|| format!("reading {}", releases_json.display()))?;
+    let releases: Vec<GithubRelease> = serde_json::from_slice(&bytes).with_context(|| {
+        format!(
+            "parsing GitHub releases JSON at {}",
+            releases_json.display()
+        )
+    })?;
+
+    let files: Vec<_> = match tag {
+        Some(tag) => {
+            let Some(release) = releases.iter().find(|r| r.tag_name == tag) else {
+                bail!("release {tag} not found in {}", releases_json.display());
+            };
+            let Some(file) = release_notes(release) else {
+                bail!("release {tag} is a draft, unpublished, or not a semver tag");
+            };
+            vec![file]
+        }
+        None => releases.iter().filter_map(release_notes).collect(),
+    };
+
+    for file in &files {
+        write_pretty(out_dir, &format!("{}.json", file.tag), file)?;
+    }
+    println!("release notes: {} file(s) written", files.len());
     Ok(())
 }
 

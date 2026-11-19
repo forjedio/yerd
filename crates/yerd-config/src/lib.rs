@@ -23,10 +23,10 @@ mod serialize;
 
 pub use error::{ConfigError, MigrationErrorReason, ValidateErrorReason};
 pub use schema::{
-    Config, DomainDelta, DomainsSection, DumpsSection, ExtEntry, GroupsSection, MailSection,
-    NetworkSection, NodeSection, ParkedSection, PhpSection, Ports, ResponseHeadersSection,
-    ServiceInstance, ServicesSection, SiteOverride, TunnelSection, DEFAULT_DNS_PORT,
-    DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
+    Config, DomainDelta, DomainsSection, DumpsSection, ExtEntry, FavouritesSection, GroupsSection,
+    MailSection, NetworkSection, NodeSection, ParkedSection, PhpSection, Ports,
+    ResponseHeadersSection, ServiceInstance, ServicesSection, SiteOverride, TunnelSection,
+    DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
 };
 
 /// The on-disk schema version this crate writes. Bumped together with a new
@@ -120,8 +120,10 @@ pub use schema::{
 /// optional `[network]` outbound-proxy table ([`Config::network`]). Both
 /// default when absent, so v26→v27 and v27→v28 are bare bumps too. v29 added
 /// the optional `[php.xdebug]` per-version table ([`PhpSection::xdebug`]); it
-/// defaults (empty) when absent, so v28→v29 is a bare bump too.
+/// defaults (empty) when absent, so v28→v29 is a bare bump too. v30 added the
+/// optional `[favourites]` table ([`Config::favourites`]); it defaults (empty)
+/// when absent, so v29→v30 is a bare bump too.
 ///
 /// The per-version detail, including how to hand-edit a file back down for an
 /// older binary, lives in `docs/developer/config-schema-history.md`.
-pub const CURRENT_VERSION: u32 = 29;
+pub const CURRENT_VERSION: u32 = 30;

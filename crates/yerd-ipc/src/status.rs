@@ -280,6 +280,10 @@ pub struct MailSummary {
     /// `index.json` (no `read`) decodes as `false` (unread).
     #[serde(default)]
     pub read: bool,
+    /// The site the mail was attributed to from the SMTP `EHLO`/`HELO` host.
+    /// Absent when the host did not resolve to a site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
 }
 
 /// A single decoded header line, for [`MailDetail::headers`].
@@ -604,6 +608,11 @@ pub struct ToolStatus {
     /// additive for older clients/daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_path: Option<String>,
+    /// The newer published version of a Yerd-managed install, matching
+    /// [`PhpPoolStatus::update_available`]. `None` when up to date, unknown,
+    /// external or not installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_available: Option<String>,
 }
 
 /// A single doctor finding.
@@ -848,4 +857,9 @@ pub struct CloudflaredStatus {
     /// Whether a Cloudflare account is logged in (a `cert.pem` is present).
     #[serde(default)]
     pub logged_in: bool,
+    /// The newer published `cloudflared` release, set only for the
+    /// Yerd-managed binary. A binary found on `PATH` belongs to the user's
+    /// package manager and always reports `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_available: Option<String>,
 }

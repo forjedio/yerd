@@ -28,7 +28,20 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v29 (current)
+### v30 (current)
+
+**Added:** the optional `[favourites]` table - the sites starred in the desktop app, as a list of lowercased site names. Entries are not validated against live sites, like `[groups]` membership. It defaults to empty when absent, so a file with no favourites omits it entirely.
+
+```toml
+[favourites]
+sites = ["blog"]
+```
+
+**Migration from v29:** bare version bump - the table defaults to empty when absent, so a v29 file needs no other change.
+
+**To downgrade to v29:** change `version = 30` to `version = 29` and delete the `[favourites]` table (a v29 daemon rejects the unknown table under `deny_unknown_fields`). The starred sites are lost.
+
+### v29
 
 **Added:** the optional `[php.xdebug]` table - per-version settings for the [bundled Xdebug](../guide/xdebug) toggle. `[php.xdebug."<version>"]` holds `enabled` (bool), `modes` (a non-empty list of `debug`, `develop`, `coverage`, `profile`, `trace`, `gcstats`) and `start` (`"always"` or `"trigger"`). An entry is written only while it differs from the default (off, `["debug"]`, `"always"`), so an untouched file omits the table entirely.
 

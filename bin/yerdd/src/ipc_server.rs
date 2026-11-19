@@ -112,10 +112,12 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             // fs-watcher tick) rather than detected fresh here - this
             // handler is polled every few seconds and must not re-stat every
             // site's marker files on each poll. See `wordpress_detect`.
+            let favourites = state.favourite_sites.read().await.clone();
             let router = state.router.read().await;
             let tld = router.config().tld().to_owned();
             let wordpress_sites = state.wordpress_sites.read().await;
             let laravel_sites = state.laravel_sites.read().await;
+            let framework_sites = state.framework_sites.read().await;
             let entries = router
                 .iter()
                 .map(|site| {
@@ -133,6 +135,8 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
                         apex_shadowed_by,
                         uses_front_controller,
                         is_laravel,
+                        favourite: favourites.contains(&name.to_ascii_lowercase()),
+                        framework: framework_sites.get(name).copied(),
                     }
                 })
                 .collect();
@@ -208,6 +212,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         | Request::DeleteGroup { .. }
         | Request::SetGroupOrder { .. }
         | Request::SetSiteGroup { .. }
+        | Request::SetSiteFavourite { .. }
         | Request::RenameGroup { .. } => handle_group_mutation(req, state).await,
         Request::ListPhp => php_versions_response(state).await,
         Request::InstallPhp {
@@ -466,6 +471,9 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::UninstallNode { version } => uninstall_node(&version, state).await,
         Request::ClearNodeVersion { site } => clear_node_version(&site, state).await,
         Request::NodeSite { site } => node_site_response(&site, state).await,
+        Request::NodeSites => node_sites_response(state).await,
+        Request::ReleaseNotes => crate::about::release_notes(state).await,
+        Request::Contributors => crate::about::contributors(state).await,
         Request::UninstallTool { tool } => uninstall_tool(&tool, state).await,
         Request::CheckUpdate { channel } => {
             let dl = crate::network::downloader(state).await;
@@ -1702,6 +1710,7 @@ pub(crate) async fn reconcile_client_shims_now(state: &DaemonState) {
 async fn list_tools_with_external(state: &DaemonState) -> Vec<yerd_ipc::ToolStatus> {
     let node_default = state.config.lock().await.node.default.clone();
     let mut tools = crate::tools::list_status(&state.dirs, node_default.as_deref());
+    crate::tool_updates::fill_update_available(state, &mut tools).await;
     let taggable = |t: &yerd_ipc::ToolStatus| {
         !t.installed
             && crate::tools::Tool::parse(&t.id).is_some_and(crate::tools::Tool::accepts_external)
@@ -3024,7 +3033,7 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
         return internal(format!("config validation failed: {e}"));
     }
 
-    let (candidate, candidate_wordpress, candidate_laravel) =
+    let (candidate, candidate_wordpress, candidate_laravel, candidate_framework) =
         match startup::build_router(&new, &state.dirs, &state.detect_cache) {
             Ok(r) => r,
             Err(DaemonError::Core(yerd_core::CoreError::DuplicateSite { name })) => {
@@ -3045,6 +3054,7 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
     *state.router.write().await = candidate;
     *state.wordpress_sites.write().await = candidate_wordpress;
     *state.laravel_sites.write().await = candidate_laravel;
+    *state.framework_sites.write().await = candidate_framework;
     drop(cfg_guard);
     crate::tunnel::rebuild_routes(state).await;
 
@@ -3233,8 +3243,9 @@ async fn list_response_headers(state: &DaemonState) -> Response {
     Response::ResponseHeaders { headers }
 }
 
-/// Apply a group mutation (create/delete/reorder/assign). Groups are a
-/// config-only organisational overlay that never affects routing, so this uses
+/// Apply a group or favourite mutation (create/delete/reorder/assign, or
+/// star/unstar). Both are config-only organisational overlays that never affect
+/// routing, so this uses
 /// the lighter clone → apply → validate → save → commit path (like
 /// [`set_dns_port`]) - **no** router rebuild and **no** `watch_dirty` notify,
 /// which would only provoke a needless parked-dir rescan.
@@ -3268,6 +3279,9 @@ async fn handle_group_mutation(req: Request, state: &DaemonState) -> Response {
         return internal(format!("config save failed: {e}"));
     }
 
+    if matches!(req, Request::SetSiteFavourite { .. }) {
+        *state.favourite_sites.write().await = new.favourites.sites.clone();
+    }
     *cfg_guard = new;
     tracing::info!(summary = %applied.summary, "applied group mutation");
     Response::Ok
@@ -3816,34 +3830,86 @@ async fn node_site_response(name: &str, state: &DaemonState) -> Response {
         let cfg = state.config.lock().await;
         (cfg.node.default.clone(), cfg.node.sites.clone())
     };
-    let empty = |error: String| Response::NodeSite {
+    let entry = match site_project_root(state, name).await {
+        Ok(root) => resolve_node(name, &state.dirs, &root, configured.as_deref(), &prefs),
+        Err(Response::Error { message, .. }) => node_error_entry(name, message),
+        Err(_) => node_error_entry(name, format!("cannot resolve site '{name}'")),
+    };
+    Response::NodeSite {
+        preference: entry.preference,
+        project_file: entry.project_file,
+        effective: entry.effective,
+        source: entry.source,
+        error: entry.error,
+        missing: entry.missing,
+    }
+}
+
+/// `NodeSites` - every routed site's Node resolution, in router order. Each
+/// entry matches what `NodeSite` replies for that site. The per-site
+/// filesystem sweep runs on the blocking pool.
+async fn node_sites_response(state: &DaemonState) -> Response {
+    let (configured, prefs) = {
+        let cfg = state.config.lock().await;
+        (cfg.node.default.clone(), cfg.node.sites.clone())
+    };
+    let sites: Vec<(String, PathBuf)> = state
+        .router
+        .read()
+        .await
+        .iter()
+        .map(|s| (s.name().to_owned(), s.document_root().to_path_buf()))
+        .collect();
+    let dirs = state.dirs.clone();
+    let sweep = tokio::task::spawn_blocking(move || {
+        sites
+            .into_iter()
+            .map(|(name, root)| match std::fs::canonicalize(root) {
+                Ok(root) => resolve_node(&name, &dirs, &root, configured.as_deref(), &prefs),
+                Err(e) => node_error_entry(&name, format!("cannot resolve site root: {e}")),
+            })
+            .collect()
+    })
+    .await;
+    match sweep {
+        Ok(sites) => Response::NodeSites { sites },
+        Err(e) => internal(format!("node sites task failed: {e}")),
+    }
+}
+
+fn node_error_entry(site: &str, error: String) -> yerd_ipc::NodeSiteEntry {
+    yerd_ipc::NodeSiteEntry {
+        site: site.to_owned(),
         preference: None,
         project_file: None,
         effective: None,
         source: None,
         error: Some(error),
         missing: None,
-    };
-    let root = match site_project_root(state, name).await {
-        Ok(root) => root,
-        Err(Response::Error { message, .. }) => return empty(message),
-        Err(_) => return empty(format!("cannot resolve site '{name}'")),
-    };
+    }
+}
+
+/// Resolve the Node release for a site at canonical project `root`, from the
+/// configured global default and the per-root preferences. Shared by `NodeSite`
+/// and `NodeSites` so both resolve identically.
+fn resolve_node(
+    site: &str,
+    dirs: &yerd_platform::PlatformDirs,
+    root: &Path,
+    configured: Option<&str>,
+    prefs: &std::collections::BTreeMap<String, String>,
+) -> yerd_ipc::NodeSiteEntry {
     let preference = prefs.get(root.to_string_lossy().as_ref()).cloned();
-    let file = match yerd_platform::node::project_file(&root, Some(&root)) {
+    let file = match yerd_platform::node::project_file(root, Some(root)) {
         Ok(file) => file,
         Err(error) => {
-            return Response::NodeSite {
+            return yerd_ipc::NodeSiteEntry {
                 preference,
-                project_file: None,
-                effective: None,
-                source: None,
-                error: Some(error),
-                missing: None,
+                ..node_error_entry(site, error)
             }
         }
     };
-    let default = yerd_platform::node::default_selector(&state.dirs, configured.as_deref());
+    let default = yerd_platform::node::default_selector(dirs, configured);
     let chosen = yerd_core::node::choose(
         file.as_ref().map(|f| (f.selector.as_str(), f.kind)),
         preference.as_deref(),
@@ -3851,7 +3917,7 @@ async fn node_site_response(name: &str, state: &DaemonState) -> Response {
     )
     .map(|(selector, _)| selector.to_owned());
     let (effective, source, error, missing) = match yerd_platform::node::select_from(
-        &state.dirs,
+        dirs,
         file.as_ref(),
         preference.as_deref(),
         default.as_deref(),
@@ -3870,7 +3936,8 @@ async fn node_site_response(name: &str, state: &DaemonState) -> Response {
             selector: f.selector,
         })
     });
-    Response::NodeSite {
+    yerd_ipc::NodeSiteEntry {
+        site: site.to_owned(),
         preference,
         project_file,
         effective,
@@ -4123,7 +4190,7 @@ Subject: Captured\r\n\r\nhi\r\n";
             other => panic!("expected Mails, got {other:?}"),
         }
 
-        state.mail_store.append(SAMPLE_EML).await.unwrap();
+        state.mail_store.append(SAMPLE_EML, None).await.unwrap();
         let id = match dispatch(Request::ListMails, &state).await {
             Response::Mails { mails } => {
                 assert_eq!(mails.len(), 1);
@@ -4181,7 +4248,10 @@ Subject: Captured\r\n\r\nhi\r\n";
 
         state
             .mail_store
-            .append(b"From: a@b.c\r\nTo: d@e.f\r\nSubject: Hi\r\n\r\nbody\r\n")
+            .append(
+                b"From: a@b.c\r\nTo: d@e.f\r\nSubject: Hi\r\n\r\nbody\r\n",
+                None,
+            )
             .await
             .unwrap();
         let seeded = status_mail(&state).await;
@@ -4540,6 +4610,121 @@ Subject: Captured\r\n\r\nhi\r\n";
                 let blog = sites.iter().find(|s| s.site.name() == "blog").unwrap();
                 assert_eq!(blog.site.php(), PhpVersion::new(8, 4));
                 assert_eq!(blog.site.kind(), yerd_core::SiteKind::Parked);
+            }
+            other => panic!("expected Sites, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_site_favourite_lists_and_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sites_root = tmp.path().join("sites");
+        std::fs::create_dir_all(sites_root.join("blog")).unwrap();
+        std::fs::create_dir_all(sites_root.join("shop")).unwrap();
+        let state = state_in(tmp.path());
+        dispatch(Request::Park { path: sites_root }, &state).await;
+
+        let resp = dispatch(
+            Request::SetSiteFavourite {
+                site: "Blog".into(),
+                favourite: true,
+            },
+            &state,
+        )
+        .await;
+        assert!(matches!(resp, Response::Ok), "got {resp:?}");
+
+        match dispatch(Request::ListSites, &state).await {
+            Response::Sites { sites } => {
+                let fav = |name: &str| {
+                    sites
+                        .iter()
+                        .find(|s| s.site.name() == name)
+                        .unwrap()
+                        .favourite
+                };
+                assert!(fav("blog"));
+                assert!(!fav("shop"));
+            }
+            other => panic!("expected Sites, got {other:?}"),
+        }
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert!(reloaded.favourites.sites.contains("blog"));
+
+        let resp = dispatch(
+            Request::SetSiteFavourite {
+                site: "blog".into(),
+                favourite: false,
+            },
+            &state,
+        )
+        .await;
+        assert!(matches!(resp, Response::Ok), "got {resp:?}");
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert!(reloaded.favourites.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_sites_reflects_favourite_set_and_clear_without_config_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sites_root = tmp.path().join("sites");
+        std::fs::create_dir_all(sites_root.join("blog")).unwrap();
+        let state = state_in(tmp.path());
+        dispatch(Request::Park { path: sites_root }, &state).await;
+
+        for favourite in [true, false] {
+            let resp = dispatch(
+                Request::SetSiteFavourite {
+                    site: "blog".into(),
+                    favourite,
+                },
+                &state,
+            )
+            .await;
+            assert!(matches!(resp, Response::Ok), "got {resp:?}");
+
+            let _config = state.config.lock().await;
+            let listed = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                dispatch(Request::ListSites, &state),
+            )
+            .await
+            .expect("ListSites must not wait on the config mutex");
+            match listed {
+                Response::Sites { sites } => {
+                    let blog = sites.iter().find(|s| s.site.name() == "blog").unwrap();
+                    assert_eq!(blog.favourite, favourite);
+                }
+                other => panic!("expected Sites, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn list_sites_reports_framework() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sites_root = tmp.path().join("sites");
+        std::fs::create_dir_all(sites_root.join("api")).unwrap();
+        std::fs::write(
+            sites_root.join("api").join("composer.json"),
+            br#"{"require":{"symfony/framework-bundle":"^7"}}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(sites_root.join("plain")).unwrap();
+        let state = state_in(tmp.path());
+        dispatch(Request::Park { path: sites_root }, &state).await;
+
+        match dispatch(Request::ListSites, &state).await {
+            Response::Sites { sites } => {
+                let framework = |name: &str| {
+                    sites
+                        .iter()
+                        .find(|s| s.site.name() == name)
+                        .unwrap()
+                        .framework
+                };
+                assert_eq!(framework("api"), Some(yerd_core::SiteFramework::Symfony));
+                assert_eq!(framework("plain"), None);
             }
             other => panic!("expected Sites, got {other:?}"),
         }
@@ -8181,6 +8366,98 @@ mod node_tests {
             summary(node_site_response("ghost", &state).await),
             (None, None, None, None, true)
         );
+    }
+
+    #[tokio::test]
+    async fn release_notes_dispatch_serves_fresh_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state_in(tmp.path());
+        let entry = yerd_ipc::ReleaseNotesEntry {
+            version: "2.0.4".into(),
+            tag: "v2.0.4".into(),
+            published_at: "2026-07-25T15:49:58Z".into(),
+            prerelease: false,
+            summary: "Thing".into(),
+            features: vec![],
+            fixes: vec![],
+            others: vec![],
+        };
+        *state.release_notes_cache.write().await =
+            Some((std::time::Instant::now(), (None, vec![entry.clone()])));
+        let resp = dispatch(Request::ReleaseNotes, &state).await;
+        assert_eq!(
+            resp,
+            Response::ReleaseNotes {
+                current: None,
+                earlier: vec![entry],
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn contributors_dispatch_serves_fresh_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state_in(tmp.path());
+        let person = yerd_ipc::Contributor {
+            login: "totov".into(),
+            avatar_url: "https://a.test/1".into(),
+            commits: 12,
+        };
+        *state.contributors_cache.write().await =
+            Some((std::time::Instant::now(), vec![person.clone()]));
+        let resp = dispatch(Request::Contributors, &state).await;
+        assert_eq!(
+            resp,
+            Response::Contributors {
+                contributors: vec![person],
+                total: 1,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn node_sites_matches_node_site_for_every_site() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state_in(tmp.path());
+        for version in ["20.1.0", "22.9.0"] {
+            release(&state, version, None);
+        }
+        let blog = site(&state, tmp.path(), "blog").await;
+        site(&state, tmp.path(), "shop").await;
+        let gone = site(&state, tmp.path(), "gone").await;
+        std::fs::remove_dir(&gone).unwrap();
+        std::fs::write(PathBuf::from(&blog).join(".nvmrc"), "22").unwrap();
+        set_node_config(&state, Some("20"), &[]).await;
+
+        let Response::NodeSites { sites } = dispatch(Request::NodeSites, &state).await else {
+            panic!("expected NodeSites");
+        };
+        let names: Vec<&str> = sites.iter().map(|e| e.site.as_str()).collect();
+        let router_names: Vec<String> = state
+            .router
+            .read()
+            .await
+            .iter()
+            .map(|s| s.name().to_owned())
+            .collect();
+        assert_eq!(names, router_names);
+        for entry in &sites {
+            let expected = node_site_response(&entry.site, &state).await;
+            let actual = Response::NodeSite {
+                preference: entry.preference.clone(),
+                project_file: entry.project_file.clone(),
+                effective: entry.effective.clone(),
+                source: entry.source,
+                error: entry.error.clone(),
+                missing: entry.missing.clone(),
+            };
+            assert_eq!(actual, expected, "{}", entry.site);
+        }
+        let by_name = |n: &str| sites.iter().find(|e| e.site == n).unwrap();
+        assert_eq!(by_name("blog").effective.as_deref(), Some("22.9.0"));
+        assert_eq!(by_name("blog").source, Some(NodeSource::Nvmrc));
+        assert_eq!(by_name("shop").effective.as_deref(), Some("20.1.0"));
+        assert!(by_name("gone").error.is_some());
     }
 
     struct NodeIndexDl {

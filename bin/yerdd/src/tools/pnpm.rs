@@ -79,6 +79,23 @@ fn asset_sha256(release: &LatestRelease, asset: &str) -> Option<String> {
         .then(|| hex.to_ascii_lowercase())
 }
 
+/// The latest pnpm release tag (`v10.1.0`), for the update poll.
+pub(crate) async fn latest(dl: &dyn Downloader) -> Result<String, ToolError> {
+    let body = dl
+        .download(LATEST_API)
+        .await
+        .map_err(|e| ToolError::Download(format!("pnpm latest release: {e}")))?;
+    let release: LatestRelease = serde_json::from_slice(&body)
+        .map_err(|e| ToolError::Download(format!("pnpm release parse: {e}")))?;
+    if !valid_tag(&release.tag_name) {
+        return Err(ToolError::Download(format!(
+            "unexpected pnpm tag {:?}",
+            release.tag_name
+        )));
+    }
+    Ok(release.tag_name)
+}
+
 /// Install the latest pnpm release for the host into `{data}/tools/pnpm/`.
 pub async fn install(dirs: &PlatformDirs, dl: &dyn Downloader) -> Result<(), ToolError> {
     let plat = host_platform().ok_or(ToolError::UnsupportedHost("pnpm"))?;

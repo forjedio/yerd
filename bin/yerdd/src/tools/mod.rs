@@ -217,6 +217,7 @@ pub fn status(dirs: &PlatformDirs, tool: Tool, node_default: Option<&str>) -> To
             .collect(),
         external: false,
         external_path: None,
+        update_available: None,
     }
 }
 
@@ -227,6 +228,81 @@ pub fn list_status(dirs: &PlatformDirs, node_default: Option<&str>) -> Vec<ToolS
         .iter()
         .map(|&t| status(dirs, t, node_default))
         .collect()
+}
+
+/// `latest` when it is a stable release strictly newer than `installed`, for
+/// `ToolStatus::update_available`. Both sides may carry a `v` or `bun-v`
+/// prefix; anything that is not semver yields `None`.
+pub(crate) fn newer_version(installed: &str, latest: &str) -> Option<String> {
+    let parse = |v: &str| yerd_update::parse_tag(v.strip_prefix("bun-").unwrap_or(v));
+    let current = parse(installed)?;
+    let candidate = parse(latest)?;
+    (candidate.pre.is_empty() && candidate > current).then(|| latest.to_owned())
+}
+
+/// The highest stable `version` of `package` in a Packagist `p2/<package>.json`
+/// document. Order is not assumed; pre-releases and non-semver entries such as
+/// `dev-main` are skipped.
+pub(crate) fn packagist_latest(bytes: &[u8], package: &str) -> Option<String> {
+    let doc: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    doc.get("packages")?
+        .get(package)?
+        .as_array()?
+        .iter()
+        .filter_map(|entry| entry.get("version")?.as_str())
+        .filter_map(|raw| {
+            let parsed = yerd_update::parse_tag(raw)?;
+            parsed.pre.is_empty().then_some((parsed, raw))
+        })
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, raw)| raw.to_owned())
+}
+
+/// Fetch a Packagist `p2` document and pick its latest stable version.
+pub(crate) async fn fetch_packagist_latest(
+    dl: &dyn Downloader,
+    package: &str,
+) -> Result<String, ToolError> {
+    let url = format!("https://repo.packagist.org/p2/{package}.json");
+    let bytes = dl
+        .download(&url)
+        .await
+        .map_err(|e| ToolError::Download(format!("packagist {package}: {e}")))?;
+    packagist_latest(&bytes, package)
+        .ok_or_else(|| ToolError::Download(format!("packagist {package}: no stable version")))
+}
+
+/// The latest published version of `tool`, for the notify-only update poll.
+/// `Ok(None)` for Node, whose updates `node_updates` already tracks. Installs
+/// nothing.
+pub(crate) async fn latest(
+    tool: Tool,
+    dirs: &PlatformDirs,
+    dl: &dyn Downloader,
+) -> Result<Option<String>, ToolError> {
+    let version = match tool {
+        Tool::Node => return Ok(None),
+        Tool::Composer => composer::latest(dirs, dl).await?,
+        Tool::Bun => bun::latest(dl).await?,
+        Tool::Pnpm => pnpm::latest(dl).await?,
+        Tool::Laravel => laravel::latest(dl).await?,
+        Tool::WpCli => wp_cli::latest(dl).await?,
+    };
+    Ok(Some(version))
+}
+
+/// The installed version to compare against the latest one. The Laravel
+/// installer's marker is always `installed`, so its real version comes from
+/// Composer's `installed.php`; every other tool uses its marker.
+pub(crate) fn comparable_version(
+    dirs: &PlatformDirs,
+    tool: Tool,
+    marker: Option<&str>,
+) -> Option<String> {
+    match tool {
+        Tool::Laravel => laravel::installed_installer_version(dirs),
+        _ => marker.map(str::to_owned),
+    }
 }
 
 /// A sink for streamed install output (one line per send). The streamed-install
@@ -507,6 +583,140 @@ pub(crate) fn move_dir_contents(from: &Path, to: &Path) -> Result<(), ToolError>
 #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn newer_version_cases() {
+        let cases: &[(&str, &str, Option<&str>)] = &[
+            ("v1.3.14", "bun-v1.3.15", Some("bun-v1.3.15")),
+            ("v1.3.14", "v1.3.15", Some("v1.3.15")),
+            ("2.8.1", "2.8.12", Some("2.8.12")),
+            ("2.8.12", "2.8.12", None),
+            ("2.8.12", "2.8.1", None),
+            ("2.8.1", "2.9.0-RC1", None),
+            ("v10.1.0", "v10.2.0", Some("v10.2.0")),
+            ("garbage", "2.8.12", None),
+            ("2.8.1", "garbage", None),
+            ("installed", "v5.33.0", None),
+            ("v5.32.0", "v5.33.0", Some("v5.33.0")),
+        ];
+        for (installed, latest, want) in cases {
+            assert_eq!(
+                newer_version(installed, latest).as_deref(),
+                *want,
+                "{installed} vs {latest}"
+            );
+        }
+    }
+
+    const P2_INSTALLER: &str = r#"{"packages":{"laravel/installer":[
+        {"name":"laravel/installer","version":"v5.33.0-beta.1","version_normalized":"5.33.0.0-beta1"},
+        {"version":"v5.32.0","version_normalized":"5.32.0.0"},
+        {"version":"v5.33.0","version_normalized":"5.33.0.0"},
+        {"version":"dev-main"},
+        {"version":"v4.5.1"}
+    ]},"minified":"composer/2.0"}"#;
+
+    #[test]
+    fn packagist_latest_cases() {
+        let cases: &[(&str, &str, Option<&str>)] = &[
+            (P2_INSTALLER, "laravel/installer", Some("v5.33.0")),
+            (P2_INSTALLER, "wp-cli/wp-cli", None),
+            (
+                r#"{"packages":{"a/b":[{"version":"1.0.0-RC1"}]}}"#,
+                "a/b",
+                None,
+            ),
+            ("not json", "a/b", None),
+            (r#"{"packages":{"a/b":{}}}"#, "a/b", None),
+        ];
+        for (doc, package, want) in cases {
+            assert_eq!(
+                packagist_latest(doc.as_bytes(), package).as_deref(),
+                *want,
+                "{package}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wp_cli_latest_reads_the_core_package_not_the_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = crate::test_support::dirs_in(tmp.path());
+        let core = crate::test_support::UrlDl::default()
+            .with(
+                "https://repo.packagist.org/p2/wp-cli/wp-cli.json",
+                r#"{"packages":{"wp-cli/wp-cli":[{"version":"v2.12.1"},{"version":"v2.12.0"}]}}"#,
+            )
+            .with(
+                "https://repo.packagist.org/p2/wp-cli/wp-cli-bundle.json",
+                r#"{"packages":{"wp-cli/wp-cli-bundle":[{"version":"v2.12.0"}]}}"#,
+            );
+        let got = latest(Tool::WpCli, &dirs, &core).await.unwrap();
+        assert_eq!(got.as_deref(), Some("v2.12.1"));
+        assert_eq!(
+            newer_version("v2.12.0", "v2.12.1").as_deref(),
+            Some("v2.12.1")
+        );
+
+        let bundle_only = crate::test_support::UrlDl::default().with(
+            "https://repo.packagist.org/p2/wp-cli/wp-cli.json",
+            r#"{"packages":{"wp-cli/wp-cli-bundle":[{"version":"v2.12.0"}]}}"#,
+        );
+        assert!(latest(Tool::WpCli, &dirs, &bundle_only).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn latest_per_tool_from_fixtures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = crate::test_support::dirs_in(tmp.path());
+        crate::test_support::fake_php(&dirs, "8.4");
+        let dl = crate::test_support::UrlDl::default()
+            .with(
+                "https://getcomposer.org/versions",
+                r#"{"stable":[{"path":"/download/2.8.12/composer.phar","version":"2.8.12","min-php":70205}]}"#,
+            )
+            .with(
+                "https://api.github.com/repos/oven-sh/bun/releases/latest",
+                r#"{"tag_name":"bun-v1.3.15"}"#,
+            )
+            .with(
+                "https://api.github.com/repos/pnpm/pnpm/releases/latest",
+                r#"{"tag_name":"v10.2.0","assets":[]}"#,
+            )
+            .with(
+                "https://repo.packagist.org/p2/laravel/installer.json",
+                P2_INSTALLER,
+            );
+        let cases: &[(Tool, Option<&str>)] = &[
+            (Tool::Composer, Some("2.8.12")),
+            (Tool::Bun, Some("v1.3.15")),
+            (Tool::Pnpm, Some("v10.2.0")),
+            (Tool::Laravel, Some("v5.33.0")),
+            (Tool::Node, None),
+        ];
+        for (tool, want) in cases {
+            assert_eq!(
+                latest(*tool, &dirs, &dl).await.unwrap().as_deref(),
+                *want,
+                "{tool:?}"
+            );
+        }
+        assert!(latest(Tool::WpCli, &dirs, &dl).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn composer_latest_needs_an_installed_php() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = crate::test_support::dirs_in(tmp.path());
+        let dl = crate::test_support::UrlDl::default().with(
+            "https://getcomposer.org/versions",
+            r#"{"stable":[{"path":"/download/2.8.12/composer.phar","version":"2.8.12","min-php":70205}]}"#,
+        );
+        assert!(matches!(
+            latest(Tool::Composer, &dirs, &dl).await,
+            Err(ToolError::UnsupportedHost(_))
+        ));
+    }
 
     #[test]
     fn parse_and_ids_round_trip() {

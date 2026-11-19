@@ -35,6 +35,33 @@ impl yerd_php::CommandRunner for NoFfiRunner {
     }
 }
 
+/// A [`yerd_php::Downloader`] serving fixed bodies by exact URL. Any other URL
+/// fails like an offline network.
+#[derive(Default)]
+pub struct UrlDl(pub std::collections::HashMap<String, Vec<u8>>);
+
+impl UrlDl {
+    /// A downloader serving `body` at `url`, in addition to what it already serves.
+    #[must_use]
+    pub fn with(mut self, url: &str, body: &str) -> Self {
+        self.0.insert(url.to_owned(), body.as_bytes().to_vec());
+        self
+    }
+}
+
+#[async_trait::async_trait]
+impl yerd_php::Downloader for UrlDl {
+    async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
+        self.0
+            .get(url)
+            .cloned()
+            .ok_or_else(|| yerd_php::DownloadError::Transport {
+                url: url.to_owned(),
+                reason: "offline".into(),
+            })
+    }
+}
+
 /// A tempdir-rooted [`PlatformDirs`] for a daemon unit test - five short,
 /// disjoint subdirectories, none of which need to exist on disk beforehand.
 #[must_use]
@@ -46,6 +73,18 @@ pub fn dirs_in(tmp: &Path) -> PlatformDirs {
         cache: tmp.join("ca"),
         runtime: tmp.join("r"),
     }
+}
+
+/// Lay down a fake bundled PHP-FPM binary so `discover_bundled` reports
+/// `version` as installed.
+pub fn fake_php(dirs: &PlatformDirs, version: &str) {
+    let sbin = dirs
+        .data
+        .join("php")
+        .join(format!("php-{version}"))
+        .join("sbin");
+    std::fs::create_dir_all(&sbin).unwrap();
+    std::fs::write(sbin.join("php-fpm"), b"x").unwrap();
 }
 
 /// A fully-populated [`DaemonState`] for a daemon unit test: an empty router,
@@ -81,6 +120,9 @@ pub fn state_in(tmp: &Path) -> DaemonState {
         php_updates: RwLock::new(std::collections::HashMap::new()),
         node_updates: RwLock::new(std::collections::BTreeMap::new()),
         node_update_count: std::sync::atomic::AtomicU32::new(0),
+        tool_updates: RwLock::new(std::collections::BTreeMap::new()),
+        release_notes_cache: RwLock::new(None),
+        contributors_cache: RwLock::new(None),
         yerd_update: RwLock::new(Vec::new()),
         update_snapshot: RwLock::new(None),
         php_manager,
@@ -136,6 +178,8 @@ pub fn state_in(tmp: &Path) -> DaemonState {
         wordpress_login_prepend_script: None,
         wordpress_sites: Arc::new(RwLock::new(std::collections::HashMap::new())),
         laravel_sites: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        framework_sites: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        favourite_sites: RwLock::new(std::collections::BTreeSet::new()),
         lan_ip: None,
         lan_setup_bound: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         remote_setup_code: tokio::sync::Mutex::new(None),

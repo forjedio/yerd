@@ -90,20 +90,18 @@ pub async fn run(state: Arc<DaemonState>, mut shutdown_rx: watch::Receiver<bool>
 /// previous router is left in place).
 async fn recompute(state: &DaemonState) -> Option<HashSet<PathBuf>> {
     let guard = state.config.lock().await;
-    let (router, wordpress_sites, laravel_sites, watch_roots) = match startup::build_routing(
-        &guard,
-        &state.dirs,
-        &state.detect_cache,
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!(error = %e, "watcher router rebuild failed; keeping previous routing");
-            return None;
-        }
-    };
+    let (router, wordpress_sites, laravel_sites, framework_sites, watch_roots) =
+        match startup::build_routing(&guard, &state.dirs, &state.detect_cache) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "watcher router rebuild failed; keeping previous routing");
+                return None;
+            }
+        };
     *state.router.write().await = router;
     *state.wordpress_sites.write().await = wordpress_sites;
     *state.laravel_sites.write().await = laravel_sites;
+    *state.framework_sites.write().await = framework_sites;
 
     let mut desired: HashSet<PathBuf> = watch_roots.into_iter().collect();
     for p in &guard.parked.paths {

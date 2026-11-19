@@ -123,14 +123,26 @@ fn write_quick_config(dirs: &PlatformDirs) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// `cloudflared` install + account status for the wire.
+/// `cloudflared` install + account status for the wire. `update_available`
+/// comes from the `tool_updates` cache and is set only for the managed binary.
 pub async fn cloudflared_status(state: &DaemonState) -> CloudflaredStatus {
     let resolved = resolved_cloudflared(state).await;
+    let update_available = match resolved.as_ref() {
+        Some(install::Resolved {
+            source: install::CloudflaredSource::Managed,
+            version: Some(version),
+            ..
+        }) => crate::tool_updates::cached(state, crate::tool_updates::CLOUDFLARED_KEY)
+            .await
+            .and_then(|latest| install::calver_newer(version, &latest)),
+        _ => None,
+    };
     CloudflaredStatus {
         installed: resolved.is_some(),
         version: resolved.as_ref().and_then(|r| r.version.clone()),
         source: resolved.map(|r| source_to_wire(r.source)),
         logged_in: named::is_logged_in(&state.dirs),
+        update_available,
     }
 }
 

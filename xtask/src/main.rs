@@ -1,7 +1,9 @@
 //! Yerd build automation, invoked as `cargo xtask <command>`.
 //!
-//! Provides `bump` (set the project version across the three manifests) and
-//! `version-check` (assert a tag matches them). Pure helpers live in
+//! Provides `bump` (set the project version across the three manifests),
+//! `version-check` (assert a tag matches them), and the CDN commands
+//! `cdn-manifests`, `cdn-reconcile-plan` and `cdn-release-notes` (see [`cdn`]).
+//! Pure helpers live in
 //! [`version`]; per-command I/O glue lives here. (Linux packaging is no longer an
 //! xtask concern - the single GUI bundle is produced by Tauri; see
 //! `apps/yerd-gui/src-tauri/tauri.bundle-linux.conf.json`.)
@@ -73,6 +75,19 @@ pub enum Command {
         #[arg(long)]
         out_dir: PathBuf,
     },
+    /// Write one categorised `<tag>.json` release-notes file per published
+    /// release (or just `--tag`) from the GitHub Releases API response.
+    CdnReleaseNotes {
+        /// Path to the `gh api .../releases` JSON response.
+        #[arg(long)]
+        releases_json: PathBuf,
+        /// Directory to write the `<tag>.json` files into.
+        #[arg(long)]
+        out_dir: PathBuf,
+        /// Write only this tag, failing if it is missing or a draft.
+        #[arg(long)]
+        tag: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -93,6 +108,11 @@ fn main() -> Result<()> {
             sha256sums_dir,
             out_dir,
         } => cdn::run_reconcile_plan(releases_json, cdn_listing, sha256sums_dir, out_dir),
+        Command::CdnReleaseNotes {
+            releases_json,
+            out_dir,
+            tag,
+        } => cdn::run_release_notes(releases_json, out_dir, tag.as_deref()),
     }
 }
 

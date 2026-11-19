@@ -82,10 +82,11 @@ pub(crate) fn not_found_site(cfg: &Config, name_lc: &str) -> MutateError {
 /// already-canonicalised directory for `Park`/`Link`. `default_php` is the
 /// version assigned to newly linked sites.
 ///
-/// Pure: no filesystem, clock, or environment access. Only the site- and
-/// group-mutation variants are handled; anything else is [`MutateError::Invalid`]
-/// (the I/O wrapper never routes `Ping`/`ListSites` here). The group variants
-/// ignore `router`/`canonical`/`default_php` - groups are a config-only overlay.
+/// Pure: no filesystem, clock, or environment access. Only the site-, group- and
+/// favourite-mutation variants are handled; anything else is
+/// [`MutateError::Invalid`] (the I/O wrapper never routes `Ping`/`ListSites`
+/// here). The group and favourite variants ignore `router`/`canonical`/
+/// `default_php`, since both are config-only overlays.
 pub fn apply(
     cfg: &mut Config,
     router: &SiteRouter,
@@ -141,6 +142,9 @@ pub fn apply(
         Request::SetGroupOrder { order } => apply_set_group_order(cfg, order),
         Request::SetSiteGroup { site, group } => apply_set_site_group(cfg, site, group.as_deref()),
         Request::RenameGroup { from, to } => apply_rename_group(cfg, from, to),
+        Request::SetSiteFavourite { site, favourite } => {
+            apply_set_site_favourite(cfg, site, *favourite)
+        }
         _ => Err(MutateError::Invalid("unsupported request".into())),
     }
 }
@@ -1038,6 +1042,32 @@ fn apply_set_site_group(
         cfg.groups.members.remove(&site_lc);
         Ok(Applied {
             summary: format!("{site_lc} ungrouped"),
+        })
+    }
+}
+
+/// Star (`true`) or unstar (`false`) a site. The name is trimmed and
+/// lowercased to match the router's site identities, and an empty name is
+/// rejected; both directions are idempotent and, like
+/// [`apply_set_site_group`], the name is not validated against live sites.
+fn apply_set_site_favourite(
+    cfg: &mut Config,
+    site: &str,
+    favourite: bool,
+) -> Result<Applied, MutateError> {
+    let site_lc = site.trim().to_ascii_lowercase();
+    if site_lc.is_empty() {
+        return Err(MutateError::Invalid("site name must not be empty".into()));
+    }
+    if favourite {
+        cfg.favourites.sites.insert(site_lc.clone());
+        Ok(Applied {
+            summary: format!("{site_lc} starred"),
+        })
+    } else {
+        cfg.favourites.sites.remove(&site_lc);
+        Ok(Applied {
+            summary: format!("{site_lc} unstarred"),
         })
     }
 }
@@ -2473,6 +2503,105 @@ mod tests {
                 ),
                 "expected Invalid for {bad:?}"
             );
+        }
+    }
+
+    #[test]
+    fn set_site_favourite_table() {
+        struct Case {
+            name: &'static str,
+            start: &'static [&'static str],
+            site: &'static str,
+            favourite: bool,
+            want: Option<&'static [&'static str]>,
+        }
+        let cases = [
+            Case {
+                name: "set inserts",
+                start: &[],
+                site: "blog",
+                favourite: true,
+                want: Some(&["blog"]),
+            },
+            Case {
+                name: "set twice is a no-op",
+                start: &["blog"],
+                site: "blog",
+                favourite: true,
+                want: Some(&["blog"]),
+            },
+            Case {
+                name: "clear removes",
+                start: &["blog", "shop"],
+                site: "blog",
+                favourite: false,
+                want: Some(&["shop"]),
+            },
+            Case {
+                name: "clear when absent is a no-op",
+                start: &["shop"],
+                site: "blog",
+                favourite: false,
+                want: Some(&["shop"]),
+            },
+            Case {
+                name: "mixed case is stored lowercased",
+                start: &[],
+                site: "BlOg",
+                favourite: true,
+                want: Some(&["blog"]),
+            },
+            Case {
+                name: "mixed case clear matches lowercased entry",
+                start: &["blog"],
+                site: "BLOG",
+                favourite: false,
+                want: Some(&[]),
+            },
+            Case {
+                name: "surrounding whitespace is trimmed",
+                start: &[],
+                site: "  blog \t",
+                favourite: true,
+                want: Some(&["blog"]),
+            },
+            Case {
+                name: "empty name is rejected",
+                start: &["blog"],
+                site: "",
+                favourite: true,
+                want: None,
+            },
+            Case {
+                name: "whitespace-only name is rejected",
+                start: &["blog"],
+                site: "   ",
+                favourite: false,
+                want: None,
+            },
+        ];
+        let r = empty_router();
+        for c in cases {
+            let mut cfg = Config::default();
+            cfg.favourites.sites = c.start.iter().map(|s| (*s).to_owned()).collect();
+            let result = apply(
+                &mut cfg,
+                &r,
+                &Request::SetSiteFavourite {
+                    site: c.site.into(),
+                    favourite: c.favourite,
+                },
+                None,
+                v(8, 3),
+            );
+            let got: Vec<&str> = cfg.favourites.sites.iter().map(String::as_str).collect();
+            if let Some(want) = c.want {
+                assert!(result.is_ok(), "{}", c.name);
+                assert_eq!(got, want, "{}", c.name);
+            } else {
+                assert!(matches!(result, Err(MutateError::Invalid(_))), "{}", c.name);
+                assert_eq!(got, c.start, "{}", c.name);
+            }
         }
     }
 

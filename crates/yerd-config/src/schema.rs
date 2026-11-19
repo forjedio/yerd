@@ -109,6 +109,8 @@ pub struct Config {
     /// Outbound proxy for Yerd's own downloads and network subprocesses.
     /// Default: system detection.
     pub network: NetworkSection,
+    /// Sites the user starred in the GUI. Empty by default.
+    pub favourites: FavouritesSection,
 }
 
 impl Default for Config {
@@ -139,6 +141,7 @@ impl Default for Config {
             route_rules: RouteRulesSection::default(),
             response_headers: ResponseHeadersSection::default(),
             network: NetworkSection::default(),
+            favourites: FavouritesSection::default(),
         }
     }
 }
@@ -310,6 +313,26 @@ impl GroupsSection {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.order.is_empty() && self.members.is_empty()
+    }
+}
+
+/// Favourite (starred) sites (see [`Config::favourites`]).
+///
+/// A GUI overlay like [`GroupsSection`]: keyed by lowercased site name and never
+/// validated against live sites, so a favourite for a site that later
+/// disappears is simply ignored.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FavouritesSection {
+    /// Lowercased names of the favourite sites.
+    pub sites: BTreeSet<String>,
+}
+
+impl FavouritesSection {
+    /// True when no site is a favourite, so the serialiser omits the
+    /// `[favourites]` table and a default config stays byte-stable.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.sites.is_empty()
     }
 }
 

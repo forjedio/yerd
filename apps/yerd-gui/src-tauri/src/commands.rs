@@ -266,6 +266,12 @@ pub async fn set_site_group(site: String, group: Option<String>) -> Result<Respo
     finish(exchange(&Request::SetSiteGroup { site, group }).await?)
 }
 
+/// Star or unstar a site.
+#[tauri::command]
+pub async fn set_site_favourite(site: String, favourite: bool) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetSiteFavourite { site, favourite }).await?)
+}
+
 #[tauri::command]
 pub async fn rename_group(from: String, to: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::RenameGroup { from, to }).await?)
@@ -1056,6 +1062,26 @@ pub async fn node_site(site: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::NodeSite { site }).await?)
 }
 
+/// Every site's Node resolution in one call.
+#[tauri::command]
+pub async fn node_sites() -> Result<Response, GuiError> {
+    finish(exchange(&Request::NodeSites).await?)
+}
+
+// ── about (release notes, contributors) ──────────────────────────────────────
+
+/// The running release's notes and a few earlier stable releases.
+#[tauri::command]
+pub async fn release_notes() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ReleaseNotes).await?)
+}
+
+/// The human contributors to the Yerd repository.
+#[tauri::command]
+pub async fn contributors() -> Result<Response, GuiError> {
+    finish(exchange(&Request::Contributors).await?)
+}
+
 // ── tunnels (Cloudflare Tunnel integration) ──────────────────────────────────
 
 /// Install the `cloudflared` binary as a streamed job (returns a job id).
@@ -1535,6 +1561,8 @@ mod tests {
             apex_shadowed_by: None,
             uses_front_controller: false,
             is_laravel: false,
+            favourite: false,
+            framework: None,
         }
     }
 

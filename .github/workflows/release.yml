@@ -486,6 +486,21 @@ jobs:
             "https://${PULLZONE}/latest.json" \
             "https://${PULLZONE}/latest.json.minisig"
 
+      # 6. Publish this tag's categorised release notes, reusing regen's api.json.
+      # Runs even when signing/upload/purge failed. The folder sits outside
+      # releases/, so cdn-sync.yml's reconcile never lists or prunes it.
+      - name: Publish release notes
+        id: notes
+        if: ${{ !cancelled() && steps.regen.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          cargo run -q -p xtask -- cdn-release-notes \
+            --releases-json api.json \
+            --out-dir notes \
+            --tag "$TAG"
+          bash .github/scripts/bunny-put.sh "notes/${TAG}.json" "release-notes/${TAG}.json"
+          bash .github/scripts/bunny-purge.sh "https://${PULLZONE}/release-notes/${TAG}.json"
+
       # Report the ACTUAL outcome of the steps above (any of which can fail while
       # the job stays green via continue-on-error). Mirrors build-cdn.yml's
       # branch-on-step-outcome summary rather than always claiming success.
@@ -497,6 +512,7 @@ jobs:
           SIGN: ${{ steps.sign.outcome }}
           UPLOAD: ${{ steps.upload.outcome }}
           PURGE: ${{ steps.purge.outcome }}
+          NOTES: ${{ steps.notes.outcome }}
         run: |
           {
             if [ "$UPLOAD" = "success" ]; then
@@ -505,10 +521,11 @@ jobs:
               echo "- Release folder: \`releases/${TAG}/\` (mirror: ${MIRROR})"
               echo "- Root manifests regenerated + uploaded: \`releases.json\`, \`latest.json\`"
               echo "- Edge cache purge: ${PURGE}"
+              echo "- Release notes \`release-notes/${TAG}.json\`: ${NOTES}"
             else
               echo "### CDN mirror did not complete"
               echo ""
-              echo "- mirror: ${MIRROR} / regenerate: ${REGEN} / sign: ${SIGN} / upload: ${UPLOAD} / purge: ${PURGE}"
+              echo "- mirror: ${MIRROR} / regenerate: ${REGEN} / sign: ${SIGN} / upload: ${UPLOAD} / purge: ${PURGE} / notes: ${NOTES}"
               echo "- GitHub Releases remains the source of truth; rerun \`cdn-sync.yml\` to reconcile."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

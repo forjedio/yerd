@@ -13,7 +13,7 @@
 )]
 
 use yerd_core::node::{MajorLine, NodeSource};
-use yerd_core::{PhpVersion, RouterConfig, Site, SiteKind};
+use yerd_core::{PhpVersion, RouterConfig, Site, SiteFramework, SiteKind};
 
 #[test]
 fn php_version_serialises_as_dotted_string() {
@@ -30,6 +30,32 @@ fn site_kind_serialises_as_snake_case_string() {
     assert_eq!(
         serde_json::to_string(&SiteKind::Linked).unwrap(),
         r#""linked""#
+    );
+}
+
+#[test]
+fn site_framework_serialises_as_snake_case_string() {
+    let cases = [
+        (SiteFramework::Laravel, r#""laravel""#),
+        (SiteFramework::Wordpress, r#""wordpress""#),
+        (SiteFramework::Symfony, r#""symfony""#),
+        (SiteFramework::Statamic, r#""statamic""#),
+        (SiteFramework::Craft, r#""craft""#),
+        (SiteFramework::Drupal, r#""drupal""#),
+        (SiteFramework::Other, r#""other""#),
+    ];
+    for (f, want) in cases {
+        let s = serde_json::to_string(&f).unwrap();
+        assert_eq!(s, want);
+        assert_eq!(serde_json::from_str::<SiteFramework>(&s).unwrap(), f);
+    }
+}
+
+#[test]
+fn unknown_site_framework_decodes_as_other() {
+    assert_eq!(
+        serde_json::from_str::<SiteFramework>(r#""joomla""#).unwrap(),
+        SiteFramework::Other
     );
 }
 

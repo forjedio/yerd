@@ -19,6 +19,8 @@ pub struct RawMessage {
     pub recipients: Vec<String>,
     /// The dot-unstuffed message bytes.
     pub raw: Vec<u8>,
+    /// The host the client announced in `EHLO`/`HELO`, if it gave one.
+    pub helo: Option<String>,
 }
 
 /// What the I/O layer should do after a command line.
@@ -35,6 +37,7 @@ pub enum Reply {
 /// In-progress SMTP session state (envelope being built up).
 #[derive(Debug, Default)]
 pub struct Session {
+    helo: Option<String>,
     from: Option<String>,
     recipients: Vec<String>,
 }
@@ -65,7 +68,10 @@ impl Session {
             .unwrap_or("")
             .to_ascii_uppercase();
         match verb.as_str() {
-            "HELO" | "EHLO" => Reply::Line("250 yerd\r\n".to_string()),
+            "HELO" | "EHLO" => {
+                self.helo = trimmed.split_whitespace().nth(1).map(str::to_owned);
+                Reply::Line("250 yerd\r\n".to_string())
+            }
             "MAIL" => {
                 self.recipients.clear();
                 self.from = Some(extract_address(trimmed));
@@ -97,12 +103,14 @@ impl Session {
     /// Consume the raw `DATA` bytes (everything between the `354` and the
     /// terminating `\r\n.\r\n`, with that terminator already stripped by the I/O
     /// layer) and produce the captured message. Resets the envelope so the same
-    /// connection may send another message.
+    /// connection may send another message; the `HELO` host is kept, since it
+    /// belongs to the connection rather than the envelope (RFC 5321 §4.1.1.5).
     pub fn finish_data(&mut self, data: &[u8]) -> RawMessage {
         RawMessage {
             envelope_from: self.from.take().unwrap_or_default(),
             recipients: std::mem::take(&mut self.recipients),
             raw: unstuff(data),
+            helo: self.helo.clone(),
         }
     }
 }
@@ -232,6 +240,40 @@ mod tests {
         s.command("RCPT TO:<x@y.z>");
         let msg = s.finish_data(b"x");
         assert_eq!(msg.envelope_from, "bare@example.com");
+    }
+
+    #[test]
+    fn helo_host_is_recorded() {
+        let cases: &[(&[&str], Option<&str>)] = &[
+            (&["EHLO blog.test"], Some("blog.test")),
+            (&["ehlo blog.test"], Some("blog.test")),
+            (&["HELO   shop.test  \r\n"], Some("shop.test")),
+            (&["HELO"], None),
+            (&["EHLO a.test", "HELO"], None),
+            (&["MAIL FROM:<a@b.c>"], None),
+            (&["EHLO blog.test", "RSET"], Some("blog.test")),
+        ];
+        for (lines, want) in cases {
+            let mut s = Session::new();
+            for line in *lines {
+                s.command(line);
+            }
+            s.command("RCPT TO:<x@y.z>");
+            let msg = s.finish_data(b"x");
+            assert_eq!(msg.helo.as_deref(), *want, "lines: {lines:?}");
+        }
+    }
+
+    #[test]
+    fn helo_host_survives_a_second_message() {
+        let mut s = Session::new();
+        s.command("EHLO blog.test");
+        s.command("RCPT TO:<x@y.z>");
+        let first = s.finish_data(b"x");
+        s.command("RCPT TO:<x@y.z>");
+        let second = s.finish_data(b"y");
+        assert_eq!(first.helo.as_deref(), Some("blog.test"));
+        assert_eq!(second.helo.as_deref(), Some("blog.test"));
     }
 
     #[test]

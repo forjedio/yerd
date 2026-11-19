@@ -14,6 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use yerd_php::Downloader;
 use yerd_platform::PlatformDirs;
 
 use super::{drain, move_dir_contents, stage_and_swap, tool_dir, ProgressTx, Tool, ToolError};
@@ -77,6 +78,16 @@ pub(crate) fn ensure_quiet_deprecations_scan_dir(dirs: &PlatformDirs) -> std::io
 /// `PHP_INI_SCAN_DIR` would do).
 pub(crate) fn quiet_deprecations_scan_dir_env(dir: &Path) -> String {
     format!(":{}", dir.display())
+}
+
+/// The package whose version the `.version` marker records (see
+/// `read_wp_cli_version`), so the update poll compares like with like.
+const CORE_PACKAGE: &str = "wp-cli/wp-cli";
+
+/// The latest stable `wp-cli/wp-cli` on Packagist, for the update poll. The
+/// bundle is deliberately not consulted: the marker holds the core version.
+pub(crate) async fn latest(dl: &dyn Downloader) -> Result<String, ToolError> {
+    super::fetch_packagist_latest(dl, CORE_PACKAGE).await
 }
 
 /// `{data}/tools/wp-cli/vendor/wp-cli/wp-cli/php/boot-fs.php` - the filesystem

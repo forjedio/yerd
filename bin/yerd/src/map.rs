@@ -2297,6 +2297,7 @@ mod tests {
             version: None,
             source: None,
             logged_in: false,
+            update_available: None,
         };
         for (state, label) in [
             (TunnelRunState::Running, "online"),
@@ -2341,6 +2342,7 @@ mod tests {
             version: None,
             source: None,
             logged_in: true,
+            update_available: None,
         }
     }
 
@@ -3314,6 +3316,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn renders_human_responses_and_exit_codes() {
         assert_eq!(render(&Response::Pong, false).stdout, "pong");
         assert_eq!(render(&Response::Pong, false).code, 0);
@@ -3334,6 +3337,7 @@ mod tests {
                         binaries: vec!["node".into(), "npm".into(), "npx".into()],
                         external: false,
                         external_path: None,
+                        update_available: None,
                     },
                     ToolStatus {
                         id: "bun".into(),
@@ -3343,6 +3347,7 @@ mod tests {
                         binaries: vec!["bun".into(), "bunx".into()],
                         external: true,
                         external_path: Some("/opt/homebrew/bin/bun".into()),
+                        update_available: None,
                     },
                 ],
             },
@@ -3366,6 +3371,8 @@ mod tests {
                     apex_shadowed_by: None,
                     uses_front_controller: true,
                     is_laravel: false,
+                    favourite: false,
+                    framework: None,
                 }],
             },
             false,
@@ -3398,6 +3405,8 @@ mod tests {
                     apex_shadowed_by: None,
                     uses_front_controller: false,
                     is_laravel: false,
+                    favourite: false,
+                    framework: None,
                 }],
             },
             false,
@@ -4019,6 +4028,8 @@ mod tests {
             apex_shadowed_by: Some("shop".into()),
             uses_front_controller: false,
             is_laravel: false,
+            favourite: false,
+            framework: None,
         };
         let r = render_domains(&[e], "test", None, false);
         assert!(r.stdout.contains("corp.test (primary)"));
@@ -4036,6 +4047,8 @@ mod tests {
             apex_shadowed_by: None,
             uses_front_controller: false,
             is_laravel: false,
+            favourite: false,
+            framework: None,
         };
         let r = render_domains(&[e], "test", None, false);
         assert!(r.stdout.contains("foo.test (primary)"));
@@ -5346,6 +5359,7 @@ mod tests {
                         subject: "hello\tthere\nworld".into(),
                         date_epoch: 0,
                         read: false,
+                        site: None,
                     },
                     yerd_ipc::MailSummary {
                         id: "id2".into(),
@@ -5354,6 +5368,7 @@ mod tests {
                         subject: String::new(),
                         date_epoch: 0,
                         read: false,
+                        site: None,
                     },
                 ],
             },

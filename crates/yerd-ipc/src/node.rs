@@ -1,5 +1,6 @@
-//! Wire types for managed Node releases (see [`crate::Response::NodeVersions`]
-//! and [`crate::Response::NodeSite`]). Field order is the contract.
+//! Wire types for managed Node releases (see [`crate::Response::NodeVersions`],
+//! [`crate::Response::NodeSite`] and [`crate::Response::NodeSites`]). Field
+//! order is the contract.
 
 use serde::{Deserialize, Serialize};
 use yerd_core::node::NodeSource;
@@ -46,4 +47,31 @@ pub struct NodeProjectFile {
     pub kind: NodeSource,
     /// The selector in the file.
     pub selector: String,
+}
+
+/// One site's Node resolution (reply element of [`crate::Response::NodeSites`]).
+/// The fields after `site` mean exactly what they do on
+/// [`crate::Response::NodeSite`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeSiteEntry {
+    /// Site name.
+    pub site: String,
+    /// The site's saved preference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preference: Option<String>,
+    /// The project file at or above the site root, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_file: Option<Box<NodeProjectFile>>,
+    /// The exact release that would run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective: Option<String>,
+    /// Which source chose `effective`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<NodeSource>,
+    /// Why the lookup or resolution failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The chosen selector when it matches no installed release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing: Option<String>,
 }

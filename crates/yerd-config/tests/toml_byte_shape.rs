@@ -54,8 +54,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 29\n"),
-        "expected first line `version = 29`; got: {s}"
+        s.starts_with("version = 30\n"),
+        "expected first line `version = 30`; got: {s}"
     );
 }
 
@@ -818,4 +818,27 @@ fn default_xdebug_entry_is_not_written() {
         .insert(PhpVersion::new(8, 3), yerd_core::XdebugSettings::default());
     let s = only_default.to_toml().unwrap();
     assert!(!s.contains("xdebug"), "got: {s}");
+}
+
+#[test]
+fn default_config_emits_no_favourites_table() {
+    let s = Config::default().to_toml().unwrap();
+    assert!(!s.contains("[favourites]"), "got: {s}");
+}
+
+#[test]
+fn populated_favourites_section_emits_last_and_round_trips() {
+    use yerd_core::network::OutboundProxyMode;
+    let mut c = Config::default();
+    c.network.mode = OutboundProxyMode::Off;
+    c.favourites.sites.insert("blog".to_string());
+    let s = c.to_toml().unwrap();
+    let network_at = s.find("\n[network]\n").expect("[network] table present");
+    let favourites_at = s.find("\n[favourites]\n").expect("[favourites] present");
+    assert!(network_at < favourites_at, "got: {s}");
+    assert!(
+        s.ends_with("\n[favourites]\nsites = [\"blog\"]\n"),
+        "got: {s}"
+    );
+    assert_eq!(Config::from_toml(&s).unwrap(), c);
 }

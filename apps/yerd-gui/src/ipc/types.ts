@@ -43,6 +43,9 @@ export interface Site {
   front_controller?: boolean;
 }
 
+/** crates/yerd-core/src/detect.rs - SiteFramework. */
+export type SiteFramework = "laravel" | "wordpress" | "symfony" | "statamic" | "craft" | "drupal" | "other";
+
 /**
  * One entry in `Response::Sites` - `Site` plus a WordPress-detection flag
  * served from the daemon's in-memory cache (`SiteEntry` in response.rs,
@@ -67,6 +70,10 @@ export interface SiteEntry extends Site {
   /** Whether an `artisan` marker was found at the site's project root, i.e. it
    *  is a Laravel app (eligible to link a Reverb instance). */
   is_laravel?: boolean;
+  /** Whether the user starred this site. Omitted when false. */
+  favourite?: boolean;
+  /** The framework detected at the site's project root, when recognised. */
+  framework?: SiteFramework;
 }
 
 /** crates/yerd-ipc/src/response.rs - WordPressAdminUser, for the auto-login
@@ -192,6 +199,8 @@ export interface MailSummary {
   date_epoch: number;
   /** Whether the email has been marked read (absent against an older daemon). */
   read?: boolean;
+  /** Site attributed from the SMTP EHLO/HELO host; absent when unknown. */
+  site?: string;
 }
 
 /** crates/yerd-ipc/src/status.rs - MailHeader. */
@@ -711,6 +720,21 @@ export type Response =
       /** The chosen selector that matches no installed release, so it can be installed. */
       missing?: string;
     }
+  | { type: "node_sites"; sites: NodeSiteEntry[] }
+  | {
+      type: "release_notes";
+      /** The running release's notes; absent when none are published. */
+      current?: ReleaseNotesEntry;
+      /** Earlier stable releases, newest first. */
+      earlier: ReleaseNotesEntry[];
+    }
+  | {
+      type: "contributors";
+      /** Human contributors, most contributions first. */
+      contributors: Contributor[];
+      /** How many contributors are listed. */
+      total: number;
+    }
   | { type: "network_settings"; settings: NetworkSettings }
   | { type: "network_test"; result: NetworkTestResult }
   | { type: "job_started"; job_id: string }
@@ -793,6 +817,8 @@ export interface ToolStatus {
    * to report.
    */
   external_path?: string;
+  /** Newer published version of a managed, installed tool; absent otherwise. */
+  update_available?: string;
 }
 
 // ── node versions (crates/yerd-ipc/src/node.rs, crates/yerd-core/src/node.rs) ──
@@ -845,6 +871,53 @@ export interface NodeProjectFile {
   selector: string;
 }
 
+/** crates/yerd-ipc/src/node.rs - NodeSiteEntry. One site's Node resolution,
+ *  with the same optional fields as the `node_site` response. */
+export interface NodeSiteEntry {
+  site: string;
+  preference?: string;
+  project_file?: NodeProjectFile;
+  effective?: string;
+  source?: NodeSource;
+  error?: string;
+  missing?: string;
+}
+
+// ── about (about.rs) ──────────────────────────────────────────────────────────
+
+/** crates/yerd-ipc/src/about.rs - ReleaseNoteItem. One change in a release. */
+export interface ReleaseNoteItem {
+  title: string;
+  /** GitHub login of the author, without the `@`. */
+  author?: string;
+  /** Pull request URL. */
+  url?: string;
+}
+
+/** crates/yerd-ipc/src/about.rs - ReleaseNotesEntry. One release's categorised notes. */
+export interface ReleaseNotesEntry {
+  /** Bare semver version, e.g. `2.1.0`. */
+  version: string;
+  /** Release tag, e.g. `v2.1.0`. */
+  tag: string;
+  /** RFC 3339 publish time. */
+  published_at: string;
+  prerelease: boolean;
+  /** The first feature, else fix, else other title. */
+  summary: string;
+  features: ReleaseNoteItem[];
+  fixes: ReleaseNoteItem[];
+  others: ReleaseNoteItem[];
+}
+
+/** crates/yerd-ipc/src/about.rs - Contributor. One human contributor. */
+export interface Contributor {
+  login: string;
+  avatar_url: string;
+  /** Commits GitHub credits to this contributor. */
+  commits: number;
+}
+
 /** One user database in a SQL service (mirrors the daemon's `DatabaseSummary`). */
 export interface DatabaseSummary {
   name: string;
@@ -887,6 +960,8 @@ export interface CloudflaredStatus {
   source?: CloudflaredSource;
   /** Whether a Cloudflare account is logged in (Phase 2). */
   logged_in: boolean;
+  /** Newer published release of the Yerd-managed binary; absent for a PATH binary. */
+  update_available?: string;
 }
 
 /** crates/yerd-ipc/src/status.rs - NamedTunnelMeta. */
@@ -925,6 +1000,8 @@ export type MailResponse = Extract<Response, { type: "mail" }>;
 export type NodeVersionsResponse = Extract<Response, { type: "node_versions" }>;
 export type AvailableNodeResponse = Extract<Response, { type: "available_node" }>;
 export type NodeSiteResponse = Extract<Response, { type: "node_site" }>;
+export type ReleaseNotesResponse = Extract<Response, { type: "release_notes" }>;
+export type ContributorsResponse = Extract<Response, { type: "contributors" }>;
 
 /** How the daemon picks its outbound proxy. */
 export type OutboundProxyMode = "system" | "manual" | "off";

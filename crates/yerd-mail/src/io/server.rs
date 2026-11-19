@@ -13,6 +13,14 @@ use crate::error::MailError;
 use crate::io::store::Store;
 use crate::pure::smtp::{Reply, Session};
 
+/// Maps the host a client announced in `EHLO`/`HELO` to the site it belongs
+/// to, so captured mail can be attributed. The daemon backs this with its live
+/// site router; the mail crate cannot see sites itself.
+pub trait SiteResolver: Send + Sync + 'static {
+    /// The name of the site serving `host`, or `None` when no site matches.
+    fn site_for_host(&self, host: &str) -> impl Future<Output = Option<String>> + Send;
+}
+
 /// Largest message we will buffer (defensive cap against a runaway sender).
 const MAX_MESSAGE_BYTES: usize = 25 * 1024 * 1024;
 
@@ -28,16 +36,19 @@ pub async fn bind(port: u16) -> Result<TcpListener, MailError> {
         .map_err(|source| MailError::Bind { port, source })
 }
 
-/// Accept connections and capture mail until `shutdown` resolves.
+/// Accept connections and capture mail until `shutdown` resolves. Each
+/// captured message is attributed to a site through `resolver`.
 ///
 /// `S: Send + 'static` because the daemon `tokio::spawn`s this future.
-pub async fn serve<S>(
+pub async fn serve<S, R>(
     listener: TcpListener,
     store: Arc<Store>,
+    resolver: Arc<R>,
     shutdown: S,
 ) -> Result<(), MailError>
 where
     S: Future<Output = ()> + Send + 'static,
+    R: SiteResolver,
 {
     tokio::pin!(shutdown);
     loop {
@@ -47,8 +58,9 @@ where
             accepted = listener.accept() => match accepted {
                 Ok((stream, _peer)) => {
                     let store = store.clone();
+                    let resolver = resolver.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_conn(stream, store).await {
+                        if let Err(e) = handle_conn(stream, store, resolver).await {
                             tracing::debug!(error = %e, "mail connection ended with error");
                         }
                     });
@@ -62,7 +74,11 @@ where
 
 /// Drive one connection through the SMTP exchange, persisting each completed
 /// `DATA` payload.
-async fn handle_conn(stream: TcpStream, store: Arc<Store>) -> std::io::Result<()> {
+async fn handle_conn<R: SiteResolver>(
+    stream: TcpStream,
+    store: Arc<Store>,
+    resolver: Arc<R>,
+) -> std::io::Result<()> {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
 
@@ -87,7 +103,11 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>) -> std::io::Result<()
                 write_half.write_all(r.as_bytes()).await?;
                 let data = read_data(&mut reader).await?;
                 let msg = session.finish_data(&data);
-                match store.append(&msg.raw).await {
+                let site = match msg.helo.as_deref() {
+                    Some(host) => resolver.site_for_host(host).await,
+                    None => None,
+                };
+                match store.append(&msg.raw, site).await {
                     Ok(()) => write_half.write_all(b"250 OK: queued\r\n").await?,
                     Err(e) => {
                         tracing::warn!(error = %e, "failed to store captured mail");
@@ -144,8 +164,16 @@ mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
 
-    #[tokio::test]
-    async fn captures_a_message_over_tcp() {
+    struct FakeResolver;
+
+    impl SiteResolver for FakeResolver {
+        fn site_for_host(&self, host: &str) -> impl Future<Output = Option<String>> + Send {
+            let site = (host == "blog.test").then(|| "blog".to_string());
+            async move { site }
+        }
+    }
+
+    async fn capture_with_helo(helo: &str) -> Vec<yerd_ipc::MailSummary> {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::open(dir.path().to_path_buf()).unwrap());
         let listener = bind(0).await.unwrap();
@@ -153,7 +181,7 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         let serve_store = store.clone();
         let handle = tokio::spawn(async move {
-            serve(listener, serve_store, async move {
+            serve(listener, serve_store, Arc::new(FakeResolver), async move {
                 let _ = rx.await;
             })
             .await
@@ -170,7 +198,7 @@ mod tests {
             let mut b = [0u8; 256];
             let _ = c.read(&mut b).await.unwrap();
         }
-        cmd(&mut client, "EHLO test\r\n").await;
+        cmd(&mut client, &format!("EHLO {helo}\r\n")).await;
         cmd(&mut client, "MAIL FROM:<a@b.c>\r\n").await;
         cmd(&mut client, "RCPT TO:<d@e.f>\r\n").await;
         cmd(&mut client, "DATA\r\n").await;
@@ -190,10 +218,23 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         let list = store.list().await;
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].subject, "Hello");
-
         let _ = tx.send(());
         let _ = handle.await;
+        list
+    }
+
+    #[tokio::test]
+    async fn captures_a_message_over_tcp() {
+        let list = capture_with_helo("test").await;
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].subject, "Hello");
+        assert_eq!(list[0].site, None);
+    }
+
+    #[tokio::test]
+    async fn attributes_mail_to_the_ehlo_site() {
+        let list = capture_with_helo("blog.test").await;
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].site.as_deref(), Some("blog"));
     }
 }
