@@ -49,6 +49,7 @@ apps/yerd-gui/
     │   ├── client.ts       typed wrappers around invoke() + IpcError
     │   └── client.test.ts  command-mapping + error-categorisation tests
     ├── composables/        useDaemon (singleton poller), usePoll, useToast, useWideLayout, useIdes, useSiteEditor,
+    │                       useElevation (OS-privilege Fix / Fix all / Revert, shared by Welcome and Doctor),
     │                       useCreateSiteJob / useToolPrereqs / useSiteBasics and the starters
     │                       (useSiteStarters, useLaravelStarter, useWordPressStarter) behind New site
     ├── components/         AppShell, SideNav, NavLink, TitleBar, PageHeader, AboutSection, StatusPill, ComingSoon, EnvironmentCard,
@@ -69,6 +70,7 @@ apps/yerd-gui/
     │                       DumpsSetupDialog),
     │                       share/ (ShareList, ShareInspector, ShareSiteDialog, ShareSetupDialog,
     │                       CloudflareLoginDialog),
+    │                       doctor/ (DoctorList, DoctorInspector),
     │                       PhpVersionPanel, AddExtensionModal, DaemonDownHero, DaemonDiagnosticsPanel,
     │                       overview/ (status, favourites, setup checklist, release notes and contributors cards),
     │                       ui/ (incl. AsyncState, EmptyState, InfoBanner, ConfirmDialog, DialogFrame,
@@ -83,6 +85,8 @@ apps/yerd-gui/
                             dumps (merging dump pages, grouping by request, event tags and bodies,
                             capture pill, follow-newest selection), dumpLog,
                             share (Share sections, state labels, facts copy, tunnel chip),
+                            elevation (OS-privilege rows, the single source for the Doctor dot),
+                            doctor (Doctor finding groups, default selection, permission copy),
                             php (PHP list order, status and update labels, banner, install choices
                             and the install-progress line),
                             tooling (Tooling split, descriptions, Composer gate, PATH copy),
@@ -558,8 +562,8 @@ default landing dashboard: status, favourites, release notes and contributors), 
 streamed installs, Update, uninstall, and the global default; in the command
 palette without a digit), **SitesView**, **ToolingView** (`/tooling`; Node is
 not listed there, it has its own page), **ServicesView**,
-**LaravelDumpsView** (`/dumps`), **MailView** (`/mail`), **DoctorView** (which
-also hosts the OS-privileges **EnvironmentCard** - CA trust / resolver / ports),
+**LaravelDumpsView** (`/dumps`), **MailView** (`/mail`), **DoctorView** (findings
+plus the OS-privilege rows - CA trust / resolver / ports - via `useElevation`),
 and **IntegrationsView** (`/integrations`, Share). `/about` redirects to
 `/general` (the tray's About and Update items still navigate there; the build
 info, updates and troubleshooting cards now live at the end of Settings in
@@ -602,10 +606,11 @@ alarming wire value `stopped`, reserving red **"failed"** for an actual crash.
 
 `ComingSoon.vue` renders a deliberately non-interactive `<span>`
 (`aria-disabled="true"`, a native `title` tooltip, no clickable element) so a
-gated control reads as intentional rather than broken. It has a **single** use
-today: on a platform without in-app elevation - i.e. a future Windows build,
-since the GUI ships only on macOS/Linux - the Doctor page's **Environment**
-*Fix* action falls back to a "soon" pill pointing at `yerd elevate`. On the
+gated control reads as intentional rather than broken. Its only use today: on a
+platform without in-app elevation - i.e. a future Windows build, since the GUI
+ships only on macOS/Linux - the *Fix* action on the Doctor page's **System
+permissions** (and Welcome's environment card) falls back to a "soon" pill
+pointing at `yerd elevate`. On the
 supported platforms every control is fully wired (the earlier Logs / restart
 stubs are gone now that their IPC exists).
 

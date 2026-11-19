@@ -9,15 +9,15 @@ Both read from the daemon, which owns all runtime state. The CLI is a thin clien
 
 ## In the desktop app
 
-The **Doctor** page (under the **System** group) mirrors the CLI's diagnostics in two panels. The **Health** list sorts every finding by severity - Healthy, Warning, or Problem - each with a copyable remedy command. **Run safe fixes** applies the safe one-click repairs (restarting a failed PHP-FPM pool), and **Re-check** re-runs diagnostics; on a healthy machine the list collapses to an "all clear" panel.
+The **Doctor** page (under the **System** group) mirrors the CLI's diagnostics as a list with a details panel beside it. The list groups every finding under **Problems**, **Warnings** and **Info**; select one to see its full detail and a copyable remedy command. **Run safe fixes** in the toolbar applies the safe one-click repairs (restarting a failed PHP-FPM pool), and **Re-check** re-runs diagnostics. On a healthy machine the panel shows **No problems found**; if the daemon can't run diagnostics it shows **Health check unavailable** with a **Re-check** button.
 
-The same page carries an **Environment** panel for OS-level state, each row with a one-click action behind an OS prompt (the GUI never runs as root):
+Below the findings, **System permissions** lists the OS-level state, each with a one-click action behind an OS prompt (the GUI never runs as root):
 
 - **Local CA trusted** - whether HTTPS sites are trusted in the system store.
 - **`.test` resolver installed** - whether the OS routes `*.test` to Yerd's DNS.
-- **Privileged ports (80/443)** - whether the daemon can bind the standard ports.
+- **Privileged ports 80/443** - whether the daemon can bind the standard ports.
 
-Where a row isn't configured, **Fix (elevate)** runs the privileged action; once it *is* configured, **Revert** (Unelevate) undoes it, both behind an in-app confirm dialog and the OS prompt. Reverting the resolver restores your previous one on macOS; port revert is macOS-only.
+Select a permission that isn't granted and **Fix** runs the privileged action; once Yerd has granted it, **Revert** undoes it after an in-app confirm and the OS prompt. **Fix all** on the System permissions label appears when two or more need fixing. Reverting the resolver restores your previous one on macOS; port revert is macOS-only.
 
 <ThemedImage light="/images/doctor-light.png" dark="/images/doctor-dark.png" alt="The Doctor page in the Yerd desktop app" />
 
