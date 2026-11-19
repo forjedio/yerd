@@ -1,4 +1,5 @@
 import type { ToolStatus } from "@/ipc/types";
+import { joinWithAnd } from "@/lib/utils";
 
 /**
  * Pure derivations for the Tooling screen. No I/O; the input is the daemon's
@@ -45,8 +46,7 @@ export function needsComposer(t: ToolStatus, tools: ToolStatus[]): boolean {
 
 /** Joins command names for prose: `a`, `a and b`, `a, b and c`. */
 export function commandList(bins: string[]): string {
-  if (bins.length <= 1) return bins[0] ?? "";
-  return `${bins.slice(0, -1).join(", ")} and ${bins[bins.length - 1]}`;
+  return joinWithAnd(bins);
 }
 
 /** The success toast detail, e.g. "bun and bunx are on your PATH". */

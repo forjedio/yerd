@@ -8,6 +8,17 @@ export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs));
 }
 
+/** A count with its noun, e.g. `1 site` or `3 sites`. */
+export function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** Joins names for prose: `a`, `a and b`, `a, b and c`. */
+export function joinWithAnd(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
 /** Status-dot tones (mirrors StatusPill's `Tone`). */
 export type StatusTone = "ok" | "warn" | "bad" | "unknown" | "muted";
 

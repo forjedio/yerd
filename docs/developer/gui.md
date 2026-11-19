@@ -67,6 +67,8 @@ apps/yerd-gui/
     │                       mail/ (MailInbox, MailReader, MailSetupDialog),
     │                       dumps/ (DumpsRequestList, DumpsRequestDetail, DumpsEventCard, DumpsCapturePill,
     │                       DumpsSetupDialog),
+    │                       share/ (ShareList, ShareInspector, ShareSiteDialog, ShareSetupDialog,
+    │                       CloudflareLoginDialog),
     │                       PhpVersionPanel, AddExtensionModal, DaemonDownHero, DaemonDiagnosticsPanel,
     │                       overview/ (status, favourites, setup checklist, release notes and contributors cards),
     │                       ui/ (incl. AsyncState, EmptyState, InfoBanner, ConfirmDialog, DialogFrame,
@@ -80,6 +82,7 @@ apps/yerd-gui/
                             mail (app labels, time labels, capture state, Laravel .env),
                             dumps (merging dump pages, grouping by request, event tags and bodies,
                             capture pill, follow-newest selection), dumpLog,
+                            share (Share sections, state labels, facts copy, tunnel chip),
                             php (PHP list order, status and update labels, banner, install choices
                             and the install-progress line),
                             tooling (Tooling split, descriptions, Composer gate, PATH copy),

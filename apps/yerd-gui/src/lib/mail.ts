@@ -4,6 +4,7 @@
  */
 import type { MailStatus, MailSummary } from "@/ipc/types";
 import type { RemoteContentKind, RemoteContentRef } from "@/lib/mailLinks";
+import { plural } from "@/lib/utils";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -178,10 +179,6 @@ export function laravelEnv({ port, fromName, fromAddress }: LaravelEnvInput): st
     `MAIL_FROM_ADDRESS="${address}"`,
     `MAIL_FROM_NAME="${name}"`,
   ].join("\n");
-}
-
-function plural(n: number, one: string, many: string): string {
-  return n === 1 ? `1 ${one}` : `${n} ${many}`;
 }
 
 /** The reader's remote-content bar text, or `null` when the mail has none. */

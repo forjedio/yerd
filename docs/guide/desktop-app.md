@@ -141,7 +141,7 @@ Laravel telemetry interception - `dump()`/`dd()` plus queries, jobs, views, requ
 
 <ThemedImage light="/images/share-light.png" dark="/images/share-dark.png" alt="Share page" />
 
-Publishes a local site to the public internet over Cloudflare Tunnel. A **Cloudflare Tunnel** card shows the detected `cloudflared` version; a **Shared sites** card picks a site and opens a Quick Tunnel with one click, alongside a live table of active tunnels showing each one's health (Connecting, Online, Reconnecting, Failed), its last error, and any preflight warnings. A separate **Named tunnels** card walks through connecting a Cloudflare account and exposing sites on your own domain. A key button on each shared site sets an optional share password. See [Sharing Sites](./sharing).
+Publishes a local site to the public internet over Cloudflare Tunnel. Your shares are listed in two groups, **Quick links** and **Your domain**, each with a status dot and its public address; selecting one shows its public URL (**Copy**, **Open**), its type, local site and health (Connecting, Running, Reconnecting, Failed) with the last error and any preflight warnings, and **Stop sharing** or **Remove from domain**. On a narrower window the list becomes a table and the details open in a drawer. **Share a site** shares a site as a temporary Quick link or on your own domain in one step; **Setup** installs or updates `cloudflared`, connects your Cloudflare account and manages the tunnel for your domain. A key button on each share sets an optional share password. See [Sharing Sites](./sharing).
 
 ### Doctor
 

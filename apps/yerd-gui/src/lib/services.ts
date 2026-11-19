@@ -3,6 +3,7 @@
  * `list_services`, `list_databases` and status replies.
  */
 import type { ServiceRunState, ServiceStatus, SiteEntry, StatusReport } from "@/ipc/types";
+import { plural } from "@/lib/utils";
 
 /** A per-site instance (Reverb) has no installed version, but it is still a
  *  configured, startable instance identified by its linked site. */
@@ -87,10 +88,6 @@ export function serviceSections(services: ServiceStatus[]): ServiceSection[] {
 /** The lowercase state word rows and the table show. */
 export function statusWord(state: ServiceRunState): string {
   return state;
-}
-
-function plural(n: number, one: string, many: string): string {
-  return `${n} ${n === 1 ? one : many}`;
 }
 
 /** A list row's second line: `running · :3308 · 16 databases`. The count shows
