@@ -67,7 +67,8 @@ mod unix {
 
     use yerd_platform::pure::install_receipt::{InstallMode, ReceiptError};
     use yerd_platform::pure::shell_profile::{
-        self, detect_shell, rc_relpaths, render_block, HostOs, Shell,
+        self, bash_login_relpath, detect_shell, rc_relpaths, render_block, HostOs, Shell,
+        BASH_LOGIN_FILES,
     };
     use yerd_platform::{ActivePaths, Paths};
 
@@ -102,7 +103,12 @@ mod unix {
         let install = matches!(action, PathAction::Install);
         let mut touched = Vec::new();
         let mut any_err = false;
-        for rel in rc_relpaths(shell, host_os()) {
+        let rels = if install {
+            install_relpaths(shell, &home)
+        } else {
+            cleanup_relpaths(shell)
+        };
+        for rel in rels {
             let rc = home.join(&rel);
             if !install && !rc.exists() {
                 continue;
@@ -147,7 +153,7 @@ mod unix {
             return;
         };
         let mut added = false;
-        for rel in rc_relpaths(shell, host_os()) {
+        for rel in install_relpaths(shell, &home) {
             if let Ok(true) = edit_one(&home.join(&rel), shell, &bin_dirs, true) {
                 added = true;
             }
@@ -170,7 +176,7 @@ mod unix {
             return Vec::new();
         };
         let mut touched = Vec::new();
-        for rel in rc_relpaths(shell, host_os()) {
+        for rel in cleanup_relpaths(shell) {
             let rc = home.join(&rel);
             if !rc.exists() {
                 continue;
@@ -180,6 +186,36 @@ mod unix {
             }
         }
         touched
+    }
+
+    /// The rc files to add the block to. Bash's login file is whichever one
+    /// Bash would actually read (see [`bash_login_relpath`]).
+    fn install_relpaths(shell: Shell, home: &Path) -> Vec<PathBuf> {
+        rc_relpaths(shell, host_os())
+            .into_iter()
+            .map(|rel| {
+                if shell == Shell::Bash && rel == Path::new(".bash_profile") {
+                    bash_login_relpath(|name| home.join(name).exists())
+                } else {
+                    rel
+                }
+            })
+            .collect()
+    }
+
+    /// The rc files a block may have been added to: for Bash, every login file
+    /// [`install_relpaths`] could have picked.
+    fn cleanup_relpaths(shell: Shell) -> Vec<PathBuf> {
+        let mut rels = rc_relpaths(shell, host_os());
+        if shell == Shell::Bash {
+            for name in BASH_LOGIN_FILES {
+                let rel = PathBuf::from(name);
+                if !rels.contains(&rel) {
+                    rels.push(rel);
+                }
+            }
+        }
+        rels
     }
 
     /// Edit one rc file. Returns `Ok(true)` if the file's contents changed.

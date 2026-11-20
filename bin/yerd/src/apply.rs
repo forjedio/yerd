@@ -247,12 +247,14 @@ pub fn run(
         eprintln!("yerd: update verification failed: {e}");
         return ExitCode::from(1);
     }
+    if kind == StagedArtifact::HeadlessTarGz {
+        return finish_headless(apply_headless(staged));
+    }
     let result = match kind {
         StagedArtifact::AppTarGz => apply_macos(staged, relaunch_gui, gui_owns_daemon),
         StagedArtifact::Deb => apply_linux(staged, relaunch_gui),
         StagedArtifact::Pacman => apply_linux_pacman(staged, relaunch_gui),
         StagedArtifact::Rpm => apply_linux_rpm(staged, relaunch_gui),
-        StagedArtifact::HeadlessTarGz => apply_headless(staged),
         _ => Err("unknown staged artifact kind from the daemon".to_owned()),
     };
     match result {
@@ -1083,17 +1085,15 @@ fn swap_files<S: AsRef<str>>(
             existed.then_some(&*backup),
             name,
         ) {
-            for entry in swapped.iter().rev() {
-                match entry {
-                    Swapped::Replaced { target, backup } => {
-                        let _ = std::fs::rename(backup, target);
-                    }
-                    Swapped::Created { target } => {
-                        let _ = std::fs::remove_file(target);
-                    }
-                }
+            let failures = roll_back(&swapped);
+            if failures.is_empty() {
+                return Err(e);
             }
-            return Err(e);
+            return Err(format!(
+                "{e}; rolling back also failed, so {} may hold a mix of old and new files: {}",
+                dir.display(),
+                failures.join("; ")
+            ));
         }
         swapped.push(if existed {
             Swapped::Replaced { target, backup }
@@ -1109,13 +1109,40 @@ fn swap_files<S: AsRef<str>>(
     Ok(())
 }
 
+/// Undo `swapped` in reverse order, attempting every step. Returns a message
+/// per step that failed, naming any backup still on disk.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn roll_back(swapped: &[Swapped]) -> Vec<String> {
+    let mut failures = Vec::new();
+    for entry in swapped.iter().rev() {
+        match entry {
+            Swapped::Replaced { target, backup } => {
+                if let Err(e) = std::fs::rename(backup, target) {
+                    failures.push(format!(
+                        "restoring {}: {e} (the old file is still at {})",
+                        target.display(),
+                        backup.display()
+                    ));
+                }
+            }
+            Swapped::Created { target } => {
+                if let Err(e) = std::fs::remove_file(target) {
+                    failures.push(format!("removing {}: {e}", target.display()));
+                }
+            }
+        }
+    }
+    failures
+}
+
 /// The installed mode: 0644 for the receipt, 0755 for the required binaries,
 /// and for an extra file 0755 only when the archive marked it executable.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn install_mode_for(name: &str, payload_mode: u32) -> u32 {
     if name == yerd_platform::pure::install_receipt::RECEIPT_FILE {
         0o644
-    } else if required_files(true).contains(&name) || payload_mode & 0o111 != 0 {
+    } else if required_files(cfg!(target_os = "macos")).contains(&name) || payload_mode & 0o111 != 0
+    {
         0o755
     } else {
         0o644
@@ -1143,16 +1170,89 @@ fn swap_one(target: &Path, new: &Path, backup: Option<&Path>, name: &str) -> Res
     })
 }
 
-/// Install a staged headless tarball over the running binaries and restart the
-/// daemon. No elevation: the install dir is the user's.
+/// How the daemon came back after a headless swap. The files are installed in
+/// every case; only the restart differs.
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+enum HeadlessRestart {
+    /// The daemon restarted onto the new binary.
+    Restarted,
+    /// No daemon was running; it picks up the new binary at its next start.
+    /// Only detected on macOS, where the restart goes over IPC.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    NotRunning,
+    /// The daemon could not be restarted.
+    Failed(String),
+}
+
+/// Lock file in the install dir that serializes headless updates. Named with
+/// the `yerd-` prefix so `yerd uninstall` sweeps it up with the other files.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn apply_headless(staged: &Path) -> Result<(), String> {
+const UPDATE_LOCK: &str = "yerd-update.lock";
+
+/// Report a headless apply. A failed restart after a committed swap says the
+/// new files are in place (nothing was rolled back) and how to recover.
+fn finish_headless(result: Result<HeadlessRestart, String>) -> ExitCode {
+    match result {
+        Ok(HeadlessRestart::Restarted) => {
+            println!("yerd: update applied; the daemon restarted on the new version");
+            ExitCode::SUCCESS
+        }
+        Ok(HeadlessRestart::NotRunning) => {
+            println!(
+                "yerd: update applied; the daemon isn't running and will use the new version \
+                 when it next starts"
+            );
+            ExitCode::SUCCESS
+        }
+        Ok(HeadlessRestart::Failed(e)) => {
+            eprintln!(
+                "yerd: the update is installed, but restarting the daemon failed: {e}. \
+                 Run `yerd restart daemon` to load the new version"
+            );
+            ExitCode::from(1)
+        }
+        Err(e) => {
+            eprintln!("yerd: update failed: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// Install a staged headless tarball over the running binaries and restart the
+/// daemon. No elevation: the install dir is the user's. Holds the install
+/// dir's update lock from before the first replacement until the restart, so
+/// two updates never interleave their swaps or rollbacks.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn apply_headless(staged: &Path) -> Result<HeadlessRestart, String> {
     let dir = yerd_platform::install_mode::current_exe_dir()
         .ok_or_else(|| ReceiptError::ExeUnresolved.to_string())?;
+    let _lock = lock_install_dir(&dir)?;
     let had_port_cap = yerdd_had_port_capability(&dir.join("yerdd"));
-    install_headless(staged, &dir, &unique_suffix())?;
-    restart_after_headless_swap(&dir, had_port_cap);
-    Ok(())
+    install_headless(staged, &dir, &unique_suffix(), Some(UPDATE_PUBLIC_KEY))?;
+    Ok(restart_after_headless_swap(&dir, had_port_cap))
+}
+
+/// Take the install dir's exclusive update lock, or refuse without touching
+/// anything when another update holds it. Released when the file drops.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn lock_install_dir(dir: &Path) -> Result<std::fs::File, String> {
+    use fs4::fs_std::FileExt as _;
+    let path = dir.join(UPDATE_LOCK);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("opening {}: {e}", path.display()))?;
+    match file.try_lock_exclusive() {
+        Ok(true) => Ok(file),
+        Ok(false) => Err(format!(
+            "another update of {} is in progress; nothing was changed",
+            dir.display()
+        )),
+        Err(e) => Err(format!("locking {}: {e}", path.display())),
+    }
 }
 
 /// Whether `getcap` output shows `cap_net_bind_service` on the file. `None`
@@ -1185,30 +1285,52 @@ fn yerdd_had_port_capability(_yerdd: &Path) -> bool {
     false
 }
 
-/// Extract `staged` into a staging dir inside `dir`, validate the file set and
-/// its receipt, then swap every binary in `dir`. Nothing in `dir` changes unless
-/// validation passes; the staging dir is always removed.
+/// Snapshot `staged` into a staging dir inside `dir`, verify the snapshot's
+/// signature against `public_key` (when given), extract the snapshot, validate
+/// the file set and its receipt, then swap every binary in `dir`. Extracting
+/// the verified copy means a concurrent re-stage of `staged` can't change what
+/// gets installed. Nothing in `dir` changes unless validation passes; the
+/// staging dir is always removed.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn install_headless(staged: &Path, dir: &Path, suffix: &str) -> Result<(), String> {
+fn install_headless(
+    staged: &Path,
+    dir: &Path,
+    suffix: &str,
+    public_key: Option<&str>,
+) -> Result<(), String> {
     let staging = dir.join(format!(".yerd-staging-{suffix}"));
     std::fs::create_dir(&staging)
         .map_err(|e| format!("creating staging dir {}: {e}", staging.display()))?;
     let result = (|| -> Result<(), String> {
+        let bytes = std::fs::read(staged).map_err(|e| format!("reading staged artifact: {e}"))?;
+        if let Some(key) = public_key {
+            let sig_path = sibling_minisig(staged);
+            let sig = std::fs::read_to_string(&sig_path)
+                .map_err(|e| format!("reading signature {}: {e}", sig_path.display()))?;
+            verify_minisign(key, &sig, &bytes)
+                .map_err(|e| format!("update verification failed: {e}"))?;
+        }
+        let archive = staging.join("update.tar.gz");
+        std::fs::write(&archive, &bytes)
+            .map_err(|e| format!("writing {}: {e}", archive.display()))?;
+        let extracted = staging.join("x");
+        std::fs::create_dir(&extracted)
+            .map_err(|e| format!("creating {}: {e}", extracted.display()))?;
         let status = Command::new("tar")
             .arg("-xzf")
-            .arg(staged)
+            .arg(&archive)
             .arg("-C")
-            .arg(&staging)
+            .arg(&extracted)
             .status()
             .map_err(|e| format!("spawning tar: {e}"))?;
         if !status.success() {
             return Err("extracting the update archive failed".to_owned());
         }
         let names = validate_payload(
-            &list_payload(&staging)?,
+            &list_payload(&extracted)?,
             required_files(cfg!(target_os = "macos")),
         )?;
-        let payload = staging.join(HEADLESS_TOP_DIR);
+        let payload = extracted.join(HEADLESS_TOP_DIR);
         let receipt = std::fs::read_to_string(
             payload.join(yerd_platform::pure::install_receipt::RECEIPT_FILE),
         )
@@ -1227,16 +1349,19 @@ fn install_headless(staged: &Path, dir: &Path, suffix: &str) -> Result<(), Strin
 /// manager instead. The swap also drops any `cap_net_bind_service` on `yerdd`,
 /// so when it had one, say how to grant it again.
 #[cfg(target_os = "linux")]
-fn restart_after_headless_swap(dir: &Path, had_port_cap: bool) {
-    restart_daemon();
-    if !had_port_cap {
-        return;
+fn restart_after_headless_swap(dir: &Path, had_port_cap: bool) -> HeadlessRestart {
+    let outcome = match yerd_service_ctl::ServiceCtl::new(dir.join("yerdd")).restart() {
+        Ok(()) => HeadlessRestart::Restarted,
+        Err(e) => HeadlessRestart::Failed(e.to_string()),
+    };
+    if had_port_cap {
+        println!(
+            "yerd: the update reset the port capability on yerdd; to bind 80/443 again, run \
+             `sudo {}/yerd elevate ports`, then `yerd restart daemon`",
+            dir.display()
+        );
     }
-    println!(
-        "yerd: the update reset the port capability on yerdd; run `sudo {}/yerd elevate ports` \
-         to bind 80/443 again",
-        dir.display()
-    );
+    outcome
 }
 
 /// Restart the daemon onto the swapped binary. A system-domain launchd job
@@ -1245,26 +1370,26 @@ fn restart_after_headless_swap(dir: &Path, had_port_cap: bool) {
 /// boot id to change. A daemon that isn't running picks the new binary up at
 /// its next start.
 #[cfg(target_os = "macos")]
-fn restart_after_headless_swap(_dir: &Path, _had_port_cap: bool) {
-    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+fn restart_after_headless_swap(_dir: &Path, _had_port_cap: bool) -> HeadlessRestart {
+    let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-    else {
-        eprintln!("yerd: could not restart the daemon; run `yerd restart daemon`");
-        return;
-    };
-    if rt
-        .block_on(crate::transport::exchange(&yerd_ipc::Request::Ping))
-        .is_err()
     {
-        return;
+        Ok(rt) => rt,
+        Err(e) => return HeadlessRestart::Failed(format!("starting a runtime: {e}")),
+    };
+    match rt.block_on(crate::transport::exchange(&yerd_ipc::Request::Ping)) {
+        Ok(_) => {}
+        Err(e) if e.is_daemon_down() => return HeadlessRestart::NotRunning,
+        Err(e) => return HeadlessRestart::Failed(e.to_string()),
     }
     let restarted = rt.block_on(async {
         let before = crate::fetch_boot_id().await.ok().flatten();
         crate::restart_and_await_boot_change(before).await
     });
-    if let Err(e) = restarted {
-        eprintln!("yerd: daemon restart reported: {e}; run `yerd restart daemon`");
+    match restarted {
+        Ok(()) => HeadlessRestart::Restarted,
+        Err(e) => HeadlessRestart::Failed(e.to_string()),
     }
 }
 
@@ -1299,7 +1424,7 @@ fn relaunch_gui_app() -> bool {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn apply_headless(_staged: &Path) -> Result<(), String> {
+fn apply_headless(_staged: &Path) -> Result<HeadlessRestart, String> {
     Err("a headless tarball cannot be installed on this platform".to_owned())
 }
 
@@ -1752,7 +1877,7 @@ mod tests {
             let dir = install_dir(tmp.path());
             let tarball = build_tarball(tmp.path(), "headless\n", None, None);
 
-            install_headless(&tarball, &dir, "t1").unwrap();
+            install_headless(&tarball, &dir, "t1", None).unwrap();
 
             for name in names() {
                 let path = dir.join(name);
@@ -1777,7 +1902,7 @@ mod tests {
             let dir = install_dir(tmp.path());
             let tarball = build_tarball(tmp.path(), "headless\n", Some("yerd-extra"), None);
 
-            install_headless(&tarball, &dir, "t5").unwrap();
+            install_headless(&tarball, &dir, "t5", None).unwrap();
 
             assert_eq!(
                 std::fs::read_to_string(dir.join("yerd-extra")).unwrap(),
@@ -1797,7 +1922,7 @@ mod tests {
             std::fs::write(dir.join("yerd-extra"), "old extra").unwrap();
             let tarball = build_tarball(tmp.path(), "headless\n", Some("yerd-extra"), None);
 
-            install_headless(&tarball, &dir, "t6").unwrap();
+            install_headless(&tarball, &dir, "t6", None).unwrap();
 
             assert_eq!(
                 std::fs::read_to_string(dir.join("yerd-extra")).unwrap(),
@@ -1817,7 +1942,7 @@ mod tests {
                 let tmp = tempfile::tempdir().unwrap();
                 let dir = install_dir(tmp.path());
                 let tarball = build_tarball(tmp.path(), receipt, extra, skip);
-                let err = install_headless(&tarball, &dir, "t2").unwrap_err();
+                let err = install_headless(&tarball, &dir, "t2", None).unwrap_err();
                 assert!(err.contains(needle), "expected {needle:?} in {err:?}");
                 assert_untouched(&dir);
                 assert!(leftovers(&dir).is_empty(), "{:?}", leftovers(&dir));
@@ -1849,7 +1974,7 @@ mod tests {
                 .unwrap();
             assert!(status.success());
 
-            let err = install_headless(&tarball, &dir, "t3").unwrap_err();
+            let err = install_headless(&tarball, &dir, "t3", None).unwrap_err();
             assert!(err.contains("yerd/yerdd is not a regular file"), "{err}");
             assert_untouched(&dir);
         }

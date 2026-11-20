@@ -20,8 +20,11 @@ It runs the same way as a desktop install: **rootless**. The daemon runs as
 your user; `sudo` appears only for one-time setup steps.
 
 ::: info Supported platforms
-Linux **x86-64** and **arm64** (any distro with glibc and `systemd`), and macOS
-on **Apple Silicon**. Intel Macs and Windows are not supported.
+Linux **x86-64** and **arm64** with **glibc 2.34 or newer** and `systemd`
+(e.g. Ubuntu 22.04, Debian 12, RHEL/Rocky 9, Fedora, Arch, or later), and
+macOS on **Apple Silicon**. musl distros such as Alpine, older glibc (Debian
+11, Ubuntu 20.04), Intel Macs and Windows are not supported. The install
+script checks the glibc version before downloading anything.
 :::
 
 ## Install
@@ -41,7 +44,8 @@ It:
 5. Runs `yerd path install` so `yerd` (and the `php`/`composer` shims) are on
    your `PATH`. Open a new shell, or `source` your shell profile, to pick it up.
 
-It refuses to run as root, and refuses if the desktop app is already installed
+It refuses to run as root, refuses on Linux without glibc 2.34+, and refuses
+if the desktop app is already installed
 (see [Coexisting with the desktop app](#coexisting-with-the-desktop-app)).
 
 ### Options
@@ -51,7 +55,7 @@ Set these environment variables on the `sh` side of the pipe:
 | Variable | Effect |
 |---|---|
 | `YERD_VERSION=<tag>` | Install a specific release (e.g. `v2.2.0`, or a release candidate such as `v2.2.0-rc.1`; the leading `v` is optional) instead of the latest stable. Downloads come from `files.yerd.app`. |
-| `YERD_INSTALL_DIR=<dir>` | Install somewhere other than `~/.yerd/bin`. Pick a directory you own, so self-update never needs root. The path can't contain spaces (systemd can't run a daemon from one), so the script refuses it. |
+| `YERD_INSTALL_DIR=<dir>` | Install somewhere other than `~/.yerd/bin`. Pick a directory you own, so self-update never needs root. The path can't contain spaces, `%`, `$`, quotes or backslashes (systemd would rewrite them in the service's command line), so the script refuses it. |
 | `YERD_NO_MODIFY_PATH=1` | Don't touch your shell profile; add the install directory to `PATH` yourself. |
 
 ```sh
@@ -153,11 +157,13 @@ every `sudo` command on this page.
 :::
 
 ::: warning FileVault blocks unattended boot
-With FileVault on (the default on new Macs), an Apple Silicon Mac stops at the
-disk-unlock screen after a reboot. Nothing runs, not even SSH, until someone
-unlocks it. For a truly unattended server, turn FileVault off. To keep it on,
-reboot with `sudo fdesetup authrestart`, which unlocks the disk once for the
-next boot.
+With FileVault on (the default on new Macs), an Apple Silicon Mac waits for
+the disk to be unlocked after a reboot, and the daemon can't start until it
+is. On macOS 26 or later with Remote Login on, you can unlock it remotely by
+logging in over SSH. On older macOS nothing runs, not even SSH, until someone
+unlocks it at the Mac. Either way someone has to unlock it, so for a truly
+unattended server turn FileVault off. To keep it on, reboot with
+`sudo fdesetup authrestart`, which unlocks the disk once for the next boot.
 :::
 
 ::: warning Keep sites out of protected folders
@@ -178,7 +184,8 @@ yerd restart daemon                  # restart in place, no sudo on either OS
 ```
 
 `yerd daemon stop` always runs as you, without `sudo`. The service still starts
-at the next boot.
+at the next boot. On macOS, `sudo … daemon start` only starts a job registered
+for this install and your account; another install's job is left alone.
 
 ## Set up PHP and sites
 
@@ -208,8 +215,10 @@ things are specific to servers:
 - **Ports on Linux.** `elevate ports` grants `~/.yerd/bin/yerdd` the
   `cap_net_bind_service` capability. File capabilities are wiped whenever the
   binary is replaced, so **after every self-update** the daemon drops back to
-  `8080`/`8443` until you re-run `sudo ~/.yerd/bin/yerd elevate ports`. If
-  the daemon had the capability before the update, the updater reminds you.
+  `8080`/`8443` until you re-run `sudo ~/.yerd/bin/yerd elevate ports` and
+  then `yerd restart daemon` (the capability applies when `yerdd` next
+  starts). If the daemon had the capability before the update, the updater
+  reminds you.
 - **`nosuid` home directories.** If `/home` is mounted `nosuid`, the kernel
   ignores file capabilities there and the daemon stays on `8080`/`8443`. Either
   live with the high ports, or install to a directory on a filesystem without
@@ -243,8 +252,8 @@ the daemon. If a newer release adds a file to the tarball, it is installed
 alongside the rest. Your install directory is yours, so no `sudo` is needed. Channels
 (`--edge`/`--stable`) work as described in [Self-Update](../reference/cli/update).
 
-On Linux, re-run `sudo ~/.yerd/bin/yerd elevate ports` afterwards if you use
-ports 80/443 ([why](#elevation-over-ssh)).
+On Linux, if you use ports 80/443, run `sudo ~/.yerd/bin/yerd elevate ports`
+and then `yerd restart daemon` afterwards ([why](#elevation-over-ssh)).
 
 ## Coexisting with the desktop app
 
@@ -252,8 +261,8 @@ Run **either** a headless install **or** the desktop app on one machine, not
 both. They share the same daemon, socket and config, so Yerd refuses to mix
 them rather than guess:
 
-- `install.sh` refuses when `/Applications/Yerd.app` (macOS) or `/usr/bin/yerdd`
-  (Linux) exists.
+- `install.sh` refuses when `Yerd.app` is in `/Applications` or
+  `~/Applications` (macOS), or `/usr/bin/yerdd` exists (Linux).
 - `yerd daemon install` refuses when the desktop app or its daemon registration
   is present.
 - `yerd update` refuses if the CLI you ran and the daemon belong to different

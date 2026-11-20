@@ -30,6 +30,7 @@ interprocess   = { workspace = true }
 serde_json     = { workspace = true }
 thiserror      = { workspace = true }
 tempfile       = { workspace = true }
+fs4            = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # `user` resolves the invoking user (home/shell) under sudo for the full

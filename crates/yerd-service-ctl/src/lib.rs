@@ -474,12 +474,13 @@ mod tests {
         assert_eq!(ctl.yerdd_path, PathBuf::from("/usr/lib/yerd/yerdd"));
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn macos_service_target_ends_with_the_label() {
-        let t = service_target();
-        assert!(t.starts_with("gui/") || t.starts_with("system/"), "{t}");
-        assert!(t.ends_with("/dev.yerd.daemon"), "{t}");
+        for system in [false, true] {
+            let t = macos_target(system, 501);
+            assert!(t.starts_with("gui/") || t.starts_with("system/"), "{t}");
+            assert!(t.ends_with("/dev.yerd.daemon"), "{t}");
+        }
     }
 
     #[test]

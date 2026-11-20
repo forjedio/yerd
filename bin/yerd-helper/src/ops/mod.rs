@@ -118,6 +118,22 @@ pub fn bootout_system(label: &str) {
     ));
 }
 
+/// Unload the system-domain job `label`. A job that isn't loaded is success;
+/// any other failure (launchctl missing, or the job still loaded after a
+/// failed `bootout`) is returned.
+#[cfg(target_os = "macos")]
+pub fn bootout_system_checked(label: &str) -> Result<(), HelperError> {
+    let target = format!("system/{label}");
+    match run_command("launchctl", LAUNCHCTL, ["bootout", &target]) {
+        Ok(_) => Ok(()),
+        Err(HelperError::Command {
+            reason: CommandReason::NonZero(_),
+            ..
+        }) if run_command("launchctl", LAUNCHCTL, ["print", &target]).is_err() => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// Discard the result of a best-effort step, such as a `launchctl bootout` of
 /// a job that isn't loaded.
 #[cfg(target_os = "macos")]

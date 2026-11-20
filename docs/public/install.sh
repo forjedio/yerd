@@ -6,7 +6,8 @@
 # Environment:
 #   YERD_VERSION=<tag>       install this release (e.g. v2.2.0) instead of the
 #                            latest stable one
-#   YERD_INSTALL_DIR=<dir>   install here instead of ~/.yerd/bin (no spaces)
+#   YERD_INSTALL_DIR=<dir>   install here instead of ~/.yerd/bin (no spaces,
+#                            %, $, quotes or backslashes)
 #   YERD_NO_MODIFY_PATH=1    don't run `yerd path install`
 #
 # The download is checked against the release's SHA256SUMS. Docs:
@@ -16,6 +17,7 @@ set -eu
 
 CDN="https://files.yerd.app"
 RECEIPT="yerd-install-receipt"
+MIN_GLIBC_MINOR=34
 
 say() {
     printf '%s\n' "$*"
@@ -60,15 +62,35 @@ detect_platform() {
     esac
 }
 
+# The Linux build links against glibc 2.34+. musl distros (e.g. Alpine) and
+# older glibc can't load it, so stop before downloading anything.
+check_glibc() {
+    [ "$OS" = "Linux" ] || return 0
+    glibc=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')
+    [ -n "$glibc" ] \
+        || die "Yerd's Linux build needs glibc 2.$MIN_GLIBC_MINOR or newer, and this system doesn't use glibc (musl distros such as Alpine aren't supported)"
+    major=${glibc%%.*}
+    minor=${glibc#*.}
+    minor=${minor%%.*}
+    case "$major$minor" in
+        *[!0-9]*) die "could not read the glibc version ('$glibc'); Yerd needs glibc 2.$MIN_GLIBC_MINOR or newer" ;;
+    esac
+    if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt "$MIN_GLIBC_MINOR" ]; }; then
+        die "this system has glibc $glibc; Yerd's Linux build needs glibc 2.$MIN_GLIBC_MINOR or newer (e.g. Ubuntu 22.04, Debian 12, RHEL 9 or later)"
+    fi
+}
+
 refuse_desktop_app() {
     if [ "$OS" = "MacOS" ]; then
-        gui="/Applications/Yerd.app"
+        set -- "/Applications/Yerd.app" "${HOME:-/nonexistent}/Applications/Yerd.app"
     else
-        gui="/usr/bin/yerdd"
+        set -- "/usr/bin/yerdd"
     fi
-    if [ -e "$gui" ]; then
-        die "the Yerd desktop app is installed ($gui). A headless install can't run alongside it; remove it with \`yerd uninstall\` first, then re-run this script"
-    fi
+    for gui in "$@"; do
+        if [ -e "$gui" ]; then
+            die "the Yerd desktop app is installed ($gui). A headless install can't run alongside it; remove it with \`yerd uninstall\` first, then re-run this script"
+        fi
+    done
 }
 
 # Print the browser_download_url values inside the "stable" entry of
@@ -174,6 +196,7 @@ main() {
 
     [ "$(id -u)" -ne 0 ] \
         || die "don't run this installer as root: Yerd runs as your user. Run it as your normal account; sudo is only needed for later setup steps"
+    check_glibc
     refuse_desktop_app
 
     need curl
@@ -188,7 +211,7 @@ main() {
     [ -n "${HOME:-}" ] || [ -n "${YERD_INSTALL_DIR:-}" ] || die "HOME is not set; set YERD_INSTALL_DIR"
     DIR="${YERD_INSTALL_DIR:-$HOME/.yerd/bin}"
     case "$DIR" in
-        *[[:space:]]*) die "the install directory '$DIR' contains whitespace, which the daemon's service registration can't handle; set YERD_INSTALL_DIR to a path without spaces" ;;
+        *[[:space:]]* | *[%\$\"\'\\]*) die "the install directory '$DIR' contains whitespace or one of % \$ \" ' \\, which the daemon's service registration can't handle; set YERD_INSTALL_DIR to a plain path" ;;
     esac
 
     TMP=$(mktemp -d 2>/dev/null || mktemp -d -t yerd-install)

@@ -31,8 +31,8 @@ use yerd_platform::pure::launchd_ports::is_persistent_forwarder_path;
 use crate::error::ValidationReason;
 #[cfg(target_os = "macos")]
 use crate::ops::{
-    atomic_write, bootout_system, bootstrap_system, invalid, remove_if_present, resolve_user,
-    run_command,
+    atomic_write, bootout_system, bootout_system_checked, bootstrap_system, invalid,
+    remove_if_present, resolve_user, run_command,
 };
 
 #[cfg(target_os = "macos")]
@@ -41,8 +41,10 @@ const DAEMON_BIN: &str = "yerdd";
 /// Write and load the daemon job for `uid`, replacing any existing one.
 ///
 /// Validates the user, the sibling `yerdd`, and the install receipt before
-/// touching the system. If the job can't be loaded, the plist is removed again
-/// so `yerd-service-ctl` never targets a job that isn't there.
+/// touching the system. If the new job can't be loaded, the previous plist (if
+/// any) is put back and reloaded, so a failed re-install never leaves a server
+/// without its daemon at the next boot; with no previous plist the new one is
+/// removed so `yerd-service-ctl` never targets a job that isn't there.
 #[cfg(target_os = "macos")]
 pub fn install(uid: u32) -> Result<(), HelperError> {
     let user = resolve_user(uid)?;
@@ -50,24 +52,51 @@ pub fn install(uid: u32) -> Result<(), HelperError> {
     require_headless(&dir)?;
     let yerdd = locate_daemon(&dir)?;
     let plist = launchd_daemon::compose_daemon_plist(&yerdd, &user.name, &user.dir);
+    let previous = read_previous_plist()?;
     atomic_write(Path::new(DAEMON_PLIST), plist.as_bytes(), true)?;
-    let result =
-        run_command("chown", "/usr/sbin/chown", ["root:wheel", DAEMON_PLIST]).and_then(|_| {
-            bootout_system(DAEMON_LABEL);
-            bootstrap_system(DAEMON_PLIST)
-        });
+    let result = load_plist();
     if result.is_err() {
         bootout_system(DAEMON_LABEL);
-        let _ = remove_if_present(DAEMON_PLIST);
+        match previous {
+            Some(old) => {
+                let _ =
+                    atomic_write(Path::new(DAEMON_PLIST), &old, true).and_then(|()| load_plist());
+            }
+            None => {
+                let _ = remove_if_present(DAEMON_PLIST);
+            }
+        }
     }
     result
 }
 
-/// Unload the daemon job and delete its plist (absent is fine).
+/// Unload the daemon job and delete its plist (absent is fine). The plist is
+/// only deleted once the job is confirmed unloaded.
 #[cfg(target_os = "macos")]
 pub fn uninstall() -> Result<(), HelperError> {
-    bootout_system(DAEMON_LABEL);
+    bootout_system_checked(DAEMON_LABEL)?;
     remove_if_present(DAEMON_PLIST)
+}
+
+/// Make the written plist root-owned and (re)load the job from it.
+#[cfg(target_os = "macos")]
+fn load_plist() -> Result<(), HelperError> {
+    run_command("chown", "/usr/sbin/chown", ["root:wheel", DAEMON_PLIST])?;
+    bootout_system(DAEMON_LABEL);
+    bootstrap_system(DAEMON_PLIST)
+}
+
+/// The current daemon plist's bytes, if one is registered.
+#[cfg(target_os = "macos")]
+fn read_previous_plist() -> Result<Option<Vec<u8>>, HelperError> {
+    match std::fs::read(DAEMON_PLIST) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(HelperError::Io {
+            path: PathBuf::from(DAEMON_PLIST),
+            source,
+        }),
+    }
 }
 
 #[cfg(target_os = "macos")]

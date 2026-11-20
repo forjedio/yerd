@@ -297,9 +297,14 @@ impl HelperInvocation {
 
 /// Pull the next argv element as `(flag, value)`, or `None` if the flag
 /// or its value is missing.
+/// The next `--flag value` pair. A lone trailing argument is left in `iter`
+/// (not consumed) so the caller's trailing-argument check rejects it.
 fn next_pair<'a>(iter: &mut std::slice::Iter<'a, OsString>) -> Option<(&'a OsStr, &'a OsString)> {
-    let flag = iter.next()?;
-    Some((flag.as_os_str(), iter.next()?))
+    let [flag, value, ..] = iter.as_slice() else {
+        return None;
+    };
+    iter.nth(1);
+    Some((flag.as_os_str(), value))
 }
 
 fn require_utf8(value: &OsStr, flag: &'static str) -> Result<String, ArgvParseError> {
@@ -930,13 +935,10 @@ mod tests {
     fn from_argv_setcap_missing_value_after_flag() {
         let v = argv(&["setcap", "--binary"]);
         let err = HelperInvocation::from_argv(&v).unwrap_err();
-        assert!(matches!(
-            err,
-            ArgvParseError::MissingFlag {
-                flag: "--binary",
-                ..
-            }
-        ));
+        assert!(
+            matches!(&err, ArgvParseError::Trailing(flag) if flag == "--binary"),
+            "{err:?}"
+        );
     }
 
     #[test]

@@ -15,6 +15,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use yerd_platform::pure::install_receipt::{InstallMode, ReceiptError};
+use yerd_platform::pure::launchd_daemon::DaemonJobIdentity;
 
 use crate::cli::DaemonAction;
 
@@ -71,6 +72,16 @@ fn check_receipt(mode: Result<InstallMode, ReceiptError>) -> Result<(), Refusal>
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const LINUX_DESKTOP_YERDD: &str = "/usr/bin/yerdd";
 
+/// Whether systemd would rewrite `path` in `ExecStart=`: it splits on
+/// whitespace, unquotes quotes and backslashes, and expands `%` specifiers and
+/// `$` variables, so the unit would run some other path.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn systemd_unsafe_path(path: &Path) -> bool {
+    path.to_string_lossy()
+        .chars()
+        .any(|c| c.is_whitespace() || matches!(c, '%' | '$' | '"' | '\'' | '\\'))
+}
+
 /// Linux `install`: refuse as root, refuse a `yerdd` path systemd can't run,
 /// refuse next to a desktop app install, and refuse to overwrite a
 /// `yerd.service` unit that runs a different `yerdd` (another install's
@@ -90,11 +101,12 @@ fn linux_install_check(
             EX_NOPERM,
         ));
     }
-    if own_yerdd.to_string_lossy().chars().any(char::is_whitespace) {
+    if systemd_unsafe_path(own_yerdd) {
         return Err(Refusal::new(
             format!(
-                "{} contains whitespace, which systemd's ExecStart= splits on; reinstall to a \
-                 path without spaces (set YERD_INSTALL_DIR for the install script) and retry",
+                "{} contains whitespace or one of % $ \" ' \\, which systemd's ExecStart= \
+                 would rewrite; reinstall to a plain path (set YERD_INSTALL_DIR for the \
+                 install script) and retry",
                 own_yerdd.display()
             ),
             EX_CONFIG,
@@ -154,14 +166,18 @@ fn linux_register_preconditions(
 
 /// What macOS `install` saw before deciding.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 #[allow(clippy::struct_excessive_bools)]
 struct MacInstallFacts {
     root: bool,
     sudo_uid: Option<u32>,
+    /// The sudo user's account name.
+    user: String,
     gui_app: bool,
     gui_agent: bool,
     system_plist: bool,
+    /// Who the registered system job runs as, when its plist parses.
+    registered: Option<DaemonJobIdentity>,
     daemon_running: bool,
 }
 
@@ -187,16 +203,28 @@ fn macos_install_check(facts: &MacInstallFacts, yerd: &Path) -> Result<u32, Refu
     };
     if facts.gui_app {
         return Err(Refusal::new(
-            "the desktop app is installed (/Applications/Yerd.app) and manages the daemon; \
-             uninstall one of the two installs first",
+            "the desktop app is installed (Yerd.app in /Applications or ~/Applications) and \
+             manages the daemon; uninstall one of the two installs first",
             EX_CONFIG,
         ));
     }
     if facts.gui_agent {
         return Err(Refusal::new(
+            "the desktop app's daemon is registered with launchd for this user; uninstall the \
+             desktop app first",
+            EX_CONFIG,
+        ));
+    }
+    if let Some(job) = facts
+        .registered
+        .as_ref()
+        .filter(|job| job.user != facts.user)
+    {
+        return Err(Refusal::new(
             format!(
-                "the desktop app's daemon registration (~/{}) exists; uninstall the desktop app first",
-                yerd_platform::pure::launchd_daemon::GUI_AGENT_RELPATH
+                "the daemon job is registered for another account ({}, running {}); \
+                 uninstall that install first",
+                job.user, job.yerdd
             ),
             EX_CONFIG,
         ));
@@ -220,6 +248,33 @@ enum MacStart {
     ServiceCtl,
     /// Under sudo, re-bootstrap the system job through the helper for `uid`.
     Helper(u32),
+}
+
+/// macOS `start` under sudo re-registers the system job for this install, so
+/// it must already belong to this install and user; otherwise it would take
+/// over another account's or install's job.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn registered_job_matches(
+    registered: Option<&DaemonJobIdentity>,
+    user: &str,
+    yerdd: &Path,
+) -> Result<(), Refusal> {
+    match registered {
+        Some(job) if job.user == user && Path::new(&job.yerdd) == yerdd => Ok(()),
+        Some(job) => Err(Refusal::new(
+            format!(
+                "the registered daemon job runs {} as {}, not this install; start it with that \
+                 install's yerd, or re-register with `sudo <this yerd> daemon install`",
+                job.yerdd, job.user
+            ),
+            EX_CONFIG,
+        )),
+        None => Err(Refusal::new(
+            "the registered daemon job's plist can't be read as one Yerd wrote; re-register \
+             with `sudo <this yerd> daemon install`",
+            EX_CONFIG,
+        )),
+    }
 }
 
 /// macOS `start`. A headless install without its system job has nothing for
@@ -431,15 +486,22 @@ mod unix_impl {
         super::check_receipt(install_mode::detect())?;
         let yerd = own_dir()?.join("yerd");
         let sudo_uid = elevate::sudo_uid();
+        let home = sudo_uid.and_then(os::home_of);
         let system_plist = std::path::Path::new(DAEMON_PLIST).exists();
         let facts = super::MacInstallFacts {
             root: elevate::is_root(),
             sudo_uid,
-            gui_app: std::path::Path::new("/Applications/Yerd.app").exists(),
-            gui_agent: sudo_uid
-                .and_then(os::home_of)
-                .is_some_and(|home| home.join(GUI_AGENT_RELPATH).exists()),
+            user: sudo_uid.map(user_name).unwrap_or_default(),
+            gui_app: std::path::Path::new("/Applications/Yerd.app").exists()
+                || home
+                    .as_ref()
+                    .is_some_and(|h| h.join("Applications/Yerd.app").exists()),
+            gui_agent: home
+                .as_ref()
+                .is_some_and(|h| h.join(GUI_AGENT_RELPATH).exists())
+                || sudo_uid.is_some_and(os::gui_agent_loaded),
             system_plist,
+            registered: os::registered_job(),
             daemon_running: !system_plist && sudo_uid.is_some_and(os::daemon_running_for),
         };
         let uid = super::macos_install_check(&facts, &yerd)?;
@@ -477,7 +539,14 @@ mod unix_impl {
                     }
                     other => Refusal::new(format!("starting the daemon failed: {other}"), 1),
                 })?,
-            super::MacStart::Helper(uid) => os::run_install_daemon_job(uid)?,
+            super::MacStart::Helper(uid) => {
+                super::registered_job_matches(
+                    os::registered_job().as_ref(),
+                    &user_name(uid),
+                    &dir.join("yerdd"),
+                )?;
+                os::run_install_daemon_job(uid)?;
+            }
         }
         println!("yerd: daemon started");
         Ok(())
@@ -564,6 +633,26 @@ mod unix_impl {
                 .args(["-U", &uid.to_string(), "-x", "yerdd"])
                 .output()
                 .is_ok_and(|o| o.status.success())
+        }
+
+        /// The desktop app's per-user agent (`SMAppService` or the loose
+        /// plist) is loaded in `uid`'s GUI domain.
+        pub fn gui_agent_loaded(uid: u32) -> bool {
+            let target = format!(
+                "gui/{uid}/{}",
+                yerd_platform::pure::launchd_daemon::DAEMON_LABEL
+            );
+            Command::new("launchctl")
+                .args(["print", &target])
+                .output()
+                .is_ok_and(|o| o.status.success())
+        }
+
+        /// The registered system job's identity, if its plist exists and parses.
+        pub fn registered_job() -> Option<yerd_platform::pure::launchd_daemon::DaemonJobIdentity> {
+            let plist =
+                std::fs::read_to_string(yerd_platform::pure::launchd_daemon::DAEMON_PLIST).ok()?;
+            yerd_platform::pure::launchd_daemon::parse_daemon_plist(&plist)
         }
 
         pub fn home_of(uid: u32) -> Option<PathBuf> {
@@ -660,13 +749,19 @@ mod tests {
     }
 
     #[test]
-    fn linux_install_check_refuses_whitespace_in_the_yerdd_path() {
+    fn linux_install_check_refuses_paths_systemd_would_rewrite() {
         let unit_path = Path::new("/home/u/.config/systemd/user/yerd.service");
         let cases = [
             ("/home/u/.yerd/bin/yerdd", None),
             ("/home/u/My Tools/bin/yerdd", Some(EX_CONFIG)),
             ("/home/u/tab\there/yerdd", Some(EX_CONFIG)),
             ("/opt/yerd\u{a0}bin/yerdd", Some(EX_CONFIG)),
+            ("/home/u/yerd%h/bin/yerdd", Some(EX_CONFIG)),
+            ("/home/u/$HOME/yerdd", Some(EX_CONFIG)),
+            ("/home/u/it's/yerdd", Some(EX_CONFIG)),
+            ("/home/u/a\"b/yerdd", Some(EX_CONFIG)),
+            ("/home/u/a\\b/yerdd", Some(EX_CONFIG)),
+            ("/home/u/yerd-1.0_x/yerdd", None),
         ];
         for (yerdd, want) in cases {
             let got = linux_install_check(false, false, None, unit_path, Path::new(yerdd))
@@ -721,7 +816,12 @@ mod tests {
         let ok = MacInstallFacts {
             root: true,
             sudo_uid: Some(501),
+            user: "me".to_owned(),
             ..MacInstallFacts::default()
+        };
+        let job = |user: &str| DaemonJobIdentity {
+            yerdd: "/Users/x/.yerd/bin/yerdd".to_owned(),
+            user: user.to_owned(),
         };
         let yerd = Path::new(YERD);
         assert_eq!(macos_install_check(&ok, yerd), Ok(501));
@@ -730,7 +830,8 @@ mod tests {
                 &MacInstallFacts {
                     system_plist: true,
                     daemon_running: true,
-                    ..ok
+                    registered: Some(job("me")),
+                    ..ok.clone()
                 },
                 yerd
             ),
@@ -739,14 +840,17 @@ mod tests {
 
         let refused = [
             (
-                MacInstallFacts { root: false, ..ok },
+                MacInstallFacts {
+                    root: false,
+                    ..ok.clone()
+                },
                 EX_NOPERM,
                 "sudo /Users/me/.yerd/bin/yerd daemon install",
             ),
             (
                 MacInstallFacts {
                     sudo_uid: None,
-                    ..ok
+                    ..ok.clone()
                 },
                 EX_NOPERM,
                 "through sudo",
@@ -754,23 +858,32 @@ mod tests {
             (
                 MacInstallFacts {
                     gui_app: true,
-                    ..ok
+                    ..ok.clone()
                 },
                 EX_CONFIG,
-                "/Applications/Yerd.app",
+                "~/Applications",
             ),
             (
                 MacInstallFacts {
                     gui_agent: true,
-                    ..ok
+                    ..ok.clone()
                 },
                 EX_CONFIG,
-                "LaunchAgents",
+                "registered with launchd",
+            ),
+            (
+                MacInstallFacts {
+                    system_plist: true,
+                    registered: Some(job("alice")),
+                    ..ok.clone()
+                },
+                EX_CONFIG,
+                "another account (alice",
             ),
             (
                 MacInstallFacts {
                     daemon_running: true,
-                    ..ok
+                    ..ok.clone()
                 },
                 EX_CONFIG,
                 "yerd daemon stop",
@@ -814,6 +927,34 @@ mod tests {
                 "no headless daemon job is registered; run \
                  `sudo /Users/me/.yerd/bin/yerd daemon install` first"
             );
+        }
+    }
+
+    #[test]
+    fn registered_job_matches_only_this_install_and_user() {
+        let yerdd = Path::new("/Users/me/.yerd/bin/yerdd");
+        let job = |path: &str, user: &str| DaemonJobIdentity {
+            yerdd: path.to_owned(),
+            user: user.to_owned(),
+        };
+        assert_eq!(
+            registered_job_matches(Some(&job("/Users/me/.yerd/bin/yerdd", "me")), "me", yerdd),
+            Ok(())
+        );
+        for (registered, needle) in [
+            (
+                Some(job("/Users/me/.yerd/bin/yerdd", "alice")),
+                "as alice, not this install",
+            ),
+            (
+                Some(job("/opt/yerd/yerdd", "me")),
+                "runs /opt/yerd/yerdd as me",
+            ),
+            (None, "can't be read"),
+        ] {
+            let r = registered_job_matches(registered.as_ref(), "me", yerdd).unwrap_err();
+            assert_eq!(r.code, EX_CONFIG);
+            assert!(r.message.contains(needle), "{}", r.message);
         }
     }
 

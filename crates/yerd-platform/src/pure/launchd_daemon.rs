@@ -70,6 +70,43 @@ pub fn compose_daemon_plist(yerdd: &Path, user: &str, home: &Path) -> String {
     out
 }
 
+/// Who a registered daemon job runs as and which `yerdd` it runs, read back
+/// from a plist written by [`compose_daemon_plist`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DaemonJobIdentity {
+    /// The `yerdd` path (first `ProgramArguments` entry).
+    pub yerdd: String,
+    /// The account the job runs as (`UserName`).
+    pub user: String,
+}
+
+/// Parse the identity out of `plist`, or `None` if it isn't shaped like one
+/// [`compose_daemon_plist`] wrote.
+#[must_use]
+pub fn parse_daemon_plist(plist: &str) -> Option<DaemonJobIdentity> {
+    let (_, args) = plist.split_once("<key>ProgramArguments</key>")?;
+    let (_, user) = plist.split_once("<key>UserName</key>")?;
+    Some(DaemonJobIdentity {
+        yerdd: xml_unescape(first_string(args)?),
+        user: xml_unescape(first_string(user)?),
+    })
+}
+
+fn first_string(text: &str) -> Option<&str> {
+    let (_, rest) = text.split_once("<string>")?;
+    let (value, _) = rest.split_once("</string>")?;
+    Some(value)
+}
+
+fn xml_unescape(value: &str) -> String {
+    value
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -111,6 +148,29 @@ mod tests {
         assert!(p.contains("o&apos;neil&quot;x"));
         assert!(p.contains("/Users/a&amp;b"));
         assert!(!p.contains("a&b"));
+    }
+
+    #[test]
+    fn parse_round_trips_the_composed_plist() {
+        for (yerdd, user) in [
+            ("/Users/me/.yerd/bin/yerdd", "me"),
+            ("/tmp/a&b<c>/yerdd", "o'neil\"x"),
+            ("/tmp/&amp;/yerdd", "me"),
+        ] {
+            let p = compose_daemon_plist(Path::new(yerdd), user, Path::new("/Users/me"));
+            assert_eq!(
+                parse_daemon_plist(&p),
+                Some(DaemonJobIdentity {
+                    yerdd: yerdd.to_owned(),
+                    user: user.to_owned(),
+                })
+            );
+        }
+        assert_eq!(parse_daemon_plist(""), None);
+        assert_eq!(
+            parse_daemon_plist("<key>ProgramArguments</key><array></array>"),
+            None
+        );
     }
 
     #[test]

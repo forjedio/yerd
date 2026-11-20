@@ -155,7 +155,9 @@ bun --version
 ```
 
 `yerd path install` writes a small, guarded block to your shell's startup file
-(`.zshrc`, `.bashrc`/`.bash_profile`, or `config.fish`). `yerd path uninstall`
+(`.zshrc`, `config.fish`, or for Bash `.bashrc` plus the login file Bash
+actually reads: `.bash_profile`, else `.bash_login`, else `.profile`, creating
+`.bash_profile` only when none exists). `yerd path uninstall`
 removes it; `yerd path print` shows the snippet without touching any file.
 
 ::: info Coexisting with Herd, Homebrew, or nvm

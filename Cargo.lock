@@ -6329,6 +6329,7 @@ name = "yerd"
 version = "2.1.0-rc.3"
 dependencies = [
  "clap",
+ "fs4",
  "interprocess",
  "minisign",
  "nix",

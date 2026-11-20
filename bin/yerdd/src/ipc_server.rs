@@ -478,12 +478,17 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         }
         Request::StageUpdate { channel } => {
             let dl = crate::network::downloader(state).await;
+            let install_mode = tokio::task::spawn_blocking(yerd_platform::install_mode::detect)
+                .await
+                .unwrap_or(Err(
+                    yerd_platform::pure::install_receipt::ReceiptError::ExeUnresolved,
+                ));
             crate::self_update::stage_update(
                 channel,
                 state,
                 &dl,
                 yerd_update::UPDATE_PUBLIC_KEY,
-                yerd_platform::install_mode::detect(),
+                install_mode,
             )
             .await
         }
@@ -6798,39 +6803,27 @@ Subject: Captured\r\n\r\nhi\r\n";
     /// The staged kind and basename the host platform should pick from
     /// [`full_stage_dl`] for a package or headless install.
     fn expected_staged(headless: bool) -> (yerd_ipc::StagedArtifact, &'static str) {
-        let format = yerd_update::PkgFormat::resolve(headless, yerd_update::PkgFormat::current());
-        match (yerd_update::Platform::current(), format) {
-            (yerd_update::Platform::MacOsAarch64, yerd_update::PkgFormat::Tarball) => {
-                (yerd_ipc::StagedArtifact::HeadlessTarGz, STAGE_HL_MAC)
-            }
-            (yerd_update::Platform::LinuxX86_64, yerd_update::PkgFormat::Tarball) => {
-                (yerd_ipc::StagedArtifact::HeadlessTarGz, STAGE_HL_X86)
-            }
-            (yerd_update::Platform::LinuxAarch64, yerd_update::PkgFormat::Tarball) => {
-                (yerd_ipc::StagedArtifact::HeadlessTarGz, STAGE_HL_ARM)
-            }
-            (yerd_update::Platform::MacOsAarch64, _) => {
-                (yerd_ipc::StagedArtifact::AppTarGz, STAGE_MAC)
-            }
-            (yerd_update::Platform::LinuxX86_64, yerd_update::PkgFormat::Deb) => {
-                (yerd_ipc::StagedArtifact::Deb, STAGE_DEB)
-            }
-            (yerd_update::Platform::LinuxX86_64, yerd_update::PkgFormat::Pacman) => {
-                (yerd_ipc::StagedArtifact::Pacman, STAGE_PKG)
-            }
-            (yerd_update::Platform::LinuxAarch64, yerd_update::PkgFormat::Deb) => {
-                (yerd_ipc::StagedArtifact::Deb, STAGE_ARM)
-            }
-            (yerd_update::Platform::LinuxAarch64, yerd_update::PkgFormat::Pacman) => {
-                (yerd_ipc::StagedArtifact::Pacman, STAGE_PKG_ARM)
-            }
-            (yerd_update::Platform::LinuxX86_64, yerd_update::PkgFormat::Rpm) => {
-                (yerd_ipc::StagedArtifact::Rpm, STAGE_RPM)
-            }
-            (yerd_update::Platform::LinuxAarch64, yerd_update::PkgFormat::Rpm) => {
-                (yerd_ipc::StagedArtifact::Rpm, STAGE_RPM_ARM)
-            }
-            (other, _) => panic!("unexpected platform for fixture: {other:?}"),
+        use yerd_ipc::StagedArtifact;
+        use yerd_update::{PkgFormat, Platform};
+        if headless {
+            return match Platform::current() {
+                Platform::MacOsAarch64 => (StagedArtifact::HeadlessTarGz, STAGE_HL_MAC),
+                Platform::LinuxX86_64 => (StagedArtifact::HeadlessTarGz, STAGE_HL_X86),
+                Platform::LinuxAarch64 => (StagedArtifact::HeadlessTarGz, STAGE_HL_ARM),
+                other @ Platform::Unsupported => {
+                    panic!("unexpected platform for fixture: {other:?}")
+                }
+            };
+        }
+        match (Platform::current(), PkgFormat::current()) {
+            (Platform::MacOsAarch64, _) => (StagedArtifact::AppTarGz, STAGE_MAC),
+            (Platform::LinuxX86_64, PkgFormat::Deb) => (StagedArtifact::Deb, STAGE_DEB),
+            (Platform::LinuxX86_64, PkgFormat::Pacman) => (StagedArtifact::Pacman, STAGE_PKG),
+            (Platform::LinuxAarch64, PkgFormat::Deb) => (StagedArtifact::Deb, STAGE_ARM),
+            (Platform::LinuxAarch64, PkgFormat::Pacman) => (StagedArtifact::Pacman, STAGE_PKG_ARM),
+            (Platform::LinuxX86_64, PkgFormat::Rpm) => (StagedArtifact::Rpm, STAGE_RPM),
+            (Platform::LinuxAarch64, PkgFormat::Rpm) => (StagedArtifact::Rpm, STAGE_RPM_ARM),
+            (other, format) => panic!("unexpected platform for fixture: {other:?} {format:?}"),
         }
     }
 

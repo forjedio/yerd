@@ -41,8 +41,8 @@ sudo ~/.yerd/bin/yerd uninstall
 
 On top of the steps above:
 
-- **macOS:** under `sudo`, the helper also removes the boot-time LaunchDaemon that `yerd daemon install` registered (`system/dev.yerd.daemon`, `/Library/LaunchDaemons/dev.yerd.daemon.plist`). Without root it can't, and launchd would restart a killed daemon, so `yerd uninstall` refuses up front (exit `77`, nothing changed) and tells you to run `sudo <path>/yerd uninstall`.
-- **Linux:** the `yerd` systemd user unit is stopped, disabled and removed like the desktop app's, from `$XDG_CONFIG_HOME/systemd/user` (when set) and `~/.config/systemd/user`. Lingering is left enabled, because other user services may rely on it; the command reminds you, and `sudo loginctl disable-linger <user>` turns it off.
+- **macOS:** under `sudo`, the helper first removes the boot-time LaunchDaemon that `yerd daemon install` registered (`system/dev.yerd.daemon`, `/Library/LaunchDaemons/dev.yerd.daemon.plist`). If that fails, uninstall stops there (exit `1`) without removing anything else, so the helper is still around to retry. Without root it can't remove the job, and launchd would restart a killed daemon, so `yerd uninstall` refuses up front (exit `77`, nothing changed) and tells you to run `sudo <path>/yerd uninstall`.
+- **Linux:** the `yerd` systemd user unit is stopped, disabled and removed like the desktop app's, from wherever systemd loaded it (asked before disabling it, so a custom `$XDG_CONFIG_HOME` is found even under `sudo`), `$XDG_CONFIG_HOME/systemd/user` (when set) and `~/.config/systemd/user`. A unit file that can't be removed is listed in the summary. Lingering is left enabled, because other user services may rely on it; the command reminds you, and `sudo loginctl disable-linger <user>` turns it off.
 - The `yerd-install-receipt` is removed with the binaries, along with any other `yerd-*` file a later update added there, and so is the install directory (`~/.yerd/bin`) once it's empty. Files without the `yerd-` prefix are left alone, so a shared `YERD_INSTALL_DIR` keeps your own files.
 
 ## Run it with `sudo`

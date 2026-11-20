@@ -67,6 +67,25 @@ pub fn rc_relpaths(shell: Shell, _os: HostOs) -> Vec<PathBuf> {
     }
 }
 
+/// Bash's login files, in the order a login shell looks for them. It reads
+/// only the first that exists.
+pub const BASH_LOGIN_FILES: [&str; 3] = [".bash_profile", ".bash_login", ".profile"];
+
+/// The Bash login file to add the block to, given which of
+/// [`BASH_LOGIN_FILES`] exist: the first existing one (the only one Bash
+/// reads), else `.bash_profile`. Creating `.bash_profile` beside an existing
+/// `.profile` would make Bash stop reading `.profile`, dropping whatever it
+/// sets up (on Debian and Ubuntu, sourcing `.bashrc` and adding `~/bin`).
+#[must_use]
+pub fn bash_login_relpath(exists: impl Fn(&str) -> bool) -> PathBuf {
+    let name = BASH_LOGIN_FILES
+        .iter()
+        .copied()
+        .find(|name| exists(name))
+        .unwrap_or(".bash_profile");
+    PathBuf::from(name)
+}
+
 /// Escape a value for a **POSIX** double-quoted string: `\`, `$`, `` ` ``, and
 /// `"` are special inside `"…"`, so backslash-escape them. (Quoting alone only
 /// handles spaces; a data dir containing `$`/`` ` ``/`\` would otherwise expand
@@ -387,6 +406,25 @@ mod tests {
         );
         let fish = rc_relpaths(Shell::Fish, HostOs::Linux);
         assert!(fish[0].ends_with("config.fish"));
+    }
+
+    #[test]
+    fn bash_login_relpath_picks_the_file_bash_reads() {
+        let cases: [(&[&str], &str); 6] = [
+            (&[], ".bash_profile"),
+            (&[".profile"], ".profile"),
+            (&[".bash_login", ".profile"], ".bash_login"),
+            (&[".bash_profile", ".profile"], ".bash_profile"),
+            (&[".bash_profile", ".bash_login"], ".bash_profile"),
+            (&[".bashrc"], ".bash_profile"),
+        ];
+        for (existing, want) in cases {
+            assert_eq!(
+                bash_login_relpath(|name| existing.contains(&name)),
+                PathBuf::from(want),
+                "{existing:?}"
+            );
+        }
     }
 
     #[test]

@@ -226,6 +226,28 @@ fn install_daemon_job_uid_is_validated() {
 }
 
 #[test]
+fn install_daemon_job_rejects_an_unpaired_trailing_argument() {
+    for trailing in ["--rogue", "--uid"] {
+        assert!(
+            matches!(
+                HelperInvocation::from_argv(&os_argv(&[
+                    "install-daemon-job",
+                    "--uid",
+                    "501",
+                    trailing
+                ])),
+                Err(ArgvParseError::Trailing(_))
+            ),
+            "trailing {trailing:?} must be rejected"
+        );
+    }
+    assert!(matches!(
+        HelperInvocation::from_argv(&os_argv(&["install-daemon-job", "--uid", "501"])),
+        Ok(HelperInvocation::InstallDaemonJob { uid: 501 })
+    ));
+}
+
+#[test]
 fn lan_port_redirect_round_trips_through_argv() {
     for inv in [
         HelperInvocation::InstallLanPortRedirect {
