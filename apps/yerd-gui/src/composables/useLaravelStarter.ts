@@ -1,4 +1,4 @@
-import { computed, reactive, ref } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 
 import { useResource } from "@/composables/useResource";
 import type { SiteBasicsForm } from "@/composables/useSiteBasics";
@@ -62,7 +62,9 @@ const LARAVEL_MAX_PHP = "8.5";
 /**
  * The Laravel starter: kit, auth, testing, database, frontend runtime, Node,
  * git and Boost options, plus the `laravel new` command preview and the toolchain
- * gate (PHP 8.3-8.5, Composer, the Laravel installer).
+ * gate (PHP 8.3-8.5, Composer, the Laravel installer). No authentication is only
+ * offered for the official kits (the installer ignores it with `--using`), and it
+ * drops teams and class components, which the blank kits have no variant for.
  */
 export function useLaravelStarter(basics: SiteBasicsForm, ctx: StarterContext) {
   const toast = useToast();
@@ -87,6 +89,11 @@ export function useLaravelStarter(basics: SiteBasicsForm, ctx: StarterContext) {
   );
   const isLivewire = computed(() => kitChoice.value === "livewire");
   const hasAuthKit = computed(() => kitChoice.value !== "none");
+  const offersNoAuth = computed(() => hasAuthKit.value && kitChoice.value !== "community");
+  const noAuth = computed(() => offersNoAuth.value && form.auth === "none");
+  watch(kitChoice, (kit) => {
+    if (kit === "community" && form.auth === "none") form.auth = "laravel";
+  });
   /** Yerd's Node releases, newest first; shares the Node page's cache. */
   const { data: nodeData, refresh: reloadNode } = useResource("node", listNode, {
     immediate: false,
@@ -195,9 +202,9 @@ export function useLaravelStarter(basics: SiteBasicsForm, ctx: StarterContext) {
         : (kitChoice.value as StarterKitTag);
     return {
       starter_kit: kit,
-      auth: hasAuthKit.value ? form.auth : "laravel",
-      livewire_class_components: isLivewire.value && form.livewireClassComponents,
-      teams: hasAuthKit.value && form.teams,
+      auth: noAuth.value || (hasAuthKit.value && form.auth !== "none") ? form.auth : "laravel",
+      livewire_class_components: isLivewire.value && !noAuth.value && form.livewireClassComponents,
+      teams: hasAuthKit.value && !noAuth.value && form.teams,
       testing: form.testing,
       database: form.database,
       js: form.js,
@@ -295,6 +302,8 @@ export function useLaravelStarter(basics: SiteBasicsForm, ctx: StarterContext) {
     isJsKit,
     isLivewire,
     hasAuthKit,
+    offersNoAuth,
+    noAuth,
     showNodePicker,
     nodeOptions,
     autoInstallLabel,

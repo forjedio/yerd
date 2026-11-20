@@ -81,7 +81,8 @@ pub enum Framework {
 pub struct LaravelOptions {
     /// The starter kit (`--react`/`--vue`/`--livewire`/`--svelte`/`--using`, or none).
     pub starter_kit: StarterKit,
-    /// Authentication provider for kits that scaffold auth (`--workos` vs built-in).
+    /// Authentication provider for kits that scaffold auth (`--workos`,
+    /// `--no-authentication`, or built-in).
     pub auth: AuthProvider,
     /// `--livewire-class-components` (Livewire kit only).
     pub livewire_class_components: bool,
@@ -130,6 +131,9 @@ pub enum AuthProvider {
     Laravel,
     /// `WorkOS` `AuthKit` (`--workos`).
     WorkOs,
+    /// No authentication scaffolding (`--no-authentication`): official kits
+    /// install their blank variant.
+    None,
 }
 
 /// Testing framework selection.

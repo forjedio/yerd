@@ -387,6 +387,31 @@ describe("NewSiteDialog options and create", () => {
     });
   });
 
+  it("creates with no authentication and hides the toggles it can't use", async () => {
+    const w = await openDialog();
+    await toOptions(w, "invoicer");
+    const radio = (label: string, text: string) =>
+      w
+        .get(`[aria-label="${label}"]`)
+        .findAll('[role="radio"]')
+        .find((r) => r.text() === text);
+    await w.get('[data-kit="community"]').trigger("click");
+    expect(radio("Authentication provider", "None")).toBeUndefined();
+    await w.get('[data-kit="vue"]').trigger("click");
+    await w.get('[aria-label="Team support"]').trigger("click");
+    await radio("Authentication provider", "None")?.trigger("click");
+    expect(w.find('[aria-label="Team support"]').exists()).toBe(false);
+    expect(w.get('[data-testid="ns-command"]').text()).toContain(
+      "laravel new invoicer --vue --no-authentication --pest",
+    );
+    await click(w, "Create site");
+    expect(spec()?.framework.options).toMatchObject({
+      starter_kit: "vue",
+      auth: "none",
+      teams: false,
+    });
+  });
+
   it("requires a community package before Create", async () => {
     const w = await openDialog();
     await toOptions(w);

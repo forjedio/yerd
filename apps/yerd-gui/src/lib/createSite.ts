@@ -11,9 +11,12 @@ export function laravelCommand(name: string, o: LaravelOptions): string {
   const args = ["laravel", "new", name];
   if (typeof o.starter_kit === "object") args.push(`--using=${o.starter_kit.community}`);
   else if (o.starter_kit !== "none") args.push(`--${o.starter_kit}`);
-  if (o.auth === "work_os") args.push("--workos");
-  if (o.livewire_class_components) args.push("--livewire-class-components");
-  if (o.teams) args.push("--teams");
+  const noAuth =
+    o.auth === "none" && ["react", "vue", "livewire", "svelte"].includes(o.starter_kit as string);
+  if (noAuth) args.push("--no-authentication");
+  else if (o.auth === "work_os") args.push("--workos");
+  if (!noAuth && o.livewire_class_components) args.push("--livewire-class-components");
+  if (!noAuth && o.teams) args.push("--teams");
   args.push(o.testing === "pest" ? "--pest" : "--phpunit");
   args.push(`--database=${o.database}`);
   if (o.js !== "skip") args.push(`--${o.js}`);

@@ -93,7 +93,7 @@ Creating a Laravel site needs a PHP version between 8.3 and 8.5, **Composer**, a
 **Options** for Laravel:
 
 - **Starter kit** - **None** (a plain skeleton, no auth scaffolding), the official **React**, **Vue**, or **Svelte** kits (Inertia + TypeScript), **Livewire** (Blade + PHP), or **Community kit** to scaffold from any `--using <package>`.
-- **Authentication** (with a kit) - **Built-in** or **WorkOS**, plus **Team support**, and **Standalone Livewire class components** for Livewire.
+- **Authentication** (with a kit) - **Built-in**, **WorkOS**, or **None** (official kits only: installs the kit's blank variant with no auth scaffolding, so Team support and class components are hidden), plus **Team support**, and **Standalone Livewire class components** for Livewire.
 - **Testing** - **Pest** or **PHPUnit**.
 - **Database** - SQLite, MySQL, MariaDB, PostgreSQL, or SQL Server.
 - **Frontend dependencies** - how the frontend is installed and built, for every kit (each ships a Vite build): **npm** (the default), **Bun**, **pnpm**, or **Later** to skip it.
