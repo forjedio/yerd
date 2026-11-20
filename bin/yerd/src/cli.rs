@@ -506,6 +506,19 @@ pub enum ProxyAction {
         /// The path prefix, when removing a site's path rule.
         prefix: Option<String>,
     },
+    /// Change a proxy's upstream in place, keeping its domains, wildcards and
+    /// HTTPS setting. Two arguments update a whole-host proxy
+    /// (`yerd proxy edit grafana http://localhost:3001`); three update a site's
+    /// path rule (`yerd proxy edit codestash /live http://127.0.0.1:8082`).
+    Edit {
+        /// A proxy name, which may be dotted (`api.account`), or a site name
+        /// (path rule).
+        first: String,
+        /// The new upstream URL (whole-host), or the path prefix (path rule).
+        second: String,
+        /// The new upstream URL, when the second argument is a path prefix.
+        third: Option<String>,
+    },
     /// List whole-host proxies and per-site path rules.
     List,
 }

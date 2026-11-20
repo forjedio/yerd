@@ -634,6 +634,12 @@ pub struct ProxyRuleEntry {
     pub prefix: String,
     /// The upstream URL (`http[s]://host:port`).
     pub target: String,
+    /// The display name of the per-site service that owns this rule (e.g.
+    /// `Reverb` for its `/app` rule). The service re-points the rule at its own
+    /// port, so the daemon refuses a direct edit. Omitted for an ordinary
+    /// rule so its wire shape stays byte-identical to older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_by: Option<String>,
 }
 
 /// One per-site path-prefix routing rule (reply element of
@@ -1214,6 +1220,7 @@ mod variant_name_pinning {
                 site: "app".into(),
                 prefix: "/app".into(),
                 target: "http://127.0.0.1:8080".into(),
+                managed_by: None,
             }],
         });
         pin_response(Response::Routes {

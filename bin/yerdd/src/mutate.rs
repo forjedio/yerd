@@ -123,6 +123,10 @@ pub fn apply(
         Request::RemoveProxyRule { site, prefix } => {
             apply_remove_proxy_rule(cfg, router, site, prefix)
         }
+        Request::UpdateProxy { name, url } => apply_update_proxy(cfg, name, url),
+        Request::UpdateProxyRule { site, prefix, url } => {
+            apply_update_proxy_rule(cfg, router, site, prefix, url)
+        }
         Request::AddRouteRule {
             site,
             prefix,
@@ -367,6 +371,53 @@ fn reject_loop_target(cfg: &Config, target: &UpstreamTarget) -> Result<(), Mutat
     Ok(())
 }
 
+/// Parse and loop-check a proxy upstream, shared by add and update so both
+/// accept exactly the same targets.
+fn parse_upstream(cfg: &Config, url: &str) -> Result<UpstreamTarget, MutateError> {
+    let target = UpstreamTarget::from_url_str(url)
+        .map_err(|e| MutateError::Invalid(format!("invalid proxy target: {e}")))?;
+    reject_loop_target(cfg, &target)?;
+    Ok(target)
+}
+
+/// The per-site service that owns a path rule, found by
+/// [`managed_rule_service`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ManagedRule<'a> {
+    /// The service type's display name, e.g. `Reverb`.
+    pub service: &'static str,
+    /// The owning instance's wire id, e.g. `reverb:app`.
+    pub wire_id: &'a str,
+}
+
+/// The service instance that owns `site_lc`'s path rule at `prefix`, if any.
+/// A per-site service with a
+/// [`proxy_path`](yerd_services::ServiceDefinition::proxy_path) (Reverb's
+/// `/app`) re-points that rule at its own loopback port whenever it is added,
+/// re-linked, or has its port changed, so a direct edit would be silently
+/// undone. `site_lc` is the lowercased site name (not a parked docroot); the
+/// match against the instance's site is case-insensitive.
+pub(crate) fn managed_rule_service<'a>(
+    cfg: &'a Config,
+    site_lc: &str,
+    prefix: &str,
+) -> Option<ManagedRule<'a>> {
+    let wanted = normalize_prefix(prefix);
+    let registry = crate::services::registry();
+    cfg.services.instances.iter().find_map(|(wire, inst)| {
+        let site = inst.site.as_deref()?;
+        if !site.eq_ignore_ascii_case(site_lc) {
+            return None;
+        }
+        let (type_id, _) = crate::services::parse_wire_id(wire);
+        let def = registry.get(&type_id)?;
+        (def.proxy_path()? == wanted).then(|| ManagedRule {
+            service: def.display_name(),
+            wire_id: wire.as_str(),
+        })
+    })
+}
+
 /// Normalise a rule prefix's trailing slash the same way
 /// [`yerd_core::ProxyRule::new`] does, so removal matches a stored rule.
 fn normalize_prefix(prefix: &str) -> String {
@@ -387,9 +438,7 @@ fn apply_add_proxy(
     name: &str,
     url: &str,
 ) -> Result<Applied, MutateError> {
-    let target = UpstreamTarget::from_url_str(url)
-        .map_err(|e| MutateError::Invalid(format!("invalid proxy target: {e}")))?;
-    reject_loop_target(cfg, &target)?;
+    let target = parse_upstream(cfg, url)?;
     let proxy = ProxySite::new(name, target).map_err(|e| MutateError::Invalid(e.to_string()))?;
     let name_lc = proxy.name().to_owned();
     if router.get(&name_lc).is_some() || cfg.proxies.iter().any(|p| p.name() == name_lc) {
@@ -425,6 +474,20 @@ fn apply_remove_proxy(cfg: &mut Config, name: &str) -> Result<Applied, MutateErr
     })
 }
 
+/// Replace a whole-host proxy's upstream, leaving its name, HTTPS flag and
+/// domain delta untouched.
+fn apply_update_proxy(cfg: &mut Config, name: &str, url: &str) -> Result<Applied, MutateError> {
+    let target = parse_upstream(cfg, url)?;
+    let name_lc = name.to_ascii_lowercase();
+    let Some(proxy) = cfg.proxies.iter_mut().find(|p| p.name() == name_lc) else {
+        return Err(MutateError::NotFound(format!("no proxy named {name_lc}")));
+    };
+    proxy.set_target(target);
+    Ok(Applied {
+        summary: format!("updated proxy {name_lc} -> {url}"),
+    })
+}
+
 /// The per-site storage key, shared by `proxy_rules`, `route_rules` and
 /// `response_headers`:
 /// linked sites key by name, parked sites by document-root (matching
@@ -447,9 +510,7 @@ fn apply_add_proxy_rule(
     url: &str,
 ) -> Result<Applied, MutateError> {
     let name_lc = site.to_ascii_lowercase();
-    let target = UpstreamTarget::from_url_str(url)
-        .map_err(|e| MutateError::Invalid(format!("invalid proxy target: {e}")))?;
-    reject_loop_target(cfg, &target)?;
+    let target = parse_upstream(cfg, url)?;
     let rule = ProxyRule::new(prefix, target)
         .map_err(|e| MutateError::Invalid(format!("invalid rule prefix: {e}")))?;
     let (linked, key) =
@@ -469,6 +530,46 @@ fn apply_add_proxy_rule(
     let summary = format!("added proxy rule {name_lc}{} -> {url}", rule.prefix());
     rules.push(rule);
     Ok(Applied { summary })
+}
+
+/// Replace a site path rule's upstream, leaving its site and prefix untouched.
+fn apply_update_proxy_rule(
+    cfg: &mut Config,
+    router: &SiteRouter,
+    site: &str,
+    prefix: &str,
+    url: &str,
+) -> Result<Applied, MutateError> {
+    let target = parse_upstream(cfg, url)?;
+    let name_lc = site.to_ascii_lowercase();
+    let wanted = normalize_prefix(prefix);
+    let managed = managed_rule_service(cfg, &name_lc, &wanted)
+        .map(|m| (m.service.to_owned(), m.wire_id.to_owned()));
+    let (linked, key) =
+        site_rule_key(router, &name_lc).ok_or_else(|| not_found_site(cfg, &name_lc))?;
+    let map = if linked {
+        &mut cfg.proxy_rules.linked
+    } else {
+        &mut cfg.proxy_rules.parked
+    };
+    let Some(rule) = map
+        .get_mut(&key)
+        .and_then(|rules| rules.iter_mut().find(|r| r.prefix() == wanted))
+    else {
+        return Err(MutateError::NotFound(format!(
+            "site {name_lc} has no proxy rule for {wanted}"
+        )));
+    };
+    if let Some((service, wire_id)) = managed {
+        return Err(MutateError::Invalid(format!(
+            "{name_lc}{wanted} is managed by the {service} service; change the service's port \
+             instead (yerd service set-port {wire_id} <port>)"
+        )));
+    }
+    rule.set_target(target);
+    Ok(Applied {
+        summary: format!("updated proxy rule {name_lc}{wanted} -> {url}"),
+    })
 }
 
 /// Remove a path-prefix proxy rule from a site, pruning the site's entry when
@@ -1295,6 +1396,270 @@ mod tests {
             v(8, 3),
         );
         assert!(matches!(unknown, Err(MutateError::NotFound(_))));
+    }
+
+    fn add_grafana(cfg: &mut Config) {
+        apply(
+            cfg,
+            &empty_router(),
+            &Request::AddProxy {
+                name: "grafana".into(),
+                url: "http://localhost:3000".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+    }
+
+    fn add_rule(cfg: &mut Config, router: &SiteRouter, site: &str, prefix: &str) {
+        apply(
+            cfg,
+            router,
+            &Request::AddProxyRule {
+                site: site.into(),
+                prefix: prefix.into(),
+                url: "http://127.0.0.1:3000".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+    }
+
+    fn update_rule(
+        cfg: &mut Config,
+        router: &SiteRouter,
+        site: &str,
+        prefix: &str,
+        url: &str,
+    ) -> Result<Applied, MutateError> {
+        apply(
+            cfg,
+            router,
+            &Request::UpdateProxyRule {
+                site: site.into(),
+                prefix: prefix.into(),
+                url: url.into(),
+            },
+            None,
+            v(8, 3),
+        )
+    }
+
+    #[test]
+    fn update_proxy_replaces_target_keeping_secure_and_domains() {
+        let mut cfg = Config::default();
+        add_grafana(&mut cfg);
+        cfg.proxies[0].set_secure(true);
+        cfg.domains.proxy.insert(
+            "grafana".into(),
+            DomainDelta {
+                added: vec![
+                    Domain::parse_subpart("custom").unwrap(),
+                    Domain::parse_subpart("*.grafana").unwrap(),
+                ],
+                ..DomainDelta::default()
+            },
+        );
+        let domains_before = cfg.domains.proxy.clone();
+
+        apply(
+            &mut cfg,
+            &empty_router(),
+            &Request::UpdateProxy {
+                name: "Grafana".into(),
+                url: "http://localhost:3001".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+
+        assert_eq!(cfg.proxies.len(), 1);
+        assert_eq!(
+            cfg.proxies[0].target(),
+            &UpstreamTarget::from_url_str("http://localhost:3001").unwrap()
+        );
+        assert_eq!(cfg.proxies[0].name(), "grafana");
+        assert!(cfg.proxies[0].secure());
+        assert_eq!(cfg.domains.proxy, domains_before);
+    }
+
+    #[test]
+    fn update_proxy_reports_not_found() {
+        let mut cfg = Config::default();
+        add_grafana(&mut cfg);
+        let before = cfg.clone();
+        let res = apply(
+            &mut cfg,
+            &empty_router(),
+            &Request::UpdateProxy {
+                name: "nope".into(),
+                url: "http://localhost:3001".into(),
+            },
+            None,
+            v(8, 3),
+        );
+        assert!(matches!(res, Err(MutateError::NotFound(_))));
+        assert_eq!(cfg, before);
+    }
+
+    #[test]
+    fn update_proxy_invalid_targets_leave_proxy_unchanged() {
+        for url in ["ftp://x", "not a url", "http://foo.test"] {
+            let mut cfg = Config::default();
+            add_grafana(&mut cfg);
+            let before = cfg.clone();
+            let res = apply(
+                &mut cfg,
+                &empty_router(),
+                &Request::UpdateProxy {
+                    name: "grafana".into(),
+                    url: url.into(),
+                },
+                None,
+                v(8, 3),
+            );
+            assert!(matches!(res, Err(MutateError::Invalid(_))), "url {url:?}");
+            assert_eq!(cfg, before, "url {url:?}");
+        }
+    }
+
+    #[test]
+    fn update_parked_and_linked_proxy_rule_keeps_site_and_prefix() {
+        let new_target = UpstreamTarget::from_url_str("http://127.0.0.1:8082").unwrap();
+
+        let mut cfg = Config::default();
+        let parked = router_with_parked("blog", "/srv/blog");
+        add_rule(&mut cfg, &parked, "blog", "/ws");
+        update_rule(&mut cfg, &parked, "Blog", "/ws/", "http://127.0.0.1:8082").unwrap();
+        let rules = cfg.proxy_rules.parked.get("/srv/blog").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].prefix(), "/ws");
+        assert_eq!(rules[0].target(), &new_target);
+        assert!(cfg.proxy_rules.linked.is_empty());
+
+        let mut cfg = Config::default();
+        let mut linked = empty_router();
+        linked
+            .insert(Site::linked("app", "/srv/app", v(8, 3)).unwrap())
+            .unwrap();
+        add_rule(&mut cfg, &linked, "app", "/live");
+        update_rule(&mut cfg, &linked, "app", "/live", "http://127.0.0.1:8082").unwrap();
+        let rules = cfg.proxy_rules.linked.get("app").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].prefix(), "/live");
+        assert_eq!(rules[0].target(), &new_target);
+        assert!(cfg.proxy_rules.parked.is_empty());
+    }
+
+    #[test]
+    fn update_proxy_rule_reports_not_found() {
+        let mut router = router_with_parked("blog", "/srv/blog");
+        router
+            .insert(Site::parked("empty", "/srv/empty", v(8, 3)).unwrap())
+            .unwrap();
+        let mut cfg = Config::default();
+        add_rule(&mut cfg, &router, "blog", "/ws");
+        let cases = [("nope", "/ws"), ("empty", "/ws"), ("blog", "/other")];
+        for (site, prefix) in cases {
+            let before = cfg.clone();
+            let res = update_rule(&mut cfg, &router, site, prefix, "http://127.0.0.1:8082");
+            assert!(
+                matches!(res, Err(MutateError::NotFound(_))),
+                "case {site} {prefix}: {res:?}"
+            );
+            assert_eq!(cfg, before, "case {site} {prefix}");
+        }
+    }
+
+    fn with_reverb(cfg: &mut Config, site: &str) {
+        cfg.services.instances.insert(
+            format!("reverb:{site}"),
+            yerd_config::ServiceInstance {
+                port: Some(8080),
+                site: Some(site.into()),
+                enabled: false,
+                ..yerd_config::ServiceInstance::default()
+            },
+        );
+    }
+
+    #[test]
+    fn update_proxy_rule_refuses_a_service_managed_rule() {
+        let mut router = router_with_parked("blog", "/srv/blog");
+        router
+            .insert(Site::linked("app", "/srv/app", v(8, 3)).unwrap())
+            .unwrap();
+        let cases = [
+            ("app", "app", "/app", true),
+            ("app", "App", "/app/", true),
+            ("blog", "blog", "/app", true),
+            ("app", "app", "/live", false),
+            ("other", "app", "/app", false),
+            ("", "app", "/app", false),
+        ];
+        for (reverb_site, site, prefix, refused) in cases {
+            let mut cfg = Config::default();
+            if !reverb_site.is_empty() {
+                with_reverb(&mut cfg, reverb_site);
+            }
+            let rule_site = site.to_ascii_lowercase();
+            add_rule(&mut cfg, &router, &rule_site, prefix);
+            let before = cfg.clone();
+            let res = update_rule(&mut cfg, &router, site, prefix, "http://127.0.0.1:8082");
+            let case = format!("reverb on {reverb_site:?}, edit {site}{prefix}");
+            if refused {
+                let Err(MutateError::Invalid(msg)) = res else {
+                    panic!("{case}: expected Invalid, got {res:?}");
+                };
+                assert!(
+                    msg.contains("managed by the Reverb service"),
+                    "{case}: {msg}"
+                );
+                assert!(
+                    msg.contains("yerd service set-port reverb:"),
+                    "{case}: {msg}"
+                );
+                assert_eq!(cfg, before, "{case}");
+            } else {
+                assert!(res.is_ok(), "{case}: {res:?}");
+                assert_ne!(cfg, before, "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn update_proxy_rule_reports_missing_managed_rule_as_not_found() {
+        let router = router_with_parked("blog", "/srv/blog");
+        let mut cfg = Config::default();
+        with_reverb(&mut cfg, "blog");
+        let res = update_rule(&mut cfg, &router, "blog", "/app", "http://127.0.0.1:8082");
+        assert!(matches!(res, Err(MutateError::NotFound(_))), "{res:?}");
+    }
+
+    #[test]
+    fn managed_rule_service_matches_site_and_prefix() {
+        let mut cfg = Config::default();
+        with_reverb(&mut cfg, "Blog");
+        let found = ManagedRule {
+            service: "Reverb",
+            wire_id: "reverb:Blog",
+        };
+        let cases = [
+            ("blog", "/app", Some(found)),
+            ("blog", "/app/", Some(found)),
+            ("blog", "/ws", None),
+            ("shop", "/app", None),
+        ];
+        for (site, prefix, want) in cases {
+            assert_eq!(
+                managed_rule_service(&cfg, site, prefix),
+                want,
+                "{site}{prefix}"
+            );
+        }
     }
 
     #[test]

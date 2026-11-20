@@ -12,7 +12,8 @@ without Yerd running the service itself. Two shapes:
   (`wss://myapp.test/app`), so cookies and CORS just work.
 
 `yerd proxy add`'s two forms are distinguished by argument count: two arguments
-create a whole-host proxy, three attach a path rule to a site.
+create a whole-host proxy, three attach a path rule to a site. `yerd proxy edit`
+follows the same convention to change an existing proxy's upstream.
 
 ::: tip Looking for a path that maps to a *file* instead?
 A proxy path rule forwards to a separate running service. To send unmatched URIs
@@ -25,6 +26,8 @@ site has both on the same prefix, the proxy rule wins.
 | --- | --- | --- |
 | `yerd proxy add <NAME> <URL>` | Create a whole-host proxy (`<NAME>.test` → `<URL>`). | `yerd proxy add reverb http://localhost:8080` |
 | `yerd proxy add <SITE> <PREFIX> <URL>` | Add a path rule: requests under `<PREFIX>` on `<SITE>.test` proxy to `<URL>`. | `yerd proxy add myapp /app http://127.0.0.1:8080` |
+| `yerd proxy edit <NAME> <URL>` | Change a whole-host proxy's upstream; its domains, wildcards and HTTPS are kept. | `yerd proxy edit reverb http://localhost:8081` |
+| `yerd proxy edit <SITE> <PREFIX> <URL>` | Change a path rule's upstream. | `yerd proxy edit myapp /app http://127.0.0.1:8081` |
 | `yerd proxy remove <NAME>` | Remove a whole-host proxy. | `yerd proxy remove reverb` |
 | `yerd proxy remove <SITE> <PREFIX>` | Remove a path rule from a site. | `yerd proxy remove myapp /app` |
 | `yerd proxy list` | List every whole-host proxy and per-site path rule. | `yerd proxy list` |
@@ -42,6 +45,9 @@ curl https://reverb.test/
 yerd proxy add myapp /app http://127.0.0.1:8080
 # https://myapp.test/        → PHP (Laravel)
 # https://myapp.test/app     → Reverb (websockets included)
+
+# Point the path rule at a different port, keeping everything else
+yerd proxy edit myapp /app http://127.0.0.1:8081
 
 # List, then remove
 yerd proxy list
@@ -120,6 +126,12 @@ begins with `/`, before connecting - a malformed value fails with a usage error
 a `.test` host, or a loopback host on one of Yerd's own bound proxy ports. A
 proxy name that collides with an existing site or proxy is rejected as
 "already exists".
+
+`proxy edit` validates exactly as `add`. An unknown proxy or path rule is
+reported as not found, and a rejected edit leaves the existing upstream in
+place. Rules a service manages (such as Reverb's `/app`) follow the service's
+port and can't be edited directly; use `yerd service set-port <service> <port>`
+instead. `proxy list` marks them `(managed by <service>)`.
 :::
 
 ## See also

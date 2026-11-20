@@ -628,9 +628,10 @@ fn domain_request(action: &crate::cli::DomainAction) -> Result<Request, ClientEr
     })
 }
 
-/// Map a `yerd proxy <action>` to its wire request. Arity distinguishes a
-/// whole-host proxy from a path rule (see [`crate::cli::ProxyAction`]). The
-/// upstream URL is validated by the daemon (authoritative); the client only
+/// Map a `yerd proxy <action>` (add, edit, remove, list) to its wire request.
+/// Arity distinguishes a whole-host proxy from a path rule (see
+/// [`crate::cli::ProxyAction`]). The upstream URL is validated by the daemon
+/// (authoritative); the client only
 /// checks the name and, for a rule, that the prefix is absolute. A whole-host
 /// proxy name may be dotted, a path rule's site name may not, so each arm
 /// validates its own name rather than sharing one up-front check.
@@ -654,6 +655,31 @@ fn proxy_request(action: &crate::cli::ProxyAction) -> Result<Request, ClientErro
             } else {
                 validate_target_name(first)?;
                 Request::AddProxy {
+                    name: first.clone(),
+                    url: second.clone(),
+                }
+            }
+        }
+        ProxyAction::Edit {
+            first,
+            second,
+            third,
+        } => {
+            if let Some(url) = third {
+                validate_name(first)?;
+                validate_prefix(second)?;
+                Request::UpdateProxyRule {
+                    site: first.clone(),
+                    prefix: second.clone(),
+                    url: url.clone(),
+                }
+            } else if second.starts_with('/') {
+                return Err(ClientError::Usage(format!(
+                    "missing upstream URL for rule {first}{second}: usage is yerd proxy edit <site> <prefix> <url>"
+                )));
+            } else {
+                validate_target_name(first)?;
+                Request::UpdateProxy {
                     name: first.clone(),
                     url: second.clone(),
                 }
@@ -1456,7 +1482,8 @@ fn select_routes<'a>(
 /// Render `yerd proxy list`: whole-host proxies then per-site path rules. A
 /// proxy the daemon reports as customized gains an indented `domains:` line,
 /// mirroring `yerd domain list`; an effectively-default proxy carries no domain
-/// fields and renders as a single line.
+/// fields and renders as a single line. A service-managed path rule is suffixed
+/// `(managed by <service>)`.
 fn format_proxies(proxies: &[yerd_ipc::ProxyEntry], rules: &[yerd_ipc::ProxyRuleEntry]) -> String {
     use std::fmt::Write as _;
     if proxies.is_empty() && rules.is_empty() {
@@ -1479,7 +1506,11 @@ fn format_proxies(proxies: &[yerd_ipc::ProxyEntry], rules: &[yerd_ipc::ProxyRule
         }
         out.push_str("Path rules:\n");
         for r in rules {
-            let _ = writeln!(out, "  {} {} -> {}", r.site, r.prefix, r.target);
+            let _ = write!(out, "  {} {} -> {}", r.site, r.prefix, r.target);
+            if let Some(service) = &r.managed_by {
+                let _ = write!(out, " (managed by {service})");
+            }
+            out.push('\n');
         }
     }
     out.trim_end().to_owned()
@@ -3995,6 +4026,19 @@ mod tests {
             },
         })
         .is_err());
+        let err = to_request(&Command::Proxy {
+            action: ProxyAction::Edit {
+                first: "codestash".into(),
+                second: "/live".into(),
+                third: None,
+            },
+        })
+        .unwrap_err();
+        assert!(matches!(err, ClientError::Usage(_)), "got: {err:?}");
+        assert_eq!(
+            err.to_string(),
+            "missing upstream URL for rule codestash/live: usage is yerd proxy edit <site> <prefix> <url>"
+        );
     }
 
     #[test]
@@ -4539,6 +4583,35 @@ mod tests {
         );
         assert_eq!(
             to_request(&Command::Proxy {
+                action: ProxyAction::Edit {
+                    first: "grafana".into(),
+                    second: "http://localhost:3001".into(),
+                    third: None,
+                },
+            })
+            .unwrap(),
+            Request::UpdateProxy {
+                name: "grafana".into(),
+                url: "http://localhost:3001".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Proxy {
+                action: ProxyAction::Edit {
+                    first: "codestash".into(),
+                    second: "/live".into(),
+                    third: Some("http://127.0.0.1:8082".into()),
+                },
+            })
+            .unwrap(),
+            Request::UpdateProxyRule {
+                site: "codestash".into(),
+                prefix: "/live".into(),
+                url: "http://127.0.0.1:8082".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Proxy {
                 action: ProxyAction::List,
             })
             .unwrap(),
@@ -4604,6 +4677,21 @@ mod tests {
             format_proxies(std::slice::from_ref(&apex_primary), &[]),
             "Whole-host proxies:\n  account-dev (http) -> http://127.0.0.1:48087\n    \
              domains: account-dev.test, custom-domain.test"
+        );
+    }
+
+    #[test]
+    fn format_proxies_marks_service_managed_rules() {
+        let rule = |prefix: &str, managed_by: Option<&str>| yerd_ipc::ProxyRuleEntry {
+            site: "app".into(),
+            prefix: prefix.into(),
+            target: "http://127.0.0.1:8080".into(),
+            managed_by: managed_by.map(Into::into),
+        };
+        assert_eq!(
+            format_proxies(&[], &[rule("/app", Some("Reverb")), rule("/live", None)]),
+            "Path rules:\n  app /app -> http://127.0.0.1:8080 (managed by Reverb)\n  \
+             app /live -> http://127.0.0.1:8080"
         );
     }
 

@@ -35,7 +35,9 @@ yerd secure reverb
 # https://reverb.test/  (trusted cert, HTTP redirects to HTTPS)
 ```
 
-Remove it with `yerd proxy remove reverb`.
+Point it somewhere else with `yerd proxy edit reverb http://localhost:8081`.
+Its extra domains, wildcards and HTTPS setting stay as they are. Remove it with
+`yerd proxy remove reverb`.
 
 ### Names and extra domains
 
@@ -86,11 +88,17 @@ too - your JS client connects to `wss://myapp.test/app` on the same origin. The
 full path is passed through to the upstream unchanged (`/app/...` reaches
 Reverb as `/app/...`), which is what Reverb expects.
 
-Remove a rule with `yerd proxy remove myapp /app`.
+Point a rule at a different upstream with
+`yerd proxy edit myapp /app http://127.0.0.1:8081`; the site and path stay as
+they are. Rules a service manages (such as the `/app` rule a site's Reverb
+service adds) follow the service's port and can't be edited directly: change it
+with `yerd service set-port reverb:myapp <port>` instead. Remove a rule with
+`yerd proxy remove myapp /app`.
 
 In the desktop app, **New proxy** on the Proxies page adds either shape: pick
 **A whole domain** or **A path on a site**, then the name or the site and path,
-and the upstream.
+and the upstream. To change an existing proxy's or path's upstream, use the
+**Edit** button on its "Forward to" row in the inspector.
 
 <ThemedImage light="/images/proxies-new-light.png" dark="/images/proxies-new-dark.png" alt="The New proxy dialog in A path on a site mode, forwarding invoicing.test/app to 127.0.0.1:8081" />
 

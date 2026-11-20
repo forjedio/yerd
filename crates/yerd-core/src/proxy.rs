@@ -240,6 +240,11 @@ impl ProxyRule {
         &self.target
     }
 
+    /// Replaces the upstream, keeping every other field.
+    pub fn set_target(&mut self, target: UpstreamTarget) {
+        self.target = target;
+    }
+
     /// Whether this rule matches `path`. Boundary-correct: `/app` matches `/app`
     /// and `/app/x` but not `/apple`. Root (`/`) is a catch-all.
     #[must_use]
@@ -332,6 +337,11 @@ impl ProxySite {
     /// Toggles the HTTPS flag.
     pub fn set_secure(&mut self, secure: bool) {
         self.secure = secure;
+    }
+
+    /// Replaces the upstream, keeping every other field.
+    pub fn set_target(&mut self, target: UpstreamTarget) {
+        self.target = target;
     }
 }
 
@@ -573,5 +583,23 @@ mod tests {
         let mut p = ProxySite::new("reverb", target("http://localhost:8080")).unwrap();
         p.set_secure(true);
         assert!(p.secure());
+    }
+
+    #[test]
+    fn proxy_site_set_target_keeps_name_and_secure() {
+        let mut p = ProxySite::new("reverb", target("http://localhost:8080")).unwrap();
+        p.set_secure(true);
+        p.set_target(target("http://127.0.0.1:3001"));
+        assert_eq!(p.target(), &target("http://127.0.0.1:3001"));
+        assert_eq!(p.name(), "reverb");
+        assert!(p.secure());
+    }
+
+    #[test]
+    fn proxy_rule_set_target_keeps_prefix() {
+        let mut r = ProxyRule::new("/app/", target("http://localhost:8080")).unwrap();
+        r.set_target(target("http://127.0.0.1:3001"));
+        assert_eq!(r.prefix(), "/app");
+        assert_eq!(r.target(), &target("http://127.0.0.1:3001"));
     }
 }

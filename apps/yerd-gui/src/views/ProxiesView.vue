@@ -2,6 +2,7 @@
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import { Plus, Trash2 } from "lucide-vue-next";
 
+import EditUpstreamDialog from "@/components/proxies/EditUpstreamDialog.vue";
 import NewProxyDialog, {
   type AddPathRequest,
   type AddProxyRequest,
@@ -30,6 +31,8 @@ import {
   removeProxyRule,
   setSecure,
   sitesAndParked,
+  updateProxy,
+  updateProxyRule,
 } from "@/ipc/client";
 import type { ProxyEntry, ProxyRuleEntry, SiteEntry } from "@/ipc/types";
 import {
@@ -201,6 +204,66 @@ async function confirmAddRule({ site, prefix, url }: AddPathRequest): Promise<vo
   }
 }
 
+// ── edit upstream ──
+// Like remove, the dialog's target is captured at open time and never cleared,
+// so a save always updates the item whose Edit was clicked.
+const editOpen = ref(false);
+const editTarget = ref<ProxyItem | null>(null);
+
+function openEdit(item: ProxyItem): void {
+  editTarget.value = item;
+  void nextTick(() => {
+    editOpen.value = true;
+  });
+}
+
+const editHost = computed(() => {
+  const t = editTarget.value;
+  if (!t) return "";
+  return t.kind === "proxy" ? proxyHost(t.proxy, tld.value) : `${t.rule.site}.${tld.value}${t.rule.prefix}`;
+});
+
+const editCurrent = computed(() => {
+  const t = editTarget.value;
+  if (!t) return "";
+  return t.kind === "proxy" ? t.proxy.target : t.rule.target;
+});
+
+async function confirmEditProxy(p: ProxyEntry, url: string): Promise<void> {
+  const key = proxyKey(p.name);
+  setBusy(key, true);
+  try {
+    await updateProxy(p.name, url);
+    toast.success(`Updated ${proxyHost(p, tld.value)}`, `Forwarding to ${upstreamLabel(url)}`);
+    await load({ force: true });
+  } catch (e) {
+    toast.error("Couldn't update proxy", (e as IpcError).message);
+  } finally {
+    setBusy(key, false);
+  }
+}
+
+async function confirmEditRule(r: ProxyRuleEntry, url: string): Promise<void> {
+  const key = ruleKey(r.site, r.prefix);
+  setBusy(key, true);
+  try {
+    await updateProxyRule(r.site, r.prefix, url);
+    toast.success(`Updated ${r.site}.${tld.value}${r.prefix}`, `Forwarding to ${upstreamLabel(url)}`);
+    await load({ force: true });
+  } catch (e) {
+    toast.error("Couldn't update path", (e as IpcError).message);
+  } finally {
+    setBusy(key, false);
+  }
+}
+
+function confirmEdit(url: string): void {
+  const t = editTarget.value;
+  if (!t) return;
+  if (t.kind === "proxy") void confirmEditProxy(t.proxy, url);
+  else void confirmEditRule(t.rule, url);
+}
+
 function onDomainsChanged(): void {
   void load({ force: true });
 }
@@ -328,6 +391,7 @@ const inspectorProps = computed(() => ({
               v-bind="inspectorProps"
               @toggle-secure="toggleSecure"
               @remove="openRemove"
+              @edit="openEdit"
               @domains-changed="onDomainsChanged"
             />
             <p v-else class="flex h-full items-center justify-center text-[13px] text-faint">
@@ -346,6 +410,7 @@ const inspectorProps = computed(() => ({
       @close="drawerOpen = false"
       @toggle-secure="toggleSecure"
       @remove="openRemove"
+      @edit="openEdit"
       @domains-changed="onDomainsChanged"
     />
 
@@ -357,6 +422,13 @@ const inspectorProps = computed(() => ({
       :trusted="report?.ca.trusted_system ?? null"
       @add-proxy="confirmAddProxy"
       @add-path="confirmAddRule"
+    />
+
+    <EditUpstreamDialog
+      v-model:open="editOpen"
+      :host="editHost"
+      :current="editCurrent"
+      @save="confirmEdit"
     />
 
     <ConfirmDialog
