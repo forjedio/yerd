@@ -8,15 +8,15 @@ on:
   workflow_dispatch:
     inputs:
       macos:
-        description: "macOS (Apple Silicon) — .dmg / .app.tar.gz"
+        description: "macOS (Apple Silicon) — .dmg / .app.tar.gz + headless .tar.gz"
         type: boolean
         default: true
       linux_x64:
-        description: "Linux x86_64 — .deb"
+        description: "Linux x86_64 — .deb + headless .tar.gz"
         type: boolean
         default: false
       linux_arm64:
-        description: "Linux arm64 — .deb"
+        description: "Linux arm64 — .deb + headless .tar.gz"
         type: boolean
         default: false
       arch:
