@@ -10,7 +10,7 @@ import {
   Scale,
   Stethoscope,
 } from "lucide-vue-next";
-import { onMounted, ref, type Component } from "vue";
+import { onMounted, ref, watch, type Component } from "vue";
 
 import logoUrl from "@/assets/logo.svg";
 import mdbinMarkUrl from "@/assets/mdbin-mark.svg";
@@ -67,23 +67,32 @@ const LINKS: { label: string; url: string; icon: Component | string }[] = [
 ];
 
 /**
- * Loads the versions. Outside Tauri (tests) the app version stays blank; a down
- * daemon degrades quietly (its fields read "unknown" / "-"), so only an
- * unexpected error toasts.
+ * Loads the versions, each on its own: the IPC protocol is the app's own
+ * constant and must not blank because the daemon is down. Outside Tauri
+ * (tests) the app version stays blank; a down daemon degrades quietly (its
+ * field reads "unknown"), so only an unexpected error toasts.
  */
 async function loadVersions(): Promise<void> {
-  appVersion.value = await getVersion().catch(() => "");
-  try {
-    const [p, report] = await Promise.all([protocolVersion(), status()]);
-    protocol.value = p;
-    daemonVersion.value = report.daemon_version;
-  } catch (e) {
-    const err = e as IpcError;
+  const [app, p, report] = await Promise.allSettled([getVersion(), protocolVersion(), status()]);
+  appVersion.value = app.status === "fulfilled" ? app.value : "";
+  if (p.status === "fulfilled") protocol.value = p.value;
+  if (report.status === "fulfilled") {
+    daemonVersion.value = report.value.daemon_version;
+  } else {
+    const err = report.reason as IpcError;
     if (!err.unreachable) toast.error("Couldn't load daemon info", err.message);
   }
 }
 
 onMounted(() => {
+  void loadVersions();
+  void loadCached();
+});
+
+/** A daemon that was down at mount fills in its version and the cached update
+ *  result once it answers. */
+watch(running, (up) => {
+  if (!up) return;
   void loadVersions();
   void loadCached();
 });

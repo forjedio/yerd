@@ -198,6 +198,16 @@ export function mergePage(held: DumpEvent[], page: DumpsResponse): DumpEvent[] {
   return kept.length === held.length ? held : kept;
 }
 
+/**
+ * Whether a page shows the daemon restarted since the last one: event ids
+ * restart at 1 with a fresh daemon, so its `latest_id` falls below the cursor.
+ * The held events then belong to the old process and must be dropped and the
+ * stream re-read from the start.
+ */
+export function streamRestarted(cursor: number, page: DumpsResponse): boolean {
+  return page.latest_id < cursor;
+}
+
 /** The `request` event of a request, parsed. It arrives when the request ends. */
 export interface RequestSummary {
   method: string;
@@ -301,16 +311,33 @@ export function matchesQuery(e: DumpEvent, q: string): boolean {
   return hay.toLowerCase().includes(needle);
 }
 
+/** Whether a non-empty filter matches the request itself: its method, path,
+ *  status or site. An empty filter never does, so it can't widen the list. */
+export function summaryMatches(req: DumpRequest, q: string): boolean {
+  const needle = q.trim().toLowerCase();
+  if (needle === "" || !req.summary) return false;
+  const { method, uri, status } = req.summary;
+  return `${method} ${uri} ${status ?? ""} ${req.site}`.toLowerCase().includes(needle);
+}
+
 /**
- * The requests with at least one card the detail would show for this filter:
- * a card of the chip's category (any category for `all`) that matches the
- * filter text. The request summary is not a card, so it never matches alone.
+ * The cards the detail shows for this filter: those of the chip's category
+ * (any for `all`) that match the filter text, or every card of the category
+ * when the text matches the request itself (see {@link summaryMatches}).
+ */
+export function shownCards(req: DumpRequest, q: string, category: ChipKey): DumpEvent[] {
+  const inCategory = requestCards(req).filter((e) => category === "all" || e.category === category);
+  return summaryMatches(req, q) ? inCategory : inCategory.filter((e) => matchesQuery(e, q));
+}
+
+/**
+ * The requests the list keeps for this filter: those with a card the detail
+ * would show (see {@link shownCards}), plus, on the `all` chip, a request whose
+ * method, path or status matches the text even when it has no cards.
  */
 export function filterRequests(requests: readonly DumpRequest[], q: string, category: ChipKey): DumpRequest[] {
-  return requests.filter((r) =>
-    requestCards(r).some(
-      (e) => (category === "all" || e.category === category) && matchesQuery(e, q),
-    ),
+  return requests.filter(
+    (r) => shownCards(r, q, category).length > 0 || (category === "all" && summaryMatches(r, q)),
   );
 }
 
@@ -375,20 +402,22 @@ export function pillLabel(state: CaptureState, port: number, compact: boolean): 
 }
 
 /**
- * The request to select under the follow-newest rule, given the newest key
- * before this update. Nothing selected, or a selection that is gone, picks the
- * newest; while the newest was selected, a newer arrival takes over; an older
- * pick stays put.
+ * The request to select under the follow-newest rule, given the newest shown
+ * key before this update. `shown` is the list the user sees (the filter's
+ * result) and `all` every held request. Nothing selected, or a selection that
+ * is gone from `all`, picks the newest shown; while the newest shown was
+ * selected, a newer shown arrival takes over, so a request the filter hides
+ * never steals the selection; an older pick stays put.
  */
 export function nextSelection(
   prevFirst: string | null,
   selected: string | null,
-  requests: readonly DumpRequest[],
+  shown: readonly DumpRequest[],
+  all: readonly DumpRequest[] = shown,
 ): string | null {
-  const first = requests[0]?.key ?? null;
-  if (first === null) return null;
-  if (selected === null || !requests.some((r) => r.key === selected)) return first;
-  if (selected === prevFirst) return first;
+  const first = shown[0]?.key ?? null;
+  if (selected === null || !all.some((r) => r.key === selected)) return first;
+  if (selected === prevFirst && first !== null) return first;
   return selected;
 }
 

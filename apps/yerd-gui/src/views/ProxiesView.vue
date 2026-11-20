@@ -75,7 +75,7 @@ const tld = computed(() => report.value?.tld ?? "test");
 const hasSecureProxy = computed(() => proxies.value.some((p) => p.secure));
 
 const caWarning = computed<SiteWarning | null>(() => {
-  if (!report.value || !hasSecureProxy.value || report.value.ca.trusted_system === true) return null;
+  if (!report.value || !hasSecureProxy.value || report.value.ca.trusted_system !== false) return null;
   const text = "Browsers will warn on HTTPS proxies until you trust Yerd's local certificate authority.";
   return { key: "ca", text, compactText: text, action: "Trust now" };
 });
@@ -206,6 +206,9 @@ function onDomainsChanged(): void {
 }
 
 // ── remove proxy / path ──
+// The confirm hands its target to the remove call when clicked, and the
+// target is never cleared afterwards, so a second confirm opened while the
+// first removal runs keeps its own target.
 const removeOpen = ref(false);
 const removeTarget = ref<ProxyItem | null>(null);
 
@@ -244,7 +247,6 @@ async function confirmRemoveProxy(p: ProxyEntry): Promise<void> {
     toast.error("Couldn't remove proxy", (e as IpcError).message);
   } finally {
     setBusy(key, false);
-    removeTarget.value = null;
   }
 }
 
@@ -259,7 +261,6 @@ async function confirmRemoveRule(r: ProxyRuleEntry): Promise<void> {
     toast.error("Couldn't remove path", (e as IpcError).message);
   } finally {
     setBusy(key, false);
-    removeTarget.value = null;
   }
 }
 

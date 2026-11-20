@@ -153,8 +153,12 @@ browser / handler).
 The HTML body is sanitized with **DOMPurify** and rendered in a **Shadow DOM**
 in the reader (so link clicks work reliably on macOS WKWebView). Openable
 `http(s)` / `mailto` / `tel` links are stamped and opened via the OS browser /
-handler. Inline images referenced by `cid:` are embedded as `data:` URLs.
-Remote images and stylesheets (e.g. a logo served over `https://`) are **blocked
+handler; in-page `#section` links scroll the message, and any other link does
+nothing, so a message can never navigate the app. The message is contained in
+its pane: its styles can't position anything over the rest of the window.
+Inline images referenced by `cid:` are embedded as `data:` URLs.
+Remote images, stylesheets, CSS backgrounds (including `image-set()`) and
+table `background` attributes (e.g. a logo served over `https://`) are **blocked
 by default** so merely opening a message cannot phone home. Local ones always
 load: anything on your Yerd TLD (a logo at `https://shop.test/logo.png`),
 `localhost` or a loopback address is served by your own machine. A bar beside the
@@ -162,7 +166,8 @@ tabs says what was blocked (for example "1 remote image blocked"); use **Load**
 when you want it, and **Hide** to block it again. The **Headers** tab lists those
 URLs under **Remote content**. Non-inline attachments appear in a band under the
 message header and open with the OS default app; **Delete** removes the open
-message after a confirmation.
+message after a confirmation. A message whose body can't be read (for example a
+missing `.eml` file) still offers **Delete** in the reader.
 
 ## Configuration
 

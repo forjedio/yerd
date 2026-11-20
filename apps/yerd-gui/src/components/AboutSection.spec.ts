@@ -20,6 +20,16 @@ vi.mock("@/ipc/client", () => ({
 
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: vi.fn(async () => "2.1.0") }));
 
+const navigateHandlers = vi.hoisted(() => [] as ((event: { payload: string }) => void)[]);
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (_name: string, handler: (event: { payload: string }) => void) => {
+    navigateHandlers.push(handler);
+    return () => {
+      navigateHandlers.splice(navigateHandlers.indexOf(handler), 1);
+    };
+  }),
+}));
+
 vi.mock("@/composables/useDaemon", async () => {
   const { ref } = await import("vue");
   const state = { connected: ref<boolean | null>(true) };
@@ -28,7 +38,9 @@ vi.mock("@/composables/useDaemon", async () => {
 
 import * as daemonModule from "@/composables/useDaemon";
 
-import { type UpdateCheck, useUpdateCheck } from "@/composables/useUpdateCheck";
+import { defineComponent, h } from "vue";
+
+import { type UpdateCheck, useAboutRequests, useUpdateCheck } from "@/composables/useUpdateCheck";
 
 import AboutSection from "./AboutSection.vue";
 
@@ -192,5 +204,45 @@ describe("AboutSection", () => {
     await button(w, "Diagnostics")?.trigger("click");
     expect(w.emitted("logs")).toHaveLength(1);
     expect(w.emitted("diagnostics")).toHaveLength(1);
+  });
+
+  it("keeps the IPC protocol when the daemon is down and fills the daemon in once it answers", async () => {
+    daemon.connected.value = false;
+    mocks.status.mockRejectedValue(Object.assign(new Error("down"), { unreachable: true }));
+    mocks.cachedUpdateStatus.mockRejectedValue(new Error("down"));
+    const w = await mountAbout("column");
+    expect(w.find('[data-testid="about-protocol"]').text()).toBe("1");
+    expect(w.find('[data-testid="about-daemon-version"]').text()).toBe("unknown");
+
+    mocks.status.mockResolvedValue({ daemon_version: "2.1.0-rc.1" } as unknown as StatusReport);
+    mocks.cachedUpdateStatus.mockResolvedValue(upd({ available: true, target: "2.1.0" }));
+    daemon.connected.value = true;
+    await flushPromises();
+    expect(w.find('[data-testid="about-daemon-version"]').text()).toBe("2.1.0-rc.1");
+    expect(w.find('[data-testid="update-headline"]').text()).toContain("Yerd 2.1.0 is available");
+  });
+
+  it("replaces a stale up-to-date status when the tray asks for About", async () => {
+    const updates = useUpdateCheck();
+    const Host = defineComponent({
+      setup() {
+        useAboutRequests(() => void updates.refreshCached());
+        return () => h(AboutSection, { layout: "column", updates });
+      },
+    });
+    const w = mount(Host);
+    mounted.push(w);
+    await flushPromises();
+    expect(w.find('[data-testid="update-headline"]').text()).toContain("Up to date");
+
+    mocks.cachedUpdateStatus.mockResolvedValue(upd({ available: true, target: "2.1.0" }));
+    navigateHandlers.forEach((handler) => handler({ payload: "/sites" }));
+    await flushPromises();
+    expect(w.find('[data-testid="update-headline"]').text()).toContain("Up to date");
+
+    navigateHandlers.forEach((handler) => handler({ payload: "/about" }));
+    await flushPromises();
+    expect(w.find('[data-testid="update-headline"]').text()).toContain("Yerd 2.1.0 is available");
+    expect(button(w, "Update")).toBeDefined();
   });
 });

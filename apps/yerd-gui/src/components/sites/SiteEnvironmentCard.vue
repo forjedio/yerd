@@ -30,14 +30,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   changePhp: [site: SiteEntry, version: string];
   toggleSecure: [site: SiteEntry];
-  /** `options.silent` suppresses the parent's success toast, for a change the
-   *  user didn't ask for and that another toast already explains. */
-  changeWpAutoLogin: [
-    site: SiteEntry,
-    enabled: boolean,
-    user: string | null,
-    options?: { silent?: boolean },
-  ];
+  changeWpAutoLogin: [site: SiteEntry, enabled: boolean, user: string | null];
   nodeChanged: [];
 }>();
 
@@ -83,16 +76,19 @@ const wpAutoLoginChecking = ref(false);
  *  can recognize it's stale and skip applying its result. */
 let wpAdminUsersRequestId = 0;
 
+/** Why the last admin-list fetch failed, shown inline under the switch. */
+const wpAdminUsersError = ref<string | null>(null);
+
 /** Fetch `name`'s admin list, reporting whether it is now loaded. A stale
  *  response (the user moved on) counts as a failure: it must not be acted on.
  *
- *  On failure a site already set to auto-login is switched back off, since
- *  auto-login can't work without an admin to mint the token for. That write is
- *  silent - the error toast is the only message worth showing for one failure -
- *  and only happens for the site still in view. */
-async function loadWpAdminUsers(name: string): Promise<boolean> {
+ *  A failure never writes the saved auto-login setting: the lookup also runs
+ *  when a site is merely selected, so it is reported (inline, plus a toast when
+ *  `notify` is set for an explicit click) and the setting is left alone. */
+async function loadWpAdminUsers(name: string, notify: boolean): Promise<boolean> {
   const requestId = ++wpAdminUsersRequestId;
   wpAdminUsersStatus.value = "loading";
+  wpAdminUsersError.value = null;
   try {
     const users = await wordpressAdminUsers(name);
     if (requestId !== wpAdminUsersRequestId) return false;
@@ -105,15 +101,14 @@ async function loadWpAdminUsers(name: string): Promise<boolean> {
   } catch (e) {
     if (requestId !== wpAdminUsersRequestId) return false;
     wpAdminUsersStatus.value = "error";
-    toast.error(
-      "Couldn't load WordPress admin users",
-      (e as IpcError).message || "couldn't load admin users",
-    );
-    if (props.site.name === name && props.site.wp_auto_login) {
-      emit("changeWpAutoLogin", props.site, false, null, { silent: true });
-    }
+    wpAdminUsersError.value = (e as IpcError).message || "couldn't load admin users";
+    if (notify) toast.error("Couldn't load WordPress admin users", wpAdminUsersError.value);
     return false;
   }
+}
+
+function retryWpAdminUsers(): void {
+  void loadWpAdminUsers(props.site.name, true);
 }
 
 /** Switching auto-login on is gated on the admin list, retrying a fetch that
@@ -129,7 +124,7 @@ async function toggleWpAutoLogin(site: SiteEntry, enabled: boolean): Promise<voi
   }
   wpAutoLoginChecking.value = true;
   try {
-    if (wpAdminUsersStatus.value !== "ready" && !(await loadWpAdminUsers(site.name))) return;
+    if (wpAdminUsersStatus.value !== "ready" && !(await loadWpAdminUsers(site.name, true))) return;
   } finally {
     wpAutoLoginChecking.value = false;
   }
@@ -145,15 +140,16 @@ function changeWpAutoLoginUser(site: SiteEntry, user: string): void {
  *  only where auto-login is on: opening a site that isn't using it must not
  *  reach for the database (nor report that it couldn't). The request id is
  *  invalidated and the state cleared first, so a fetch left live across a
- *  switch can't toast, or write auto-login off, behind the user's back. */
+ *  switch can't report against the wrong site. */
 watch(
   () => props.site.name,
   () => {
     wpAdminUsersRequestId += 1;
     wpAdminUsersStatus.value = "idle";
     wpAdminUsersOptions.value = [DEFAULT_ADMIN_OPTION];
+    wpAdminUsersError.value = null;
     if (!props.site.is_wordpress || !props.site.wp_auto_login) return;
-    void loadWpAdminUsers(props.site.name);
+    void loadWpAdminUsers(props.site.name, false);
   },
   { immediate: true },
 );
@@ -181,6 +177,7 @@ const ROW = "flex min-h-14 items-center justify-between gap-4 px-4 py-2.5";
           :model-value="site.php"
           :options="phpOptions"
           aria-label="Site PHP version"
+          manual-activation
           :disabled="busy"
           @update:model-value="changePhp"
         />
@@ -238,6 +235,23 @@ const ROW = "flex min-h-14 items-center justify-between gap-4 px-4 py-2.5";
             @update:model-value="changeWpAutoLoginUser(site, $event)"
           />
         </div>
+        <p
+          v-else-if="site.wp_auto_login && wpAdminUsersStatus === 'error'"
+          class="mt-2 flex items-center justify-between gap-4 text-xs text-destructive"
+          role="alert"
+          data-testid="wp-admin-users-error"
+        >
+          <span class="min-w-0 truncate" :title="wpAdminUsersError ?? undefined">
+            Couldn't load admin users: {{ wpAdminUsersError }}
+          </span>
+          <button
+            type="button"
+            class="shrink-0 font-medium text-brand hover:underline"
+            @click="retryWpAdminUsers"
+          >
+            Retry
+          </button>
+        </p>
       </div>
 
       <div :class="ROW">

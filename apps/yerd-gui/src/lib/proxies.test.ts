@@ -37,6 +37,9 @@ describe("upstreams", () => {
     ["HTTPS://x:1/", "HTTPS://x:1"],
     ["http://", "http://"],
     ["", ""],
+    ["3000", "http://127.0.0.1:3000"],
+    [" :5173 ", "http://127.0.0.1:5173"],
+    ["3000/", "http://127.0.0.1:3000"],
   ])("normalizeUpstream(%j) is %j", (raw, expected) => {
     expect(normalizeUpstream(raw)).toBe(expected);
   });

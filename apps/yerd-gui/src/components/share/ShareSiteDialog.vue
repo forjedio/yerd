@@ -8,7 +8,7 @@ import DialogFrame from "@/components/ui/DialogFrame.vue";
 import Input from "@/components/ui/Input.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import type { Site } from "@/ipc/types";
-import { scheme, type ShareKind, suggestedHost } from "@/lib/share";
+import { hostPlaceholder, isShareHostname, scheme, type ShareKind, suggestedHost } from "@/lib/share";
 import { cn } from "@/lib/utils";
 
 /** What the dialog asks the view to share. `hostname` is set for a domain share. */
@@ -21,7 +21,8 @@ export interface ShareRequest {
 /**
  * The one-step Share a site dialog: pick a site, then a Quick link (a temporary
  * trycloudflare.com URL) or Your domain (a hostname on the account's zone
- * through the domain tunnel). The hostname follows the site until edited.
+ * through the domain tunnel). The hostname follows the site until edited, and
+ * a domain share needs the account's zone and a hostname on it.
  * While the share is in flight the dialog stays open and locked; the view
  * closes it on success.
  */
@@ -92,7 +93,14 @@ function pick(next: ShareKind): void {
 const canShare = computed(() => {
   if (!site.value || props.locked) return false;
   if (kind.value === "quick") return true;
-  return props.domainReady && hostname.value.trim().length > 0;
+  return props.domainReady && isShareHostname(hostname.value, props.zone);
+});
+
+const hostHint = computed(() => {
+  if (!props.zone) return "Yerd couldn't read your Cloudflare domain yet. Sharing on it unlocks once it's known.";
+  const host = hostname.value.trim();
+  if (host && !isShareHostname(host, props.zone)) return `Use a hostname on ${props.zone}, like app.${props.zone}.`;
+  return null;
 });
 
 function onOpen(open: boolean): void {
@@ -174,10 +182,11 @@ const CARD_BTN =
           id="share-hostname"
           class="font-mono"
           :model-value="hostname"
-          :placeholder="suggestedHost('site', zone)"
+          :placeholder="hostPlaceholder(zone)"
           :disabled="busy"
           @update:model-value="editHost"
         />
+        <p v-if="hostHint" class="mt-1.5 text-xs text-warning" data-testid="host-hint">{{ hostHint }}</p>
       </div>
 
       <p v-if="chosen" class="flex items-center gap-2 text-xs text-muted-foreground" data-testid="share-publishes">

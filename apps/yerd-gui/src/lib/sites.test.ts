@@ -8,10 +8,12 @@ import {
   groupNameAvailable,
   httpsDetail,
   matchesChip,
+  normalizeDomain,
   OVERFLOW_LIMIT,
   servedPath,
   servingState,
   siteChips,
+  siteNameTaken,
   siteWarnings,
   sourceDetail,
   tildify,
@@ -346,5 +348,30 @@ describe("tildify", () => {
     ["/Users/a/x", null, "/Users/a/x"],
   ])("tildify(%s, %s) is %s", (path, home, expected) => {
     expect(tildify(path, home)).toBe(expected);
+  });
+});
+
+describe("normalizeDomain", () => {
+  it.each([
+    ["api.blog.test", "api.blog.test"],
+    ["API.Blog.TEST", "api.blog.test"],
+    ["api.blog.test.", "api.blog.test"],
+    [" *.Blog.test. ", "*.blog.test"],
+  ])("normalizes %s to %s", (input, expected) => {
+    expect(normalizeDomain(input)).toBe(expected);
+  });
+});
+
+describe("siteNameTaken", () => {
+  it.each<[string, string[], boolean]>([
+    ["blog", ["blog", "shop"], true],
+    ["Blog", ["blog"], true],
+    ["blog", ["BLOG"], true],
+    [" blog ", ["blog"], true],
+    ["blog2", ["blog"], false],
+    ["", ["blog"], false],
+    ["blog", [], false],
+  ])("%j against %j is %s", (name, existing, expected) => {
+    expect(siteNameTaken(name, existing)).toBe(expected);
   });
 });

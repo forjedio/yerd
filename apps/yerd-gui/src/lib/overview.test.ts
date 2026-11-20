@@ -3,13 +3,13 @@ import { describe, expect, it } from "vitest";
 import type { ServiceStatus, SiteEntry, StatusReport } from "@/ipc/types";
 
 import {
-  emptyEnvironment,
   favouriteSites,
   formatReleaseDate,
   healthRows,
   metaSegments,
   nextStep,
   portsReady,
+  setupPending,
   setupSteps,
   siteHeadline,
   siteSubtitle,
@@ -58,17 +58,6 @@ describe("portsReady", () => {
     ["fell back from an unprivileged port", { http: { requested: 8000, bound: 8001, fell_back: true } }, true],
   ] as const)("%s", (_name, overrides, expected) => {
     expect(portsReady(report(overrides as Partial<StatusReport>))).toBe(expected);
-  });
-});
-
-describe("emptyEnvironment", () => {
-  it.each([
-    ["nothing at all", { php: [], sites: { parked: 0, linked: 0, secured: 0 } }, true],
-    ["PHP only", { sites: { parked: 0, linked: 0, secured: 0 } }, false],
-    ["a linked site only", { php: [], sites: { parked: 0, linked: 1, secured: 0 } }, false],
-    ["a parked site only", { php: [], sites: { parked: 1, linked: 0, secured: 0 } }, false],
-  ] as const)("%s", (_name, overrides, expected) => {
-    expect(emptyEnvironment(report(overrides as Partial<StatusReport>))).toBe(expected);
   });
 });
 
@@ -176,6 +165,19 @@ describe("healthRows", () => {
     ]);
   });
 
+  it("flags an unbound DNS port instead of a green resolver row", () => {
+    const rows = healthRows(report({ dns_unbound: 1053 }));
+    expect(rows).toEqual([
+      { key: "ok", tone: "ok", text: "Local CA trusted" },
+      {
+        key: "dns",
+        tone: "bad",
+        text: "Couldn't bind DNS port 1053 — .test names won't resolve",
+        link: { label: "Change port", to: "/general" },
+      },
+    ]);
+  });
+
   it("uses the configured tld", () => {
     expect(healthRows(report({ tld: "dev" }))[0]?.text).toBe(
       "Local CA trusted · .dev resolver installed",
@@ -213,12 +215,30 @@ describe("setupSteps and nextStep", () => {
     ["a fresh machine with a trusted CA", empty, 0, [true, false, false], "php"],
     ["an untrusted CA", { ...empty, ca: { trusted_system: null } }, 0, [false, false, false], "trust"],
     ["an empty parked root", empty, 1, [true, false, true], "php"],
+    ["PHP installed, nothing parked yet", { sites: { parked: 0, linked: 0, secured: 0 } }, 0, [true, true, false], "park"],
+    ["a linked site counts as parked", { php: [], sites: { parked: 0, linked: 1, secured: 0 } }, 0, [true, false, true], "php"],
     ["everything done", {}, 0, [true, true, true], null],
   ] as const)("%s", (_name, overrides, roots, done, next) => {
     const steps = setupSteps(report(overrides as unknown as Partial<StatusReport>), roots);
     expect(steps.map((s) => s.key)).toEqual(["trust", "php", "park"]);
     expect(steps.map((s) => s.done)).toEqual(done);
     expect(nextStep(steps)).toBe(next);
+  });
+});
+
+describe("setupPending", () => {
+  const none = { sites: { parked: 0, linked: 0, secured: 0 } };
+
+  it.each([
+    ["a fresh machine", { ...none, php: [] }, 0, true],
+    ["PHP installed but nothing parked", none, 0, true],
+    ["a parked root but no PHP", { ...none, php: [] }, 1, true],
+    ["PHP and a parked root", none, 1, false],
+    ["PHP and a linked site", { sites: { parked: 0, linked: 1, secured: 0 } }, 0, false],
+    ["set up but the CA untrusted", { ca: { trusted_system: false } }, 0, false],
+  ] as const)("%s", (_name, overrides, roots, expected) => {
+    const steps = setupSteps(report(overrides as unknown as Partial<StatusReport>), roots);
+    expect(setupPending(steps)).toBe(expected);
   });
 });
 

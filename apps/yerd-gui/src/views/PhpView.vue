@@ -45,8 +45,22 @@ const { data, loading, error: resourceError, refresh: reloadPhp, mutate } = useR
 const installed = computed<PhpVersion[]>(() => data.value?.installed ?? []);
 const defaultVersion = computed<PhpVersion | null>(() => data.value?.default ?? null);
 const updates = computed<PhpUpdate[]>(() => data.value?.updates ?? []);
-/** A key naming the in-flight version-level action, e.g. `restart:8.4`. */
-const busy = ref<string | null>(null);
+/** Keys naming the in-flight version-level actions, e.g. `restart:8.4`. Each
+ *  action owns its own key, so one finishing never re-enables another. */
+const busy = ref<string[]>([]);
+
+/** Run `action` under `key`, unless that key (or, for updates, any update) is
+ *  already in flight. A second click on a running action is a no-op. */
+async function runBusy(key: string, action: () => Promise<void>): Promise<void> {
+  const family = key.startsWith("update:") ? "update:" : key;
+  if (busy.value.some((k) => (family === "update:" ? k.startsWith(family) : k === key))) return;
+  busy.value = [...busy.value, key];
+  try {
+    await action();
+  } finally {
+    busy.value = busy.value.filter((k) => k !== key);
+  }
+}
 
 /** Only a cold-load failure replaces the screen; a failed revalidation over
  *  cached data keeps the list and inspector (and their staged edits) mounted. */
@@ -159,68 +173,75 @@ function onDirty(v: PhpVersion, d: boolean): void {
   dirtyByVersion.value = { ...dirtyByVersion.value, [v]: d };
 }
 
+/** A version that leaves the list (uninstalled) takes its panel, and so its
+ *  staged edits, with it: drop its dirty flag so it can't raise a discard
+ *  prompt or reopen the drawer for edits that no longer exist. */
+watch(versions, (vs) => {
+  const stale = Object.keys(dirtyByVersion.value).filter((v) => !vs.includes(v));
+  if (stale.length === 0) return;
+  dirtyByVersion.value = Object.fromEntries(
+    Object.entries(dirtyByVersion.value).filter(([v]) => vs.includes(v)),
+  );
+});
+
 // ── version actions ──
 /**
  * Check for patch updates. The daemon answers with the full PHP state, so it
  * replaces the cached view whole and settings such as Xdebug stay current.
  */
-async function refreshUpdates(): Promise<void> {
-  busy.value = "refresh";
-  try {
-    const r = await checkPhpUpdates();
-    mutate(() => ({ ...r, updates: r.updates ?? [] }));
-    toast.success(
-      "Update check complete",
-      r.updates?.length ? `${r.updates.length} update(s) available` : "All up to date",
-    );
-  } catch (e) {
-    toast.error("Update check failed", (e as IpcError).message);
-  } finally {
-    busy.value = null;
-  }
+function refreshUpdates(): Promise<void> {
+  return runBusy("refresh", async () => {
+    try {
+      const r = await checkPhpUpdates();
+      mutate(() => ({ ...r, updates: r.updates ?? [] }));
+      toast.success(
+        "Update check complete",
+        r.updates?.length ? `${r.updates.length} update(s) available` : "All up to date",
+      );
+    } catch (e) {
+      toast.error("Update check failed", (e as IpcError).message);
+    }
+  });
 }
 
-async function makeDefault(v: PhpVersion): Promise<void> {
-  busy.value = `default:${v}`;
-  try {
-    await setDefaultPhp(v);
-    mutate((cur) => (cur ? { ...cur, default: v } : cur));
-    toast.success(`PHP ${v} is now the default`);
-  } catch (e) {
-    toast.error("Couldn't set default", (e as IpcError).message);
-  } finally {
-    busy.value = null;
-  }
+function makeDefault(v: PhpVersion): Promise<void> {
+  return runBusy(`default:${v}`, async () => {
+    try {
+      await setDefaultPhp(v);
+      mutate((cur) => (cur ? { ...cur, default: v } : cur));
+      toast.success(`PHP ${v} is now the default`);
+    } catch (e) {
+      toast.error("Couldn't set default", (e as IpcError).message);
+    }
+  });
 }
 
-async function doUpdate(v: PhpVersion | null): Promise<void> {
-  busy.value = v ? `update:${v}` : "update:all";
-  try {
-    await updatePhp(v);
-    toast.success(v ? `Updated PHP ${v}` : "Updated all PHP versions");
-    await Promise.all([reloadPhp({ force: true }), refresh()]);
-  } catch (e) {
-    toast.error("Update failed", (e as IpcError).message);
-  } finally {
-    busy.value = null;
-  }
+function doUpdate(v: PhpVersion | null): Promise<void> {
+  return runBusy(v ? `update:${v}` : "update:all", async () => {
+    try {
+      await updatePhp(v);
+      toast.success(v ? `Updated PHP ${v}` : "Updated all PHP versions");
+      await Promise.all([reloadPhp({ force: true }), refresh()]);
+    } catch (e) {
+      toast.error("Update failed", (e as IpcError).message);
+    }
+  });
 }
 
 const anyRunning = computed(() =>
   (report.value?.php ?? []).some((p) => p.state === "running" || p.state === "failed"),
 );
 
-async function doRestart(v: PhpVersion): Promise<void> {
-  busy.value = `restart:${v}`;
-  try {
-    await restartPhp(v);
-    toast.success(`Restarted PHP ${v}`);
-    await refresh();
-  } catch (e) {
-    toast.error(`Couldn't restart PHP ${v}`, (e as IpcError).message);
-  } finally {
-    busy.value = null;
-  }
+function doRestart(v: PhpVersion): Promise<void> {
+  return runBusy(`restart:${v}`, async () => {
+    try {
+      await restartPhp(v);
+      toast.success(`Restarted PHP ${v}`);
+      await refresh();
+    } catch (e) {
+      toast.error(`Couldn't restart PHP ${v}`, (e as IpcError).message);
+    }
+  });
 }
 
 async function doRestartAll(): Promise<void> {
@@ -228,16 +249,15 @@ async function doRestartAll(): Promise<void> {
     toast.info("No running pools to restart");
     return;
   }
-  busy.value = "restart:all";
-  try {
-    await restartAllPhp();
-    toast.success("Restarted all running pools");
-    await refresh();
-  } catch (e) {
-    toast.error("Couldn't restart pools", (e as IpcError).message);
-  } finally {
-    busy.value = null;
-  }
+  await runBusy("restart:all", async () => {
+    try {
+      await restartAllPhp();
+      toast.success("Restarted all running pools");
+      await refresh();
+    } catch (e) {
+      toast.error("Couldn't restart pools", (e as IpcError).message);
+    }
+  });
 }
 
 // ── uninstall ──
@@ -255,18 +275,16 @@ function openUninstall(v: PhpVersion): void {
 async function confirmUninstall(): Promise<void> {
   const v = uninstallTarget.value;
   if (!v) return;
-  busy.value = `uninstall:${v}`;
-  try {
-    await uninstallPhp(v);
-    toast.success(`Uninstalled PHP ${v}`);
+  await runBusy(`uninstall:${v}`, async () => {
+    try {
+      await uninstallPhp(v);
+      toast.success(`Uninstalled PHP ${v}`);
+    } catch (e) {
+      toast.error(`Couldn't uninstall PHP ${v}`, (e as IpcError).message);
+    }
     await reloadPhp({ force: true });
-  } catch (e) {
-    toast.error(`Couldn't uninstall PHP ${v}`, (e as IpcError).message);
-    await reloadPhp({ force: true });
-  } finally {
-    busy.value = null;
-    uninstallTarget.value = null;
-  }
+  });
+  uninstallTarget.value = null;
 }
 
 // ── extensions ──
@@ -338,8 +356,8 @@ onUnmounted(
   <div class="flex h-full flex-col">
     <PageHeader title="PHP" docs="/guide/php-versions">
       <template #actions>
-        <Button variant="outline" size="sm" :disabled="busy === 'refresh'" @click="refreshUpdates">
-          <Spinner v-if="busy === 'refresh'" class="size-4" />
+        <Button variant="outline" size="sm" :disabled="busy.includes('refresh')" @click="refreshUpdates">
+          <Spinner v-if="busy.includes('refresh')" class="size-4" />
           <RefreshCw v-else />
           Check for updates
         </Button>

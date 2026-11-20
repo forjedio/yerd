@@ -27,6 +27,7 @@ import {
   headerStatus,
   isPerSite,
   siteDomain,
+  uninstallVersion,
   versionLabel,
 } from "@/lib/services";
 import { cn, runStateDotClass } from "@/lib/utils";
@@ -134,7 +135,7 @@ const LINK =
               {{ versionLabel(service) }}
             </span>
             <span v-else-if="service.site" class="truncate font-mono text-[15px] text-muted-foreground">
-              {{ siteDomain(service, tld) }}
+              {{ siteDomain(service, tld, sites) }}
             </span>
           </h2>
           <p class="mt-1.5 flex items-center gap-1.5 text-xs text-muted-foreground" data-testid="service-status">
@@ -191,7 +192,7 @@ const LINK =
             <Square v-else />
             Stop
           </Button>
-          <DropdownMenu v-model:open="headerMenuOpen">
+          <DropdownMenu v-model:open="headerMenuOpen" @vue:before-unmount="headerMenuOpen = false">
             <DropdownMenuTrigger as-child>
               <Button
                 variant="outline"
@@ -219,7 +220,7 @@ const LINK =
                 data-action="uninstall"
                 @select="emit('uninstall')"
               >
-                <Trash2 class="size-4" /> Uninstall {{ service.display_name }} {{ versionLabel(service) }}…
+                <Trash2 class="size-4" /> Uninstall {{ service.display_name }} {{ uninstallVersion(service) }}…
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -247,7 +248,7 @@ const LINK =
         <div v-if="perSite" :class="CELL" data-testid="fact-site">
           <span :class="CELL_LABEL">Site</span>
           <span class="flex items-center gap-2">
-            <span class="min-w-0 flex-1 truncate font-mono text-[13px]">{{ siteDomain(service, tld) }}</span>
+            <span class="min-w-0 flex-1 truncate font-mono text-[13px]">{{ siteDomain(service, tld, sites) }}</span>
             <button
               type="button"
               :class="LINK"

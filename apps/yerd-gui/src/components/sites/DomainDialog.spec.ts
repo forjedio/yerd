@@ -71,4 +71,29 @@ describe("DomainDialog", () => {
     expect(document.body.textContent).toContain("WordPress site");
     w.unmount();
   });
+
+  it.each(["API.blog.test", "api.blog.test.", " Api.Blog.Test. "])(
+    "treats %j as no change to api.blog.test",
+    async (next) => {
+      const w = mountDialog({ editing: "api.blog.test" });
+      await type(next);
+      expect(saveButton("Save").disabled).toBe(true);
+      w.unmount();
+    },
+  );
+
+  it("blocks turning the primary into a wildcard", async () => {
+    const w = mountDialog({ editing: "blog.test", editingPrimary: true });
+    await type("*.blog.test");
+    expect(saveButton("Save").disabled).toBe(true);
+    expect(document.body.textContent).toContain("The primary domain can't be a wildcard");
+    w.unmount();
+  });
+
+  it("still allows a wildcard when editing an alias", async () => {
+    const w = mountDialog({ editing: "api.blog.test" });
+    await type("*.blog.test");
+    expect(saveButton("Save").disabled).toBe(false);
+    w.unmount();
+  });
 });

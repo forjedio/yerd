@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   canStartNamed,
   cloudflaredLine,
+  hostPlaceholder,
+  isShareHostname,
   loginUrlFrom,
   namedWarningsFor,
   removeTunnelCopy,
@@ -149,9 +151,32 @@ describe("labels", () => {
 
   it.each([
     ["forjed.io", "app.forjed.io"],
-    [null, "app.example.com"],
+    [null, ""],
   ])("suggests a hostname for zone %s", (zone, host) => {
     expect(suggestedHost("app", zone)).toBe(host);
+  });
+
+  it.each([
+    ["forjed.io", "site.forjed.io"],
+    [null, "site.example.com"],
+  ])("placeholds the hostname for zone %s", (zone, placeholder) => {
+    expect(hostPlaceholder(zone)).toBe(placeholder);
+  });
+
+  it.each([
+    ["app.forjed.io", "forjed.io", true],
+    ["  App.Forjed.io. ", "forjed.io", true],
+    ["forjed.io", "forjed.io", true],
+    ["a.b.forjed.io", "forjed.io", true],
+    ["app.example.com", "forjed.io", false],
+    ["appforjed.io", "forjed.io", false],
+    ["*.forjed.io", "forjed.io", false],
+    ["app..forjed.io", "forjed.io", false],
+    ["app_1.forjed.io", "forjed.io", false],
+    ["", "forjed.io", false],
+    ["app.example.com", null, false],
+  ])("isShareHostname(%j, %j)", (host, zone, ok) => {
+    expect(isShareHostname(host, zone)).toBe(ok);
   });
 
   it.each([

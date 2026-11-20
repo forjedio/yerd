@@ -171,6 +171,66 @@ describe("MailReader", () => {
     expect(w.emitted("delete")).toEqual([["m1"]]);
   });
 
+  it("offers Delete for a message whose body could not be read", async () => {
+    const w = await mountReader({ detail: null, failedId: "broken" });
+    expect(w.get('[data-testid="reader-failed"]').text()).toContain("couldn't be opened");
+    await w.get('[data-testid="reader-failed"] button').trigger("click");
+    await flushPromises();
+    expect(document.body.textContent).toContain("“(unreadable message)” will be deleted.");
+    const confirm = Array.from(document.body.querySelectorAll('[role="alertdialog"] button')).find(
+      (b) => b.textContent?.trim() === "Delete",
+    ) as HTMLButtonElement;
+    confirm.click();
+    await flushPromises();
+    expect(w.emitted("delete")).toEqual([["broken"]]);
+  });
+
+  it.each([
+    ["a bare # link", '<a id="link" href="#">Unsubscribe</a>'],
+    ["a #fragment link", '<p id="top">Top</p><a id="link" href="#top">Back to top</a>'],
+    ["a missing #fragment", '<a id="link" href="#nowhere">Nowhere</a>'],
+    ["a relative link", '<a id="link" href="/account">Account</a>'],
+  ])("cancels %s so the app route never changes", async (_, html) => {
+    window.location.hash = "#/mail";
+    const w = await mountReader({ detail: detail({ html_body: html }) });
+    const root = (w.get('[data-testid="reader-html"]').element as HTMLElement).shadowRoot;
+    const link = root?.getElementById("link");
+    if (!link) throw new Error("no link");
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true, composed: true });
+    link.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
+    expect(window.location.hash).toBe("#/mail");
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it("scrolls the reader frame to a #fragment target", async () => {
+    const w = await mountReader({ detail: detail({ html_body: '<a id="link" href="#end">Jump</a><p id="end">End</p>' }) });
+    const frame = w.get('[data-testid="reader-frame"]').element as HTMLElement;
+    const root = (w.get('[data-testid="reader-html"]').element as HTMLElement).shadowRoot;
+    const target = root?.getElementById("end");
+    if (!target) throw new Error("no target");
+    vi.spyOn(frame, "getBoundingClientRect").mockReturnValue({ top: 100 } as DOMRect);
+    vi.spyOn(target, "getBoundingClientRect").mockReturnValue({ top: 420 } as DOMRect);
+    root?.getElementById("link")?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
+    expect(frame.scrollTop).toBe(320);
+  });
+
+  it("contains the message so its CSS cannot cover the app", async () => {
+    const w = await mountReader({
+      detail: detail({
+        html_body:
+          '<html><head><style>:host { position: fixed !important; inset: 0 !important; }</style></head><body><div style="position:fixed;inset:0">x</div></body></html>',
+      }),
+    });
+    const frame = w.get('[data-testid="reader-frame"]').element as HTMLElement;
+    expect(frame.style.getPropertyValue("contain")).toBe("layout paint");
+    expect(frame.style.isolation).toBe("isolate");
+    expect(frame.style.transform).toBe("translateZ(0)");
+    expect(frame.contains(w.get('[data-testid="reader-html"]').element)).toBe(true);
+    expect(shadowHtml(w)).not.toMatch(/:host\s*\{\s*position/);
+    expect(shadowHtml(w)).toContain(":not(*) { position: fixed !important;");
+  });
+
   it("shows a close button when closable and disables Delete while deleting", async () => {
     const w = await mountReader({ closable: true, deleting: true });
     await w.get('[aria-label="Close message"]').trigger("click");

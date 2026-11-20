@@ -87,6 +87,7 @@ function stubIpc(opts: StubOpts = {}) {
         return opts.routeDns?.() ?? Promise.resolve({ type: "ok" });
       case "set_site_tunnel":
       case "set_tunnel_password":
+      case "job_cancel":
       case "create_named_tunnel":
       case "delete_named_tunnel":
         return Promise.resolve({ type: "ok" });
@@ -410,6 +411,33 @@ describe("IntegrationsView setup", () => {
     await click(buttonByText("Connect"));
     expect(calls("cloudflared_login")).toHaveLength(1);
     expect(dialogTitles()).toEqual(["Connect Cloudflare account"]);
+  });
+
+  it("cancels the login job when its dialog is closed mid-login, and unlocks the page", async () => {
+    vi.useFakeTimers();
+    stubIpc({ cloudflared: { ...MANAGED, logged_in: false }, jobStates: ["running", "running", "running"] });
+    await mountView();
+    await openSetup();
+    await click(buttonByText("Connect"));
+    expect(dialogTitles()).toEqual(["Connect Cloudflare account"]);
+
+    await click(document.querySelector('[role="dialog"] [aria-label="Close"]'));
+    await vi.advanceTimersByTimeAsync(600);
+    await flushPromises();
+    expect(calls("job_cancel")).toEqual([{ jobId: "j1" }]);
+    expect(calls("tunnel_status").length).toBeGreaterThan(1);
+
+    await openSetup();
+    expect(buttonByText("Connect")).toBeTruthy();
+  });
+
+  it("does not cancel a login that finished", async () => {
+    stubIpc({ cloudflared: { ...MANAGED, logged_in: false }, jobStates: ["succeeded"] });
+    await mountView();
+    await openSetup();
+    await click(buttonByText("Connect"));
+    await flushPromises();
+    expect(calls("job_cancel")).toHaveLength(0);
   });
 
   it("starts a stopped tunnel from Setup", async () => {

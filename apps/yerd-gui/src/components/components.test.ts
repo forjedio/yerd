@@ -73,6 +73,43 @@ describe("SegmentedControl", () => {
     await w.findAll('[role="radio"]')[0]?.trigger("click");
     expect(w.emitted("update:modelValue")).toBeUndefined();
   });
+  it("emits nothing when the selected option is picked again", async () => {
+    const w = mount(SegmentedControl, {
+      props: { modelValue: "8.4", options, ariaLabel: "PHP version" },
+    });
+    await w.findAll('[role="radio"]')[1]?.trigger("click");
+    expect(w.emitted("update:modelValue")).toBeUndefined();
+  });
+
+  it.each([
+    [false, [["8.3"]]],
+    [true, undefined],
+  ])("with manualActivation %s, the click an arrow key causes emits %j", async (manualActivation, expected) => {
+    const w = mount(SegmentedControl, {
+      props: { modelValue: "8.4", options, ariaLabel: "PHP version", manualActivation },
+    });
+    const first = w.findAll('[role="radio"]')[0];
+    await first?.trigger("keydown", { key: "ArrowLeft" });
+    await first?.trigger("click");
+    expect(w.emitted("update:modelValue")).toEqual(expected);
+  });
+
+  it("selects on Space or a pointer click once the arrow key is released", async () => {
+    const w = mount(SegmentedControl, {
+      props: { modelValue: "8.4", options, ariaLabel: "PHP version", manualActivation: true },
+    });
+    const first = w.findAll('[role="radio"]')[0];
+    await first?.trigger("keydown", { key: "ArrowLeft" });
+    await first?.trigger("keyup", { key: "ArrowLeft" });
+    await first?.trigger("keydown", { key: " " });
+    await first?.trigger("click");
+    await w.setProps({ modelValue: "8.3" });
+    const second = w.findAll('[role="radio"]')[1];
+    await second?.trigger("keydown", { key: "ArrowRight" });
+    await second?.trigger("pointerdown");
+    await second?.trigger("click");
+    expect(w.emitted("update:modelValue")).toEqual([["8.3"], ["8.4"]]);
+  });
 });
 
 describe("Select", () => {

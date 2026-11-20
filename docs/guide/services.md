@@ -67,8 +67,16 @@ engine) how many databases it holds. Selecting one opens its inspector:
   stored data* option (without it your data stays on disk for a reinstall), or
   **Remove this instance** for a per-site Reverb.
 - The facts strip shows the **Address** with **Edit port** (applies on next
-  start), the **Version** with **Change** (upgrade in place, keeping your data)
-  or, for Reverb, the **Site** with **Open**, and the **Start with Yerd** switch.
+  start), the **Version** with **Change** or, for Reverb, the **Site** with
+  **Open**, and the **Start with Yerd** switch. **Change** installs the chosen
+  version, restarts the engine onto it and removes the old binaries. It
+  preselects the newest version newer than the one you run, and won't move
+  MySQL, MariaDB or PostgreSQL to an older version, since an older engine can't
+  read data a newer one wrote. MySQL, MariaDB and Redis keep their data across
+  the change, as does PostgreSQL within one major. A new PostgreSQL major starts
+  with an empty cluster: the old major's databases stay on disk (each major has
+  its own data directory) and come back if you switch back to that major.
+  Meilisearch indexes don't carry over; rebuild them with Laravel Scout.
 - **Databases** (SQL engines): **New database**, a filter, and **Hide test
   copies**, which folds Laravel's parallel-testing copies (`app_test_1`, …)
   under the database they came from. Each row's `···` menu offers **Back up to

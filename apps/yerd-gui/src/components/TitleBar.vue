@@ -291,8 +291,11 @@ function controlButtonClass(kind: ControlKind): string {
       "
     >
       <!-- macOS: traffic lights (close / minimize / zoom). Colored while the
-           window is focused, flat gray otherwise; glyphs revealed on hover. -->
-      <div v-if="resolved === 'macos'" class="group flex items-center gap-2">
+           window is focused, flat gray otherwise; glyphs revealed on hover.
+           Both control sets sit at z-[46], above an inspector drawer's
+           backdrop and panel, so the window can be closed or zoomed while a
+           drawer is open. -->
+      <div v-if="resolved === 'macos'" class="group relative z-[46] flex items-center gap-2">
         <button
           type="button"
           aria-label="Close"
@@ -323,7 +326,7 @@ function controlButtonClass(kind: ControlKind): string {
       </div>
 
       <!-- Linux: close / minimize / maximize. Windows: minimize / maximize / close. -->
-      <div v-else-if="controls.length" class="flex items-center gap-1">
+      <div v-else-if="controls.length" class="relative z-[46] flex items-center gap-1">
         <button
           v-for="kind in controls"
           :key="kind"

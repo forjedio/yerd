@@ -19,6 +19,7 @@ import {
 } from "@/lib/mail";
 import {
   buildMailFrameDocument,
+  findFragmentTarget,
   linkifyText,
   listRemoteContentUrls,
   resolveExternalHref,
@@ -35,6 +36,15 @@ import { humaniseBytes } from "@/lib/utils";
  * link clicks are handled in-process (WKWebView does not reliably deliver
  * sandboxed iframe clicks / postMessage). Opens are scheme-allowlisted. Remote
  * images and stylesheets stay blocked until the user loads them, per message.
+ * Every link click is cancelled: the app uses a hash router, so an in-mail `#`
+ * link would otherwise navigate the app; `#fragment` links scroll the reader.
+ *
+ * The shadow host sits inside a frame that contains the message: `contain:
+ * layout paint` and a transform make the frame the containing block for
+ * `position: fixed` mail content and clip it, and `isolation` keeps the mail's
+ * z-indexes inside. Mail CSS cannot select the frame (`:host` only reaches the
+ * shadow host, and those rules are disabled anyway), so a message cannot lay
+ * itself over the app chrome.
  */
 const props = defineProps<{
   detail: MailDetail | null;
@@ -46,6 +56,8 @@ const props = defineProps<{
   closable?: boolean;
   /** Yerd's site TLD: images and styles on it (and on localhost) load without opting in. */
   tld?: string;
+  /** The selected message whose body could not be read; the reader still offers Delete for it. */
+  failedId?: string | null;
 }>();
 
 const emit = defineEmits<{ delete: [id: string]; close: [] }>();
@@ -87,8 +99,9 @@ const linkedTextBody = computed(() => linkifyText(props.detail?.text_body || "(e
 
 function askDelete(): void {
   const d = props.detail;
-  if (!d) return;
-  pendingDelete.value = { id: d.id, subject: subject.value };
+  const id = d?.id ?? props.failedId;
+  if (!id) return;
+  pendingDelete.value = { id, subject: d ? subject.value : "(unreadable message)" };
   confirmOpen.value = true;
 }
 
@@ -99,7 +112,16 @@ function confirmDelete(): void {
 let lastOpenedLink = "";
 let lastOpenedAt = 0;
 
+const htmlFrame = ref<HTMLElement | null>(null);
 const htmlHost = ref<HTMLElement | null>(null);
+
+/** Keeps mail content inside the frame; see the component doc. */
+const FRAME_CONTAINMENT = {
+  position: "relative",
+  contain: "layout paint",
+  isolation: "isolate",
+  transform: "translateZ(0)",
+} as const;
 
 function openMailLink(url: string): void {
   const resolved = resolveExternalHref(url);
@@ -113,13 +135,22 @@ function openMailLink(url: string): void {
   });
 }
 
+function scrollToFragment(fragment: string): void {
+  const frame = htmlFrame.value;
+  const root = htmlHost.value?.shadowRoot;
+  if (!frame || !root) return;
+  const target = findFragmentTarget(root, fragment);
+  if (!target) return;
+  frame.scrollTop += target.getBoundingClientRect().top - frame.getBoundingClientRect().top;
+}
+
 function onHtmlLinkClick(ev: Event): void {
   const action = resolveFrameLink(ev.target);
-  if (!action || action.kind === "scroll") return;
+  if (!action) return;
   ev.preventDefault();
   ev.stopPropagation();
-  if (action.kind !== "open") return;
-  openMailLink(action.url);
+  if (action.kind === "open") openMailLink(action.url);
+  else if (action.kind === "scroll") scrollToFragment(action.fragment);
 }
 
 /**
@@ -164,7 +195,7 @@ function renderHtmlBody(html: string): void {
 </style>${head}<div class="yerd-mail-body">${body}</div>`;
   const wrapper = root.querySelector<HTMLElement>(".yerd-mail-body");
   if (wrapper && bodyStyle) wrapper.setAttribute("style", bodyStyle);
-  propagateMailBackground(host, wrapper);
+  propagateMailBackground(wrapper);
 }
 
 /**
@@ -172,17 +203,19 @@ function renderHtmlBody(html: string): void {
  * the whole canvas, so the mail's background must reach the scroll container
  * rather than stopping at the end of its content.
  */
-function propagateMailBackground(host: HTMLElement, wrapper: HTMLElement | null): void {
-  host.style.removeProperty("background-color");
+function propagateMailBackground(wrapper: HTMLElement | null): void {
+  const frame = htmlFrame.value;
+  if (!frame) return;
+  frame.style.removeProperty("background-color");
   if (!wrapper) return;
   const background = getComputedStyle(wrapper).backgroundColor;
   if (!background || background === "transparent") return;
   if (/^rgba\(.*,\s*0\)$/.test(background)) return;
-  host.style.backgroundColor = background;
+  frame.style.backgroundColor = background;
 }
 
 function clearHtmlBody(): void {
-  htmlHost.value?.style.removeProperty("background-color");
+  htmlFrame.value?.style.removeProperty("background-color");
   const root = htmlHost.value?.shadowRoot;
   if (root) root.innerHTML = "";
 }
@@ -202,9 +235,9 @@ watch(
 
 function handleTextLinkClick(ev: MouseEvent): void {
   const action = resolveFrameLink(ev.target);
-  if (!action || action.kind !== "open") return;
+  if (!action) return;
   ev.preventDefault();
-  openMailLink(action.url);
+  if (action.kind === "open") openMailLink(action.url);
 }
 
 async function openAttachment(att: MailAttachment): Promise<void> {
@@ -322,7 +355,9 @@ const PANEL = "h-full overflow-auto rounded-[10px] border focus-visible:outline-
 
         <div class="mt-4 min-h-0 flex-1">
           <TabsContent value="preview" force-mount class="h-full data-[state=inactive]:hidden">
-            <div ref="htmlHost" :class="[PANEL, 'bg-white']" data-testid="reader-html" />
+            <div ref="htmlFrame" :class="[PANEL, 'bg-white']" :style="FRAME_CONTAINMENT" data-testid="reader-frame">
+              <div ref="htmlHost" data-testid="reader-html" />
+            </div>
           </TabsContent>
           <TabsContent value="text" class="h-full">
             <!-- eslint-disable-next-line vue/no-v-html -->
@@ -357,6 +392,18 @@ const PANEL = "h-full overflow-auto rounded-[10px] border focus-visible:outline-
         </div>
       </TabsRoot>
     </template>
+
+    <div
+      v-else-if="failedId"
+      class="flex flex-1 flex-col items-center justify-center gap-3 text-center"
+      data-testid="reader-failed"
+    >
+      <p class="text-[13px] text-muted-foreground">This message couldn't be opened.</p>
+      <Button variant="outline" size="sm" :disabled="deleting" @click="askDelete">
+        <Trash2 />
+        Delete
+      </Button>
+    </div>
 
     <p v-else class="flex flex-1 items-center justify-center text-[13px] text-faint">
       Select a message to read it.

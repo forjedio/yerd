@@ -32,6 +32,119 @@ export function versionLabel(s: ServiceStatus): string {
   return s.selected_version ?? s.installed_versions[s.installed_versions.length - 1] ?? "-";
 }
 
+/** Order two dotted service versions numerically (`9.10.0` after `9.9.1`); a
+ *  missing or non-numeric segment counts as 0. */
+export function compareServiceVersions(a: string, b: string): number {
+  const pa = a.split(".").map((p) => Number.parseInt(p, 10) || 0);
+  const pb = b.split(".").map((p) => Number.parseInt(p, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+/** The engines whose stored data an older version can't open (MySQL and
+ *  MariaDB keep one shared datadir; PostgreSQL clusters are per major and an
+ *  older major can't read a newer one), so the GUI never switches them down. */
+const NO_DOWNGRADE = new Set(["mysql", "mariadb", "postgres"]);
+
+/** Whether switching this engine to an older version is refused. */
+export function blocksDowngrade(typeId: string): boolean {
+  return NO_DOWNGRADE.has(typeId);
+}
+
+/** The version a Change replaces: the selected one, else the newest installed. */
+export function currentVersion(s: ServiceStatus): string | null {
+  if (s.selected_version) return s.selected_version;
+  const sorted = [...s.installed_versions].sort(compareServiceVersions);
+  return sorted[sorted.length - 1] ?? null;
+}
+
+/** One option in the Change version picker. */
+export interface VersionChoice {
+  value: string;
+  label: string;
+  downgrade: boolean;
+}
+
+/**
+ * The Change version picker: every available version not already installed,
+ * oldest first, each flagged when it is older than `current`. The preselection
+ * is the newest version newer than `current`, or "" when only older ones exist
+ * so a downgrade is never one click away.
+ */
+export function versionChoices(
+  available: readonly string[],
+  installed: readonly string[],
+  current: string | null,
+): { options: VersionChoice[]; preselect: string } {
+  const have = new Set(installed);
+  const options = available
+    .filter((v) => !have.has(v))
+    .sort(compareServiceVersions)
+    .map((v) => ({
+      value: v,
+      label: `v${v}`,
+      downgrade: current !== null && compareServiceVersions(v, current) < 0,
+    }));
+  const newer = options.filter((o) => !o.downgrade);
+  return { options, preselect: newer[newer.length - 1]?.value ?? "" };
+}
+
+function major(version: string): string {
+  return version.split(".")[0] ?? version;
+}
+
+/** The note under the Change version picker, matching what the daemon does to
+ *  the engine's data for this switch. */
+export function changeVersionNote(
+  typeId: string,
+  name: string,
+  current: string | null,
+  target: string,
+): { text: string; blocked: boolean } {
+  if (!target) {
+    return {
+      text: blocksDowngrade(typeId)
+        ? `Only older versions are offered. ${name} can't move to an older version, because data written by a newer version can't be read by an older one.`
+        : "Only older versions are offered. Pick one to move to it.",
+      blocked: true,
+    };
+  }
+  const downgrade = current !== null && compareServiceVersions(target, current) < 0;
+  if (downgrade && blocksDowngrade(typeId)) {
+    return {
+      text: `${name} can't move to an older version: data written by v${current} can't be read by v${target}. Pick a newer version instead.`,
+      blocked: true,
+    };
+  }
+  if (typeId === "meilisearch") {
+    return {
+      text: "Meilisearch indexes do not transfer between versions automatically. The previous version's data is retained; rebuild indexes with Laravel Scout.",
+      blocked: false,
+    };
+  }
+  if (typeId === "postgres" && current !== null && major(current) !== major(target)) {
+    return {
+      text: `Installs v${target}, restarts ${name} onto it, and removes v${current}. PostgreSQL ${major(target)} starts with an empty cluster: your PostgreSQL ${major(current)} databases stay on disk and come back if you switch back to a ${major(current)}.x version.`,
+      blocked: false,
+    };
+  }
+  return {
+    text: "Installs the selected version, restarts the service onto it, and removes the current version. Your stored data is kept.",
+    blocked: false,
+  };
+}
+
+/** The version Uninstall removes, and the one its menu item and confirm name:
+ *  the selected version when it is installed, else the newest installed. */
+export function uninstallVersion(s: ServiceStatus): string {
+  if (s.selected_version && s.installed_versions.includes(s.selected_version)) return s.selected_version;
+  const sorted = [...s.installed_versions].sort(compareServiceVersions);
+  return sorted[sorted.length - 1] ?? "";
+}
+
 /** Whether this instance carries a version to show (engines do; app servers like
  *  Reverb run against a site's PHP and have none). */
 export function hasVersion(s: ServiceStatus): boolean {
@@ -104,10 +217,13 @@ export function headerStatus(s: ServiceStatus): string {
   return s.state === "failed" ? "Failed" : "Stopped";
 }
 
-/** The linked site's `.test` domain (`reverb.test`), or "" for a single-instance
- *  engine with no site. */
-export function siteDomain(s: ServiceStatus, tld: string): string {
-  return s.site ? `${s.site}.${tld}` : "";
+/** The linked site's address: its primary domain when the site has one set,
+ *  else `{site}.{tld}` (`reverb.test`). "" for a single-instance engine with no
+ *  site. */
+export function siteDomain(s: ServiceStatus, tld: string, sites: readonly SiteEntry[] = []): string {
+  if (!s.site) return "";
+  const linked = sites.find((site) => site.name === s.site);
+  return linked?.primary_domain ?? `${s.site}.${tld}`;
 }
 
 /** The configured loopback address; the daemon binds every engine to 127.0.0.1. */

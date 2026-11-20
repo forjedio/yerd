@@ -31,8 +31,8 @@ const props = defineProps<{
   pools: Record<PhpVersion, PhpPoolStatus>;
   updates: PhpUpdate[];
   dirty: Record<string, boolean>;
-  /** The view's in-flight action key, e.g. `restart:8.4` or `update:all`. */
-  busy: string | null;
+  /** The view's in-flight action keys, e.g. `restart:8.4` or `update:all`. */
+  busy: string[];
 }>();
 
 const emit = defineEmits<{
@@ -48,7 +48,7 @@ const updateFor = computed<Record<string, PhpUpdate>>(() =>
 );
 const banner = computed(() => bannerCopy(props.updates));
 const bannerBusy = computed(() =>
-  banner.value ? props.busy === (banner.value.target ? `update:${banner.value.target}` : "update:all") : false,
+  banner.value ? props.busy.some((k) => k.startsWith("update:")) : false,
 );
 
 function count(v: PhpVersion): number {
@@ -56,7 +56,7 @@ function count(v: PhpVersion): number {
 }
 
 function rowBusy(v: PhpVersion): boolean {
-  return props.busy?.endsWith(`:${v}`) ?? false;
+  return props.busy.some((k) => k.endsWith(`:${v}`));
 }
 
 function state(v: PhpVersion) {

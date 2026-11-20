@@ -104,6 +104,15 @@ describe("PhpSharedDefaults FFI switch", () => {
     expect(w.get(toggle).attributes("aria-checked")).toBe("true");
   });
 
+  it("is clean again after toggling a saved explicit Off on and back off", async () => {
+    const w = mountPane({ data: data({ settings: { "ffi.enable": "Off" } }) });
+    expect(lastDirty(w)).toEqual([false]);
+    await w.get(toggle).trigger("click");
+    expect(lastDirty(w)).toEqual([true]);
+    await w.get(toggle).trigger("click");
+    expect(lastDirty(w)).toEqual([false]);
+  });
+
   it("sends On when switched on and saved", async () => {
     const w = mountPane();
     expect(w.find('[data-testid="ffi-unavailable"]').exists()).toBe(false);
@@ -144,31 +153,33 @@ describe("PhpSharedDefaults form", () => {
     expect((field(clean, "memory_limit").element as HTMLInputElement).value).toBe("512M");
   });
 
-  it("sends every key on save, writes the shared cache and emits the reply", async () => {
+  it("sends only the edited key on save, writes the shared cache and emits the reply", async () => {
     const cache = useResource("php", listPhp, { immediate: false });
     const w = mountPane();
     await field(w, "memory_limit").setValue("1G");
     await save(w);
 
-    const payload = lastPayload()!;
-    expect(payload.memory_limit).toBe("1G");
-    expect(payload.max_input_time).toBe("");
-    expect(Object.keys(payload).sort()).toEqual(
-      [
-        "display_errors",
-        "error_reporting",
-        "ffi.enable",
-        "max_execution_time",
-        "max_file_uploads",
-        "max_input_time",
-        "memory_limit",
-        "post_max_size",
-        "upload_max_filesize",
-      ].sort(),
-    );
+    expect(lastPayload()).toEqual({ memory_limit: "1G" });
     expect(cache.data.value).toEqual(saved);
     expect(w.emitted("updated")?.[0]).toEqual([saved]);
     expect(useToast().toasts.value.map((t) => t.title)).toContain("PHP settings updated");
+  });
+
+  it("takes an out-of-band change to another key while dirty and never reverts it", async () => {
+    const w = mountPane({ data: data({ settings: { memory_limit: "512M" } }) });
+    await field(w, "upload_max_filesize").setValue("64M");
+    await w.setProps({ data: data({ settings: { memory_limit: "1G" } }) });
+    expect((field(w, "memory_limit").element as HTMLInputElement).value).toBe("1G");
+    expect((field(w, "upload_max_filesize").element as HTMLInputElement).value).toBe("64M");
+    await save(w);
+    expect(lastPayload()).toEqual({ upload_max_filesize: "64M" });
+  });
+
+  it("removes a cleared key by sending it blank", async () => {
+    const w = mountPane({ data: data({ settings: { memory_limit: "512M" } }) });
+    await field(w, "memory_limit").setValue("");
+    await save(w);
+    expect(lastPayload()).toEqual({ memory_limit: "" });
   });
 
   it.each([

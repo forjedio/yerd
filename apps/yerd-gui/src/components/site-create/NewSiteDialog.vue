@@ -37,6 +37,7 @@ import { useWordPressStarter } from "@/composables/useWordPressStarter";
 import { openInBrowser, openPath } from "@/ipc/client";
 import type { ComposerFramework, StatusReport } from "@/ipc/types";
 import { formatElapsed } from "@/lib/createSite";
+import { siteNameTaken } from "@/lib/sites";
 import { cn } from "@/lib/utils";
 
 /**
@@ -44,7 +45,9 @@ import { cn } from "@/lib/utils";
  * missing-tools step when the starter's toolchain is incomplete, then the
  * starter's Options, then the create job's progress and Done screen. Switching
  * starters keeps what was typed on Project. There is one create at a time: it
- * keeps running when the dialog closes, and reopening shows its progress.
+ * keeps running when the dialog closes or unmounts, and reopening shows its
+ * progress. A name an existing site already uses (linked or parked, any case)
+ * is refused, since creating it would reconfigure that site instead.
  */
 const props = defineProps<{
   open: boolean;
@@ -57,6 +60,8 @@ const props = defineProps<{
   home: string | null;
   initialStarter?: StarterId;
   initialName?: string;
+  /** Every existing site's name, so a taken name is refused before the job starts. */
+  existingNames?: string[];
 }>();
 
 const emit = defineEmits<{
@@ -72,6 +77,7 @@ const { siteName, nameValid, projectPath, domain, openUrl, basicsValid } = useSi
   basics,
   props,
 );
+const nameTaken = computed(() => siteNameTaken(basics.name, props.existingNames ?? []));
 
 const prereqs = reactive(useToolPrereqs(() => props.open));
 const ctx: StarterContext = {
@@ -107,10 +113,9 @@ const step = ref<Step>("project");
 
 const job = useCreateSiteJob({
   isOpen: () => props.open,
-  domain: () => domain.value,
   onCreated: () => emit("created"),
 });
-const { state, phase, log, error, cancelRequested, inFlight, startedAt, finishedAt } = job;
+const { state, phase, log, error, cancelRequested, inFlight, startedAt, finishedAt, snapshot } = job;
 
 /**
  * Keep the PHP pick valid: fill it when empty, and replace it when the starter
@@ -148,12 +153,33 @@ function resetAll(): void {
   reconcilePhp();
 }
 
+/** Put back the form a running create was started from, for a dialog that
+ *  was remounted (the Sites view was left) while the job carried on. */
+function restoreFromSnapshot(): void {
+  const snap = snapshot.value;
+  if (!snap) return;
+  if (snap.starter !== starter.value) {
+    starter.value = snap.starter;
+    active.value.reset();
+  }
+  basics.name = snap.name;
+  basics.location = snap.location;
+  basics.php = snap.php;
+  basics.secure = snap.secure;
+}
+
+/** Reopening shows a running create's progress, and leaves a tools step that
+ *  is still installing as it was, so its install isn't forgotten and re-run. */
 watch(
   () => props.open,
   (open) => {
     if (!open) return;
-    if (inFlight.value) step.value = "progress";
-    else resetAll();
+    if (inFlight.value) {
+      restoreFromSnapshot();
+      step.value = "progress";
+    } else if (!prereqs.busy) {
+      resetAll();
+    }
   },
   { immediate: true },
 );
@@ -166,7 +192,7 @@ watch(
 );
 
 const canNext = computed(
-  () => !prereqs.loading && nameValid.value && basics.location.trim() !== "",
+  () => !prereqs.loading && nameValid.value && !nameTaken.value && basics.location.trim() !== "",
 );
 
 function next(): void {
@@ -179,9 +205,21 @@ const canCreate = computed(
 );
 
 function create(): void {
-  if (!canCreate.value) return;
+  if (!canCreate.value || inFlight.value) return;
+  if (nameTaken.value) {
+    step.value = "project";
+    return;
+  }
   step.value = "progress";
-  void job.start(active.value.buildSpec());
+  void job.start(active.value.buildSpec(), {
+    starter: starter.value,
+    name: basics.name,
+    location: basics.location,
+    php: basics.php,
+    secure: basics.secure,
+    domain: domain.value,
+    doneSummary: active.value.doneSummary,
+  });
 }
 
 function close(): void {
@@ -294,6 +332,7 @@ const currentStepNumber = computed(() => (step.value === "options" ? 2 : 1));
       :open-url="openUrl"
       :project-path="projectPath"
       :name-valid="nameValid"
+      :name-taken="nameTaken"
       :ca-trusted="report?.ca.trusted_system === true"
       @update:starter="selectStarter"
       @existing="existing"
@@ -321,7 +360,7 @@ const currentStepNumber = computed(() => (step.value === "options" ? 2 : 1));
       :domain="domain"
       :open-url="openUrl"
       :secure="basics.secure"
-      :done-summary="active.doneSummary"
+      :done-summary="snapshot?.doneSummary ?? active.doneSummary"
       :started-at="startedAt"
       :finished-at="finishedAt"
     />

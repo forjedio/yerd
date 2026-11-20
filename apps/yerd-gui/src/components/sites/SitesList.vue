@@ -35,7 +35,9 @@ import { cn } from "@/lib/utils";
  * (compact windows), where clicking a row opens the inspector drawer. Both share
  * the sections, collapse state, "+ N more" overflow and the keyboard: ↑/↓ move
  * the selection, Return opens the site, ⌘E/⌘T open the editor/terminal and ⌘C
- * copies the URL (only when no text is selected).
+ * copies the URL (only when no text is selected). In the table, Space or → opens
+ * the selected site's drawer. The shortcuts act only on a selection the user can
+ * see: a site hidden by a filter, a collapsed section or the overflow is ignored.
  */
 const props = defineProps<{
   sections: SiteSection[];
@@ -92,6 +94,13 @@ const flatRows = computed<SiteEntry[]>(() =>
   props.sections.flatMap((sec) => (expanded(sec) ? rowsOf(sec).rows : [])),
 );
 
+/** The selected site when it is one of the visible rows, else null. */
+const visibleSelected = computed(() =>
+  props.selected !== null && flatRows.value.some((r) => r.name === props.selected)
+    ? props.selected
+    : null,
+);
+
 function rowId(name: string): string {
   return `site-row-${name}`;
 }
@@ -145,11 +154,16 @@ function onKeydown(event: KeyboardEvent): void {
     moveSelection(-1);
     return;
   }
-  const name = props.selected;
+  const name = visibleSelected.value;
   if (!name) return;
   if (!mod && event.key === "Enter") {
     event.preventDefault();
     emit("open", name);
+    return;
+  }
+  if (!mod && props.layout === "table" && (event.key === " " || event.key === "ArrowRight")) {
+    event.preventDefault();
+    emit("activate", name);
     return;
   }
   if (!mod || event.shiftKey || event.altKey) return;
@@ -167,12 +181,13 @@ function onKeydown(event: KeyboardEvent): void {
 }
 
 const mac = isMac();
-const hints = [
+const hints = computed(() => [
   { keys: "↑↓", label: "navigate" },
   { keys: "Return", label: "open in browser" },
+  ...(props.layout === "table" ? [{ keys: "Space", label: "details" }] : []),
   { keys: formatChord({ mod: true, key: "e" }, mac), label: "editor" },
   { keys: formatChord({ mod: true, key: "t" }, mac), label: "terminal" },
-];
+]);
 
 const TABLE_COLS = "grid grid-cols-[minmax(0,1fr)_64px_64px_120px_88px_20px] items-center gap-x-3";
 
@@ -189,7 +204,7 @@ function groupIndex(name: string): number {
       tabindex="0"
       role="listbox"
       aria-label="Sites"
-      :aria-activedescendant="selected ? rowId(selected) : undefined"
+      :aria-activedescendant="visibleSelected ? rowId(visibleSelected) : undefined"
       data-testid="sites-list"
       @keydown="onKeydown"
     >

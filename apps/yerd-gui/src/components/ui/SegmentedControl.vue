@@ -9,8 +9,12 @@ import { cn } from "@/lib/utils";
  * `brand` fills the selected option blue (PHP, Node); `plain` lifts it onto the
  * card surface (Authentication, Testing, Frontend dependencies). `size="md"`
  * renders taller sans-serif options (Settings: theme, update channel, log source).
+ *
+ * Picking the option already selected emits nothing. With `manualActivation`,
+ * arrow keys only move focus and Space selects, for a control whose every
+ * change is a daemon write: reka's radios otherwise select on arrow focus.
  */
-withDefaults(
+const props = withDefaults(
   defineProps<{
     modelValue: string;
     options: readonly { value: string; label: string }[];
@@ -18,14 +22,28 @@ withDefaults(
     ariaLabel?: string;
     variant?: "brand" | "plain";
     size?: "sm" | "md";
+    manualActivation?: boolean;
   }>(),
-  { variant: "brand", disabled: false, size: "sm" },
+  { variant: "brand", disabled: false, size: "sm", manualActivation: false },
 );
 
 const emit = defineEmits<{ "update:modelValue": [string] }>();
 
+const ARROW_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
+let arrowHeld = false;
+
+function onKeydown(event: KeyboardEvent): void {
+  arrowHeld = ARROW_KEYS.has(event.key);
+}
+
+function release(): void {
+  arrowHeld = false;
+}
+
 function onUpdate(value: unknown): void {
-  if (typeof value === "string") emit("update:modelValue", value);
+  if (typeof value !== "string" || value === props.modelValue) return;
+  if (props.manualActivation && arrowHeld) return;
+  emit("update:modelValue", value);
 }
 </script>
 
@@ -42,6 +60,9 @@ function onUpdate(value: unknown): void {
       )
     "
     @update:model-value="onUpdate"
+    @keydown.capture="onKeydown"
+    @keyup.capture="release"
+    @pointerdown.capture="release"
   >
     <RadioGroupItem
       v-for="o in options"

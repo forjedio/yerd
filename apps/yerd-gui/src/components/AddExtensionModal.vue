@@ -36,16 +36,18 @@ const busy = ref(false);
 // just chose. Keep it beside the field rather than in a toast that outlives it.
 const problem = ref<string | null>(null);
 
-watch(
-  () => props.open,
-  (isOpen) => {
-    if (!isOpen) return;
-    path.value = "";
-    name.value = "";
-    zend.value = false;
-    problem.value = null;
-  },
-);
+/** Bumped whenever the dialog closes, reopens or changes version, so a reply to
+ *  an add from an earlier session can't close or write into the current one. */
+let session = 0;
+
+watch([() => props.open, () => props.version], () => {
+  session += 1;
+  busy.value = false;
+  path.value = "";
+  name.value = "";
+  zend.value = false;
+  problem.value = null;
+});
 
 async function browse(): Promise<void> {
   const picked = await pickExtensionFile();
@@ -63,22 +65,20 @@ async function add(): Promise<void> {
     problem.value = "choose an extension file";
     return;
   }
+  const mine = session;
+  const version = props.version;
   busy.value = true;
   problem.value = null;
   try {
-    const map = await addPhpExtension(
-      props.version,
-      chosen,
-      zend.value,
-      name.value.trim() || undefined,
-    );
+    const map = await addPhpExtension(version, chosen, zend.value, name.value.trim() || undefined);
     toast.success("Extension registered", "Loaded into the FPM pool and CLI.");
     emit("added", map);
-    emit("update:open", false);
+    if (mine === session) emit("update:open", false);
   } catch (e) {
-    problem.value = (e as IpcError).message;
+    if (mine === session) problem.value = (e as IpcError).message;
+    else toast.error(`Couldn't add the extension to PHP ${version}`, (e as IpcError).message);
   } finally {
-    busy.value = false;
+    if (mine === session) busy.value = false;
   }
 }
 </script>

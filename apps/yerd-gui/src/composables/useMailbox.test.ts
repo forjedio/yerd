@@ -29,12 +29,13 @@ function detailOf(id: string): MailDetail {
 
 let mails: MailSummary[] = [];
 let getMailImpl: (id: string) => Promise<unknown> = (id) => Promise.resolve({ type: "mail", mail: detailOf(id) });
+let listMailsImpl: () => Promise<unknown> = () => Promise.resolve({ type: "mails", mails });
 
 function stubIpc(): void {
   invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
     switch (cmd) {
       case "list_mails":
-        return Promise.resolve({ type: "mails", mails });
+        return listMailsImpl();
       case "get_mail":
         return getMailImpl(String(args?.id));
       case "mark_mails_read":
@@ -80,6 +81,7 @@ beforeEach(() => {
   invokeMock.mockReset();
   mails = [summary("a"), summary("b")];
   getMailImpl = (id) => Promise.resolve({ type: "mail", mail: detailOf(id) });
+  listMailsImpl = () => Promise.resolve({ type: "mails", mails });
   for (const t of [...useToast().toasts.value]) useToast().dismiss(t.id);
   stubIpc();
 });
@@ -136,16 +138,31 @@ describe("useMailbox selection", () => {
     expect(box.detail.value?.id).toBe("b");
   });
 
-  it("drops a user's pick that fails to load but keeps a failed automatic one", async () => {
+  it("keeps a pick that fails to load selected and marks it failed", async () => {
     getMailImpl = () => Promise.reject(new Error("gone"));
     const box = await setup();
     expect(box.selectedId.value).toBe("a");
+    expect(box.failedId.value).toBe("a");
     expect(box.detail.value).toBeNull();
     await box.select("b", true);
-    expect(box.selectedId.value).toBeNull();
+    expect(box.selectedId.value).toBe("b");
+    expect(box.failedId.value).toBe("b");
     expect(box.detail.value).toBeNull();
     expect(box.loadingDetail.value).toBe(false);
     expect(toastTitles()).toContain("Couldn't open the email");
+  });
+
+  it("deletes a message whose body failed to load", async () => {
+    getMailImpl = (id) =>
+      id === "a" ? Promise.reject(new Error("gone")) : Promise.resolve({ type: "mail", mail: detailOf(id) });
+    const box = await setup();
+    expect(box.failedId.value).toBe("a");
+    mails = [summary("b")];
+    expect(await box.deleteMail("a")).toBe(true);
+    await flushPromises();
+    expect(invokeMock).toHaveBeenCalledWith("delete_mails", { ids: ["a"] });
+    expect(box.failedId.value).toBeNull();
+    expect(box.selectedId.value).toBe("b");
   });
 
   it("moves to the next message when the selected one disappears", async () => {
@@ -182,6 +199,39 @@ describe("useMailbox delete and clear", () => {
     expect(await box.deleteMail("a")).toBe(true);
     expect(invokeMock).toHaveBeenCalledWith("delete_mails", { ids: ["a"] });
     expect(toastTitles()).toContain("Message deleted");
+  });
+
+  it("keeps a deleted message gone when a poll in flight returns the old list", async () => {
+    vi.useFakeTimers();
+    const box = await setup();
+    expect(box.selectedId.value).toBe("a");
+    let releaseStale: (v: unknown) => void = () => undefined;
+    const stale = [...mails];
+    listMailsImpl = () =>
+      new Promise((resolve) => {
+        releaseStale = resolve;
+      });
+    await vi.advanceTimersByTimeAsync(4000);
+    listMailsImpl = () => Promise.resolve({ type: "mails", mails });
+    mails = [summary("b")];
+    expect(await box.deleteMail("a")).toBe(true);
+    releaseStale({ type: "mails", mails: stale });
+    await flushPromises();
+    expect(box.list.value.map((m) => m.id)).toEqual(["b"]);
+    expect(box.selectedId.value).toBe("b");
+    expect(calls("get_mail").filter((c) => (c[1] as { id: string }).id === "a")).toHaveLength(1);
+    expect(toastTitles()).not.toContain("Couldn't open the email");
+  });
+
+  it("forgets a hidden id once the daemon list drops it, so it can't mask a later mail", async () => {
+    vi.useFakeTimers();
+    const box = await setup();
+    mails = [summary("b")];
+    await box.deleteMail("a");
+    await poll();
+    mails = [summary("a"), summary("b")];
+    await poll();
+    expect(box.list.value.map((m) => m.id)).toEqual(["a", "b"]);
   });
 
   it("toasts a failed delete and returns false", async () => {

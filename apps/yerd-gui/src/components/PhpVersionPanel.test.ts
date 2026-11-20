@@ -944,6 +944,27 @@ describe("PhpVersionPanel settings grid", () => {
     expect((setPhpVersionSettings.mock.calls[0][1] as Record<string, string>).display_errors).toBe(expected);
   });
 
+  it("sends only the edited override, never the untouched ones", async () => {
+    const w = mountPanel({ overrides: { memory_limit: "1G" } });
+    await w.find('input[id="set-8.3-upload_max_filesize"]').setValue("64M");
+    await w.get('[data-testid="version-save"]').trigger("click");
+    await flushPromises();
+    expect(setPhpVersionSettings).toHaveBeenCalledWith("8.3", { upload_max_filesize: "64M" });
+  });
+
+  it("takes an out-of-band override while dirty and doesn't revert it on save", async () => {
+    const w = mountPanel();
+    await w.find('input[id="set-8.3-upload_max_filesize"]').setValue("64M");
+    await w.setProps({ overrides: { memory_limit: "1G" } });
+    expect((w.find('input[id="set-8.3-memory_limit"]').element as HTMLInputElement).value).toBe("1G");
+    expect((w.find('input[id="set-8.3-upload_max_filesize"]').element as HTMLInputElement).value).toBe(
+      "64M",
+    );
+    await w.get('[data-testid="version-save"]').trigger("click");
+    await flushPromises();
+    expect(setPhpVersionSettings).toHaveBeenCalledWith("8.3", { upload_max_filesize: "64M" });
+  });
+
   it("writes the shared PHP cache even when the panel is gone before the reply", async () => {
     resetResourceCache();
     let finish: (r: unknown) => void = () => {};
@@ -1001,5 +1022,43 @@ describe("PhpVersionPanel extras", () => {
     menu.vm.$emit("update:open", false);
     await nextTick();
     expect(w.emitted("update:layerOpen")?.slice(-1)[0]).toEqual([false]);
+  });
+
+  it("drops an open menu's layer when its row or the panel goes away", async () => {
+    const MenuStub = {
+      name: "ExtMenuStub",
+      emits: ["update:open"],
+      template: "<div><slot /></div>",
+    };
+    const stubbed = mount(PhpVersionPanel, {
+      props: {
+        version: "8.3",
+        globalSettings: {},
+        overrides: {},
+        directives: {},
+        pool: {},
+        extensions: [XDEBUG],
+        installedVersion: true,
+        extensionsLoading: false,
+        ffiAvailable: false,
+        libvipsFound: null,
+        xdebug: null,
+        xdebugAvailable: true,
+      },
+      global: { stubs: { ...dropdownStubs, DropdownMenu: MenuStub } },
+    });
+    stubbed.findComponent({ name: "ExtMenuStub" }).vm.$emit("update:open", true);
+    await nextTick();
+    expect(stubbed.emitted("update:layerOpen")?.slice(-1)[0]).toEqual([true]);
+
+    await stubbed.setProps({ extensions: [] });
+    expect(stubbed.emitted("update:layerOpen")?.slice(-1)[0]).toEqual([false]);
+
+    await stubbed.setProps({ extensions: [XDEBUG] });
+    stubbed.findComponent({ name: "ExtMenuStub" }).vm.$emit("update:open", true);
+    await nextTick();
+    expect(stubbed.emitted("update:layerOpen")?.slice(-1)[0]).toEqual([true]);
+    stubbed.unmount();
+    expect(stubbed.emitted("update:layerOpen")?.slice(-1)[0]).toEqual([false]);
   });
 });

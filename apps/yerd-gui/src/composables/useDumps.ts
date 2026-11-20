@@ -21,6 +21,7 @@ import {
   groupRequests,
   mergePage,
   nextSelection,
+  streamRestarted,
 } from "@/lib/dumps";
 
 /** Options for {@link useDumps}. */
@@ -63,11 +64,15 @@ export interface Dumps {
 /**
  * Stream the dump buffer incrementally every 750ms and the dump server status
  * every 2.5s, group the events into requests and track the selection, the
- * category chip and the event filter. While `follow` is on, the newest request
- * is selected on load and a newer arrival takes the selection as long as the
- * newest was selected; an older pick stays put. A selection whose request is
- * evicted moves to the newest (following) or clears. A page fetched before a
- * clear is dropped, so it can't bring the cleared events back for a tick.
+ * category chip and the event filter. While `follow` is on, the newest visible
+ * request is selected on load and a newer visible arrival takes the selection
+ * as long as the newest visible was selected; an older pick stays put, and a
+ * request the filter hides never takes it. Changing the filter itself never
+ * moves the selection. A selection whose request is
+ * evicted moves to the newest visible (following) or clears. A page fetched
+ * before a clear is dropped, so it can't bring the cleared events back for a
+ * tick. A daemon restart (ids start over) drops the held events and re-reads
+ * the stream from the start.
  */
 export function useDumps(options: DumpsOptions): Dumps {
   const toast = useToast();
@@ -78,8 +83,14 @@ export function useDumps(options: DumpsOptions): Dumps {
   const stream = usePoll(
     async () => {
       const fetchedIn = generation;
-      const page = await listDumps(cursor);
+      let page = await listDumps(cursor);
       if (fetchedIn !== generation) return;
+      if (streamRestarted(cursor, page)) {
+        events.value = [];
+        cursor = 0;
+        page = await listDumps(0);
+        if (fetchedIn !== generation) return;
+      }
       events.value = mergePage(events.value, page);
       cursor = page.latest_id;
     },
@@ -100,16 +111,20 @@ export function useDumps(options: DumpsOptions): Dumps {
   let prevFirst: string | null = null;
 
   function sync(): void {
-    const list = requests.value;
+    const all = requests.value;
+    const shown = visible.value;
     if (options.follow()) {
-      selectedKey.value = nextSelection(prevFirst, selectedKey.value, list);
-    } else if (selectedKey.value && !list.some((r) => r.key === selectedKey.value)) {
+      selectedKey.value = nextSelection(prevFirst, selectedKey.value, shown, all);
+    } else if (selectedKey.value && !all.some((r) => r.key === selectedKey.value)) {
       selectedKey.value = null;
     }
-    prevFirst = list[0]?.key ?? null;
+    prevFirst = shown[0]?.key ?? null;
   }
 
   watch(requests, sync, { immediate: true });
+  watch([query, category], () => {
+    prevFirst = visible.value[0]?.key ?? null;
+  });
   watch(options.follow, (on) => {
     if (on) sync();
   });

@@ -304,6 +304,17 @@ describe("SiteInspector environment", () => {
     expect(w.text()).toContain("Global default is 8.4");
   });
 
+  it("writes no PHP change while arrow keys move through the versions", async () => {
+    const w = mountInspector();
+    const radios = w.get('[aria-label="Site PHP version"]').findAll('[role="radio"]');
+    await radios[0]?.trigger("keydown", { key: "ArrowRight" });
+    await radios[1]?.trigger("click");
+    expect(w.emitted("changePhp")).toBeUndefined();
+    await radios[1]?.trigger("keyup", { key: "ArrowRight" });
+    await radios[1]?.trigger("click");
+    expect(w.emitted("changePhp")).toEqual([[site(), "8.4"]]);
+  });
+
   it("toggles HTTPS and words the certificate by trust", async () => {
     const w = mountInspector();
     await w.get('[aria-label="HTTPS"]').trigger("click");
@@ -556,7 +567,7 @@ describe("SiteInspector routing and headers", () => {
 
 describe("SiteInspector footer", () => {
   it.each([
-    [site({ kind: "parked" }), "/Users/a/Herd", "Unpark site…", "unpark"],
+    [site({ kind: "parked" }), "/Users/a/Herd", "Unpark folder…", "unpark"],
     [site(), null, "Remove site…", "unlink"],
   ] as const)("offers %#: %s", async (s, parentDir, label, event) => {
     const w = mountInspector(s, { parentDir });
@@ -564,6 +575,13 @@ describe("SiteInspector footer", () => {
     expect(action.text()).toBe(label);
     await action.trigger("click");
     expect(w.emitted(event)).toHaveLength(1);
+  });
+
+  it("names the whole folder an unpark stops serving", () => {
+    const w = mountInspector(site({ kind: "parked" }), { parentDir: "/Users/a/Herd" });
+    expect(w.get('[data-testid="inspector-footer-action"]').attributes("title")).toBe(
+      "Stops serving every site in ~/Herd",
+    );
   });
 
   it("offers nothing for a parked site outside any parked root", () => {
@@ -640,14 +658,27 @@ describe("SiteInspector drawer", () => {
 });
 
 describe("SiteInspector WordPress auto-login", () => {
-  it("turns auto-login back off and toasts when the admin users can't be read", async () => {
+  it("leaves the saved setting alone and reports inline when the admin users can't be read", async () => {
     wordpressAdminUsers.mockRejectedValue(new Error("wp-cli exploded"));
-    const on = wpSite({ wp_auto_login: true });
+    const on = wpSite({ wp_auto_login: true, wp_auto_login_user: "editor" });
     const w = mountInspector(on);
     await flushPromises();
-    expect(toastError).toHaveBeenCalledWith("Couldn't load WordPress admin users", "wp-cli exploded");
-    expect(w.emitted("changeWpAutoLogin")).toEqual([[on, false, null, { silent: true }]]);
+    expect(w.emitted("changeWpAutoLogin")).toBeUndefined();
+    expect(toastError).not.toHaveBeenCalled();
+    expect(w.get('[data-testid="wp-admin-users-error"]').text()).toContain("wp-cli exploded");
     expect(w.find('[aria-label="Sign in as"]').exists()).toBe(false);
+  });
+
+  it("retries the admin lookup from the inline error and shows the picker", async () => {
+    wordpressAdminUsers.mockRejectedValueOnce(new Error("mysql stopped"));
+    const w = mountInspector(wpSite({ wp_auto_login: true }));
+    await flushPromises();
+    wordpressAdminUsers.mockResolvedValue([{ login: "editor", display_name: "Editor" }]);
+    await button(w, "Retry").trigger("click");
+    await flushPromises();
+    expect(w.find('[data-testid="wp-admin-users-error"]').exists()).toBe(false);
+    expect(w.find('[aria-label="Sign in as"]').exists()).toBe(true);
+    expect(w.emitted("changeWpAutoLogin")).toBeUndefined();
   });
 
   it("ignores an admin-user failure that lands after the drawer closes", async () => {

@@ -4,7 +4,7 @@ import { ChevronRight } from "lucide-vue-next";
 import ServiceIcon from "@/components/services/ServiceIcon.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { LIST_LABEL } from "@/components/ui/styles";
-import type { ServiceRunState, ServiceStatus } from "@/ipc/types";
+import type { ServiceRunState, ServiceStatus, SiteEntry } from "@/ipc/types";
 import {
   detailsCell,
   hasVersion,
@@ -31,8 +31,10 @@ const props = defineProps<{
   /** Database counts of running SQL engines, by service id. */
   dbCounts: Record<string, number>;
   tld: string;
-  /** The view's in-flight action key, e.g. `restart:postgres`. */
-  busy: string | null;
+  /** The view's in-flight action keys, e.g. `restart:postgres`. */
+  busy: readonly string[];
+  /** Sites, so a per-site row shows its site's primary domain. */
+  sites?: readonly SiteEntry[];
 }>();
 
 const emit = defineEmits<{ select: [id: string] }>();
@@ -42,7 +44,7 @@ function count(s: ServiceStatus): number | null {
 }
 
 function rowBusy(s: ServiceStatus): boolean {
-  return props.busy?.endsWith(`:${s.service}`) ?? false;
+  return props.busy.some((k) => k.endsWith(`:${s.service}`));
 }
 
 function statusClass(state: ServiceRunState): string {
@@ -115,7 +117,7 @@ const TABLE_COLS =
                     {{ s.display_name }}
                   </span>
                   <span v-if="hasVersion(s)" class="shrink-0 font-mono text-xs text-faint">{{ versionLabel(s) }}</span>
-                  <span v-else-if="s.site" class="truncate font-mono text-xs text-faint">{{ siteDomain(s, tld) }}</span>
+                  <span v-else-if="s.site" class="truncate font-mono text-xs text-faint">{{ siteDomain(s, tld, sites ?? []) }}</span>
                 </span>
                 <span class="mt-1 flex items-center gap-1.5 text-xs" data-testid="row-status">
                   <span :class="cn('size-1.5 shrink-0 rounded-full', runStateDotClass(s.state))" aria-hidden="true" />
@@ -136,7 +138,7 @@ const TABLE_COLS =
             :key="s.service"
             type="button"
             :data-key="s.service"
-            :aria-label="s.site ? `${s.display_name} ${siteDomain(s, tld)}` : s.display_name"
+            :aria-label="s.site ? `${s.display_name} ${siteDomain(s, tld, sites ?? [])}` : s.display_name"
             :class="
               cn(
                 TABLE_COLS,
@@ -148,7 +150,7 @@ const TABLE_COLS =
             <span class="flex min-w-0 items-center gap-2">
               <span class="min-w-0">
                 <span class="block truncate text-[13px] font-semibold">{{ s.display_name }}</span>
-                <span v-if="s.site" class="block truncate font-mono text-[11px] text-faint">{{ siteDomain(s, tld) }}</span>
+                <span v-if="s.site" class="block truncate font-mono text-[11px] text-faint">{{ siteDomain(s, tld, sites ?? []) }}</span>
               </span>
               <Spinner v-if="rowBusy(s)" class="size-3.5 shrink-0" />
             </span>

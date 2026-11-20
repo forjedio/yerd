@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { Download, Laptop, LoaderCircle, RotateCw, ShieldAlert, Square } from "lucide-vue-next";
+import {
+  CircleAlert,
+  Download,
+  Laptop,
+  LoaderCircle,
+  RotateCw,
+  ShieldAlert,
+  Square,
+} from "lucide-vue-next";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 
 import DaemonDownHero from "@/components/DaemonDownHero.vue";
@@ -24,14 +32,14 @@ import {
   stopDaemon,
 } from "@/ipc/client";
 import { useToast } from "@/composables/useToast";
-import { emptyEnvironment } from "@/lib/overview";
+import { setupPending, setupSteps } from "@/lib/overview";
 import logoUrl from "@/assets/logo.svg";
 
 // The home/dashboard. It reads the shared daemon report (no poller of its own)
 // and shows the shared daemon-down hero, so it stays useful when the socket is
 // gone - the same surface that shows "N sites" becomes the start button. The
 // right column (release notes, contributors) loads independently of the left.
-const { report, connected, refresh } = useDaemon();
+const { report, connected, lastError, refresh } = useDaemon();
 const toast = useToast();
 
 const running = computed(() => connected.value === true);
@@ -76,11 +84,30 @@ async function confirmRestartDaemon(): Promise<void> {
   }
 }
 
+/** The daemon answered but its status couldn't be read (a typed error, e.g. a
+ *  GUI/daemon version skew the report doesn't decode across), so there is no
+ *  report to show and none is on its way. */
+const statusError = computed(() =>
+  running.value && !report.value ? (lastError.value?.message ?? null) : null,
+);
+
 // First paint, before the poll has resolved either way; also the brief window
 // where the socket answered but the first report hasn't landed.
 const connecting = computed(
-  () => (connected.value === null && !report.value) || (running.value && !report.value),
+  () =>
+    (connected.value === null && !report.value) ||
+    (running.value && !report.value && statusError.value === null),
 );
+
+const retrying = ref(false);
+async function retryStatus(): Promise<void> {
+  retrying.value = true;
+  try {
+    await refresh();
+  } finally {
+    retrying.value = false;
+  }
+}
 const tld = computed(() => report.value?.tld ?? "test");
 
 // ── live site list (favourites and the site count) ──
@@ -129,6 +156,10 @@ const siteCount = computed(() =>
     : report.value
       ? report.value.sites.parked + report.value.sites.linked
       : 0,
+);
+
+const showSetup = computed(
+  () => !!report.value && setupPending(setupSteps(report.value, sitesData.value?.parked.length ?? 0)),
 );
 
 const favouritesSkeleton = computed(
@@ -190,6 +221,36 @@ const stopBody = computed(() =>
             <div class="mt-4 h-11 animate-pulse rounded-lg bg-muted" />
           </section>
 
+          <section
+            v-else-if="statusError !== null"
+            data-testid="overview-status-error"
+            role="alert"
+            class="rounded-xl border border-destructive/40 bg-card px-5 pb-5 pt-[18px]"
+          >
+            <div class="flex items-center gap-2">
+              <CircleAlert class="size-4 text-destructive" aria-hidden="true" />
+              <h3 class="text-[15px] font-semibold">Couldn't read the daemon's status</h3>
+            </div>
+            <p class="mt-2 break-words text-[13px] text-muted-foreground">{{ statusError }}</p>
+            <p class="mt-1 text-xs text-faint">
+              The daemon is running but its reply didn't make sense to this app. If you've just
+              updated, restarting Yerd usually fixes it.
+            </p>
+            <div class="mt-4 flex gap-2">
+              <Button size="sm" :disabled="retrying" @click="retryStatus">
+                <RotateCw /> Retry
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                :disabled="busy !== null"
+                @click="restartDaemonOpen = true"
+              >
+                Restart daemon
+              </Button>
+            </div>
+          </section>
+
           <DaemonDownHero v-else-if="!running || !report" class="min-h-[560px]">
             Favourites and services come back once Yerd is running.
           </DaemonDownHero>
@@ -203,7 +264,7 @@ const stopBody = computed(() =>
               @restart="restartDaemonOpen = true"
             />
             <SetupChecklist
-              v-if="emptyEnvironment(report)"
+              v-if="showSetup"
               :report="report"
               :parked-roots="sitesData?.parked.length ?? 0"
             />

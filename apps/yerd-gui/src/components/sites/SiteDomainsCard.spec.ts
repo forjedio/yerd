@@ -171,4 +171,28 @@ describe("SiteDomainsCard actions", () => {
     release();
     await flushPromises();
   });
+
+  it.each(["DOCKER.test", "docker.test.", "Docker.Test."])(
+    "closes without a write when an edit only changes case or a trailing dot (%s)",
+    async (next) => {
+      const w = mountCard();
+      await control(w, "Edit docker.test").trigger("click");
+      const dialog = w.findComponent(DomainDialog);
+      dialog.vm.$emit("submit", next);
+      await flushPromises();
+      expect(addDomain).not.toHaveBeenCalled();
+      expect(removeDomain).not.toHaveBeenCalled();
+      expect(dialog.props("open")).toBe(false);
+    },
+  );
+
+  it("closes an open dialog when the target switches", async () => {
+    const w = mountCard();
+    await control(w, "Edit docker.test").trigger("click");
+    const dialog = w.findComponent(DomainDialog);
+    expect(dialog.props("open")).toBe(true);
+    await w.setProps({ site: { name: "other" } });
+    expect(dialog.props("open")).toBe(false);
+    expect(dialog.props("editing")).toBeNull();
+  });
 });

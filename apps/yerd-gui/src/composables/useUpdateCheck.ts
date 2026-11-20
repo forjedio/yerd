@@ -1,4 +1,5 @@
-import { computed, ref, type ComputedRef, type Ref } from "vue";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { computed, onMounted, onUnmounted, ref, type ComputedRef, type Ref } from "vue";
 
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
@@ -32,6 +33,9 @@ export interface UpdateCheck {
   /** Pre-fill from the daemon's persisted last-check result (no network); a
    *  no-op once a status is shown, so a layout switch doesn't re-fetch it. */
   loadCached: () => Promise<void>;
+  /** Re-read the daemon's persisted last-check result even when a status is
+   *  already shown, so a result found elsewhere (the tray) replaces a stale one. */
+  refreshCached: () => Promise<void>;
   /** A live check; `notify` toasts the outcome (an explicit "Check now"). */
   check: (notify?: boolean) => Promise<void>;
   /** Download, verify and apply the update on the current channel. */
@@ -80,6 +84,15 @@ export function useUpdateCheck(): UpdateCheck {
     if (status.value || liveFlow) return;
     const s = await cachedUpdateStatus().catch(() => null);
     if (!s || liveFlow) return;
+    status.value = s;
+    channel.value = s.channel;
+  }
+
+  async function refreshCached(): Promise<void> {
+    if (checking.value) return;
+    const seq = checkSeq;
+    const s = await cachedUpdateStatus().catch(() => null);
+    if (!s || checking.value || seq !== checkSeq) return;
     status.value = s;
     channel.value = s.channel;
   }
@@ -155,8 +168,39 @@ export function useUpdateCheck(): UpdateCheck {
     headline,
     checkedAgo,
     loadCached,
+    refreshCached,
     check,
     apply,
     changeChannel,
   };
+}
+
+/** The route the tray's "Update Yerd" and "About" items navigate to. */
+const ABOUT_ROUTE = "/about";
+
+/**
+ * Call `onRequest` whenever the tray asks for the About page while the calling
+ * view is already mounted. `/about` redirects to the Settings view, so when that
+ * view is already showing the navigation is a duplicate and nothing remounts:
+ * this is the only signal that the tray found something worth showing. Must be
+ * called from a component's setup. Outside Tauri (tests) it does nothing.
+ */
+export function useAboutRequests(onRequest: () => void): void {
+  let unlisten: UnlistenFn | undefined;
+  let disposed = false;
+  onMounted(async () => {
+    try {
+      const off = await listen<string>("navigate", (event) => {
+        if (event.payload === ABOUT_ROUTE) onRequest();
+      });
+      if (disposed) off();
+      else unlisten = off;
+    } catch {
+      unlisten = undefined;
+    }
+  });
+  onUnmounted(() => {
+    disposed = true;
+    unlisten?.();
+  });
 }

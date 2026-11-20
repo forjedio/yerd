@@ -1,4 +1,4 @@
-import { computed, ref, watch, type ComputedRef, type Ref } from "vue";
+import { computed, ref, shallowRef, watch, type ComputedRef, type Ref } from "vue";
 
 import { usePoll } from "@/composables/usePoll";
 import { useToast } from "@/composables/useToast";
@@ -39,6 +39,9 @@ export interface Mailbox {
   error: ComputedRef<string | null>;
   selectedId: Ref<string | null>;
   detail: Ref<MailDetail | null>;
+  /** The selected message whose body could not be read, so the reader can
+   *  still offer Delete for it. */
+  failedId: Ref<string | null>;
   loadingDetail: Ref<boolean>;
   busy: Ref<"delete" | "clear" | null>;
   select: (id: string, fromUser: boolean) => Promise<void>;
@@ -56,15 +59,24 @@ function nowSeconds(): number {
  * Poll the captured mail every 4s and track the app filter, the selected
  * message and its detail. A user's selection marks the message read; the
  * automatic one does not. A sequence number drops a stale `get_mail` reply when
- * the selection moves on before it arrives. A user's pick that fails to load is
- * dropped, so no row stays highlighted over an empty reader; a failed automatic
- * pick is kept so the next poll doesn't retry it and toast again.
+ * the selection moves on before it arrives. A pick that fails to load stays
+ * selected with `failedId` set, so the reader can offer Delete for a message
+ * whose body can't be read, and the next poll doesn't retry it and toast again.
+ *
+ * Deleted and cleared ids are hidden locally until a list without them
+ * arrives: a poll already in flight when the delete lands still returns the old
+ * list, and must not bring the message back or re-select it.
  */
 export function useMailbox(options: MailboxOptions): Mailbox {
   const toast = useToast();
   const { data: mails, error: pollError, refresh } = usePoll<MailSummary[]>(listMails, 4000);
 
-  const list = computed<MailSummary[]>(() => mails.value ?? []);
+  const removed = shallowRef<ReadonlySet<string>>(new Set());
+  const list = computed<MailSummary[]>(() => {
+    const all = mails.value ?? [];
+    const gone = removed.value;
+    return gone.size ? all.filter((m) => !gone.has(m.id)) : all;
+  });
   const app = ref("");
   const apps = computed(() => appOptions(list.value, app.value));
   const filtered = computed(() => filterByApp(list.value, app.value));
@@ -75,18 +87,28 @@ export function useMailbox(options: MailboxOptions): Mailbox {
 
   const selectedId = ref<string | null>(null);
   const detail = ref<MailDetail | null>(null);
+  const failedId = ref<string | null>(null);
   const loadingDetail = ref(false);
   const busy = ref<"delete" | "clear" | null>(null);
   let selectSeq = 0;
 
-  watch(mails, () => {
+  watch(mails, (next) => {
     now.value = nowSeconds();
+    if (removed.value.size === 0) return;
+    const present = new Set((next ?? []).map((m) => m.id));
+    const still = [...removed.value].filter((id) => present.has(id));
+    if (still.length !== removed.value.size) removed.value = new Set(still);
   });
+
+  function hide(ids: readonly string[]): void {
+    removed.value = new Set([...removed.value, ...ids]);
+  }
 
   function clearSelection(): void {
     selectSeq += 1;
     selectedId.value = null;
     detail.value = null;
+    failedId.value = null;
     loadingDetail.value = false;
   }
 
@@ -106,6 +128,7 @@ export function useMailbox(options: MailboxOptions): Mailbox {
   async function select(id: string, fromUser: boolean): Promise<void> {
     const seq = ++selectSeq;
     selectedId.value = id;
+    failedId.value = null;
     loadingDetail.value = true;
     try {
       const mail = await getMail(id);
@@ -115,8 +138,8 @@ export function useMailbox(options: MailboxOptions): Mailbox {
     } catch (e) {
       if (seq !== selectSeq) return;
       toast.error("Couldn't open the email", (e as IpcError).message);
-      if (fromUser) clearSelection();
-      else detail.value = null;
+      detail.value = null;
+      failedId.value = id;
     } finally {
       if (seq === selectSeq) loadingDetail.value = false;
     }
@@ -139,6 +162,7 @@ export function useMailbox(options: MailboxOptions): Mailbox {
     busy.value = "delete";
     try {
       await deleteMails([id]);
+      hide([id]);
       if (selectedId.value === id) clearSelection();
       await refresh();
       toast.success("Message deleted");
@@ -156,6 +180,7 @@ export function useMailbox(options: MailboxOptions): Mailbox {
     busy.value = "clear";
     try {
       await clearMails();
+      hide((mails.value ?? []).map((m) => m.id));
       clearSelection();
       app.value = "";
       await refresh();
@@ -180,6 +205,7 @@ export function useMailbox(options: MailboxOptions): Mailbox {
     error,
     selectedId,
     detail,
+    failedId,
     loadingDetail,
     busy,
     select,

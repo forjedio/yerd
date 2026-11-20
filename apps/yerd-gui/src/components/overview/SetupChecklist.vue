@@ -15,7 +15,8 @@ import { nextStep, setupSteps, type SetupStepKey } from "@/lib/overview";
 import { cn } from "@/lib/utils";
 
 /**
- * The first-run checklist shown while the environment is empty. Each step hands
+ * The first-run checklist, shown until PHP is installed and a folder is parked
+ * (see `setupPending`). Each step hands
  * off to the page that already owns it (Doctor for trust, PHP for installs) or
  * runs the same park flow as the Sites page.
  */

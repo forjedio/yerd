@@ -11,11 +11,10 @@ import {
   type ChipKey,
   chipLabel,
   type DumpRequest,
-  matchesQuery,
   metaLine,
-  requestCards,
   requestCategoryCounts,
   requestTitle,
+  shownCards,
   statusTone,
   TAG,
 } from "@/lib/dumps";
@@ -45,9 +44,7 @@ const filterShown = computed(() => filterOpen.value || query.value !== "");
 const counts = computed(() => (props.request ? requestCategoryCounts(props.request) : null));
 const cards = computed(() => {
   if (!props.request) return [];
-  return requestCards(props.request).filter(
-    (e) => (category.value === "all" || e.category === category.value) && matchesQuery(e, query.value),
-  );
+  return shownCards(props.request, query.value, category.value);
 });
 
 const emptyTitle = computed(() => {

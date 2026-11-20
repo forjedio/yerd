@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { Download, Ellipsis, Plug, Plus, Search, Trash2, Upload } from "lucide-vue-next";
 
 import { FIELD } from "@/components/services/styles";
@@ -90,6 +90,20 @@ watch(
   },
   { deep: true },
 );
+
+/** A row menu can unmount while open (the engine stops, the row is filtered
+ *  out, a confirm replaces it) without emitting `update:open(false)`, so its
+ *  flag is dropped here or the drawer would keep leaving Escape to it. */
+function forgetMenu(name: string): void {
+  if (!(name in menuOpen.value)) return;
+  const { [name]: _gone, ...rest } = menuOpen.value;
+  menuOpen.value = rest;
+  layerOpen.value = Object.values(rest).some(Boolean);
+}
+
+onBeforeUnmount(() => {
+  layerOpen.value = false;
+});
 
 watch(
   confirm,
@@ -365,7 +379,7 @@ const CONFIRM_BTN =
             >
               + {{ row.copies }} test
             </span>
-            <DropdownMenu v-model:open="menuOpen[row.name]">
+            <DropdownMenu v-model:open="menuOpen[row.name]" @vue:before-unmount="forgetMenu(row.name)">
               <DropdownMenuTrigger as-child>
                 <button
                   type="button"

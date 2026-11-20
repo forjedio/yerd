@@ -31,7 +31,10 @@ The fastest way to use Dumps is from the [desktop app](./desktop-app). Open the
 
 The page lists captured **requests**, newest first: method, status, path, site,
 event count and duration. Pick one to see its events beside the list; in a
-narrow window the list becomes a table and a request opens in a drawer.
+narrow window the list becomes a table and a request opens in a drawer. While
+the newest request the list shows is selected, a newer one takes the selection
+as it arrives (a request hidden by the filter never does). If the daemon
+restarts, the list starts over with the new daemon's events.
 
 - The **capture pill** in the toolbar reads **Intercepting on 2304** while
   capture is on, **Paused** while it is off, and **Dump server stopped** when
@@ -47,7 +50,8 @@ narrow window the list becomes a table and a request opens in a drawer.
 - The **open in window** button pops the same list and detail out into the
   standalone Dumps window.
 - A request's detail has **category chips** with per-request counts, an
-  **event filter** that narrows the events and the request list, and a
+  **event filter** that narrows the events and the request list (it also
+  matches a request's method, path and status), and a
   **caller badge** on each event: hover it for the project-relative path, click
   it to open the file in your default editor.
 

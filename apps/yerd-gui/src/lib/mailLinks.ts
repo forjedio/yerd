@@ -80,17 +80,42 @@ export function resolveExternalHref(rawHref: string | null | undefined): string 
 }
 
 /** What to do with a click on an `<a href>` inside the email body: `open` it in
- *  the OS browser, let a same-document `#` anchor `scroll`, or `block` an
- *  in-document navigation the preview must never perform. */
+ *  the OS browser, `scroll` the reader to a same-document `#fragment` (empty for
+ *  a bare `#`), or `block` an in-document navigation the preview must never
+ *  perform. The handler always cancels the default action: the app uses a hash
+ *  router, so letting a `#` link through would navigate the app itself. */
 export type FrameLinkAction =
   | { kind: "open"; url: string }
-  | { kind: "scroll" }
+  | { kind: "scroll"; fragment: string }
   | { kind: "block" };
 
-/** True for an in-page fragment link (`#`, `#section`): activating it only
- *  scrolls the current document, so the handler must let it proceed. */
-function isInPageFragment(rawHref: string | null): boolean {
-  return (rawHref?.trim() ?? "").startsWith("#");
+/** The decoded fragment of an in-page link (`#`, `#section`), or `null` when the
+ *  href is not a same-document anchor. */
+function inPageFragment(rawHref: string | null): string | null {
+  const href = rawHref?.trim() ?? "";
+  if (!href.startsWith("#")) return null;
+  const raw = href.slice(1);
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * The element a `#fragment` link points at inside the rendered mail: the first
+ * element with that `id`, else an `<a name>` anchor (common in older templates).
+ * Matched by attribute comparison rather than a selector so a fragment never
+ * needs CSS escaping. Returns `null` for an empty fragment.
+ */
+export function findFragmentTarget(root: ParentNode, fragment: string): Element | null {
+  if (!fragment) return null;
+  const candidates = [...root.querySelectorAll("[id], a[name]")];
+  return (
+    candidates.find((el) => el.getAttribute("id") === fragment) ??
+    candidates.find((el) => el.tagName === "A" && el.getAttribute("name") === fragment) ??
+    null
+  );
 }
 
 const NODE_TEXT = 3;
@@ -113,7 +138,7 @@ export function eventTargetElement(target: EventTarget | null): Element | null {
  * Classify a click that landed on `target` inside an email body. Returns `null`
  * when the click isn't on a link (leave it alone); otherwise a
  * {@link FrameLinkAction}: openable schemes go to the OS browser, same-document
- * `#` anchors are left to scroll, and everything else is blocked.
+ * `#` anchors scroll the reader, and everything else is blocked.
  * Prefers `data-yerd-url` (stamped by {@link buildMailFrameDocument}) over the
  * visible `href`.
  */
@@ -127,7 +152,8 @@ export function resolveFrameLink(target: EventTarget | null): FrameLinkAction | 
   const href = anchor.getAttribute("href");
   const url = resolveExternalHref(stamped) ?? resolveExternalHref(href);
   if (url) return { kind: "open", url };
-  return isInPageFragment(href) ? { kind: "scroll" } : { kind: "block" };
+  const fragment = inPageFragment(href);
+  return fragment === null ? { kind: "block" } : { kind: "scroll", fragment };
 }
 
 /** DOMPurify config for captured HTML email (head + body). */
@@ -277,6 +303,14 @@ function normalizeRemoteUrl(raw: string): string {
 }
 
 const CSS_URL_PATTERN = /url\s*\(\s*(['"]?)([^)'"]+)\1\s*\)/gi;
+/** `image-set()` / `-webkit-image-set()`, whose candidates may be bare strings
+ *  (no `url()`) that the url pattern never sees. One level of nested parens
+ *  covers `url(...)` and `type(...)` candidates. */
+const CSS_IMAGE_SET_PATTERN = /(?:-webkit-)?image-set\s*\(((?:[^()]|\([^()]*\))*)\)/gi;
+const CSS_STRING_PATTERN = /(['"])(.*?)\1/g;
+/** `:host`, `:host(...)` and `:host-context(...)`: mail CSS must not restyle the
+ *  reader's shadow host. */
+const CSS_HOST_PATTERN = /:host(?:-context)?\b/gi;
 /** String or url() form: `@import "https://…"` / `@import url(https://…)`. */
 const CSS_IMPORT_PATTERN =
   /@import\s+(?:url\s*\(\s*)?(['"]?)([^)'";\s]+)\1[^;]*;?/gi;
@@ -291,10 +325,17 @@ function stripCssComments(css: string): string {
   return css.replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
-/** Blank blocked `url(...)` / `@import` references inside CSS text. */
+function imageSetStrings(inner: string): string[] {
+  return [...inner.matchAll(CSS_STRING_PATTERN)].map((m) => m[2] ?? "");
+}
+
+/** Blank blocked `url(...)` / `@import` / `image-set()` references inside CSS text. */
 function neutralizeRemoteCss(css: string, blocked: BlockedUrl): string {
   let out = stripCssComments(css).replace(CSS_IMPORT_PATTERN, (full, _q, raw: string) => {
     return blocked(raw) ? "" : full;
+  });
+  out = out.replace(CSS_IMAGE_SET_PATTERN, (full, inner: string) => {
+    return imageSetStrings(inner).some((raw) => blocked(raw)) ? "none" : full;
   });
   out = out.replace(CSS_URL_PATTERN, (full, _q, raw: string) => {
     return blocked(raw) ? "none" : full;
@@ -312,9 +353,35 @@ function collectCssRemoteUrls(
     const raw = match[2];
     if (blocked(raw)) add(raw, "stylesheet");
   }
+  for (const match of cleaned.matchAll(CSS_IMAGE_SET_PATTERN)) {
+    for (const raw of imageSetStrings(match[1] ?? "")) {
+      if (blocked(raw)) add(raw, "css-url");
+    }
+  }
   for (const match of cleaned.matchAll(CSS_URL_PATTERN)) {
     const raw = match[2];
     if (blocked(raw)) add(raw, "css-url");
+  }
+}
+
+/**
+ * Make `<style>` text safe to serialize and re-parse after we edited it. A
+ * `<style>` body is raw text, so `innerHTML` writes it out unescaped; editing it
+ * after DOMPurify (removing a blocked `@import`) could splice a `</style>` out
+ * of harmless fragments and turn the rest into live markup when the reader
+ * re-parses the string. CSS never needs a literal `<` outside strings, and
+ * `\3c ` is its escape inside them, so escaping every `<` rules that out.
+ * `:host` selectors are disabled too, so mail CSS cannot restyle the reader's
+ * shadow host (the reader's containment covers anything this misses).
+ */
+function sealStyleText(css: string): string {
+  return css.replace(/</g, "\\3c ").replace(CSS_HOST_PATTERN, ":not(*)");
+}
+
+function sealStyles(doc: Document): void {
+  for (const styleEl of doc.querySelectorAll("style")) {
+    const css = styleEl.textContent;
+    if (css) styleEl.textContent = sealStyleText(css);
   }
 }
 
@@ -342,6 +409,10 @@ export function listRemoteContentUrls(html: string, localTld?: string): RemoteCo
   for (const link of doc.querySelectorAll("link[href]")) {
     const href = link.getAttribute("href");
     if (blocked(href)) add(href!, "stylesheet");
+  }
+  for (const el of doc.querySelectorAll("[background]")) {
+    const background = el.getAttribute("background");
+    if (blocked(background)) add(background!, "image");
   }
   for (const img of doc.querySelectorAll("img")) {
     const src = img.getAttribute("src");
@@ -371,6 +442,9 @@ export function listRemoteContentUrls(html: string, localTld?: string): RemoteCo
 function stripRemoteResources(doc: Document, blocked: BlockedUrl): void {
   for (const link of [...doc.querySelectorAll("link[href]")]) {
     if (blocked(link.getAttribute("href"))) link.remove();
+  }
+  for (const el of [...doc.querySelectorAll("[background]")]) {
+    if (blocked(el.getAttribute("background"))) el.removeAttribute("background");
   }
   for (const img of [...doc.querySelectorAll("img")]) {
     if (blocked(img.getAttribute("src"))) {
@@ -443,7 +517,8 @@ function bodyPresentationStyle(doc: Document): string {
 
 /**
  * Sanitize a captured HTML email with DOMPurify and stamp openable anchors.
- * Preserves inline `<style>` blocks. Remote stylesheets, images, and CSS URLs
+ * Preserves inline `<style>` blocks, sealed so no CSS edit can create markup
+ * (see {@link sealStyleText}). Remote stylesheets, images, and CSS URLs
  * are stripped unless `loadRemoteContent` is true; local ones always stay.
  */
 export function buildMailFrameDocument(
@@ -454,6 +529,7 @@ export function buildMailFrameDocument(
   const doc = new DOMParser().parseFromString(cleaned, "text/html");
   filterHeadHazards(doc);
   if (!options.loadRemoteContent) stripRemoteResources(doc, blockedUrl(options.localTld));
+  sealStyles(doc);
   stampOpenableAnchors(doc);
   return {
     head: doc.head?.innerHTML ?? "",

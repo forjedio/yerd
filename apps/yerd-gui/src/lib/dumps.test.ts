@@ -17,7 +17,10 @@ import {
   rowCaller,
   rowCallerRel,
   rowDuration,
+  shownCards,
   statusTag,
+  streamRestarted,
+  summaryMatches,
 } from "./dumps";
 
 function ev(
@@ -53,6 +56,18 @@ function status(running: boolean, enabled: boolean): DumpsStatusResponse {
     features: {},
   };
 }
+
+describe("streamRestarted", () => {
+  it.each([
+    ["the first page", 0, 0, false],
+    ["an idle page", 5, 5, false],
+    ["new events", 5, 9, false],
+    ["ids that started over", 500, 3, true],
+    ["a fresh daemon with nothing yet", 500, 0, true],
+  ])("%s", (_, cursor, latest, expected) => {
+    expect(streamRestarted(cursor, page({ latest_id: latest }))).toBe(expected);
+  });
+});
 
 describe("mergePage", () => {
   it.each([
@@ -113,6 +128,42 @@ describe("filterRequests", () => {
     ["projects", "dump", []],
   ] as const)("query %j in %s", (q, category, keys) => {
     expect(filterRequests(requests, q, category).map((r) => r.key)).toEqual(keys);
+  });
+
+  const withSummary = groupRequests([
+    ev(1, "query", { sql: "select * from carts" }, "checkout"),
+    ev(2, "request", { method: "post", uri: "/checkout", status: 500 }, "checkout"),
+    ev(3, "dump", { value_text: "hello" }, "home"),
+    ev(4, "request", { method: "get", uri: "/", status: 200 }, "home"),
+    ev(5, "request", { method: "get", uri: "/ping", status: 204 }, "ping"),
+  ]);
+
+  it.each([
+    ["/checkout", "all", ["checkout"]],
+    ["POST", "all", ["checkout"]],
+    ["500", "all", ["checkout"]],
+    ["/ping", "all", ["ping"]],
+    ["/checkout", "query", ["checkout"]],
+    ["/checkout", "dump", []],
+    ["/ping", "query", []],
+    ["", "all", ["home", "checkout"]],
+  ] as const)("matches the request summary: %j in %s", (q, category, keys) => {
+    expect(filterRequests(withSummary, q, category).map((r) => r.key)).toEqual(keys);
+  });
+
+  it("shows every card of the chip when the summary matches, else the matching cards", () => {
+    const checkout = withSummary.find((r) => r.key === "checkout");
+    if (!checkout) throw new Error("no checkout request");
+    expect(shownCards(checkout, "/checkout", "all").map((e) => e.id)).toEqual([1]);
+    expect(shownCards(checkout, "carts", "all").map((e) => e.id)).toEqual([1]);
+    expect(shownCards(checkout, "nothing", "all")).toEqual([]);
+    expect(shownCards(checkout, "/checkout", "dump")).toEqual([]);
+  });
+
+  it("never matches a summary on an empty filter", () => {
+    const checkout = withSummary.find((r) => r.key === "checkout");
+    if (!checkout) throw new Error("no checkout request");
+    expect(summaryMatches(checkout, "  ")).toBe(false);
   });
 
   it("matches on the caller", () => {
@@ -188,5 +239,20 @@ describe("nextSelection", () => {
     ["clears on an empty list", "new", "new", [], null],
   ] as const)("%s", (_, prevFirst, selected, list, expected) => {
     expect(nextSelection(prevFirst, selected, list)).toBe(expected);
+  });
+
+  const three = groupRequests([ev(1, "dump", {}, "old"), ev(2, "dump", {}, "mid"), ev(3, "dump", {}, "hidden")]);
+  const shownOnly = three.filter((r) => r.key !== "hidden");
+
+  it.each([
+    ["a hidden newer arrival never takes the selection", "mid", "mid", "mid"],
+    ["a hidden selection that still exists stays put", "mid", "hidden", "hidden"],
+    ["a gone selection moves to the newest shown", "mid", "gone", "mid"],
+  ] as const)("%s", (_, prevFirst, selected, expected) => {
+    expect(nextSelection(prevFirst, selected, shownOnly, three)).toBe(expected);
+  });
+
+  it("keeps a still-held selection while the filter shows nothing", () => {
+    expect(nextSelection("mid", "mid", [], three)).toBe("mid");
   });
 });

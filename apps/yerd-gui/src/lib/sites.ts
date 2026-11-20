@@ -16,6 +16,22 @@ export function asciiLower(s: string): string {
   return s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
 }
 
+/**
+ * A domain as the daemon stores it (`yerd-core` `Domain::parse`): ASCII
+ * lowercased with one trailing dot stripped, so `API.blog.test.` and
+ * `api.blog.test` are the same domain.
+ */
+export function normalizeDomain(fqdn: string): string {
+  const lowered = asciiLower(fqdn.trim());
+  return lowered.endsWith(".") ? lowered.slice(0, -1) : lowered;
+}
+
+/** Whether `name` matches an existing site's name, ASCII-case-insensitively. */
+export function siteNameTaken(name: string, existing: readonly string[]): boolean {
+  const wanted = asciiLower(name.trim());
+  return wanted !== "" && existing.some((n) => asciiLower(n) === wanted);
+}
+
 /** The name the old list used for ungrouped sites; still reserved for groups. */
 export const RESERVED_GROUP = "Unallocated";
 

@@ -88,8 +88,9 @@ Remove a rule with `yerd proxy remove myapp /app`.
 
 ## Upstreams and headers
 
-The upstream is `http://host:port` or `https://host:port`. For an `https://`
-upstream, Yerd verifies the certificate for a genuine public host but **skips
+The upstream is `http://host:port` or `https://host:port`. In the desktop app
+a missing scheme means `http://`, and a bare port (`3000`) means that port on
+`127.0.0.1`. For an `https://` upstream, Yerd verifies the certificate for a genuine public host but **skips
 verification for a local host** (`localhost`, a loopback/private IP, or a `.test`
 name) - self-signed dev backends are the norm there.
 

@@ -458,6 +458,61 @@ describe("PhpView version actions", () => {
   });
 });
 
+describe("PhpView busy and uninstall bookkeeping", () => {
+  it("runs one update at a time and keeps it disabled while another action finishes", async () => {
+    stubIpc({ updates: [{ version: "8.4", installed: "8.4.14", latest: "8.4.15" }], pools: [{ version: "8.4" }] });
+    const w = await mountView();
+    let finishUpdate: () => void = () => {};
+    const base = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((cmd: string, ...rest: unknown[]) =>
+      cmd === "update_php"
+        ? new Promise((resolve) => {
+            finishUpdate = () => resolve({ type: "ok" });
+          })
+        : base(cmd, ...rest),
+    );
+    const updates = () => invokeMock.mock.calls.filter(([c]) => c === "update_php").length;
+
+    await w.get('[data-testid="banner-update"]').trigger("click");
+    await flushPromises();
+    expect(menuItem(w, "update").attributes("data-disabled")).toBeDefined();
+
+    await button(w, "Restart pool").trigger("click");
+    await flushPromises();
+    expect(w.get('[data-testid="banner-update"]').attributes("disabled")).toBeDefined();
+    expect(menuItem(w, "update").attributes("data-disabled")).toBeDefined();
+
+    await menuItem(w, "update").trigger("click");
+    await w.get('[data-testid="banner-update"]').trigger("click");
+    await flushPromises();
+    expect(updates()).toBe(1);
+
+    finishUpdate();
+    await flushPromises();
+    expect(toastTitles().filter((t) => t === "Updated PHP 8.4")).toHaveLength(1);
+  });
+
+  it("forgets a dirty version once it is uninstalled", async () => {
+    setWide(null);
+    stubIpc();
+    const w = await mountView();
+    await select(w, "8.1");
+    await w.get('input[id="set-8.1-memory_limit"]').setValue("1G");
+    stubIpc({ installed: ["8.4"] });
+
+    await menuItem(w, "uninstall").trigger("click");
+    await flushPromises();
+    await button(w, "Uninstall").trigger("click");
+    await flushPromises();
+    expect(rowKeys(w)).not.toContain("8.1");
+
+    await w.get('button[aria-label="Close PHP details"]').trigger("click");
+    await flushPromises();
+    expect(w.find('[role="alertdialog"]').exists()).toBe(false);
+    expect(w.find('[data-testid="php-inspector"]').exists()).toBe(false);
+  });
+});
+
 describe("PhpView install", () => {
   async function openInstall(w: View) {
     await w.get('[data-testid="install-php"]').trigger("click");

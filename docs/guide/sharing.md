@@ -188,11 +188,14 @@ shows a count.
   password](#password-protection). Protected shares show a key icon in the list.
 - **Share a site** opens one dialog for both kinds: pick a site, then **Quick
   link** or **Your domain**. For your domain the **Public hostname** is
-  pre-filled with `{site}.{your-domain}`; sharing creates the DNS record and the
-  daemon brings the tunnel up. Removing the last site takes it back down.
+  pre-filled with `{site}.{your-domain}` and must stay on that domain; until
+  Yerd knows your authorized domain the field stays empty and **Share** stays
+  off. Sharing creates the DNS record and the daemon brings the tunnel up.
+  Removing the last site takes it back down.
 - **Setup** holds the rest: the `cloudflared` in use (install, update, or switch
   to Yerd's copy), connecting your Cloudflare account, and creating, starting or
-  removing the tunnel for your domain.
+  removing the tunnel for your domain. Closing the connect dialog before you
+  authorize in the browser cancels the login.
 - Each site's `⋯` menu on the [Sites page](./sites) also has a **Share
   publicly…** shortcut that jumps straight to sharing that site, without going
   to the Share page first:

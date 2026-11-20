@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Pencil, Plus, RotateCcw, Star, Trash2 } from "lucide-vue-next";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 
 import DomainDialog from "@/components/sites/DomainDialog.vue";
 import Button from "@/components/ui/Button.vue";
@@ -9,6 +9,7 @@ import Spinner from "@/components/ui/Spinner.vue";
 import { CARD, SECTION_LABEL } from "@/components/ui/styles";
 import { useToast } from "@/composables/useToast";
 import { addDomain, IpcError, removeDomain, resetDomains, setPrimaryDomain } from "@/ipc/client";
+import { normalizeDomain } from "@/lib/sites";
 
 /** The minimal shape the card needs from whatever holds the domains: a
  *  `SiteEntry` satisfies it as-is, and `ProxyInspector` maps a proxy onto it.
@@ -28,7 +29,9 @@ export interface DomainsTarget {
  * set), with Make primary, Edit and Remove on each row. Add domain and Edit open
  * `DomainDialog`; Reset to default asks first. The daemon has no rename, so an
  * edit adds the new domain, moves the primary across if needed, then removes the
- * old one.
+ * old one. An edit the daemon would normalize back to the old domain (case or a
+ * trailing dot) just closes, since add-then-remove would delete it. Switching to
+ * another target closes an open dialog, so a staged edit can't land on it.
  */
 const props = defineProps<{
   site: DomainsTarget;
@@ -59,6 +62,15 @@ const busy = ref<string | null>(null);
 const dialogOpen = ref(false);
 const editing = ref<string | null>(null);
 const confirmReset = ref(false);
+
+watch(
+  () => props.site.name,
+  () => {
+    dialogOpen.value = false;
+    editing.value = null;
+    confirmReset.value = false;
+  },
+);
 
 function openAdd(): void {
   editing.value = null;
@@ -92,6 +104,10 @@ async function run(key: string, fn: () => Promise<void>, ok: string): Promise<bo
 async function submit(domain: string): Promise<void> {
   const old = editing.value;
   const name = props.site.name;
+  if (old && normalizeDomain(domain) === normalizeDomain(old)) {
+    dialogOpen.value = false;
+    return;
+  }
   const done = old
     ? await run(
         `edit:${old}`,

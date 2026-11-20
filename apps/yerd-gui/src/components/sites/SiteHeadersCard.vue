@@ -48,7 +48,17 @@ async function reload(): Promise<void> {
   }
 }
 
-watch(() => props.site.name, () => void reload(), { immediate: true });
+/** A site switch refetches and closes an open dialog, so a staged add or edit
+ *  can't be saved against the newly selected site. */
+watch(
+  () => props.site.name,
+  () => {
+    dialogOpen.value = false;
+    editing.value = null;
+    void reload();
+  },
+  { immediate: true },
+);
 
 function openAdd(): void {
   editing.value = null;

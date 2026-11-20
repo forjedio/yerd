@@ -61,12 +61,15 @@ function stubIpc(opts: {
   rules?: ProxyRuleEntry[];
   sites?: SiteEntry[];
   failures?: string[];
+  commands?: Record<string, (args?: Record<string, unknown>) => Promise<unknown>>;
 }) {
   const proxies = opts.proxies ?? [];
   const rules = opts.rules ?? [];
   const sites = opts.sites ?? [];
-  invokeMock.mockImplementation((cmd: string) => {
+  invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
     if (opts.failures?.includes(cmd)) return Promise.reject(new Error(`${cmd} failed`));
+    const override = opts.commands?.[cmd];
+    if (override) return override(args);
     switch (cmd) {
       case "list_proxies":
         return Promise.resolve({ type: "proxies", proxies, rules });
@@ -291,7 +294,7 @@ describe("ProxiesView layouts", () => {
 describe("ProxiesView CA strip", () => {
   it.each([
     ["a secure proxy and an untrusted CA", true, false, true],
-    ["an unknown trust", true, null, true],
+    ["an unknown trust", true, null, false],
     ["a trusted CA", true, true, false],
     ["no secure proxy", false, false, false],
   ] as const)("with %s shows the strip: %s", async (_label, secure, trusted, shown) => {
@@ -458,6 +461,35 @@ describe("ProxiesView inspector", () => {
     await flushPromises();
     await click(w, "Remove proxy");
     expect(lastCall("remove_proxy")).toEqual({ name: "reverb" });
+  });
+
+  it("keeps a second remove confirm intact when the first removal finishes", async () => {
+    let finish = (): void => {};
+    stubIpc({
+      proxies: [reverb(), { ...dotted(), primary_domain: undefined, domains: undefined }],
+      commands: {
+        remove_proxy: (args) =>
+          args?.name === "reverb"
+            ? new Promise((resolve) => {
+                finish = () => resolve({ type: "ok" });
+              })
+            : Promise.resolve({ type: "ok" }),
+      },
+    });
+    const w = await mountView();
+    await openRow(w, "proxy:reverb");
+    await w.get('[data-testid="inspector-footer-action"]').trigger("click");
+    await flushPromises();
+    await click(w, "Remove proxy");
+
+    await openRow(w, "proxy:api.account");
+    await w.get('[data-testid="inspector-footer-action"]').trigger("click");
+    await flushPromises();
+    finish();
+    await flushPromises();
+    expect(w.get('[role="alertdialog"]').text()).toContain("Remove api.account.test?");
+    await click(w, "Remove proxy");
+    expect(lastCall("remove_proxy")).toEqual({ name: "api.account" });
   });
 
   it("removes a path after confirming", async () => {

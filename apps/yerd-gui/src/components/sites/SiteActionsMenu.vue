@@ -15,7 +15,7 @@ import {
   UserRound,
 } from "lucide-vue-next";
 import { PopoverAnchor, PopoverContent, PopoverPortal, PopoverRoot } from "reka-ui";
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 
 import SiteRoutesPanel from "@/components/SiteRoutesPanel.vue";
 import WebRootDialog from "@/components/sites/WebRootDialog.vue";
@@ -53,7 +53,8 @@ import { openWpAdmin } from "@/lib/wpAdmin";
  *
  * `layerOpen` is true while the dropdown or the New group popover is open, so
  * the drawer can leave Escape to that layer: reka never prevents Escape and
- * listens on `window`, after the drawer's document listener.
+ * listens on `window`, after the drawer's document listener. It is cleared on
+ * unmount too, since a menu torn down while open never reports closing.
  */
 const props = defineProps<{
   site: SiteEntry;
@@ -99,6 +100,21 @@ watch([menuOpen, newGroupOpen], ([menu, popover]) => {
   layerOpen.value = menu || popover;
 });
 
+onBeforeUnmount(() => {
+  layerOpen.value = false;
+});
+
+/** Set when New group… is picked: the closing menu must then skip its focus
+ *  restore, or refocusing the `···` trigger counts as a focus-outside for the
+ *  non-modal popover and dismisses it as soon as it opens. */
+let keepFocusOnClose = false;
+
+function onMenuCloseAutoFocus(event: Event): void {
+  if (!keepFocusOnClose) return;
+  keepFocusOnClose = false;
+  event.preventDefault();
+}
+
 const newGroupValid = computed(() => groupNameAvailable(newGroupName.value, props.groups.order));
 
 function later(open: () => void): void {
@@ -106,6 +122,7 @@ function later(open: () => void): void {
 }
 
 function openNewGroup(): void {
+  keepFocusOnClose = true;
   newGroupName.value = "";
   later(() => {
     newGroupOpen.value = true;
@@ -145,7 +162,7 @@ async function openDumps(): Promise<void> {
             <Ellipsis />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" class="w-60">
+        <DropdownMenuContent align="end" class="w-60" @close-auto-focus="onMenuCloseAutoFocus">
           <DropdownMenuItem @select="copyUrl">
             <Copy class="size-4" /> Copy URL
             <span class="ml-auto text-[11px] text-faint">{{ copyHint }}</span>

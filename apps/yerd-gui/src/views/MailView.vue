@@ -32,7 +32,7 @@ const router = useRouter();
 const { report, refresh } = useDaemon();
 const wide = useWideLayout();
 const box = useMailbox({ autoSelect: () => wide.value });
-const { app, busy, detail, filtered, list, loadingDetail, now, selectedId } = box;
+const { app, busy, detail, failedId, filtered, list, loadingDetail, now, selectedId } = box;
 
 onUnmounted(
   registerViewActions({
@@ -182,6 +182,7 @@ function onSelect(id: string): void {
         >
           <MailReader
             :detail="detail"
+          :failed-id="failedId"
             :tld="report?.tld"
             :loading="loadingDetail"
             :now="now"

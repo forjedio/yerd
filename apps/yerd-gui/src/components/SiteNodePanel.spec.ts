@@ -265,6 +265,52 @@ describe("SiteNodePanel", () => {
     expect(wrapper.text()).toContain("Manage Node versions");
   });
 
+  it("writes nothing when the selected segment is clicked again", async () => {
+    nodeSite.mockResolvedValue(reply({ preference: "22.9.0", effective: "22.9.0", source: "site" }));
+    const wrapper = await mountPanel();
+    await segment(wrapper, "22").trigger("click");
+    await flushPromises();
+    nodeSite.mockResolvedValue(reply());
+    const unset = await mountPanel();
+    await segment(unset, "Default").trigger("click");
+    await flushPromises();
+    expect(setNodeVersion).not.toHaveBeenCalled();
+    expect(clearNodeVersion).not.toHaveBeenCalled();
+    expect(toastSuccess).not.toHaveBeenCalled();
+  });
+
+  it("keeps another site's picker usable while a change is in flight", async () => {
+    setNodeVersion.mockReturnValue(new Promise(() => {}));
+    const wrapper = await mountPanel(site("blog"));
+    await segment(wrapper, "20").trigger("click");
+    await flushPromises();
+    expect(segment(wrapper, "20").attributes("disabled")).toBeDefined();
+    await wrapper.setProps({ site: site("shop") });
+    await flushPromises();
+    expect(segment(wrapper, "20").attributes("disabled")).toBeUndefined();
+  });
+
+  it("shows install progress only under the site that started it", async () => {
+    let finish: () => void = () => {};
+    installNodeWithProgress.mockImplementation(
+      (_v: string, _d: boolean, onLines: (lines: string[]) => void) =>
+        new Promise<void>((resolve) => {
+          onLines(["downloading node 18"]);
+          finish = resolve;
+        }),
+    );
+    nodeSite.mockResolvedValue(reply({ error: "Node 18 is not installed", missing: "18" }));
+    const wrapper = await mountPanel(site("blog"));
+    await wrapper.get('[data-testid="site-node-install"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("downloading node 18");
+    await wrapper.setProps({ site: site("shop") });
+    await flushPromises();
+    expect(wrapper.text()).not.toContain("downloading node 18");
+    finish();
+    await flushPromises();
+  });
+
   it("ignores a reply that lands after the panel closes", async () => {
     let fail: (e: unknown) => void = () => {};
     nodeSite.mockImplementation(

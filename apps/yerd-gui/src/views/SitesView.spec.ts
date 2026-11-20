@@ -33,6 +33,7 @@ vi.mock("@/composables/useDaemon", async () => {
 });
 
 import SitesView from "./SitesView.vue";
+import NewSiteDialog from "@/components/site-create/NewSiteDialog.vue";
 import LinkFolderDialog from "@/components/sites/LinkFolderDialog.vue";
 import SiteInspector from "@/components/sites/SiteInspector.vue";
 import { useDaemon } from "@/composables/useDaemon";
@@ -349,6 +350,56 @@ describe("SitesView keyboard", () => {
   });
 });
 
+describe("SitesView selection", () => {
+  it("keeps inspecting a wide selection a filter hides, until the site is gone", async () => {
+    setWide(true);
+    const world: World = { sites: [site("alpha"), site("beta")], parked: ["/srv"] };
+    serve(world);
+    const w = await mountSites();
+    expect(w.get('[data-testid="inspector-column"]').text()).toContain("alpha.test");
+    await filter(w, "beta");
+    expect(rowNames(w)).toEqual(["beta"]);
+    expect(w.get('[data-testid="inspector-column"]').text()).toContain("alpha.test");
+    world.sites = [site("beta")];
+    w.findComponent(SiteInspector).vm.$emit("domainsChanged");
+    await flushPromises();
+    expect(w.get('[data-testid="inspector-column"]').text()).toContain("beta.test");
+  });
+
+  it("ignores list shortcuts for a compact selection a filter hides", async () => {
+    serve({ sites: [site("alpha"), site("beta")], parked: ["/srv"] });
+    const w = await mountSites();
+    await row(w, "alpha").trigger("click");
+    await flushPromises();
+    await w.get('[aria-label="Close site details"]').trigger("click");
+    await filter(w, "beta");
+    await key(w, { key: "Enter" });
+    await key(w, { key: "c", metaKey: true });
+    expect(openUrl).not.toHaveBeenCalled();
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+    expect(w.get('[data-testid="sites-list"]').attributes("aria-activedescendant")).toBeUndefined();
+  });
+
+  it.each([" ", "ArrowRight"])("opens the compact drawer for the selected row on %j", async (k) => {
+    serve({ sites: [site("alpha"), site("beta")], parked: ["/srv"] });
+    const w = await mountSites();
+    expect(document.body.querySelector('[data-testid="site-inspector"]')).toBeNull();
+    await key(w, { key: "ArrowDown" });
+    await key(w, { key: "ArrowDown" });
+    await key(w, { key: k });
+    expect(document.body.querySelector('[data-testid="site-inspector"]')?.textContent).toContain(
+      "beta.test",
+    );
+    expect(w.get('[data-testid="sites-hints"]').text()).toContain("Space details");
+  });
+
+  it("passes every site name to New site so a taken name is refused", async () => {
+    serve({ sites: [site("alpha"), site("lnk", { kind: "linked" })], parked: ["/srv"] });
+    const w = await mountSites();
+    expect(w.findComponent(NewSiteDialog).props("existingNames")).toEqual(["alpha", "lnk"]);
+  });
+});
+
 describe("SitesView states", () => {
   it("offers to park, create or link when there is nothing yet", async () => {
     serve({ sites: [], routes: { park: () => ({ type: "ok" }) } });
@@ -628,9 +679,9 @@ describe("SitesView WordPress auto-login controls", () => {
     expect(w.get<HTMLSelectElement>("#site-wp-admin-user").element.value).toBe("editor");
   });
 
-  it("locks auto-login and hides the picker when the fetch fails", async () => {
+  it("hides the picker but writes nothing when the fetch for an auto-selected site fails", async () => {
     serve({
-      sites: [wpSite("alpha")],
+      sites: [wpSite("alpha", { wp_auto_login_user: "editor" })],
       routes: {
         wordpress_admin_users: () => Promise.reject(new Error("boom")),
         set_wordpress_auto_login: () => ({ type: "ok" }),
@@ -639,8 +690,7 @@ describe("SitesView WordPress auto-login controls", () => {
     const w = await mountSites();
     await flushPromises();
     expect(w.find("#site-wp-admin-user").exists()).toBe(false);
-    expect(calls("set_wordpress_auto_login")).toEqual([
-      { name: "alpha", enabled: false, user: null },
-    ]);
+    expect(w.get('[data-testid="wp-admin-users-error"]').text()).toContain("boom");
+    expect(calls("set_wordpress_auto_login")).toEqual([]);
   });
 });

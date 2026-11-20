@@ -44,7 +44,10 @@ const { data: releases, refresh: refreshReleases } = useResource("node", listNod
  *  `SiteEntry`, so it fetches per site and refetches after every change. */
 const status = ref<NodeSiteResponse | null>(null);
 const loading = ref(false);
-const busy = ref(false);
+/** The site whose Node change is in flight, so switching sites mid-write
+ *  leaves the next site's picker usable. */
+const busySite = ref<string | null>(null);
+const busy = computed(() => busySite.value === props.site.name);
 /** Bumped after a failed change so the select re-renders with the saved value. */
 const selectKey = ref(0);
 
@@ -124,7 +127,12 @@ watch(installing, (now, was) => {
  *  default) when no installed release matches it, as reported by the daemon. */
 const missingSelector = computed(() => status.value?.missing ?? null);
 
-const installProgress = ref("");
+/** The latest install log line, tagged with the site that started the install
+ *  so it isn't shown under another site after a switch. */
+const installLine = ref<{ site: string; line: string } | null>(null);
+const installProgress = computed(() =>
+  installLine.value?.site === props.site.name ? installLine.value.line : "",
+);
 
 /** Install the missing release in place, as the Node page would; the
  *  `installing` watch reloads this site's status once it ends. */
@@ -132,13 +140,14 @@ async function installMissing(): Promise<void> {
   const version = missingSelector.value;
   if (!version || busy.value || installing.value) return;
   const opId = `node-install:${version}`;
+  const site = props.site.name;
   operations.begin({ id: opId, kind: "tool-install", label: `Installing Node ${version}` });
-  installProgress.value = "";
+  installLine.value = null;
   try {
     await installNodeWithProgress(version, false, (lines) => {
       const latest = lines[lines.length - 1];
       if (!latest) return;
-      installProgress.value = latest;
+      installLine.value = { site, line: latest };
       operations.update(opId, { detail: latest });
     });
     toast.success(`Installed Node ${version}`);
@@ -147,7 +156,7 @@ async function installMissing(): Promise<void> {
     toast.error(`Install of Node ${version} failed`, (e as IpcError).message);
   } finally {
     operations.end(opId);
-    installProgress.value = "";
+    installLine.value = null;
     await refreshReleases({ force: true });
   }
 }
@@ -155,7 +164,7 @@ async function installMissing(): Promise<void> {
 async function change(version: string): Promise<void> {
   if (busy.value || installing.value) return;
   const name = props.site.name;
-  busy.value = true;
+  busySite.value = name;
   try {
     if (version === "") {
       await clearNodeVersion(name);
@@ -170,7 +179,7 @@ async function change(version: string): Promise<void> {
     selectKey.value += 1;
     toast.error("Couldn't change the Node version", (e as IpcError).message);
   } finally {
-    busy.value = false;
+    if (busySite.value === name) busySite.value = null;
   }
 }
 
@@ -246,6 +255,7 @@ const HINT =
           :model-value="status?.preference || DEFAULT_SEGMENT"
           :options="segments"
           aria-label="Site Node version"
+          manual-activation
           :disabled="busy || installing || noneInstalled"
           @update:model-value="changeSegment"
         />

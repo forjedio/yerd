@@ -215,6 +215,41 @@ describe("ServiceDatabasesCard", () => {
     expect(updates[updates.length - 1]).toEqual([true]);
   });
 
+  function lastLayerOpen(w: Card): unknown {
+    const updates = w.emitted("update:layerOpen") ?? [];
+    return updates[updates.length - 1]?.[0];
+  }
+
+  it("drops the layer when an open row menu unmounts with the engine stopping", async () => {
+    const w = await mountCard();
+    w.findAllComponents({ name: "MenuStub" })[0]!.vm.$emit("update:open", true);
+    await flushPromises();
+    expect(lastLayerOpen(w)).toBe(true);
+
+    await w.setProps({ service: postgres({ state: "stopped" }), names: null });
+    await flushPromises();
+    expect(w.findAllComponents({ name: "MenuStub" })).toHaveLength(0);
+    expect(lastLayerOpen(w)).toBe(false);
+  });
+
+  it("drops the layer when an open row menu's row is filtered out", async () => {
+    const w = await mountCard();
+    w.findAllComponents({ name: "MenuStub" })[0]!.vm.$emit("update:open", true);
+    await flushPromises();
+    await w.get('[aria-label="Filter databases"]').setValue("notes");
+    await flushPromises();
+    expect(lastLayerOpen(w)).toBe(false);
+  });
+
+  it("drops the layer when the card unmounts with a menu open", async () => {
+    const w = await mountCard();
+    w.findAllComponents({ name: "MenuStub" })[0]!.vm.$emit("update:open", true);
+    await flushPromises();
+    w.unmount();
+    mounted.splice(mounted.indexOf(w), 1);
+    expect(lastLayerOpen(w)).toBe(false);
+  });
+
   it("asks to start a stopped engine and disables New database", async () => {
     const w = await mountCard({ service: postgres({ state: "stopped" }), names: null });
     expect(w.text()).toContain("Start PostgreSQL to see its databases.");

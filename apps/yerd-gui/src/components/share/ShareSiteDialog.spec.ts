@@ -94,15 +94,37 @@ describe("ShareSiteDialog", () => {
     expect(w.emitted("share")).toEqual([[{ site: "legacy", kind: "domain", hostname: "shop.forjed.io" }]]);
   });
 
+  it("prefills nothing and blocks Share until the zone resolves", async () => {
+    const w = mountDialog({ zone: null });
+    await flushPromises();
+    await pickKind("domain");
+    await pickSite("app");
+    expect(hostInput()?.value).toBe("");
+    expect(hostInput()?.placeholder).toBe("site.example.com");
+    expect(submit().disabled).toBe(true);
+    expect(document.querySelector('[data-testid="host-hint"]')?.textContent).toContain("couldn't read your Cloudflare domain");
+
+    hostInput()!.value = "app.example.com";
+    hostInput()!.dispatchEvent(new Event("input"));
+    await flushPromises();
+    expect(submit().disabled).toBe(true);
+
+    await w.setProps({ zone: "forjed.io" });
+    await flushPromises();
+    expect(submit().disabled).toBe(true);
+    expect(document.querySelector('[data-testid="host-hint"]')?.textContent).toContain("Use a hostname on forjed.io");
+  });
+
   it("re-suggests an unedited hostname once the zone resolves", async () => {
     const w = mountDialog({ zone: null });
     await flushPromises();
     await pickKind("domain");
     await pickSite("app");
-    expect(hostInput()?.value).toBe("app.example.com");
     await w.setProps({ zone: "forjed.io" });
     await flushPromises();
     expect(hostInput()?.value).toBe("app.forjed.io");
+    expect(submit().disabled).toBe(false);
+    expect(document.querySelector('[data-testid="host-hint"]')).toBeNull();
   });
 
   it("disables Share without a hostname", async () => {

@@ -61,11 +61,6 @@ export function portsReady(report: StatusReport): boolean {
   return !fellPrivileged || report.port_redirect === true;
 }
 
-/** No PHP installed and nothing parked or linked: the first-run trigger. */
-export function emptyEnvironment(report: StatusReport): boolean {
-  return report.php.length === 0 && report.sites.parked === 0 && report.sites.linked === 0;
-}
-
 /** The status card's state: degraded when the web ports are unbound, else by site count. */
 export function statusKind(report: StatusReport, siteCount: number): StatusKind {
   if (report.web_unbound) return "not-serving";
@@ -101,9 +96,10 @@ const DOCTOR_FIX = { label: "Fix", to: "/doctor" };
 /**
  * The health well's rows. Healthy CA and resolver checks collapse into one `ok`
  * row; each failing or unknown check gets its own `warn` row linking to Doctor.
- * A web-port bind failure is a `bad` row linking to Settings; a privileged-port
- * fallback without a redirect is a `warn` row linking to Doctor. Healthy ports
- * add nothing.
+ * A web-port or DNS-port bind failure is a `bad` row linking to Settings (an
+ * installed resolver is no comfort while the DNS port is unbound, so it leaves
+ * the `ok` row then); a privileged-port fallback without a redirect is a `warn`
+ * row linking to Doctor. Healthy ports add nothing.
  */
 export function healthRows(report: StatusReport): HealthRow[] {
   const tld = report.tld;
@@ -122,8 +118,16 @@ export function healthRows(report: StatusReport): HealthRow[] {
   }
 
   const resolver = report.resolver_installed;
-  if (resolver === true) healthy.push(`.${tld} resolver installed`);
-  else {
+  const dnsUnbound = report.dns_unbound;
+  if (dnsUnbound != null) {
+    problems.push({
+      key: "dns",
+      tone: "bad",
+      text: `Couldn't bind DNS port ${dnsUnbound} — .${tld} names won't resolve`,
+      link: { label: "Change port", to: "/general" },
+    });
+  } else if (resolver === true) healthy.push(`.${tld} resolver installed`);
+  if (resolver !== true) {
     problems.push({
       key: "resolver",
       tone: "warn",
@@ -171,13 +175,27 @@ export function siteSubtitle(site: SiteEntry): string {
   return parts.join(" · ");
 }
 
-/** The first-run checklist, given the report and the number of parked roots. */
+/** The first-run checklist, given the report and the number of parked roots.
+ *  Parking is done once a folder is parked or any site is linked. */
 export function setupSteps(report: StatusReport, parkedRoots: number): SetupStep[] {
   return [
     { key: "trust", done: report.ca.trusted_system === true },
     { key: "php", done: report.php.length > 0 },
-    { key: "park", done: parkedRoots > 0 || report.sites.parked > 0 },
+    {
+      key: "park",
+      done: parkedRoots > 0 || report.sites.parked > 0 || report.sites.linked > 0,
+    },
   ];
+}
+
+/**
+ * Whether the checklist still belongs on Overview: until PHP is installed and
+ * a folder is parked (or a site linked). It stays through the steps between,
+ * so installing PHP doesn't hide the park step. Trust alone doesn't keep it up:
+ * the health well already flags an untrusted CA with its own Fix link.
+ */
+export function setupPending(steps: readonly SetupStep[]): boolean {
+  return steps.some((s) => s.key !== "trust" && !s.done);
 }
 
 /** The first step still to do, or `null` when every step is done. */

@@ -121,4 +121,14 @@ describe("SiteHeadersCard", () => {
     await flushPromises();
     expect(rows(w)).toEqual(["X-Other1"]);
   });
+
+  it("closes an open dialog when the site switches", async () => {
+    const w = await mountCard();
+    await w.get('[aria-label="Edit header X-Frame-Options"]').trigger("click");
+    const dialog = w.findComponent(HeaderDialog);
+    expect(dialog.props("open")).toBe(true);
+    await w.setProps({ site: { ...site, name: "other" } });
+    expect(dialog.props("open")).toBe(false);
+    expect(dialog.props("editing")).toBeNull();
+  });
 });

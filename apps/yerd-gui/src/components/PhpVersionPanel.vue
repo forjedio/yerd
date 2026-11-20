@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, useTemplateRef, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, useTemplateRef, watch } from "vue";
 import {
   Check,
   FileText,
@@ -161,34 +161,50 @@ watch(
 
 // ── per-version settings form ──
 // Fields hold only the override value; an empty field means "inherit" (the
-// placeholder shows what is inherited). Same pristine/seed discipline as the
-// global settings form: server refreshes only reseed while there are no
-// unsaved edits.
+// placeholder shows what is inherited). Server refreshes rebase the form: an
+// untouched field takes the fresh override, an edited one keeps the edit, and
+// Save sends only the edited fields, so an out-of-band change (CLI, MCP) to
+// another key is neither hidden nor reverted.
 const form = ref<Record<string, string>>({});
 const lastSeeded = ref<Record<string, string>>({});
 
-function seed(overrides: Record<string, string>): void {
+function seededFrom(overrides: Record<string, string>): Record<string, string> {
   const next: Record<string, string> = {};
   for (const k of SETTING_KEYS) next[k] = overrides[k] ?? "";
+  return next;
+}
+
+function seed(overrides: Record<string, string>): void {
+  const next = seededFrom(overrides);
   form.value = next;
   lastSeeded.value = { ...next };
 }
 
-/** Unsaved edits in the settings grid alone. */
-const settingsDirty = computed(() =>
-  SETTING_KEYS.some((k) => (form.value[k] ?? "") !== (lastSeeded.value[k] ?? "")),
-);
+function rebase(overrides: Record<string, string>): void {
+  const next = seededFrom(overrides);
+  const merged: Record<string, string> = {};
+  for (const k of SETTING_KEYS) {
+    const current = form.value[k] ?? "";
+    merged[k] = current === (lastSeeded.value[k] ?? "") ? (next[k] ?? "") : current;
+  }
+  form.value = merged;
+  lastSeeded.value = next;
+}
 
-// Guarded on `settingsDirty` rather than the wider `panelDirty`: a half-typed
-// directive must not stop an out-of-band ini change (e.g. via the CLI) from
-// self-correcting here.
-watch(
-  () => props.overrides,
-  (o) => {
-    if (!settingsDirty.value) seed(o);
-  },
-  { immediate: true },
-);
+/** The edited fields, as a save payload; a blank one removes its override. */
+function changedSettings(): Record<string, string> {
+  const changed: Record<string, string> = {};
+  for (const k of SETTING_KEYS) {
+    const v = form.value[k] ?? "";
+    if (v !== (lastSeeded.value[k] ?? "")) changed[k] = v;
+  }
+  return changed;
+}
+
+/** Unsaved edits in the settings grid alone. */
+const settingsDirty = computed(() => Object.keys(changedSettings()).length > 0);
+
+watch(() => props.overrides, rebase, { immediate: true });
 
 const directiveEntries = computed(() =>
   Object.entries(props.directives).sort(([a], [b]) => a.localeCompare(b)),
@@ -244,8 +260,8 @@ const canSave = computed(
 );
 
 /**
- * Persist the settings grid: the allowlisted overrides first (every field, so a
- * blank one removes its override), then the worker ceiling. Each reseeds from
+ * Persist the settings grid: the edited allowlisted overrides first (the daemon
+ * merges them; a blank one removes its override), then the worker ceiling. Each reseeds from
  * its reply. A failure stops there and leaves the rest staged.
  */
 async function save(): Promise<void> {
@@ -255,7 +271,7 @@ async function save(): Promise<void> {
     let settingsSaved = false;
     if (settingsDirty.value) {
       try {
-        const payload: Record<string, string> = { ...form.value };
+        const payload = changedSettings();
         if (!props.ffiAvailable) delete payload[FFI_KEY];
         const r = await setPhpVersionSettings(props.version, payload);
         seed(r.version_settings?.[props.version] ?? {});
@@ -609,13 +625,19 @@ function closeAddRow(): void {
 
 const extMenuOpen = ref<Record<string, boolean>>({});
 
+/** Only rows still on screen count: a row removed while its menu was open (an
+ *  out-of-band uninstall) never reports the close, and must not keep Escape. */
 watch(
-  extMenuOpen,
-  (menus) => {
-    layerOpen.value = Object.values(menus).some(Boolean);
+  [extMenuOpen, () => props.extensions],
+  ([menus, exts]) => {
+    layerOpen.value = exts.some((ext) => menus[ext.name] === true);
   },
   { deep: true },
 );
+
+onBeforeUnmount(() => {
+  layerOpen.value = false;
+});
 
 async function removeExtension(name: string): Promise<void> {
   if (isBusy.value) return;

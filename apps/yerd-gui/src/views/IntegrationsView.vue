@@ -27,6 +27,7 @@ import {
   deleteNamedTunnel,
   installCloudflaredStreamed,
   IpcError,
+  jobCancel,
   listNamedTunnels,
   listSites,
   openInBrowser,
@@ -214,6 +215,9 @@ const loginOpen = ref(false);
 const loginLines = ref<string[]>([]);
 const loginUrl = computed(() => loginUrlFrom(loginLines.value));
 
+/** Closing the dialog (or leaving the page) while the login still runs cancels
+ *  the daemon job: it holds the tunnel lock until cloudflared exits, which
+ *  would otherwise stall every other tunnel action for up to five minutes. */
 async function doLogin(): Promise<void> {
   busy.value = "login";
   loginLines.value = [];
@@ -227,6 +231,11 @@ async function doLogin(): Promise<void> {
       },
       () => loginOpen.value,
     );
+    if (final.state === "running") {
+      await jobCancel(jobId).catch((e: unknown) =>
+        toast.error("Couldn't cancel the Cloudflare login", (e as IpcError).message),
+      );
+    }
     await reload();
     if (final.state === "succeeded") {
       toast.success("Connected to Cloudflare");

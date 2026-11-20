@@ -113,7 +113,7 @@ fn next_target(
     let target = if is_zoomed(current, visible) {
         match state.restore.take() {
             Some(restored) => restored,
-            None => centered(configured?, visible),
+            None => centered(fit_to_visible(configured?, visible), visible),
         }
     } else {
         state.restore = Some(current);
@@ -173,6 +173,17 @@ fn configured_size(window: &WebviewWindow) -> Option<NSSize> {
         .map(|cfg| NSSize::new(cfg.width, cfg.height))
 }
 
+/// Shrink `size` to fit inside `visible` with the launch-fit margin, so an
+/// un-zoom to the configured size never overflows a small screen and never
+/// lands on a frame `is_zoomed` would read as zoomed.
+fn fit_to_visible(size: NSSize, visible: NSRect) -> NSSize {
+    let (width, height) = crate::window_fit::fit_size(
+        (size.width, size.height),
+        (visible.size.width, visible.size.height),
+    );
+    NSSize::new(width, height)
+}
+
 fn centered(size: NSSize, visible: NSRect) -> NSRect {
     let origin = NSPoint::new(
         visible.origin.x + (visible.size.width - size.width) / 2.0,
@@ -184,7 +195,7 @@ fn centered(size: NSSize, visible: NSRect) -> NSRect {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{centered, is_zoomed, next_target, ZoomState, ANIMATION_SETTLE};
+    use super::{centered, fit_to_visible, is_zoomed, next_target, ZoomState, ANIMATION_SETTLE};
     use objc2_foundation::{NSPoint, NSRect, NSSize};
     use std::time::{Duration, Instant};
 
@@ -270,11 +281,14 @@ mod tests {
     }
 
     #[test]
-    fn a_window_zoomed_by_the_system_restores_to_its_configured_size() {
+    fn a_window_zoomed_by_the_system_restores_to_its_fitted_configured_size() {
         let mut state = ZoomState::default();
 
         let restored = toggle(&mut state, VISIBLE, Instant::now()).expect("restores");
-        assert!(same(restored, centered(CONFIGURED, VISIBLE)));
+        assert!(same(
+            restored,
+            centered(fit_to_visible(CONFIGURED, VISIBLE), VISIBLE)
+        ));
     }
 
     #[test]
@@ -292,6 +306,34 @@ mod tests {
 
         let restored = toggle(&mut state, VISIBLE, settled + ANIMATION_SETTLE).expect("restores");
         assert!(same(restored, dragged));
+    }
+
+    #[test]
+    fn a_system_zoomed_window_on_a_small_screen_restores_inside_the_visible_frame() {
+        let mut state = ZoomState::default();
+        let visible = rect(0.0, 69.0, 1440.0, 806.0);
+        let configured = NSSize::new(1312.0, 860.0);
+
+        let restored = next_target(
+            &mut state,
+            visible,
+            visible,
+            Some(configured),
+            Instant::now(),
+        )
+        .expect("restores");
+        assert!(restored.origin.y >= visible.origin.y);
+        assert!(restored.origin.y + restored.size.height <= visible.origin.y + visible.size.height);
+        assert!(restored.origin.x >= visible.origin.x);
+        assert!(!is_zoomed(restored, visible));
+        assert_eq!(restored.size.width, 1312.0);
+    }
+
+    #[test]
+    fn fit_to_visible_keeps_a_size_that_already_fits() {
+        let size = fit_to_visible(CONFIGURED, rect(0.0, 0.0, 2560.0, 1415.0));
+        assert_eq!(size.width, CONFIGURED.width);
+        assert_eq!(size.height, CONFIGURED.height);
     }
 
     #[test]

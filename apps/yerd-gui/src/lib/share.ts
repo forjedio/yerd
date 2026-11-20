@@ -3,6 +3,7 @@
  * `tunnel_status`, `list_named_tunnels` and `list_sites` replies.
  */
 import type { CloudflaredStatus, Site, SiteHostname, TunnelInfo, TunnelRunState } from "@/ipc/types";
+import { validateDomainShape } from "@/lib/domainValidation";
 import { joinWithAnd, plural } from "@/lib/utils";
 
 /** How a share is published: a temporary quick link or a hostname on the user's domain. */
@@ -125,9 +126,26 @@ export function stateDotClass(state: ShareState): string {
 }
 
 /** The suggested public hostname for a site: `{site}.{zone}` once the zone is
- *  known, otherwise a placeholder domain. */
+ *  known, otherwise "" so no made-up domain is ever submitted. */
 export function suggestedHost(site: string, zone: string | null): string {
-  return `${site}.${zone ?? "example.com"}`;
+  return zone ? `${site}.${zone}` : "";
+}
+
+/** The hostname field's placeholder: an example on the zone, or on
+ *  example.com while the zone is unknown. */
+export function hostPlaceholder(zone: string | null): string {
+  return `site.${zone ?? "example.com"}`;
+}
+
+/** Whether `host` can be shared on `zone`: a well-formed hostname (no
+ *  wildcard) that is the zone or sits under it. False while the zone is
+ *  unknown, since the DNS route can only be created on the account's zone. */
+export function isShareHostname(host: string, zone: string | null): boolean {
+  if (!zone) return false;
+  const h = host.trim().toLowerCase().replace(/\.$/, "");
+  const z = zone.toLowerCase();
+  if (h.includes("*") || validateDomainShape(h) !== null) return false;
+  return h === z || h.endsWith(`.${z}`);
 }
 
 /** Where the active cloudflared came from. */

@@ -76,7 +76,7 @@ const reverb = computed(() =>
 );
 
 const title = computed(() =>
-  kind.value === "site" ? `Connect ${siteDomain(props.service, props.tld)}` : "Connect a Laravel app",
+  kind.value === "site" ? `Connect ${siteDomain(props.service, props.tld, props.sites)}` : "Connect a Laravel app",
 );
 
 const dbHint = computed(() => {

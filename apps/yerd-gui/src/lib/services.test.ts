@@ -4,7 +4,10 @@ import {
   address,
   canStart,
   canStop,
+  changeVersionNote,
+  compareServiceVersions,
   connectKind,
+  currentVersion,
   databasesFooter,
   defaultConnectDb,
   detailsCell,
@@ -26,6 +29,8 @@ import {
   sqlEnv,
   statusLine,
   testCopyBase,
+  uninstallVersion,
+  versionChoices,
   versionLabel,
 } from "./services";
 import type { ServiceStatus, SiteEntry, StatusReport } from "@/ipc/types";
@@ -149,6 +154,8 @@ describe("status copy", () => {
   it("builds the site domain and the address", () => {
     expect(siteDomain(reverb, "test")).toBe("blog.test");
     expect(siteDomain(svc(), "test")).toBe("");
+    expect(siteDomain(reverb, "test", [site({ primary_domain: "corp.test" })])).toBe("corp.test");
+    expect(siteDomain(reverb, "test", [site({ name: "other", primary_domain: "corp.test" })])).toBe("blog.test");
     expect(address(postgres)).toBe("127.0.0.1:5432");
   });
 });
@@ -323,5 +330,72 @@ describe("misc helpers", () => {
     ["", false],
   ])("isValidDbName(%j)", (name, expected) => {
     expect(isValidDbName(name)).toBe(expected);
+  });
+});
+
+describe("version changes", () => {
+  it.each([
+    ["9.10.0", "9.9.1", 1],
+    ["8.4.0", "9.7.1", -1],
+    ["17", "17.0", 0],
+    ["18.4", "18.4", 0],
+  ])("compareServiceVersions(%j, %j) sign", (a, b, sign) => {
+    expect(Math.sign(compareServiceVersions(a, b))).toBe(sign);
+  });
+
+  it.each([
+    [svc({ installed_versions: ["8.4.0", "9.7.1"], selected_version: "8.4.0" }), "8.4.0"],
+    [svc({ installed_versions: ["9.10.0", "9.9.1"], selected_version: null }), "9.10.0"],
+    [svc({ installed_versions: [], selected_version: null }), null],
+  ])("currentVersion %#", (s, expected) => {
+    expect(currentVersion(s)).toBe(expected);
+  });
+
+  it.each([
+    [["8.4.0", "9.7.1", "9.8.0"], ["9.7.1"], "9.7.1", "9.8.0", ["8.4.0", "9.8.0"]],
+    [["8.0.40", "8.4.9", "9.7.1"], ["9.7.1"], "9.7.1", "", ["8.0.40", "8.4.9"]],
+    [["9.10.0", "9.9.0", "9.8.0"], ["9.8.0"], "9.8.0", "9.10.0", ["9.9.0", "9.10.0"]],
+    [["1.0.0"], [], null, "1.0.0", ["1.0.0"]],
+  ])("versionChoices %#", (available, installed, current, preselect, values) => {
+    const choices = versionChoices(available, installed, current);
+    expect(choices.preselect).toBe(preselect);
+    expect(choices.options.map((o) => o.value)).toEqual(values);
+  });
+
+  it("flags downgrades", () => {
+    const { options } = versionChoices(["8.4.9", "9.8.0"], ["9.7.1"], "9.7.1");
+    expect(options.map((o) => o.downgrade)).toEqual([true, false]);
+  });
+
+  it.each([
+    ["mysql", "9.7.1", "8.4.9", true, "can't move to an older version"],
+    ["mariadb", "11.8.8", "11.4.2", true, "can't move to an older version"],
+    ["postgres", "18.4", "17.6", true, "can't move to an older version"],
+    ["redis", "9.1.0", "8.0.0", false, "Your stored data is kept"],
+    ["mysql", "9.7.1", "9.8.0", false, "Your stored data is kept"],
+    ["postgres", "17.2", "17.6", false, "Your stored data is kept"],
+    ["postgres", "17.6", "18.4", false, "PostgreSQL 18 starts with an empty cluster"],
+    ["meilisearch", "1.10.0", "1.11.0", false, "rebuild indexes"],
+    ["mysql", "9.7.1", "", true, "can't move to an older version"],
+    ["redis", "9.1.0", "", true, "Pick one to move to it"],
+  ])("changeVersionNote(%j, %j -> %j)", (type, current, target, blocked, text) => {
+    const note = changeVersionNote(type, type === "postgres" ? "PostgreSQL" : "Engine", current, target);
+    expect(note.blocked).toBe(blocked);
+    expect(note.text).toContain(text);
+  });
+
+  it("says a Postgres major change keeps the old cluster on disk", () => {
+    expect(changeVersionNote("postgres", "PostgreSQL", "17.6", "18.4").text).toContain(
+      "your PostgreSQL 17 databases stay on disk and come back if you switch back to a 17.x version",
+    );
+  });
+
+  it.each([
+    [svc({ installed_versions: ["8.4.0", "9.7.1"], selected_version: "8.4.0" }), "8.4.0"],
+    [svc({ installed_versions: ["8.4.0", "9.7.1"], selected_version: "9.9.9" }), "9.7.1"],
+    [svc({ installed_versions: ["9.10.0", "9.9.1"], selected_version: null }), "9.10.0"],
+    [svc({ installed_versions: [], selected_version: null }), ""],
+  ])("uninstallVersion %#", (s, expected) => {
+    expect(uninstallVersion(s)).toBe(expected);
   });
 });

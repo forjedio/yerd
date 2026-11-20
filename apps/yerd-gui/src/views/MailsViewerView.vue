@@ -15,7 +15,7 @@ import { registerViewActions } from "@/lib/shortcuts/useViewActions";
  * shows no capture state; it reads the site TLD once so local images load.
  */
 const box = useMailbox({ autoSelect: () => true });
-const { app, busy, detail, filtered, list, loadingDetail, now, selectedId } = box;
+const { app, busy, detail, failedId, filtered, list, loadingDetail, now, selectedId } = box;
 
 const tld = ref<string>();
 
@@ -59,6 +59,7 @@ onUnmounted(registerViewActions({ refresh: () => void box.refresh() }));
       <div class="min-w-0 flex-1">
         <MailReader
           :detail="detail"
+          :failed-id="failedId"
           :tld="tld"
           :loading="loadingDetail"
           :now="now"

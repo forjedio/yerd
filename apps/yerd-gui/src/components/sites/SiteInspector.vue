@@ -65,12 +65,7 @@ const emit = defineEmits<{
   toggleSecure: [site: SiteEntry];
   toggleFrontController: [site: SiteEntry, enabled: boolean];
   changeGroup: [site: SiteEntry, group: string];
-  changeWpAutoLogin: [
-    site: SiteEntry,
-    enabled: boolean,
-    user: string | null,
-    options?: { silent?: boolean },
-  ];
+  changeWpAutoLogin: [site: SiteEntry, enabled: boolean, user: string | null];
   share: [site: SiteEntry];
   unlink: [site: SiteEntry];
   domainsChanged: [];
@@ -112,13 +107,6 @@ function reveal(site: SiteEntry): void {
 
 async function copyUrl(): Promise<void> {
   await copyUrlWithToast(url.value);
-}
-
-/** Forwards the card's arguments as given, so an absent `options` stays absent. */
-function forwardWpAutoLogin(
-  ...args: [site: SiteEntry, enabled: boolean, user: string | null, options?: { silent?: boolean }]
-): void {
-  emit("changeWpAutoLogin", ...args);
 }
 
 function changeIde(value: string): void {
@@ -279,7 +267,7 @@ onMounted(() => {
             :busy="busy"
             @change-php="(s, v) => emit('changePhp', s, v)"
             @toggle-secure="(s) => emit('toggleSecure', s)"
-            @change-wp-auto-login="forwardWpAutoLogin"
+            @change-wp-auto-login="(s, on, user) => emit('changeWpAutoLogin', s, on, user)"
             @node-changed="emit('nodeChanged')"
           />
           <SiteDomainsCard :site="site" :tld="tld" @domains-changed="emit('domainsChanged')" />
@@ -292,9 +280,10 @@ onMounted(() => {
             variant="outline"
             :class="DANGER_TOOL"
             data-testid="inspector-footer-action"
+            :title="`Stops serving every site in ${tildify(parentDir, home)}`"
             @click="emit('unpark', parentDir)"
           >
-            <FolderMinus /> Unpark site…
+            <FolderMinus /> Unpark folder…
           </Button>
           <Button
             v-else

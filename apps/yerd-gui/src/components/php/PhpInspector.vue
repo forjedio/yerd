@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { Download, Ellipsis, RotateCw, Star, Trash2, X } from "lucide-vue-next";
 
 import PhpVersionPanel from "@/components/PhpVersionPanel.vue";
@@ -42,8 +42,8 @@ const props = defineProps<{
   extensionsLoading: boolean;
   pools: Record<PhpVersion, PhpPoolStatus>;
   updates: PhpUpdate[];
-  /** The view's in-flight action key, e.g. `restart:8.4`. */
-  busy: string | null;
+  /** The view's in-flight action keys, e.g. `restart:8.4`. */
+  busy: string[];
   anyRunning: boolean;
 }>();
 
@@ -67,14 +67,24 @@ const isInstalled = computed(() => !!version.value && props.installed.includes(v
 const legacy = computed(() => !!version.value && isLegacyVersion(version.value));
 const pool = computed(() => (version.value ? props.pools[version.value] : undefined));
 const update = computed(() => props.updates.find((u) => u.version === version.value));
+const updating = computed(() => props.busy.some((k) => k.startsWith("update:")));
 const canRestart = computed(() => pool.value?.state === "running" || pool.value?.state === "failed");
 
 const headerMenuOpen = ref(false);
 const menuOpenByVersion = ref<Record<string, boolean>>({});
 
+/** Only menus still on screen count: a menu unmounted while open (its version
+ *  uninstalled or deselected) never reports the close. */
 function isLayerOpen(): boolean {
-  return headerMenuOpen.value || Object.values(menuOpenByVersion.value).some(Boolean);
+  return (
+    (isInstalled.value && headerMenuOpen.value) ||
+    props.versions.some((v) => menuOpenByVersion.value[v] === true)
+  );
 }
+
+watch([version, isInstalled], () => {
+  headerMenuOpen.value = false;
+});
 
 const dotClass = computed(() => runStateDotClass(pool.value?.state));
 
@@ -106,7 +116,7 @@ const CHIP = "inline-flex h-5 shrink-0 items-center gap-1 rounded px-1.5 text-[1
         v-show="selected === 'shared'"
         :active="selected === 'shared'"
         :data="data"
-        :restarting="busy === 'restart:all'"
+        :restarting="busy.includes('restart:all')"
         :any-running="anyRunning"
         @updated="(r) => emit('updated', r)"
         @restart-all="emit('restartAll')"
@@ -151,11 +161,11 @@ const CHIP = "inline-flex h-5 shrink-0 items-center gap-1 rounded px-1.5 text-[1
           <Button
             variant="outline"
             :class="INSPECTOR_TOOL"
-            :disabled="!canRestart || busy === `restart:${version}`"
+            :disabled="!canRestart || busy.includes(`restart:${version}`)"
             :title="canRestart ? undefined : 'The pool is idle; it starts on the next request'"
             @click="emit('restart', version)"
           >
-            <Spinner v-if="busy === `restart:${version}`" class="size-4" />
+            <Spinner v-if="busy.includes(`restart:${version}`)" class="size-4" />
             <RotateCw v-else />
             Restart pool
           </Button>
@@ -179,8 +189,13 @@ const CHIP = "inline-flex h-5 shrink-0 items-center gap-1 rounded px-1.5 text-[1
               >
                 <Star class="size-4" /> Make default
               </DropdownMenuItem>
-              <DropdownMenuItem v-if="update" data-action="update" @select="emit('update', version)">
-                <Download class="size-4" /> Update to {{ update.latest }}
+              <DropdownMenuItem
+                v-if="update"
+                :disabled="updating"
+                data-action="update"
+                @select="emit('update', version)"
+              >
+                <Download class="size-4" /> {{ updating ? "Updating…" : `Update to ${update.latest}` }}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem

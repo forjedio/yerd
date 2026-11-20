@@ -20,18 +20,18 @@ The **Sites** page (under **Environment** in the sidebar) is the home base for m
 - **Filter chips** across the top narrow the list: **All**, **HTTPS**, **Linked**, one chip per detected framework (Laravel, WordPress, ...), and **Not on** the default PHP, each with its count. The filter field beside them (⌘F / Ctrl+F) searches names, paths and every domain a site answers on. When nothing matches, you can **Create** a site with that name or **Clear filter**.
 - The list is **sectioned**: your [groups](#site-groups) first, then one section per parked folder (with its ungrouped sites), then **Linked** sites. Sections collapse, and a long section shows its first ten sites with a **+ N more** line. A folder section's header has **Reveal** and **Unpark…** (shown on hover).
 - Each row shows the site's domain and path, a `+N alias` count when it answers on extra domains, a lock when it's served over HTTPS, and its PHP version (amber when it differs from the default).
-- With the list focused, **↑/↓** move the selection, **Return** opens the site in your browser, **⌘E** / **Ctrl+E** opens it in your editor and **⌘T** / **Ctrl+T** in a terminal; **⌘C** / **Ctrl+C** copies its URL.
+- With the list focused, **↑/↓** move the selection, **Return** opens the site in your browser, **⌘E** / **Ctrl+E** opens it in your editor and **⌘T** / **Ctrl+T** in a terminal; **⌘C** / **Ctrl+C** copies its URL. In the narrow table, **Space** or **→** opens the selected site's inspector. These keys only act on a site you can see in the list.
 
-In a wide window (the default size) the inspector sits beside the list. In a narrower window the list becomes a table with **PHP**, **Node**, **Framework** and **TLS** columns, and clicking a row slides the inspector in from the right (Escape or the backdrop closes it).
+In a wide window (the default size) the inspector sits beside the list. It keeps showing the site you picked even when a filter or a change (say, turning HTTPS off under the **HTTPS** chip) hides it from the list. In a narrower window the list becomes a table with **PHP**, **Node**, **Framework** and **TLS** columns, and clicking a row slides the inspector in from the right (Escape or the backdrop closes it).
 
 ### The site inspector
 
 - **Open site**, a **star** (adds the site to the Overview's favourites), **Editor**, **Terminal** and **Finder** (**Files** on Linux), plus a **⋯** menu.
 - The site's **URL** with a copy button; a non-standard port is highlighted.
-- **Environment**: the **PHP version**, the site's **Node version** (see [Node](./node#per-site-versions)), **HTTPS**, **WordPress auto-login** for WordPress sites, the detected **framework** and whether the site is **parked** or **linked**.
+- **Environment**: the **PHP version**, the site's **Node version** (see [Node](./node#per-site-versions)), **HTTPS**, **WordPress auto-login** for WordPress sites, the detected **framework** and whether the site is **parked** or **linked**. With the keyboard, the arrow keys move between the PHP or Node versions and **Space** switches to the focused one.
 - **Domains**: every domain the site answers on, tagged primary or wildcard. Each row has **Make primary** (star), **Edit** and **Remove**; **Add domain** and Edit open a small dialog, and **Reset to default** beside the heading returns the site to its apex only.
 - **Response headers**: the site's custom response headers, each with **Edit** and **Remove**; **Add header** opens a dialog.
-- **Unpark site…** (a parked site) or **Remove site…** (a linked site) at the bottom. Both ask for confirmation; your files are never deleted.
+- **Unpark folder…** (a parked site) or **Remove site…** (a linked site) at the bottom. Unpark stops serving the whole parked folder, every site in it, not just this one; the confirmation says how many sites that is. Both ask for confirmation; your files are never deleted.
 
 The **⋯** menu has **Copy URL**, **Share publicly…**, **Change web root…** (not for WordPress), **Move to group**, **Routing rules…** (including the front-controller switch), **Editor** (a per-site editor override), **WP Admin** for WordPress sites or the **Dumps viewer** for others, and **Unpark** or **Remove site…**.
 
@@ -61,14 +61,14 @@ Beyond registering folders you already have, the app can **scaffold a brand-new 
 **Project** asks for:
 
 - **Start from** - **Laravel**, **WordPress** or **Slim**, or **Another starter** (CodeIgniter, CakePHP) from a searchable list. **Existing folder** links a folder you already have instead. Switching starters keeps everything else you've typed.
-- **Project name** - the site is served at `<name>.test`; the line under it shows the URL and the folder that will be created.
+- **Project name** - the site is served at `<name>.test`; the line under it shows the URL and the folder that will be created. A name an existing site already uses (linked or parked, in any letter case) is refused.
 - **Location** - pick the parent folder. If it's a [parked](#parking-a-directory) root the new site is served automatically; **Choose another folder…** picks any other folder, and the site is [linked](#linking-a-directory) there under the project name.
 - **PHP version** - the version the site (and the installer) runs on. Only versions the starter supports are offered.
 - **HTTPS** - serve it over TLS from day one (you can toggle this later too).
 
 **Next** checks the starter's toolchain. If something is missing, a **Missing tools** step lists each tool and **Install missing tools** installs them (once, without touching your shell profile), then continues to **Options**. Tools you already have [installed externally](./tooling#external-tools), such as a global Composer, count.
 
-**Create site** switches the dialog to a progress view: each phase ticks off with the installer's latest output under the running one, and **Hide log** / **Show log** toggles the full log. You can close the dialog while it runs - creation keeps going in the background and is announced when it finishes - and reopening **New site** shows its progress. Only one site is created at a time. When it's done, the dialog shows the URL and a summary, with **Open in editor**, **Finder** and **Open site**. If it fails, **Back** returns to Options with your choices kept.
+**Create site** switches the dialog to a progress view: each phase ticks off with the installer's latest output under the running one, and **Hide log** / **Show log** toggles the full log. You can close the dialog, or leave the Sites page, while it runs - creation keeps going in the background, shows in the sidebar's activity indicator, and a notification announces when it finishes or fails - and reopening **New site** shows its progress. Only one site is created at a time. Likewise, closing the dialog while **Install missing tools** runs leaves the install going, and reopening shows it. When it's done, the dialog shows the URL and a summary, with **Open in editor**, **Finder** and **Open site**. If it fails, **Back** returns to Options with your choices kept.
 
 ### Laravel
 
@@ -125,7 +125,7 @@ The web root is detected automatically: `public/` for CodeIgniter and Slim, `web
 A WordPress site created through **New site** has **one-click admin login** turned on by default: opening **WP Admin** signs you in as the site's administrator instead of showing WordPress's own login screen. Existing or parked WordPress sites can opt in the same way.
 
 - A WordPress site's inspector has **WP Admin** in its **⋯** menu, which opens the site's `/wp-admin/` pre-authenticated when one-click login is on.
-- Turn it on or off, and choose **who** to sign in as, from the inspector's **Environment** card: the **WordPress auto-login** switch and a **Sign in as** picker (defaults to the earliest-created administrator).
+- Turn it on or off, and choose **who** to sign in as, from the inspector's **Environment** card: the **WordPress auto-login** switch and a **Sign in as** picker (defaults to the earliest-created administrator). If the admin list can't be read (for example, the site's database is stopped), the card says so with a **Retry** link and leaves your setting as it is.
 
 ::: info How it works
 Opening **WP Admin** mints a short-lived, single-use login token and appends it to the `/wp-admin/` URL. The proxy recognises and consumes the token on the first request, signing you in before redirecting - it's never valid a second time, and it does nothing outside that one request. If the resolver is off ([Localhost Access](./localhost-access)) or minting fails for any reason, **WP Admin** falls back to WordPress's ordinary login screen instead.

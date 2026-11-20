@@ -34,7 +34,7 @@ import { MIN_PORT, MAX_PORT, useFallbackPorts } from "@/composables/useFallbackP
 import { loadIdes, rescanIdes, useIdes } from "@/composables/useIdes";
 import { loadPlatform, usePlatform } from "@/composables/usePlatform";
 import { useToast } from "@/composables/useToast";
-import { useUpdateCheck } from "@/composables/useUpdateCheck";
+import { useAboutRequests, useUpdateCheck } from "@/composables/useUpdateCheck";
 import { useWideLayout } from "@/composables/useWideLayout";
 import {
   cliPathStatus,
@@ -66,6 +66,7 @@ import { plural } from "@/lib/utils";
 const { connected, report, refresh: refreshStatus } = useDaemon();
 const toast = useToast();
 const updates = useUpdateCheck();
+useAboutRequests(() => void updates.refreshCached());
 const { pref, setTheme } = useTheme();
 const { style: titleBarStyle, setTitleBarStyle } = useTitleBarStyle();
 

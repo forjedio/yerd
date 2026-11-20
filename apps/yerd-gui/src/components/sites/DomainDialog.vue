@@ -7,11 +7,15 @@ import Input from "@/components/ui/Input.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { isUnderTld, validateDomainShape } from "@/lib/domainValidation";
+import { normalizeDomain } from "@/lib/sites";
 
 /**
  * Add a domain to a site or proxy, or edit one (`editing` set). The field
  * resets every time the dialog opens. The daemon is authoritative, so the
- * wrong-TLD notice never blocks Save; only a malformed shape does.
+ * wrong-TLD notice never blocks Save; only a malformed shape does, or turning
+ * the primary into a wildcard (the primary must be an exact domain). An edit
+ * that only changes case or a trailing dot is no change, since the daemon
+ * normalizes both away.
  */
 const props = defineProps<{
   open: boolean;
@@ -38,8 +42,17 @@ watch(
 );
 
 const trimmed = computed(() => value.value.trim());
-const shapeError = computed(() =>
-  trimmed.value === "" ? null : validateDomainShape(trimmed.value),
+const shapeError = computed(() => {
+  if (trimmed.value === "") return null;
+  const shape = validateDomainShape(trimmed.value);
+  if (shape) return shape;
+  if (props.editingPrimary && trimmed.value.startsWith("*.")) {
+    return "The primary domain can't be a wildcard. Make another domain primary first.";
+  }
+  return null;
+});
+const unchanged = computed(
+  () => props.editing !== null && normalizeDomain(trimmed.value) === normalizeDomain(props.editing),
 );
 const tldHint = computed(() =>
   trimmed.value !== "" && shapeError.value === null && !isUnderTld(trimmed.value, props.tld)
@@ -51,7 +64,7 @@ const canSave = computed(
     !props.busy &&
     trimmed.value !== "" &&
     shapeError.value === null &&
-    trimmed.value !== props.editing,
+    !unchanged.value,
 );
 
 function save(): void {

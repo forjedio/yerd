@@ -2,13 +2,16 @@ import type { ProxyEntry, ProxyRuleEntry, SiteEntry } from "@/ipc/types";
 import { siteHost, type SiteLike } from "@/lib/siteUrl";
 
 /**
- * Coerce user upstream input into what the daemon's parser accepts: default the
- * scheme to `http://`, then strip a trailing slash so a pasted
+ * Coerce user upstream input into what the daemon's parser accepts: a bare
+ * port (`3000` or `:3000`) means that port on loopback, a missing scheme
+ * defaults to `http://`, then a trailing slash is stripped so a pasted
  * `http://host:port/` isn't rejected as a path. Strips only when a host follows
  * the scheme, leaving a bare `http://` intact (rejected honestly as no host).
  */
 export function normalizeUpstream(raw: string): string {
   let u = raw.trim();
+  const port = /^:?(\d+)\/*$/.exec(u)?.[1];
+  if (port !== undefined) u = `127.0.0.1:${port}`;
   if (u !== "" && !/^https?:\/\//i.test(u)) u = `http://${u}`;
   return u.replace(/^(https?:\/\/.+?)\/+$/i, "$1");
 }

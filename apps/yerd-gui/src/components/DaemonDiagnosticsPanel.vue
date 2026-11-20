@@ -19,12 +19,11 @@ const hasRaw = computed(
     props.diagnostics.repairLogTail.length > 0,
 );
 
-/** The last two daemon log lines (else spawn log lines), shown inline as the likely cause. */
-const excerpt = computed(() => {
-  const d = props.diagnostics;
-  const source = d.logTail.length > 0 ? d.logTail : d.spawnLogTail;
-  return source.slice(-2);
-});
+/** The last two lines of this attempt's spawn log, shown inline as the likely
+ *  cause. The spawn log is truncated on every start, so it belongs to this run;
+ *  the rolling daemon log may still end with a previous run's lines, so it stays
+ *  in the technical details rather than reading as the cause. */
+const excerpt = computed(() => props.diagnostics.spawnLogTail.slice(-2));
 
 /** A flat, paste-able plain-text dump of the whole diagnostics struct. */
 function asText(): string {
@@ -84,9 +83,7 @@ async function copy(): Promise<void> {
       <p v-for="(line, i) in excerpt" :key="i" class="truncate text-destructive" :title="line">
         {{ line }}
       </p>
-      <p v-if="diagnostics.logPath" class="mt-0.5 truncate text-faint" :title="diagnostics.logPath">
-        {{ diagnostics.logPath }}
-      </p>
+      <p class="mt-0.5 truncate text-faint">Spawn log</p>
     </div>
 
     <div class="mt-3 flow-root">

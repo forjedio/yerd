@@ -191,13 +191,15 @@ const selectedSite = computed<SiteEntry | null>(() =>
   selectedName.value ? (sites.value.find((s) => s.name === selectedName.value) ?? null) : null,
 );
 
+/** The wide layout always inspects a site: it picks the first visible one when
+ *  nothing is selected or the selection no longer exists. A selection that a
+ *  chip or query merely hides stays put, so an edit that drops the site out of
+ *  the filter never retargets the inspector (and the next click) to another. */
 watch(
-  [visibleNames, wide],
-  ([names, isWide]) => {
-    if (!isWide) return;
-    if (!selectedName.value || !names.includes(selectedName.value)) {
-      selectedName.value = names[0] ?? null;
-    }
+  [visibleNames, wide, selectedSite],
+  ([names, isWide, current]) => {
+    if (!isWide || current) return;
+    selectedName.value = names[0] ?? null;
   },
   { immediate: true },
 );
@@ -407,7 +409,6 @@ async function changeWpAutoLogin(
   site: SiteEntry,
   enabled: boolean,
   user: string | null,
-  options?: { silent?: boolean },
 ): Promise<void> {
   if (enabled === (site.wp_auto_login ?? false) && (user ?? "") === (site.wp_auto_login_user ?? "")) {
     return;
@@ -415,13 +416,9 @@ async function changeWpAutoLogin(
   rowBusy.value = `edit:${site.name}`;
   try {
     await setWordpressAutoLogin(site.name, enabled, user);
-    if (!options?.silent) {
-      toast.success(
-        enabled
-          ? `Auto-login enabled for ${site.name}`
-          : `Auto-login disabled for ${site.name}`,
-      );
-    }
+    toast.success(
+      enabled ? `Auto-login enabled for ${site.name}` : `Auto-login disabled for ${site.name}`,
+    );
     await load({ force: true });
   } catch (e) {
     toast.error("Couldn't change auto-login", (e as IpcError).message);
@@ -660,6 +657,7 @@ async function confirmUnlink(): Promise<void> {
 
 // ── new site ──
 const newSiteOpen = ref(false);
+const siteNames = computed(() => sites.value.map((s) => s.name));
 const newSiteName = ref<string | undefined>(undefined);
 
 /** Open New site, optionally prefilled. Deferred a tick so a closing menu's
@@ -909,6 +907,7 @@ const inspectorProps = computed(() => {
 
     <NewSiteDialog
       v-model:open="newSiteOpen"
+      :existing-names="siteNames"
       :parked-folders="parked"
       :php-versions="phpVersionList"
       :default-php="defaultPhp"

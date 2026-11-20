@@ -1,7 +1,7 @@
 import { computed, reactive, ref, watch } from "vue";
 
 import type { SiteBasicsForm } from "@/composables/useSiteBasics";
-import type { StarterContext, StarterModel } from "@/composables/useSiteStarters";
+import { preferredPhp, type StarterContext, type StarterModel } from "@/composables/useSiteStarters";
 import type { PrereqRow } from "@/composables/useToolPrereqs";
 import {
   availableWordPressVersions,
@@ -37,11 +37,6 @@ function randomPassword(): string {
   const bytes = new Uint32Array(20);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => chars[b % chars.length]).join("");
-}
-
-/** The default PHP when it is installed, else the first installed version. */
-function installedDefaultOrFirst(versions: readonly string[], defaultPhp: string): string {
-  return defaultPhp && versions.includes(defaultPhp) ? defaultPhp : (versions[0] ?? "");
 }
 
 /**
@@ -328,7 +323,7 @@ export function useWordPressStarter(basics: SiteBasicsForm, ctx: StarterContext)
     label: "WordPress",
     phases: PHASES,
     supportsPhp: () => true,
-    preferredPhp: () => installedDefaultOrFirst(ctx.phpVersions(), ctx.defaultPhp()),
+    preferredPhp: () => preferredPhp(ctx.phpVersions(), ctx.defaultPhp(), () => true),
     phpLabel: (v) => (isLegacyVersion(v) ? `${v} (legacy)` : v),
     phpHint: (php) =>
       php && isLegacyVersion(php)

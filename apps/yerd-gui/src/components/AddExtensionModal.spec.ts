@@ -127,4 +127,37 @@ describe("AddExtensionModal", () => {
 
     expect((w.find("#ext-path").element as HTMLInputElement).value).toBe("");
   });
+
+  it("keeps a stale add from closing or erroring into the dialog reopened for another version", async () => {
+    let fail: (e: Error) => void = () => {};
+    addPhpExtension.mockReturnValueOnce(new Promise((_, reject) => (fail = reject)));
+    const w = mountModal();
+    await w.find("#ext-path").setValue(SO);
+    await byText(w, "Add extension")!.trigger("click");
+    expect(byText(w, "Checking")).toBeDefined();
+
+    await w.setProps({ open: false });
+    await w.setProps({ open: true, version: "8.3" });
+    expect(byText(w, "Add extension")!.attributes("disabled")).toBeUndefined();
+
+    fail(new Error("undefined symbol"));
+    await vi.waitFor(() => expect(addPhpExtension).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(w.text()).not.toContain("undefined symbol");
+    expect(w.emitted("update:open")).toBeUndefined();
+    expect(byText(w, "Add extension")!.attributes("disabled")).toBeUndefined();
+  });
+
+  it("still reports a stale success to the view without closing the new dialog", async () => {
+    let succeed: (m: unknown) => void = () => {};
+    addPhpExtension.mockReturnValueOnce(new Promise((resolve) => (succeed = resolve)));
+    const w = mountModal();
+    await w.find("#ext-path").setValue(SO);
+    await byText(w, "Add extension")!.trigger("click");
+    await w.setProps({ version: "8.3" });
+
+    succeed({ "8.4": [] });
+    await vi.waitFor(() => expect(w.emitted("added")).toEqual([[{ "8.4": [] }]]));
+    expect(w.emitted("update:open")).toBeUndefined();
+  });
 });

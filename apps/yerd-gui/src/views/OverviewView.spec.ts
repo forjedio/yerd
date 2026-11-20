@@ -28,6 +28,7 @@ vi.mock("@/composables/useDaemon", async () => {
   const state = {
     connected: ref<boolean | null>(null),
     report: ref<StatusReport | null>(null),
+    lastError: ref<{ message: string } | null>(null),
     refresh: mocks.refresh,
   };
   return { useDaemon: () => state, daemonState: state };
@@ -84,6 +85,7 @@ const daemon = (
     daemonState: {
       connected: { value: boolean | null };
       report: { value: StatusReport | null };
+      lastError: { value: { message: string } | null };
     };
   }
 ).daemonState;
@@ -184,6 +186,7 @@ beforeEach(() => {
   useOnboarding().needsOnboarding.value = false;
   daemon.connected.value = true;
   daemon.report.value = makeReport();
+  daemon.lastError.value = null;
   mocks.sitesAndParked.mockResolvedValue({ sites: sitesList(62), parked: ["/Users/me/Herd"], groups: {} });
   mocks.daemonVersionConflict.mockResolvedValue(null);
   mocks.releaseNotes.mockResolvedValue({
@@ -225,6 +228,19 @@ describe("OverviewView left column", () => {
 
     expect(w.find('[data-testid="overview-skeleton"]').exists()).toBe(true);
     expect(w.find('[data-testid="status-card"]').exists()).toBe(false);
+  });
+
+  it("shows the status error with Retry instead of a perpetual skeleton", async () => {
+    daemon.report.value = null;
+    daemon.lastError.value = { message: "unknown variant `status_v2`" };
+    const w = await mountView();
+
+    expect(w.find('[data-testid="overview-skeleton"]').exists()).toBe(false);
+    const card = w.get('[data-testid="overview-status-error"]');
+    expect(card.text()).toContain("unknown variant `status_v2`");
+    await buttonByText(w, "Retry").trigger("click");
+    await flushPromises();
+    expect(mocks.refresh).toHaveBeenCalled();
   });
 
   it("shows the hero with its footer note while the daemon is down", async () => {
@@ -301,6 +317,21 @@ describe("OverviewView left column", () => {
 
     await buttonByText(w, "Re-run the full guided setup").trigger("click");
     expect(useOnboarding().needsOnboarding.value).toBe(true);
+  });
+
+  it("keeps the checklist after PHP is installed and offers the park step", async () => {
+    daemon.report.value = makeReport({ sites: { parked: 0, linked: 0, secured: 0 } });
+    mocks.sitesAndParked.mockResolvedValue({ sites: [], parked: [], groups: {} });
+    const w = await mountView();
+
+    const checklist = w.get('[data-testid="setup-checklist"]');
+    expect(checklist.get('[data-step="php"]').text()).toContain("Done");
+    expect(checklist.get('[data-step="park"]').text()).toContain("Choose…");
+  });
+
+  it("hides the checklist once PHP is installed and a folder is parked", async () => {
+    const w = await mountView();
+    expect(w.find('[data-testid="setup-checklist"]').exists()).toBe(false);
   });
 
   it("lists only starred sites, sorted, and opens one on click", async () => {

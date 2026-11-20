@@ -56,32 +56,54 @@ const settingsForm = ref<Record<string, string>>({});
 const lastSeeded = ref<Record<string, string>>({});
 const saving = ref(false);
 
-function applySettings(settings: Record<string, string> | undefined): void {
+function seededFrom(settings: Record<string, string> | undefined): Record<string, string> {
   const next: Record<string, string> = {};
   for (const s of TEXT_SETTINGS) next[s.key] = settings?.[s.key] ?? "";
   next.display_errors = settings?.display_errors ?? "";
   next[FFI_KEY] = settings?.[FFI_KEY] ?? "";
+  return next;
+}
+
+/** Reset the whole form to `settings`. */
+function applySettings(settings: Record<string, string> | undefined): void {
+  const next = seededFrom(settings);
   settingsForm.value = next;
   lastSeeded.value = { ...next };
 }
 
-/** True when the form still matches what was last seeded (no unsaved edits). */
-function settingsPristine(): boolean {
-  const form = settingsForm.value;
-  const seeded = lastSeeded.value;
-  const keys = new Set([...Object.keys(form), ...Object.keys(seeded)]);
-  for (const k of keys) {
-    if ((form[k] ?? "") !== (seeded[k] ?? "")) return false;
+/** Move the baseline to `settings`, carrying the user's edits over it: an
+ *  untouched field takes the fresh value, an edited one keeps the edit. So an
+ *  out-of-band change (CLI, MCP) to another key self-corrects even while the
+ *  form is dirty, and a later Save can't revert it. */
+function rebase(settings: Record<string, string> | undefined): void {
+  const next = seededFrom(settings);
+  const form: Record<string, string> = {};
+  for (const [k, v] of Object.entries(next)) {
+    const current = settingsForm.value[k] ?? "";
+    form[k] = current === (lastSeeded.value[k] ?? "") ? v : current;
   }
-  return true;
+  settingsForm.value = form;
+  lastSeeded.value = next;
 }
 
-/** Seeds on first load and on later revalidations only while pristine, so an
- *  out-of-band change self-corrects without clobbering unsaved edits. */
+/** The fields whose value differs from the baseline, as a save payload. */
+function changedSettings(): Record<string, string> {
+  const changed: Record<string, string> = {};
+  for (const [k, v] of Object.entries(settingsForm.value)) {
+    if (v !== (lastSeeded.value[k] ?? "")) changed[k] = v;
+  }
+  return changed;
+}
+
+/** True when the form still matches what was last seeded (no unsaved edits). */
+function settingsPristine(): boolean {
+  return Object.keys(changedSettings()).length === 0;
+}
+
 watch(
   () => props.data,
   (d) => {
-    if (d && settingsPristine()) applySettings(d.settings);
+    if (d) rebase(d.settings);
   },
   { immediate: true },
 );
@@ -90,7 +112,8 @@ const dirty = computed(() => !settingsPristine());
 
 watch(dirty, (d) => emit("dirty", d), { immediate: true });
 
-/** The FFI switch maps On to "On" and off to "" (PHP's own default). It is
+/** The FFI switch maps On to "On" and off to the saved off value ("" for PHP's
+ *  own default, or an explicit "Off"), so toggling back leaves the form clean. It is
  *  disabled when no installed version has FFI, unless the saved value is on, so
  *  a CLI-set value can still be cleared. "No version has FFI" is only claimed
  *  once the list has loaded. */
@@ -101,7 +124,8 @@ const ffiSavedOn = computed(() => props.data?.settings?.[FFI_KEY] === "On");
 const ffiSwitchDisabled = computed(() => noFfiVersions.value && !ffiSavedOn.value);
 
 function setFfi(on: boolean): void {
-  settingsForm.value[FFI_KEY] = on ? "On" : "";
+  const saved = lastSeeded.value[FFI_KEY] ?? "";
+  settingsForm.value[FFI_KEY] = on ? "On" : saved === "On" ? "" : saved;
 }
 
 const rows = computed<SettingsGridRow[]>(() =>
@@ -137,12 +161,15 @@ function onUpdate(key: string, value: string): void {
   settingsForm.value[key] = value;
 }
 
-/** Send every field; a blank value removes that setting. */
+/** Send only the edited fields (the daemon merges them); a blank value removes
+ *  that setting. Untouched keys are left to whatever the daemon holds now. */
 async function saveSettings(): Promise<void> {
   if (saving.value) return;
+  const payload = changedSettings();
+  if (Object.keys(payload).length === 0) return;
   saving.value = true;
   try {
-    const r = await setPhpSettings({ ...settingsForm.value });
+    const r = await setPhpSettings(payload);
     applySettings(r.settings);
     mutate(() => r);
     toast.success("PHP settings updated", "Pools restart to apply the changes.");

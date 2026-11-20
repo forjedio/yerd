@@ -94,11 +94,16 @@ interface StubOpts {
   databases?: Record<string, string[]>;
   addService?: () => Promise<unknown>;
   listServices?: () => Promise<unknown>;
+  available?: { service: string; available: string[]; installed: string[] }[];
+  /** Replaces the reply to one command, e.g. a pending `stop_service`. */
+  commands?: Record<string, (args?: Record<string, unknown>) => Promise<unknown>>;
 }
 
 function stubIpc(opts: StubOpts = {}) {
   const databases = opts.databases ?? { mysql: ["app", "blog"], postgres: ["main"] };
   invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+    const override = opts.commands?.[cmd];
+    if (override) return override(args);
     switch (cmd) {
       case "list_services":
         return opts.listServices?.() ?? Promise.resolve({ type: "services", services: opts.services ?? [MYSQL, POSTGRES, MARIADB, REDIS, REVERB] });
@@ -123,7 +128,7 @@ function stubIpc(opts: StubOpts = {}) {
       case "available_services":
         return Promise.resolve({
           type: "available_services",
-          services: [{ service: "mysql", available: ["8.4.0", "9.7.1", "9.8.0"], installed: ["9.7.1"] }],
+          services: opts.available ?? [{ service: "mysql", available: ["8.4.0", "9.7.1", "9.8.0"], installed: ["9.7.1"] }],
         });
       case "service_overrides":
         return Promise.resolve({ type: "service_overrides", overrides: {} });
@@ -417,6 +422,81 @@ describe("ServicesView actions", () => {
     expect(invokeMock).toHaveBeenCalledWith("change_service_version", { service: "mysql", version: "9.8.0" });
   });
 
+  it("preselects nothing and blocks Switch when only older MySQL versions exist", async () => {
+    stubIpc({ available: [{ service: "mysql", available: ["8.0.40", "8.4.9", "9.7.1"], installed: ["9.7.1"] }] });
+    const w = await mountView();
+    await button(w, "Change").trigger("click");
+    await flushPromises();
+    const picker = w.get('select[aria-label="version"]');
+    expect((picker.element as HTMLSelectElement).value).toBe("");
+    expect(w.get('[data-testid="version-note"]').text()).toContain("can't move to an older version");
+    expect(button(w, "Switch").attributes("disabled")).toBeDefined();
+
+    await picker.setValue("8.4.9");
+    await flushPromises();
+    expect(w.get('[data-testid="version-note"]').text()).toContain("data written by v9.7.1 can't be read by v8.4.9");
+    expect(button(w, "Switch").attributes("disabled")).toBeDefined();
+    await button(w, "Switch").trigger("click");
+    await flushPromises();
+    expect(calls("change_service_version")).toHaveLength(0);
+  });
+
+  it("warns that a PostgreSQL major change starts an empty cluster", async () => {
+    stubIpc({ available: [{ service: "postgres", available: ["17.6", "18.4", "19.1"], installed: ["18.4"] }] });
+    const w = await mountView();
+    await select(w, "postgres");
+    await button(w, "Change").trigger("click");
+    await flushPromises();
+    expect((w.get('select[aria-label="version"]').element as HTMLSelectElement).value).toBe("19.1");
+    const note = w.get('[data-testid="version-note"]').text();
+    expect(note).toContain("PostgreSQL 19 starts with an empty cluster");
+    expect(note).toContain("your PostgreSQL 18 databases stay on disk");
+    expect(note).not.toContain("Your stored data is kept");
+  });
+
+  it("keeps a second uninstall confirm intact when the first finishes", async () => {
+    let finish = (): void => {};
+    stubIpc({
+      commands: {
+        uninstall_service: (args) =>
+          args?.service === "mysql"
+            ? new Promise((resolve) => {
+                finish = () => resolve({ type: "ok" });
+              })
+            : Promise.resolve({ type: "ok" }),
+      },
+    });
+    const w = await mountView();
+    await w.get('[data-action="uninstall"]').trigger("click");
+    await flushPromises();
+    await button(w, "Uninstall").trigger("click");
+    await flushPromises();
+
+    await select(w, "redis");
+    await w.get('[data-action="uninstall"]').trigger("click");
+    await flushPromises();
+    finish();
+    await flushPromises();
+    expect(w.get('[role="alertdialog"]').text()).toContain("Uninstall Redis (Valkey) 9.1.0?");
+    await button(w, "Uninstall").trigger("click");
+    await flushPromises();
+    expect(invokeMock).toHaveBeenCalledWith("uninstall_service", { service: "redis", version: "9.1.0", purge: false });
+    expect(toastTitles()).toContain("Uninstalled Redis (Valkey) v9.1.0");
+  });
+
+  it("uninstalls the version its menu item names", async () => {
+    stubIpc({ services: [svc({ installed_versions: ["8.4.0", "9.7.1"], selected_version: "8.4.0" })] });
+    const w = await mountView();
+    const item = w.get('[data-action="uninstall"]');
+    expect(item.text()).toContain("Uninstall MySQL 8.4.0");
+    await item.trigger("click");
+    await flushPromises();
+    expect(w.get('[role="alertdialog"]').text()).toContain("Uninstall MySQL 8.4.0?");
+    await button(w, "Uninstall").trigger("click");
+    await flushPromises();
+    expect(invokeMock).toHaveBeenCalledWith("uninstall_service", { service: "mysql", version: "8.4.0", purge: false });
+  });
+
   it("uninstalls with the purge choice, which resets on reopen", async () => {
     stubIpc();
     const w = await mountView();
@@ -528,8 +608,80 @@ describe("ServicesView add", () => {
     expect(w.find('[role="dialog"]').exists()).toBe(false);
   });
 
+  const MEILI_UNINSTALLED = svc({
+    service: "meilisearch",
+    type_id: "meilisearch",
+    display_name: "Meilisearch",
+    installed_versions: [],
+    selected_version: null,
+    state: "stopped",
+    pid: null,
+    port: 7700,
+    supports_databases: false,
+  });
+
+  it("closes the dialog and says it couldn't start when a single-instance add saved before failing", async () => {
+    let saved = false;
+    stubIpc({
+      listServices: () =>
+        Promise.resolve({
+          type: "services",
+          services: [
+            MYSQL,
+            saved
+              ? { ...MEILI_UNINSTALLED, installed_versions: ["1.49.0"], selected_version: "1.49.0", state: "failed" }
+              : MEILI_UNINSTALLED,
+          ],
+        }),
+      addService: () => {
+        saved = true;
+        return Promise.reject(new Error("GLIBC_2.38 not found"));
+      },
+    });
+    const w = await mountView();
+    await openAndPick(w);
+    await w.get('[data-testid="add-submit"]').trigger("click");
+    await flushPromises();
+    expect(w.find('[role="dialog"]').exists()).toBe(false);
+    expect(toastTitles()).toContain("Meilisearch added, but couldn't start");
+    expect(toastTitles()).not.toContain("Couldn't add Meilisearch");
+  });
+
+  it("keeps the Add dialog locked while another service action finishes", async () => {
+    const { pending, resolveAdd } = pendingAdd();
+    let finishStop = (): void => {};
+    stubIpc({
+      addService: () => pending,
+      commands: {
+        stop_service: () =>
+          new Promise((resolve) => {
+            finishStop = () => resolve({ type: "ok" });
+          }),
+      },
+    });
+    const w = await mountView();
+    await inspector(w).get('button[data-action="stop"]').trigger("click");
+    await flushPromises();
+    await openAndPick(w);
+    await w.get('[data-testid="add-submit"]').trigger("click");
+    await flushPromises();
+
+    finishStop();
+    await flushPromises();
+    expect(toastTitles()).toContain("Stopped MySQL");
+    expect(w.get('[data-testid="add-service"]').attributes("disabled")).toBeDefined();
+    expect(w.get('[data-testid="add-submit"]').text()).toBe("Installing…");
+
+    resolveAdd();
+    await flushPromises();
+    expect(w.get('[data-testid="add-service"]').attributes("disabled")).toBeUndefined();
+  });
+
   it("keeps the dialog open and says nothing was added when the add fails before saving", async () => {
-    stubIpc({ addService: () => Promise.reject(new Error("download failed")) });
+    stubIpc({
+      services: [MYSQL, MEILI_UNINSTALLED],
+      addService: () => Promise.reject(new Error("download failed")),
+    });
     const w = await mountView();
     await openAndPick(w);
     await w.get('[data-testid="add-submit"]').trigger("click");

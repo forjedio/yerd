@@ -18,6 +18,7 @@ function ev(id: number, request_id: string, category: DumpCategory = "dump"): Du
 const COUNTS = { dumps: 0, queries: 0, jobs: 0, views: 0, requests: 0, logs: 0, cache: 0, http: 0 };
 
 let pages: DumpEvent[][] = [];
+let serverLatest = 0;
 let failing = new Set<string>();
 
 function stubIpc(): void {
@@ -26,8 +27,8 @@ function stubIpc(): void {
     switch (cmd) {
       case "list_dumps": {
         const events = pages.shift() ?? [];
-        const latest = events.reduce((m, e) => Math.max(m, e.id), 0);
-        return Promise.resolve({ type: "dumps", events, removed_ids: [], counts: COUNTS, latest_id: latest, min_live_id: 0 });
+        serverLatest = events.reduce((m, e) => Math.max(m, e.id), serverLatest);
+        return Promise.resolve({ type: "dumps", events, removed_ids: [], counts: COUNTS, latest_id: serverLatest, min_live_id: 0 });
       }
       case "dumps_status":
         return Promise.resolve({
@@ -70,6 +71,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   invokeMock.mockReset();
   pages = [[ev(1, "a"), ev(2, "a")], [ev(3, "b")]];
+  serverLatest = 0;
   failing = new Set();
   for (const t of [...useToast().toasts.value]) useToast().dismiss(t.id);
   stubIpc();
@@ -91,6 +93,37 @@ describe("useDumps stream", () => {
     expect(since).toEqual([{ since: 0 }, { since: 2 }]);
     expect(dumps.requests.value.map((r) => r.key)).toEqual(["b", "a"]);
     expect(dumps.selectedKey.value).toBe("b");
+  });
+
+  it("drops the held events and re-reads the stream after a daemon restart", async () => {
+    pages = [[ev(480, "old-1"), ev(500, "old-2")]];
+    const dumps = await setup();
+    expect(dumps.selectedKey.value).toBe("old-2");
+    serverLatest = 0;
+    pages = [[], [ev(1, "new-1"), ev(2, "new-2")], [ev(3, "new-3")]];
+    await vi.advanceTimersByTimeAsync(750);
+    await flushPromises();
+    const since = invokeMock.mock.calls.filter((c) => c[0] === "list_dumps").map((c) => c[1]);
+    expect(since).toEqual([{ since: 0 }, { since: 500 }, { since: 0 }]);
+    expect(dumps.requests.value.map((r) => r.key)).toEqual(["new-2", "new-1"]);
+    expect(dumps.selectedKey.value).toBe("new-2");
+    await vi.advanceTimersByTimeAsync(750);
+    await flushPromises();
+    expect(invokeMock.mock.calls.filter((c) => c[0] === "list_dumps").slice(-1)[0]?.[1]).toEqual({ since: 2 });
+    expect(dumps.requests.value.map((r) => r.key)).toEqual(["new-3", "new-2", "new-1"]);
+  });
+
+  it("follows the newest request the filter shows, not a hidden newer one", async () => {
+    pages = [[ev(1, "a", "query")], [ev(2, "b", "dump")]];
+    const dumps = await setup();
+    dumps.category.value = "query";
+    await flushPromises();
+    expect(dumps.selectedKey.value).toBe("a");
+    await vi.advanceTimersByTimeAsync(750);
+    await flushPromises();
+    expect(dumps.requests.value.map((r) => r.key)).toEqual(["b", "a"]);
+    expect(dumps.visible.value.map((r) => r.key)).toEqual(["a"]);
+    expect(dumps.selectedKey.value).toBe("a");
   });
 
   it("drops a page fetched before a clear", async () => {

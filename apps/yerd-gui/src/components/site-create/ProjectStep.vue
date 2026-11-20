@@ -37,6 +37,8 @@ const props = defineProps<{
   openUrl: string;
   projectPath: string;
   nameValid: boolean;
+  /** Whether an existing site already uses this name. */
+  nameTaken?: boolean;
   caTrusted: boolean;
 }>();
 
@@ -154,11 +156,14 @@ async function changeLocation(value: string): Promise<void> {
       :suffix="`.${tld}`"
       placeholder="invoicer"
       aria-label="Project name"
-      :invalid="!!name && !nameValid"
+      :invalid="!!name && (!nameValid || nameTaken)"
       @keydown.enter="emit('submit')"
     />
     <p v-if="name && !nameValid" class="mt-1.5 text-xs text-destructive">
       Use a single label: letters, numbers and hyphens only.
+    </p>
+    <p v-else-if="name && nameTaken" class="mt-1.5 text-xs text-destructive" data-testid="ns-name-taken">
+      A site named {{ name.trim().toLowerCase() }} already exists.
     </p>
     <p v-else class="mt-1.5 flex min-w-0 items-center gap-1.5 text-[11px] text-faint" data-testid="ns-preview">
       <Lock v-if="secure" class="size-3 shrink-0 text-success" aria-hidden="true" />

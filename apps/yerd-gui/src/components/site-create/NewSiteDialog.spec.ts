@@ -68,6 +68,7 @@ vi.mock("@/composables/usePlatform", () => ({
 
 import NewSiteDialog from "./NewSiteDialog.vue";
 import StarterPicker from "./StarterPicker.vue";
+import { resetCreateSiteJob } from "@/composables/useCreateSiteJob";
 import { resetIdes } from "@/composables/useIdes";
 import { resetResourceCache } from "@/composables/useResource";
 import type { NodeRelease, ToolStatus } from "@/ipc/types";
@@ -147,6 +148,7 @@ function spec() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetCreateSiteJob();
   resetResourceCache();
   resetIdes();
   hostPlatform.value = "macos";
@@ -189,6 +191,31 @@ describe("NewSiteDialog Project step", () => {
     expect(w.text()).toContain("Use a single label");
     await setName(w, "good");
     expect(byText(w, "Next: Options")?.attributes("disabled")).toBeUndefined();
+  });
+
+  it.each(["blog", "Blog", " BLOG "])(
+    "refuses %j when a site with that name already exists",
+    async (name) => {
+      const w = await openDialog(["8.4"], "8.4", { existingNames: ["shop", "blog"] });
+      await setName(w, name);
+      expect(byText(w, "Next: Options")?.attributes("disabled")).toBeDefined();
+      expect(w.get('[data-testid="ns-name-taken"]').text()).toBe("A site named blog already exists.");
+      await w.get("#ns-name").trigger("keydown", { key: "Enter" });
+      await flushPromises();
+      expect(w.text()).not.toContain("Starter kit");
+      await setName(w, "blog2");
+      expect(w.find('[data-testid="ns-name-taken"]').exists()).toBe(false);
+      expect(byText(w, "Next: Options")?.attributes("disabled")).toBeUndefined();
+    },
+  );
+
+  it("sends a name that became taken back to Project instead of creating it", async () => {
+    const w = await openDialog();
+    await toOptions(w);
+    await w.setProps({ existingNames: ["blog"] });
+    await click(w, "Create site");
+    expect(createSite).not.toHaveBeenCalled();
+    expect(w.find('[data-testid="ns-name-taken"]').exists()).toBe(true);
   });
 
   it("prefills the name it was opened with", async () => {
@@ -504,22 +531,55 @@ describe("NewSiteDialog job lifetime", () => {
     w.unmount();
   });
 
-  it("stops polling when unmounted while a status request is in flight", async () => {
-    let resolveStatus: (value: unknown) => void = () => {};
-    jobStatus.mockReturnValueOnce(
-      new Promise((resolve) => {
-        resolveStatus = resolve;
-      }),
-    );
+  it("keeps the job when unmounted, shows it in a remounted dialog and toasts the finish", async () => {
+    jobStatus.mockResolvedValue(status("running"));
+    const w = await openDialog(["8.3", "8.4"], "8.4", { initialStarter: "wordpress" });
+    await toOptions(w, "shop");
+    await w.get("#ns-wp-title").setValue("Shop");
+    await click(w, "Create site");
+    w.unmount();
+    const again = await openDialog();
+    expect(again.find("#ns-name").exists()).toBe(false);
+    expect(again.text()).toContain("Creating shop.test");
+    expect(again.text()).toContain("Downloading WordPress");
+    await click(again, "Cancel");
+    expect(jobCancel).toHaveBeenCalledWith("job-1");
+    await again.setProps({ open: false });
+    again.unmount();
+    jobStatus.mockResolvedValue(status("succeeded"));
+    await vi.waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("shop.test is ready"), {
+      timeout: 2000,
+    });
+  });
+
+  it("never starts a second create while one runs", async () => {
+    jobStatus.mockResolvedValue(status("running"));
     const w = await openDialog();
     await toOptions(w);
     await click(w, "Create site");
-    expect(jobStatus).toHaveBeenCalledTimes(1);
     w.unmount();
-    resolveStatus(status("running"));
+    const again = await openDialog();
+    expect(byText(again, "Create site")).toBeUndefined();
+    expect(byText(again, "Next: Options")).toBeUndefined();
+    expect(createSite).toHaveBeenCalledTimes(1);
+    again.unmount();
+  });
+
+  it("keeps a running tools install when reopened instead of starting over", async () => {
+    listTools.mockResolvedValue([tool("laravel")]);
+    installToolStreamed.mockImplementation(async (id: string) => `install-${id}`);
+    pollJobToEnd.mockReturnValue(new Promise(() => {}));
+    const w = await openDialog();
+    await toOptions(w);
+    await byText(w, "Install missing tools")?.trigger("click");
     await flushPromises();
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    expect(jobStatus).toHaveBeenCalledTimes(1);
+    await w.setProps({ open: false });
+    await w.setProps({ open: true });
+    await flushPromises();
+    expect(w.get('[data-tool="composer"]').text()).toContain("Installing");
+    expect(byText(w, "Installing…")?.attributes("disabled")).toBeDefined();
+    expect(installToolStreamed).toHaveBeenCalledTimes(1);
+    w.unmount();
   });
 
   it("re-enables Cancel when a cancelled create is retried", async () => {

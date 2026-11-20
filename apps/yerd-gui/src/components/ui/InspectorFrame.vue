@@ -8,8 +8,9 @@ import { cn } from "@/lib/utils";
  * The chrome around a list screen's inspector. In `panel` mode it is a plain
  * scrolling column beside the list (wide windows); in `drawer` mode it slides
  * over the window from the right with a backdrop and closes on Escape or a
- * backdrop click. Escape is left alone while `layerOpen` returns true or while
- * another modal layer sits above the drawer. The content goes in the default
+ * backdrop click. Escape is left alone while `layerOpen` returns true, while
+ * another modal or dismissable layer is open, or once something else has
+ * default-prevented it. The content goes in the default
  * slot and scrolls; an `InspectorFooter` anywhere inside it is teleported to a
  * bar below the scroll area, so the scrollbar stops above the bar.
  */
@@ -37,20 +38,29 @@ const footerId = `inspector-footer-${useId()}`;
 provide(INSPECTOR_FOOTER_KEY, `#${footerId}`);
 const panel = ref<HTMLElement | null>(null);
 
-/** Whether another modal layer is open. The drawer sits at `z-[45]`, under every
+/** Whether another layer owns Escape. The drawer sits at `z-[45]`, under every
  *  dialog's `z-50`, so any other open dialog paints above it and owns Escape:
  *  without this both listeners fire and one keypress dismisses the pair. Stacking
  *  by z-index rather than document order matters because a drawer mounted after
  *  the view's dialogs (a cold load, or a resize into the compact layout) has its
- *  teleport anchors later in `<body>`. */
-function hasDialogAbove(): boolean {
-  const dialogs = document.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"]');
-  return Array.from(dialogs).some((dialog) => dialog !== panel.value);
+ *  teleport anchors later in `<body>`. Any open reka dismissable layer (a
+ *  tooltip, menu or popover, even one a caller never reported via `layerOpen`)
+ *  closes itself on this Escape, so the drawer leaves it alone too. */
+function hasLayerAbove(): boolean {
+  const layers = document.querySelectorAll(
+    '[role="dialog"][aria-modal="true"], [role="alertdialog"], [data-dismissable-layer]',
+  );
+  return Array.from(layers).some((layer) => layer !== panel.value);
 }
 
+/** Closes the drawer on an unclaimed Escape, then marks the event handled: the
+ *  close can mount a discard prompt synchronously enough that its own window
+ *  Escape listener sees this same keypress, and reka leaves a layer open when
+ *  the Escape that reaches it is already default-prevented. */
 function onKeydown(event: KeyboardEvent): void {
-  if (!drawer.value || !props.shown || event.key !== "Escape") return;
-  if (props.layerOpen?.() || hasDialogAbove()) return;
+  if (!drawer.value || !props.shown || event.key !== "Escape" || event.defaultPrevented) return;
+  if (props.layerOpen?.() || hasLayerAbove()) return;
+  event.preventDefault();
   emit("close");
 }
 

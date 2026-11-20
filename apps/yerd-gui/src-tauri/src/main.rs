@@ -20,6 +20,7 @@ mod mail_window;
 #[cfg(target_os = "macos")]
 mod smappservice;
 mod tray;
+mod window_fit;
 
 #[cfg(target_os = "macos")]
 use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -478,17 +479,54 @@ fn decide_initial_window(app: &tauri::AppHandle) {
     }
 }
 
-/// Fill the display's work area when it is smaller than the configured launch
-/// size (`tauri.conf.json`), so the window never opens partly off screen.
+/// Shrink the main window to fit the display's work area when the configured
+/// launch size (`tauri.conf.json`) is larger, so it never opens partly off
+/// screen. Works from the configured logical size rather than `outer_size()`,
+/// which is unreliable for a hidden, never-realized window (tao on Linux seeds
+/// it with the window position). The fitted window keeps a small margin inside
+/// the work area so macOS never treats it as already zoomed.
+#[allow(clippy::cast_possible_truncation)]
 fn fit_main_window_to_display(win: &tauri::WebviewWindow) {
-    let (Ok(Some(monitor)), Ok(size)) = (win.current_monitor(), win.outer_size()) else {
+    let Some(configured) = win
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|cfg| cfg.label == win.label())
+        .map(|cfg| (cfg.width, cfg.height))
+    else {
         return;
     };
-    let area = monitor.work_area();
-    if size.width >= area.size.width || size.height >= area.size.height {
-        let _ = win.set_size(area.size);
-        let _ = win.set_position(area.position);
+    let monitor = match win.current_monitor() {
+        Ok(Some(m)) => m,
+        _ => match win.primary_monitor() {
+            Ok(Some(m)) => m,
+            _ => return,
+        },
+    };
+    let scale = monitor.scale_factor();
+    if scale <= 0.0 {
+        return;
     }
+    let work = monitor.work_area();
+    let area = (
+        f64::from(work.size.width) / scale,
+        f64::from(work.size.height) / scale,
+    );
+    if !window_fit::needs_fit(configured, area) {
+        return;
+    }
+    let size = window_fit::fit_size(configured, area);
+    let origin = (
+        f64::from(work.position.x) / scale,
+        f64::from(work.position.y) / scale,
+    );
+    let (x, y) = window_fit::centered_origin(size, origin, area);
+    let _ = win.set_size(tauri::LogicalSize::new(size.0, size.1));
+    let _ = win.set_position(tauri::PhysicalPosition::new(
+        (x * scale).round() as i32,
+        (y * scale).round() as i32,
+    ));
 }
 
 /// Apply the persisted native state before revealing the main window. The

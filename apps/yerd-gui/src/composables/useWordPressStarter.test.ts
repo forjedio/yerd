@@ -107,7 +107,7 @@ afterEach(() => {
 });
 
 describe("useWordPressStarter", () => {
-  it("builds the default spec with a derived database name on the first PHP", async () => {
+  it("builds the default spec with a derived database name on the newest PHP", async () => {
     const { starter, basics } = await setup();
     basics.name = "my-blog";
     await nextTick();
@@ -115,7 +115,7 @@ describe("useWordPressStarter", () => {
     expect(starter.buildSpec()).toEqual({
       name: "my-blog",
       parent_dir: "/srv",
-      php: "8.3",
+      php: "8.4",
       secure: false,
       framework: {
         framework: "wordpress",
@@ -139,9 +139,13 @@ describe("useWordPressStarter", () => {
     expect(starter.supportsPhp("7.4")).toBe(true);
   });
 
-  it("never prefers a default PHP that isn't installed", async () => {
-    const { starter } = await setup(["7.4", "8.3"], "8.4");
-    expect(starter.preferredPhp()).toBe("7.4");
+  it.each<[string[], string]>([
+    [["7.4", "8.3"], "8.3"],
+    [["7.4", "8.0", "8.1"], "8.1"],
+    [["8.1", "7.4"], "8.1"],
+  ])("prefers the newest of %j when the default PHP isn't installed", async (versions, expected) => {
+    const { starter } = await setup(versions, "8.4");
+    expect(starter.preferredPhp()).toBe(expected);
   });
 
   it("labels and explains legacy PHP", async () => {

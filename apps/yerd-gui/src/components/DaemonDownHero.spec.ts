@@ -132,23 +132,34 @@ describe("DaemonDownHero", () => {
     expect(mocks.openLoginItems).toHaveBeenCalledOnce();
   });
 
-  it("shows hints, the log excerpt and the raw details on failure", async () => {
-    start.diagnostics.value = diagnostics();
+  it("shows hints, the spawn log excerpt and the raw details on failure", async () => {
+    start.diagnostics.value = diagnostics({
+      spawnLogTail: ["spawning yerdd", "WARN retrying", "ERROR bind 127.0.0.1:1053: address in use"],
+    });
     const w = mountHero();
 
     expect(w.text()).toContain("The daemon didn't come up");
     expect(w.text()).toContain("Port 1053 is already in use");
     const excerpt = w.get('[data-testid="diagnostics-excerpt"]');
-    expect(excerpt.text()).not.toContain("INFO booting");
+    expect(excerpt.text()).not.toContain("spawning yerdd");
     expect(excerpt.text()).toContain("WARN retrying");
     expect(excerpt.text()).toContain("ERROR bind 127.0.0.1:1053: address in use");
-    expect(excerpt.text()).toContain("~/Library/Logs/Yerd/yerdd.log");
+    expect(excerpt.text()).toContain("Spawn log");
+    expect(excerpt.text()).not.toContain("~/Library/Logs/Yerd/yerdd.log");
     expect(w.get("details").text()).toContain("state = not running");
 
     await button(w, "Copy diagnostics").trigger("click");
     await flushPromises();
     expect(mocks.writeText).toHaveBeenCalledOnce();
     expect(mocks.writeText.mock.calls[0]?.[0]).toContain("Yerd daemon diagnostics");
+  });
+
+  it("never shows the rolling daemon log, possibly a previous run's, as the cause", () => {
+    start.diagnostics.value = diagnostics();
+    const w = mountHero();
+
+    expect(w.find('[data-testid="diagnostics-excerpt"]').exists()).toBe(false);
+    expect(w.get("details").text()).toContain("ERROR bind 127.0.0.1:1053: address in use");
   });
 
   it("omits the details without raw data", () => {
