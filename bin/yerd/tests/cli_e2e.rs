@@ -763,4 +763,18 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(5), ipc_task).await;
         drop(keep_alive);
     }
+
+    /// A build dir has no install receipt, so it is not a headless install and
+    /// `yerd daemon install` must refuse before touching any service manager.
+    #[test]
+    fn daemon_install_refuses_without_a_headless_receipt() {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_yerd"))
+            .args(["daemon", "install"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("desktop app"), "{stderr}");
+        assert!(stderr.contains("headless"), "{stderr}");
+    }
 }

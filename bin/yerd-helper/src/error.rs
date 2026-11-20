@@ -173,6 +173,16 @@ pub enum ValidationReason {
     #[cfg(target_os = "macos")]
     #[error("forwarder binary unusable: {}", .0.display())]
     ForwarderInvalid(PathBuf),
+    /// `yerdd` next to the helper is missing, not a regular file, group- or
+    /// world-writable, or on a path that won't survive a reboot. macOS-only.
+    #[cfg(target_os = "macos")]
+    #[error("daemon binary unusable: {}", .0.display())]
+    DaemonBinaryInvalid(PathBuf),
+    /// The helper's directory has no `headless` install receipt, so it is not
+    /// a headless install and must not get a system daemon job. macOS-only.
+    #[cfg(target_os = "macos")]
+    #[error("not a headless install (no valid install receipt beside the helper); reinstall with the install script")]
+    NotHeadlessInstall,
 }
 
 /// Specific failure modes for [`HelperError::Command`].

@@ -3268,6 +3268,14 @@ fn staged_artifact_each_variant_byte_shape() {
         serde_json::from_str::<StagedArtifact>(r#""rpm""#).unwrap(),
         StagedArtifact::Rpm
     );
+    assert_eq!(
+        serde_json::to_string(&StagedArtifact::HeadlessTarGz).unwrap(),
+        r#""headless_tar_gz""#
+    );
+    assert_eq!(
+        serde_json::from_str::<StagedArtifact>(r#""headless_tar_gz""#).unwrap(),
+        StagedArtifact::HeadlessTarGz
+    );
 }
 
 #[test]

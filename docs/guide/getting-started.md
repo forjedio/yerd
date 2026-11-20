@@ -28,6 +28,12 @@ Yerd supports Apple Silicon (arm64) Macs only. There are no Intel (x86-64)
 macOS builds.
 :::
 
+::: tip Installing on a server?
+On a machine you only reach over SSH, skip the desktop app and use the
+[headless install](./headless): just the CLI, daemon and helper, set up with one
+`curl | sh` command, with the daemon starting at boot.
+:::
+
 ## Install
 
 Grab the latest **stable release** from the
@@ -206,5 +212,6 @@ Trash. Full details in the [Uninstall reference](../reference/cli/uninstall).
 - [PHP Versions](./php-versions) - pools, ini defaults, and updates.
 - [HTTPS & Certificates](./https) and [DNS & .test Domains](./dns).
 - [Elevation & Privileges](./elevation) - exactly what the one-time setup grants.
+- [Headless Install](./headless) - running Yerd on a server without the app.
 - [CLI Reference](../reference/cli/) and
   [Configuration Reference](../reference/configuration) for the full surface.

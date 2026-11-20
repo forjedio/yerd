@@ -294,6 +294,11 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 "path is handled locally, not over IPC".to_owned(),
             ));
         }
+        Command::Daemon { .. } => {
+            return Err(ClientError::Usage(
+                "daemon is handled locally, not over IPC".to_owned(),
+            ));
+        }
         Command::Coverage { .. } => {
             return Err(ClientError::Usage(
                 "coverage is handled locally, not over IPC".to_owned(),
@@ -5144,6 +5149,9 @@ mod tests {
             },
             Command::Path {
                 action: crate::cli::PathAction::Install,
+            },
+            Command::Daemon {
+                action: crate::cli::DaemonAction::Install,
             },
             Command::Coverage { args: vec![] },
             Command::Exec {

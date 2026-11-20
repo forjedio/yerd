@@ -34,6 +34,8 @@ fn op_tag(inv: &HelperInvocation) -> &'static str {
         HelperInvocation::UninstallPortRedirect => ops::UNINSTALL_PORT_REDIRECT,
         HelperInvocation::InstallLanPortRedirect { .. } => ops::INSTALL_LAN_PORT_REDIRECT,
         HelperInvocation::UninstallLanPortRedirect => ops::UNINSTALL_LAN_PORT_REDIRECT,
+        HelperInvocation::InstallDaemonJob { .. } => ops::INSTALL_DAEMON_JOB,
+        HelperInvocation::UninstallDaemonJob => ops::UNINSTALL_DAEMON_JOB,
         _ => "unknown",
     }
 }
@@ -72,6 +74,8 @@ fn every_variant_round_trips_via_from_argv() {
             uid: 501,
         },
         HelperInvocation::UninstallLanPortRedirect,
+        HelperInvocation::InstallDaemonJob { uid: 501 },
+        HelperInvocation::UninstallDaemonJob,
     ];
     for inv in cases {
         let v = argv_for(inv);

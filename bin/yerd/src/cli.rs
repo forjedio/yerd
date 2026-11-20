@@ -257,6 +257,13 @@ pub enum Command {
         #[command(subcommand)]
         action: PathAction,
     },
+    /// Register and control the daemon service for a headless install. Local -
+    /// does not talk to the daemon.
+    Daemon {
+        /// What to do.
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
     /// Run a script under the default PHP version with pcov coverage enabled -
     /// the discoverable front door to the `phpcover` shim. Everything after
     /// `coverage` is passed straight through to PHP. To pin a specific version,
@@ -479,6 +486,19 @@ pub enum PathAction {
     Uninstall,
     /// Print the shell snippet without modifying any file (for manual `eval`).
     Print,
+}
+
+/// Action of `yerd daemon`.
+#[derive(clap::Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonAction {
+    /// Register the daemon to start at boot and start it now (headless installs
+    /// only). Linux: a systemd user service plus linger. macOS: a system
+    /// launchd daemon, so run it with `sudo`.
+    Install,
+    /// Start the registered daemon (macOS headless installs need `sudo`).
+    Start,
+    /// Stop the running daemon (run as yourself, not with `sudo`).
+    Stop,
 }
 
 /// Action of `yerd proxy`.
@@ -1212,6 +1232,23 @@ mod tests {
     #[test]
     fn which_rejects_composer() {
         assert!(Cli::try_parse_from(["yerd", "which", "composer"]).is_err());
+    }
+
+    #[test]
+    fn daemon_parses_its_three_verbs() {
+        for (verb, want) in [
+            ("install", DaemonAction::Install),
+            ("start", DaemonAction::Start),
+            ("stop", DaemonAction::Stop),
+        ] {
+            let cli = parse(&["yerd", "daemon", verb]);
+            let Command::Daemon { action } = cli.command else {
+                panic!("expected Daemon");
+            };
+            assert_eq!(action, want);
+        }
+        assert!(Cli::try_parse_from(["yerd", "daemon"]).is_err());
+        assert!(Cli::try_parse_from(["yerd", "daemon", "uninstall"]).is_err());
     }
 
     #[test]

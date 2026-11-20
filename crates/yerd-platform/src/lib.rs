@@ -28,6 +28,7 @@ pub mod detect;
 pub mod error;
 pub mod helper;
 pub mod ide;
+pub mod install_mode;
 pub mod lan_ip;
 pub mod libvips;
 pub mod metrics;

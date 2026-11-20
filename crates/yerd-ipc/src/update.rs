@@ -48,4 +48,7 @@ pub enum StagedArtifact {
     Pacman,
     /// Linux `.rpm` - the applier reinstalls via `rpm -U`.
     Rpm,
+    /// Headless `.headless.tar.gz` - the applier swaps the CLI binaries in
+    /// place in the install dir.
+    HeadlessTarGz,
 }

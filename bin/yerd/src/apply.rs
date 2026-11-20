@@ -10,13 +10,17 @@
 //!
 //! It runs **unprivileged in the user session**; only the minimal privileged
 //! step is elevated (Linux `dpkg` via `pkexec`; macOS only if `/Applications`
-//! isn't user-writable).
+//! isn't user-writable). A headless install never elevates: its binaries live
+//! in a user-owned dir and are swapped in place.
 //!
 //! Flow:
-//! 1. **Re-verify** the staged artifact's minisign signature (closes the
+//! 1. **Check the install receipt** beside this `yerd` against the staged kind,
+//!    so a desktop-app `yerd` never applies a headless tarball and vice versa.
+//! 2. **Re-verify** the staged artifact's minisign signature (closes the
 //!    daemon-verify → swap TOCTOU window).
-//! 2. Stop the daemon, install the new bundle/package, restart the daemon, and
-//!    optionally relaunch the GUI.
+//! 3. Stop the daemon, install the new bundle/package, restart the daemon, and
+//!    optionally relaunch the GUI. The headless path instead swaps each binary
+//!    with a hard-link backup and an atomic rename, then restarts the daemon.
 //!
 //! ## Single owner of the daemon restart (macOS)
 //!
@@ -51,6 +55,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use yerd_ipc::StagedArtifact;
+use yerd_platform::pure::install_receipt::{InstallMode, ReceiptError};
 use yerd_update::{verify_minisign, UPDATE_PUBLIC_KEY};
 
 /// Env var that switches `yerd` into applier mode. Its presence (set by the
@@ -234,6 +239,10 @@ pub fn run(
     relaunch_gui: bool,
     gui_owns_daemon: bool,
 ) -> ExitCode {
+    if let Err(e) = preflight(kind, yerd_platform::install_mode::detect()) {
+        eprintln!("yerd: {e}");
+        return ExitCode::from(1);
+    }
     if let Err(e) = reverify(staged) {
         eprintln!("yerd: update verification failed: {e}");
         return ExitCode::from(1);
@@ -243,6 +252,7 @@ pub fn run(
         StagedArtifact::Deb => apply_linux(staged, relaunch_gui),
         StagedArtifact::Pacman => apply_linux_pacman(staged, relaunch_gui),
         StagedArtifact::Rpm => apply_linux_rpm(staged, relaunch_gui),
+        StagedArtifact::HeadlessTarGz => apply_headless(staged),
         _ => Err("unknown staged artifact kind from the daemon".to_owned()),
     };
     match result {
@@ -257,6 +267,76 @@ pub fn run(
             }
             ExitCode::from(1)
         }
+    }
+}
+
+/// Refuse before touching anything when this `yerd`'s install mode is unknown
+/// or does not match the staged artifact kind.
+fn preflight(kind: StagedArtifact, mode: Result<InstallMode, ReceiptError>) -> Result<(), String> {
+    let mode = mode.map_err(|e| e.to_string())?;
+    check_kind(kind, mode)
+}
+
+/// Whether an install of `mode` may apply a staged artifact of `kind`. A
+/// mismatch means the CLI and the daemon belong to different installs.
+fn check_kind(kind: StagedArtifact, mode: InstallMode) -> Result<(), String> {
+    match (kind, mode) {
+        (StagedArtifact::HeadlessTarGz, InstallMode::Package) => Err(
+            "this yerd belongs to a different install than the daemon (a headless install); \
+             run the headless install's `yerd update --yes` instead"
+                .to_owned(),
+        ),
+        (
+            StagedArtifact::AppTarGz
+            | StagedArtifact::Deb
+            | StagedArtifact::Pacman
+            | StagedArtifact::Rpm,
+            InstallMode::Headless,
+        ) => Err(
+            "this yerd is a headless install but the daemon belongs to the desktop app; \
+             use the desktop app's updater instead"
+                .to_owned(),
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// Whether `exe` (a canonical path) is where a distro package puts `yerd`:
+/// `/usr/bin/<file>`, or the deb postinst's fallback `/usr/lib/<dir>/<file>`.
+/// Guards the Linux package paths so a tarball install that lost its receipt
+/// can never `pkexec` the desktop package.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn is_package_location(exe: &Path) -> bool {
+    let normal_count = |rest: &Path| {
+        rest.components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+            .then(|| rest.components().count())
+    };
+    if let Ok(rest) = exe.strip_prefix("/usr/bin") {
+        return normal_count(rest) == Some(1);
+    }
+    if let Ok(rest) = exe.strip_prefix("/usr/lib") {
+        return normal_count(rest) == Some(2);
+    }
+    false
+}
+
+/// Refuse a Linux package install unless this `yerd` lives where the package
+/// put it (see [`is_package_location`]).
+#[cfg(target_os = "linux")]
+fn ensure_package_location() -> Result<(), String> {
+    let exe = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .map_err(|e| format!("resolving the running yerd: {e}"))?;
+    if is_package_location(&exe) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} is not a package install (expected under /usr/bin); refusing to install a \
+             system package from here. If this is a headless install, reinstall it with the \
+             install script",
+            exe.display()
+        ))
     }
 }
 
@@ -573,6 +653,7 @@ fn relaunch_gui_app() -> bool {
 
 #[cfg(target_os = "linux")]
 fn apply_linux(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
+    ensure_package_location()?;
     if nix::unistd::geteuid().is_root() {
         return elevated_install_deb(staged);
     }
@@ -636,6 +717,7 @@ fn elevated_install_deb(staged: &Path) -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 fn apply_linux_pacman(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
+    ensure_package_location()?;
     if nix::unistd::geteuid().is_root() {
         return elevated_install_pacman(staged);
     }
@@ -720,6 +802,7 @@ fn elevated_install_pacman(staged: &Path) -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 fn apply_linux_rpm(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
+    ensure_package_location()?;
     if nix::unistd::geteuid().is_root() {
         return elevated_install_rpm(staged);
     }
@@ -820,6 +903,371 @@ fn sibling_gui() -> Option<PathBuf> {
         .find(|c| c.exists())
 }
 
+// ── headless: swap the binaries in place ─────────────────────────────────────
+
+/// The top-level directory every headless tarball extracts to.
+const HEADLESS_TOP_DIR: &str = "yerd";
+
+/// The files every headless tarball must carry, in swap order: the receipt and
+/// helpers first, then `yerdd`, then `yerd` last so the CLI is replaced only
+/// once everything it drives is in place.
+fn required_files(macos: bool) -> &'static [&'static str] {
+    if macos {
+        &[
+            yerd_platform::pure::install_receipt::RECEIPT_FILE,
+            "yerd-helper",
+            "yerd-forward",
+            "yerdd",
+            "yerd",
+        ]
+    } else {
+        &[
+            yerd_platform::pure::install_receipt::RECEIPT_FILE,
+            "yerd-helper",
+            "yerdd",
+            "yerd",
+        ]
+    }
+}
+
+/// Swapped after everything else, in this order.
+const SWAPPED_LAST: [&str; 2] = ["yerdd", "yerd"];
+
+/// Prefix every extra file in a headless tarball must carry; shared with
+/// `yerd uninstall`, which removes such files from a receipt-marked dir.
+pub(crate) const EXTRA_PREFIX: &str = "yerd-";
+
+/// What a path inside the extracted tarball is, read without following links.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryKind {
+    File,
+    Dir,
+    Other,
+}
+
+/// A name a newer release may add beside the required files: a `yerd-`
+/// prefixed basename of `[A-Za-z0-9._-]` that can't be mistaken for a swap
+/// backup. The prefix is what lets `yerd uninstall` remove extras from a
+/// shared install dir without touching the user's own files.
+fn is_safe_extra_name(name: &str) -> bool {
+    name.len() > EXTRA_PREFIX.len()
+        && name.starts_with(EXTRA_PREFIX)
+        && !name.contains(".yerd-old-")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// Require the extracted tarball to be exactly `yerd/` holding every
+/// `required` file plus any extra files a newer release adds, all regular
+/// files directly under `yerd/` (no symlinks, dirs or nested paths). `entries`
+/// are paths relative to the staging dir, `/`-separated.
+///
+/// Returns the swap order: the required files except [`SWAPPED_LAST`], then
+/// the extras (sorted), then `yerdd` and `yerd`.
+fn validate_payload(
+    entries: &[(String, EntryKind)],
+    required: &[&str],
+) -> Result<Vec<String>, String> {
+    let mut seen_top = false;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut extras = std::collections::BTreeSet::new();
+    for (path, kind) in entries {
+        if path == HEADLESS_TOP_DIR {
+            if *kind != EntryKind::Dir {
+                return Err(format!("update archive: {path} is not a directory"));
+            }
+            seen_top = true;
+            continue;
+        }
+        let name = path
+            .strip_prefix(HEADLESS_TOP_DIR)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .filter(|name| required.contains(name) || is_safe_extra_name(name))
+            .ok_or_else(|| format!("update archive has an unexpected entry: {path}"))?;
+        if *kind != EntryKind::File {
+            return Err(format!("update archive: {path} is not a regular file"));
+        }
+        if required.contains(&name) {
+            seen.insert(name);
+        } else {
+            extras.insert(name.to_owned());
+        }
+    }
+    if !seen_top {
+        return Err(format!(
+            "update archive has no top-level {HEADLESS_TOP_DIR}/ directory"
+        ));
+    }
+    if let Some(missing) = required.iter().find(|name| !seen.contains(*name)) {
+        return Err(format!("update archive is missing {missing}"));
+    }
+    let first = required
+        .iter()
+        .filter(|name| !SWAPPED_LAST.contains(name))
+        .map(|name| (*name).to_owned());
+    let last = SWAPPED_LAST
+        .iter()
+        .filter(|name| required.contains(name))
+        .map(|name| (*name).to_owned());
+    Ok(first.chain(extras).chain(last).collect())
+}
+
+/// Every path under `root`, relative and `/`-separated, with its kind. Symlinks
+/// are reported as [`EntryKind::Other`] and never followed.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn list_payload(root: &Path) -> Result<Vec<(String, EntryKind)>, String> {
+    let mut out = Vec::new();
+    let mut pending = vec![(root.to_path_buf(), String::new())];
+    while let Some((dir, prefix)) = pending.pop() {
+        let read =
+            std::fs::read_dir(&dir).map_err(|e| format!("reading {}: {e}", dir.display()))?;
+        for entry in read {
+            let entry = entry.map_err(|e| format!("reading {}: {e}", dir.display()))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let rel = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            };
+            let meta = std::fs::symlink_metadata(entry.path())
+                .map_err(|e| format!("stat {}: {e}", entry.path().display()))?;
+            let kind = if meta.is_dir() {
+                pending.push((entry.path(), rel.clone()));
+                EntryKind::Dir
+            } else if meta.is_file() {
+                EntryKind::File
+            } else {
+                EntryKind::Other
+            };
+            out.push((rel, kind));
+        }
+    }
+    Ok(out)
+}
+
+/// How a swapped file is undone on rollback.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+enum Swapped {
+    /// An existing file was replaced; its original is at `backup`.
+    Replaced { target: PathBuf, backup: PathBuf },
+    /// The file is new (an extra from a newer release); rollback removes it.
+    Created { target: PathBuf },
+}
+
+/// Replace each of `names` in `dir` with the same-named file from `payload`.
+///
+/// Each existing target is first hard-linked to `<name>.yerd-old-<suffix>` as
+/// a backup, the new file gets its mode, then one atomic `rename` puts it over
+/// the target, so the target path never disappears. A name with no existing
+/// target (an extra file a newer release added) is simply renamed in. On any
+/// failure every already-swapped file is restored from its backup and every
+/// newly created one removed. Backups are removed on success. All paths must
+/// be on one filesystem.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn swap_files<S: AsRef<str>>(
+    dir: &Path,
+    payload: &Path,
+    names: &[S],
+    suffix: &str,
+) -> Result<(), String> {
+    let mut swapped: Vec<Swapped> = Vec::new();
+    for name in names {
+        let name = name.as_ref();
+        let target = dir.join(name);
+        let backup = dir.join(format!("{name}.yerd-old-{suffix}"));
+        let existed = std::fs::symlink_metadata(&target).is_ok();
+        if let Err(e) = swap_one(
+            &target,
+            &payload.join(name),
+            existed.then_some(&*backup),
+            name,
+        ) {
+            for entry in swapped.iter().rev() {
+                match entry {
+                    Swapped::Replaced { target, backup } => {
+                        let _ = std::fs::rename(backup, target);
+                    }
+                    Swapped::Created { target } => {
+                        let _ = std::fs::remove_file(target);
+                    }
+                }
+            }
+            return Err(e);
+        }
+        swapped.push(if existed {
+            Swapped::Replaced { target, backup }
+        } else {
+            Swapped::Created { target }
+        });
+    }
+    for entry in &swapped {
+        if let Swapped::Replaced { backup, .. } = entry {
+            let _ = std::fs::remove_file(backup);
+        }
+    }
+    Ok(())
+}
+
+/// The installed mode: 0644 for the receipt, 0755 for the required binaries,
+/// and for an extra file 0755 only when the archive marked it executable.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn install_mode_for(name: &str, payload_mode: u32) -> u32 {
+    if name == yerd_platform::pure::install_receipt::RECEIPT_FILE {
+        0o644
+    } else if required_files(true).contains(&name) || payload_mode & 0o111 != 0 {
+        0o755
+    } else {
+        0o644
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn swap_one(target: &Path, new: &Path, backup: Option<&Path>, name: &str) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt as _;
+    if let Some(backup) = backup {
+        std::fs::hard_link(target, backup)
+            .map_err(|e| format!("backing up {}: {e}", target.display()))?;
+    }
+    let installed = std::fs::metadata(new)
+        .and_then(|meta| {
+            let mode = install_mode_for(name, meta.permissions().mode());
+            std::fs::set_permissions(new, std::fs::Permissions::from_mode(mode))
+        })
+        .and_then(|()| std::fs::rename(new, target));
+    installed.map_err(|e| {
+        if let Some(backup) = backup {
+            let _ = std::fs::remove_file(backup);
+        }
+        format!("replacing {}: {e}", target.display())
+    })
+}
+
+/// Install a staged headless tarball over the running binaries and restart the
+/// daemon. No elevation: the install dir is the user's.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn apply_headless(staged: &Path) -> Result<(), String> {
+    let dir = yerd_platform::install_mode::current_exe_dir()
+        .ok_or_else(|| ReceiptError::ExeUnresolved.to_string())?;
+    let had_port_cap = yerdd_had_port_capability(&dir.join("yerdd"));
+    install_headless(staged, &dir, &unique_suffix())?;
+    restart_after_headless_swap(&dir, had_port_cap);
+    Ok(())
+}
+
+/// Whether `getcap` output shows `cap_net_bind_service` on the file. `None`
+/// (getcap missing or failed) counts as yes, so the reset note still prints.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn port_capability_from_getcap(output: Option<&str>) -> bool {
+    output.map_or(true, |out| out.contains("cap_net_bind_service"))
+}
+
+/// Whether `yerdd` carries the port capability before the swap drops it,
+/// read with `getcap` (best-effort; it often lives in an sbin dir).
+#[cfg(target_os = "linux")]
+fn yerdd_had_port_capability(yerdd: &Path) -> bool {
+    let output = ["getcap", "/usr/sbin/getcap", "/sbin/getcap"]
+        .into_iter()
+        .find_map(|tool| {
+            Command::new(tool)
+                .arg(yerdd)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+        })
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    port_capability_from_getcap(output.as_deref())
+}
+
+/// macOS binds 80/443 through launchd sockets, not a file capability.
+#[cfg(target_os = "macos")]
+fn yerdd_had_port_capability(_yerdd: &Path) -> bool {
+    false
+}
+
+/// Extract `staged` into a staging dir inside `dir`, validate the file set and
+/// its receipt, then swap every binary in `dir`. Nothing in `dir` changes unless
+/// validation passes; the staging dir is always removed.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn install_headless(staged: &Path, dir: &Path, suffix: &str) -> Result<(), String> {
+    let staging = dir.join(format!(".yerd-staging-{suffix}"));
+    std::fs::create_dir(&staging)
+        .map_err(|e| format!("creating staging dir {}: {e}", staging.display()))?;
+    let result = (|| -> Result<(), String> {
+        let status = Command::new("tar")
+            .arg("-xzf")
+            .arg(staged)
+            .arg("-C")
+            .arg(&staging)
+            .status()
+            .map_err(|e| format!("spawning tar: {e}"))?;
+        if !status.success() {
+            return Err("extracting the update archive failed".to_owned());
+        }
+        let names = validate_payload(
+            &list_payload(&staging)?,
+            required_files(cfg!(target_os = "macos")),
+        )?;
+        let payload = staging.join(HEADLESS_TOP_DIR);
+        let receipt = std::fs::read_to_string(
+            payload.join(yerd_platform::pure::install_receipt::RECEIPT_FILE),
+        )
+        .map_err(|e| format!("reading the update's install receipt: {e}"))?;
+        if yerd_platform::pure::install_receipt::parse(&receipt) != Ok(InstallMode::Headless) {
+            return Err("the update archive is not a headless build".to_owned());
+        }
+        swap_files(dir, &payload, &names, suffix)
+    })();
+    let _ = std::fs::remove_dir_all(&staging);
+    result
+}
+
+/// Restart the daemon onto the swapped binary. Linux re-exec of a renamed-over
+/// binary resolves to `"<path> (deleted)"`, so it goes through the service
+/// manager instead. The swap also drops any `cap_net_bind_service` on `yerdd`,
+/// so when it had one, say how to grant it again.
+#[cfg(target_os = "linux")]
+fn restart_after_headless_swap(dir: &Path, had_port_cap: bool) {
+    restart_daemon();
+    if !had_port_cap {
+        return;
+    }
+    println!(
+        "yerd: the update reset the port capability on yerdd; run `sudo {}/yerd elevate ports` \
+         to bind 80/443 again",
+        dir.display()
+    );
+}
+
+/// Restart the daemon onto the swapped binary. A system-domain launchd job
+/// can't be kickstarted without root, so this uses the daemon's own in-place
+/// re-exec (which loads the new binary from its launch path) and waits for the
+/// boot id to change. A daemon that isn't running picks the new binary up at
+/// its next start.
+#[cfg(target_os = "macos")]
+fn restart_after_headless_swap(_dir: &Path, _had_port_cap: bool) {
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        eprintln!("yerd: could not restart the daemon; run `yerd restart daemon`");
+        return;
+    };
+    if rt
+        .block_on(crate::transport::exchange(&yerd_ipc::Request::Ping))
+        .is_err()
+    {
+        return;
+    }
+    let restarted = rt.block_on(async {
+        let before = crate::fetch_boot_id().await.ok().flatten();
+        crate::restart_and_await_boot_change(before).await
+    });
+    if let Err(e) = restarted {
+        eprintln!("yerd: daemon restart reported: {e}; run `yerd restart daemon`");
+    }
+}
+
 // ── cross-platform stubs ─────────────────────────────────────────────────────
 // `run`'s match references both installers regardless of target, so each needs a
 // definition on the *other* OS. The daemon only ever stages the artifact kind
@@ -848,6 +1296,11 @@ fn apply_linux_rpm(_staged: &Path, _relaunch_gui: bool) -> Result<(), String> {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn relaunch_gui_app() -> bool {
     false
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn apply_headless(_staged: &Path) -> Result<(), String> {
+    Err("a headless tarball cannot be installed on this platform".to_owned())
 }
 
 #[cfg(test)]
@@ -1037,5 +1490,414 @@ mod tests {
         std::fs::write(&sibling, sig.as_bytes()).unwrap();
 
         reverify_with_key(&staged, &kp.pk.to_base64()).unwrap();
+    }
+
+    #[test]
+    fn check_kind_covers_every_kind_and_mode() {
+        let package_kinds = [
+            StagedArtifact::AppTarGz,
+            StagedArtifact::Deb,
+            StagedArtifact::Pacman,
+            StagedArtifact::Rpm,
+        ];
+        for kind in package_kinds {
+            assert_eq!(check_kind(kind, InstallMode::Package), Ok(()), "{kind:?}");
+            let err = check_kind(kind, InstallMode::Headless).unwrap_err();
+            assert!(err.contains("desktop app's updater"), "{kind:?}: {err}");
+        }
+        assert_eq!(
+            check_kind(StagedArtifact::HeadlessTarGz, InstallMode::Headless),
+            Ok(())
+        );
+        let err = check_kind(StagedArtifact::HeadlessTarGz, InstallMode::Package).unwrap_err();
+        assert!(
+            err.contains("headless install's `yerd update --yes`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn preflight_refuses_an_unusable_receipt() {
+        let cases = [
+            (
+                ReceiptError::Unrecognised,
+                "reinstall with the install script",
+            ),
+            (ReceiptError::ExeUnresolved, "restart it"),
+        ];
+        for kind in [StagedArtifact::HeadlessTarGz, StagedArtifact::Deb] {
+            for (err, hint) in cases {
+                let msg = preflight(kind, Err(err)).unwrap_err();
+                assert!(msg.contains(hint), "{kind:?}/{err:?}: {msg}");
+            }
+        }
+        assert_eq!(
+            preflight(StagedArtifact::Deb, Ok(InstallMode::Package)),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn is_package_location_accepts_only_package_layouts() {
+        for (path, expected) in [
+            ("/usr/bin/yerd", true),
+            ("/usr/lib/yerd/yerd", true),
+            ("/usr/lib/a/b/yerd", false),
+            ("/usr/lib/yerd", false),
+            ("/usr/bin/sub/yerd", false),
+            ("/usr/local/bin/yerd", false),
+            ("/home/u/.yerd/bin/yerd", false),
+        ] {
+            assert_eq!(is_package_location(Path::new(path)), expected, "{path}");
+        }
+    }
+
+    fn payload_entries(files: &[&str]) -> Vec<(String, EntryKind)> {
+        let mut out = vec![("yerd".to_owned(), EntryKind::Dir)];
+        out.extend(files.iter().map(|f| (format!("yerd/{f}"), EntryKind::File)));
+        out
+    }
+
+    #[test]
+    fn validate_payload_accepts_the_required_set_in_swap_order() {
+        for macos in [true, false] {
+            let required = required_files(macos);
+            let order = validate_payload(&payload_entries(required), required).unwrap();
+            assert_eq!(order, required.to_vec(), "macos={macos}");
+        }
+    }
+
+    #[test]
+    fn validate_payload_swaps_extras_before_yerdd_and_yerd() {
+        let required = required_files(false);
+        let mut entries = payload_entries(required);
+        entries.push(("yerd/yerd-zz-tool".to_owned(), EntryKind::File));
+        entries.push(("yerd/yerd-aa-notes.txt".to_owned(), EntryKind::File));
+        assert_eq!(
+            validate_payload(&entries, required).unwrap(),
+            vec![
+                "yerd-install-receipt",
+                "yerd-helper",
+                "yerd-aa-notes.txt",
+                "yerd-zz-tool",
+                "yerdd",
+                "yerd",
+            ]
+        );
+    }
+
+    #[test]
+    fn safe_extra_name_table() {
+        let cases = [
+            ("yerd-mcp", true),
+            ("yerd-tool_2.0", true),
+            ("yerd-", false),
+            ("README.md", false),
+            ("tool_2.0", false),
+            ("yerdx", false),
+            ("", false),
+            (".hidden", false),
+            ("..", false),
+            (".", false),
+            ("a/b", false),
+            ("a b", false),
+            ("yerd.yerd-old-123", false),
+            ("caf\u{e9}", false),
+            ("x\0y", false),
+        ];
+        for (name, want) in cases {
+            assert_eq!(is_safe_extra_name(name), want, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn validate_payload_rejects_malformed_archives() {
+        let expected = required_files(false);
+        let mut hidden = payload_entries(expected);
+        hidden.push(("yerd/.evil".to_owned(), EntryKind::File));
+        let mut extra_link = payload_entries(expected);
+        extra_link.push(("yerd/yerd-tool".to_owned(), EntryKind::Other));
+        let mut unprefixed = payload_entries(expected);
+        unprefixed.push(("yerd/README.md".to_owned(), EntryKind::File));
+        let missing = payload_entries(&["yerd-install-receipt", "yerd-helper", "yerd"]);
+        let mut symlink = payload_entries(&["yerd-install-receipt", "yerd-helper", "yerd"]);
+        symlink.push(("yerd/yerdd".to_owned(), EntryKind::Other));
+        let no_top: Vec<(String, EntryKind)> = payload_entries(expected)
+            .into_iter()
+            .filter(|(p, _)| p != "yerd")
+            .collect();
+        let mut top_is_link = no_top.clone();
+        top_is_link.push(("yerd".to_owned(), EntryKind::Other));
+        let mut stray_root = payload_entries(expected);
+        stray_root.push(("other".to_owned(), EntryKind::File));
+        let mut nested = payload_entries(expected);
+        nested.push(("yerd/yerd-sub".to_owned(), EntryKind::Dir));
+        nested.push(("yerd/yerd-sub/file".to_owned(), EntryKind::File));
+        let mut dotdot = payload_entries(expected);
+        dotdot.push(("yerd/..".to_owned(), EntryKind::Dir));
+        let cases = [
+            (hidden, "unexpected entry: yerd/.evil"),
+            (extra_link, "yerd/yerd-tool is not a regular file"),
+            (unprefixed, "unexpected entry: yerd/README.md"),
+            (missing, "missing yerdd"),
+            (symlink, "yerd/yerdd is not a regular file"),
+            (no_top, "no top-level yerd/"),
+            (top_is_link, "yerd is not a directory"),
+            (stray_root, "unexpected entry: other"),
+            (nested, "yerd/yerd-sub is not a regular file"),
+            (dotdot, "unexpected entry: yerd/.."),
+        ];
+        for (entries, needle) in cases {
+            let err = validate_payload(&entries, expected).unwrap_err();
+            assert!(err.contains(needle), "expected {needle:?} in {err:?}");
+        }
+    }
+
+    #[test]
+    fn port_capability_from_getcap_table() {
+        let cases = [
+            (None, true),
+            (Some(""), false),
+            (
+                Some("/home/u/.yerd/bin/yerdd cap_net_bind_service=ep\n"),
+                true,
+            ),
+            (
+                Some("/home/u/.yerd/bin/yerdd = cap_net_bind_service+ep\n"),
+                true,
+            ),
+            (Some("/home/u/.yerd/bin/yerdd cap_sys_nice=ep\n"), false),
+        ];
+        for (out, want) in cases {
+            assert_eq!(port_capability_from_getcap(out), want, "{out:?}");
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    mod headless_swap {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use super::*;
+
+        const RECEIPT: &str = yerd_platform::pure::install_receipt::RECEIPT_FILE;
+
+        fn names() -> &'static [&'static str] {
+            required_files(cfg!(target_os = "macos"))
+        }
+
+        fn install_dir(tmp: &Path) -> PathBuf {
+            let dir = tmp.join("bin");
+            std::fs::create_dir(&dir).unwrap();
+            for name in names() {
+                std::fs::write(dir.join(name), format!("old {name}")).unwrap();
+            }
+            dir
+        }
+
+        fn build_tarball(
+            tmp: &Path,
+            receipt: &str,
+            extra: Option<&str>,
+            skip: Option<&str>,
+        ) -> PathBuf {
+            let src = tmp.join("src");
+            let top = src.join("yerd");
+            std::fs::create_dir_all(&top).unwrap();
+            for name in names().iter().filter(|n| Some(**n) != skip) {
+                let body = if *name == RECEIPT {
+                    receipt.to_owned()
+                } else {
+                    format!("new {name}")
+                };
+                std::fs::write(top.join(name), body).unwrap();
+            }
+            if let Some(extra) = extra {
+                std::fs::write(top.join(extra), "extra").unwrap();
+            }
+            let out = tmp.join("headless.tar.gz");
+            let status = Command::new("tar")
+                .env("COPYFILE_DISABLE", "1")
+                .arg("-czf")
+                .arg(&out)
+                .arg("-C")
+                .arg(&src)
+                .arg("yerd")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            out
+        }
+
+        fn assert_untouched(dir: &Path) {
+            for name in names() {
+                assert_eq!(
+                    std::fs::read_to_string(dir.join(name)).unwrap(),
+                    format!("old {name}"),
+                    "{name} must be left as it was"
+                );
+            }
+        }
+
+        fn leftovers(dir: &Path) -> Vec<String> {
+            std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|n| !names().contains(&n.as_str()))
+                .collect()
+        }
+
+        #[test]
+        fn well_formed_payload_swaps_every_file_with_modes() {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = install_dir(tmp.path());
+            let tarball = build_tarball(tmp.path(), "headless\n", None, None);
+
+            install_headless(&tarball, &dir, "t1").unwrap();
+
+            for name in names() {
+                let path = dir.join(name);
+                let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+                if *name == RECEIPT {
+                    assert_eq!(std::fs::read_to_string(&path).unwrap(), "headless\n");
+                    assert_eq!(mode, 0o644, "{name}");
+                } else {
+                    assert_eq!(
+                        std::fs::read_to_string(&path).unwrap(),
+                        format!("new {name}")
+                    );
+                    assert_eq!(mode, 0o755, "{name}");
+                }
+            }
+            assert!(leftovers(&dir).is_empty(), "{:?}", leftovers(&dir));
+        }
+
+        #[test]
+        fn extra_payload_files_are_installed_alongside() {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = install_dir(tmp.path());
+            let tarball = build_tarball(tmp.path(), "headless\n", Some("yerd-extra"), None);
+
+            install_headless(&tarball, &dir, "t5").unwrap();
+
+            assert_eq!(
+                std::fs::read_to_string(dir.join("yerd-extra")).unwrap(),
+                "extra"
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.join("yerdd")).unwrap(),
+                "new yerdd"
+            );
+            assert_eq!(leftovers(&dir), vec!["yerd-extra".to_owned()]);
+        }
+
+        #[test]
+        fn existing_extra_target_is_replaced() {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = install_dir(tmp.path());
+            std::fs::write(dir.join("yerd-extra"), "old extra").unwrap();
+            let tarball = build_tarball(tmp.path(), "headless\n", Some("yerd-extra"), None);
+
+            install_headless(&tarball, &dir, "t6").unwrap();
+
+            assert_eq!(
+                std::fs::read_to_string(dir.join("yerd-extra")).unwrap(),
+                "extra"
+            );
+            assert_eq!(leftovers(&dir), vec!["yerd-extra".to_owned()]);
+        }
+
+        #[test]
+        fn malformed_payloads_are_rejected_before_any_swap() {
+            let cases: [(&str, Option<&str>, Option<&str>, &str); 3] = [
+                ("headless", Some(".evil"), None, "unexpected entry"),
+                ("headless", None, Some("yerdd"), "missing yerdd"),
+                ("gui", None, None, "not a headless build"),
+            ];
+            for (receipt, extra, skip, needle) in cases {
+                let tmp = tempfile::tempdir().unwrap();
+                let dir = install_dir(tmp.path());
+                let tarball = build_tarball(tmp.path(), receipt, extra, skip);
+                let err = install_headless(&tarball, &dir, "t2").unwrap_err();
+                assert!(err.contains(needle), "expected {needle:?} in {err:?}");
+                assert_untouched(&dir);
+                assert!(leftovers(&dir).is_empty(), "{:?}", leftovers(&dir));
+            }
+        }
+
+        #[test]
+        fn symlink_in_payload_is_rejected_before_any_swap() {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = install_dir(tmp.path());
+            let top = tmp.path().join("src/yerd");
+            std::fs::create_dir_all(&top).unwrap();
+            for name in names() {
+                if *name == "yerdd" {
+                    std::os::unix::fs::symlink("/bin/sh", top.join(name)).unwrap();
+                } else {
+                    std::fs::write(top.join(name), "headless").unwrap();
+                }
+            }
+            let tarball = tmp.path().join("headless.tar.gz");
+            let status = Command::new("tar")
+                .env("COPYFILE_DISABLE", "1")
+                .arg("-czf")
+                .arg(&tarball)
+                .arg("-C")
+                .arg(tmp.path().join("src"))
+                .arg("yerd")
+                .status()
+                .unwrap();
+            assert!(status.success());
+
+            let err = install_headless(&tarball, &dir, "t3").unwrap_err();
+            assert!(err.contains("yerd/yerdd is not a regular file"), "{err}");
+            assert_untouched(&dir);
+        }
+
+        #[test]
+        fn failure_mid_swap_restores_the_originals() {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = install_dir(tmp.path());
+            let payload = tmp.path().join("payload");
+            std::fs::create_dir(&payload).unwrap();
+            for name in names().iter().filter(|n| **n != "yerd") {
+                std::fs::write(payload.join(name), format!("new {name}")).unwrap();
+            }
+
+            let err = swap_files(&dir, &payload, names(), "t4").unwrap_err();
+            assert!(err.contains("replacing"), "{err}");
+            assert_untouched(&dir);
+            assert!(leftovers(&dir).is_empty(), "{:?}", leftovers(&dir));
+        }
+
+        #[test]
+        fn failure_mid_swap_removes_a_newly_created_extra() {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = install_dir(tmp.path());
+            std::fs::write(dir.join("old-extra"), "old extra").unwrap();
+            let payload = tmp.path().join("payload");
+            std::fs::create_dir(&payload).unwrap();
+            for name in names().iter().filter(|n| **n != "yerd") {
+                std::fs::write(payload.join(name), format!("new {name}")).unwrap();
+            }
+            std::fs::write(payload.join("new-extra"), "new").unwrap();
+            std::fs::write(payload.join("old-extra"), "new").unwrap();
+            let mut order: Vec<&str> = names()
+                .iter()
+                .copied()
+                .filter(|n| !SWAPPED_LAST.contains(n))
+                .collect();
+            order.extend(["new-extra", "old-extra", "yerdd", "yerd"]);
+
+            let err = swap_files(&dir, &payload, &order, "t7").unwrap_err();
+            assert!(err.contains("replacing"), "{err}");
+            assert_untouched(&dir);
+            assert!(!dir.join("new-extra").exists());
+            assert_eq!(
+                std::fs::read_to_string(dir.join("old-extra")).unwrap(),
+                "old extra"
+            );
+            assert_eq!(leftovers(&dir), vec!["old-extra".to_owned()]);
+        }
     }
 }

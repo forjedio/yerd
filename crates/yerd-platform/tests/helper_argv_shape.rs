@@ -174,6 +174,58 @@ fn uninstall_lan_port_redirect_argv_frozen() {
 }
 
 #[test]
+fn install_daemon_job_argv_frozen() {
+    let inv = HelperInvocation::InstallDaemonJob { uid: 501 };
+    assert_eq!(
+        argv_strs(&inv),
+        vec![
+            "install-daemon-job".to_string(),
+            "--uid".to_string(),
+            "501".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn uninstall_daemon_job_argv_frozen() {
+    let inv = HelperInvocation::UninstallDaemonJob;
+    assert_eq!(argv_strs(&inv), vec!["uninstall-daemon-job".to_string()]);
+}
+
+#[test]
+fn daemon_job_round_trips_through_argv() {
+    for inv in [
+        HelperInvocation::InstallDaemonJob { uid: 502 },
+        HelperInvocation::UninstallDaemonJob,
+    ] {
+        let argv = inv.to_argv();
+        let reparsed = HelperInvocation::from_argv(&argv).unwrap();
+        assert_eq!(reparsed.to_argv(), argv);
+    }
+}
+
+#[test]
+fn install_daemon_job_uid_is_validated() {
+    assert!(matches!(
+        HelperInvocation::from_argv(&os_argv(&["install-daemon-job"])),
+        Err(ArgvParseError::MissingFlag { flag: "--uid", .. })
+    ));
+    for bad in ["0", "-1", "+5", "abc", "", "99999999999"] {
+        assert!(
+            matches!(
+                HelperInvocation::from_argv(&os_argv(&["install-daemon-job", "--uid", bad])),
+                Err(ArgvParseError::BadUid(_))
+            ),
+            "--uid {bad:?} must be rejected"
+        );
+    }
+    assert!(matches!(
+        HelperInvocation::from_argv(&os_argv(&["uninstall-daemon-job", "--uid", "501"])),
+        Err(ArgvParseError::Trailing(_))
+    ));
+}
+
+#[test]
 fn lan_port_redirect_round_trips_through_argv() {
     for inv in [
         HelperInvocation::InstallLanPortRedirect {
@@ -254,6 +306,11 @@ fn first_argv_element_is_always_the_op_tag() {
             HelperInvocation::UninstallPortRedirect,
             "uninstall-port-redirect",
         ),
+        (
+            HelperInvocation::InstallDaemonJob { uid: 501 },
+            "install-daemon-job",
+        ),
+        (HelperInvocation::UninstallDaemonJob, "uninstall-daemon-job"),
     ];
     for (inv, expected) in pairs {
         let v = argv_strs(inv);

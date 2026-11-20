@@ -16,6 +16,7 @@ pub mod cli_shim;
 pub mod composer_shim;
 #[cfg(unix)]
 pub mod cover_shim;
+pub mod daemon_cmd;
 #[cfg(unix)]
 pub mod debug_shim;
 pub mod elevate;
@@ -58,6 +59,7 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Elevate { target } => return elevate::run_elevate(*target, false).await,
         Command::Unelevate { target } => return elevate::run_elevate(*target, true).await,
         Command::Path { action } => return path_cmd::run(*action),
+        Command::Daemon { action } => return daemon_cmd::run(*action),
         Command::Mcp => return mcp_cmd::run().await,
         #[cfg(unix)]
         Command::Node {
@@ -409,7 +411,7 @@ async fn run_lan_status(json: bool) -> ExitCode {
 
 /// Read the running daemon's `boot_id` (a per-process random id used to detect a
 /// completed restart across the pid-preserving re-exec).
-async fn fetch_boot_id() -> Result<Option<u64>, ClientError> {
+pub(crate) async fn fetch_boot_id() -> Result<Option<u64>, ClientError> {
     use yerd_ipc::{Request, Response};
     match transport::exchange(&Request::Status).await? {
         Response::Status { report } => Ok(report.boot_id),
@@ -422,7 +424,7 @@ async fn fetch_boot_id() -> Result<Option<u64>, ClientError> {
 /// Send `RestartDaemon`, then poll `Status` (tolerating the transient
 /// connection failure while the daemon re-execs) until `boot_id` differs from
 /// `before` or a bounded timeout elapses.
-async fn restart_and_await_boot_change(before: Option<u64>) -> Result<(), ClientError> {
+pub(crate) async fn restart_and_await_boot_change(before: Option<u64>) -> Result<(), ClientError> {
     use yerd_ipc::Request;
     // The daemon writes `Ok` and flushes *before* it re-execs, so this returns
     // normally; a transient error is tolerated too (the socket may already be

@@ -478,8 +478,14 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         }
         Request::StageUpdate { channel } => {
             let dl = crate::network::downloader(state).await;
-            crate::self_update::stage_update(channel, state, &dl, yerd_update::UPDATE_PUBLIC_KEY)
-                .await
+            crate::self_update::stage_update(
+                channel,
+                state,
+                &dl,
+                yerd_update::UPDATE_PUBLIC_KEY,
+                yerd_platform::install_mode::detect(),
+            )
+            .await
         }
         Request::StopTunnel { site } => crate::tunnel::stop_tunnel(&site, state).await,
         Request::TunnelStatus => crate::tunnel::tunnel_status(state).await,
@@ -3891,6 +3897,7 @@ async fn node_site_response(name: &str, state: &DaemonState) -> Response {
 mod tests {
     use super::*;
     use yerd_core::{PhpVersion, RouterConfig, SiteRouter, Tld};
+    use yerd_platform::pure::install_receipt::{InstallMode, ReceiptError};
     use yerd_platform::PlatformDirs;
 
     use crate::test_support::state_in;
@@ -6727,52 +6734,112 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
-    #[tokio::test]
-    async fn stage_update_downloads_verifies_and_writes_artifact() {
-        if !matches!(
+    const STAGE_MAC: &str = "Yerd_MacOS_AppleSilicon_v99-0-1.app.tar.gz";
+    const STAGE_DEB: &str = "Yerd_Linux_x86_64_v99-0-1.deb";
+    const STAGE_ARM: &str = "Yerd_Linux_Arm64_v99-0-1.deb";
+    const STAGE_PKG: &str = "Yerd_Linux_x86_64_v99-0-1.pkg.tar.zst";
+    const STAGE_PKG_ARM: &str = "Yerd_Linux_Arm64_v99-0-1.pkg.tar.zst";
+    const STAGE_RPM: &str = "Yerd_Linux_x86_64_v99-0-1.rpm";
+    const STAGE_RPM_ARM: &str = "Yerd_Linux_Arm64_v99-0-1.rpm";
+    const STAGE_HL_MAC: &str = "Yerd_MacOS_AppleSilicon_v99-0-1.headless.tar.gz";
+    const STAGE_HL_X86: &str = "Yerd_Linux_x86_64_v99-0-1.headless.tar.gz";
+    const STAGE_HL_ARM: &str = "Yerd_Linux_Arm64_v99-0-1.headless.tar.gz";
+    const STAGE_ALL: [&str; 10] = [
+        STAGE_MAC,
+        STAGE_DEB,
+        STAGE_ARM,
+        STAGE_PKG,
+        STAGE_PKG_ARM,
+        STAGE_RPM,
+        STAGE_RPM_ARM,
+        STAGE_HL_MAC,
+        STAGE_HL_X86,
+        STAGE_HL_ARM,
+    ];
+
+    /// A release carrying every package and headless asset, each signed and
+    /// listed in `SHA256SUMS` with the real hash of `b"test"`.
+    fn full_stage_dl() -> StageDl {
+        let mut assets: Vec<String> = Vec::new();
+        for name in STAGE_ALL {
+            assets.push(format!(
+                r#"{{"name":"{name}","browser_download_url":"https://h/{name}","size":4}}"#
+            ));
+            assets.push(format!(
+                r#"{{"name":"{name}.minisig","browser_download_url":"https://h/{name}.minisig","size":1}}"#
+            ));
+        }
+        assets.push(
+            r#"{"name":"SHA256SUMS","browser_download_url":"https://h/SHA256SUMS","size":1}"#
+                .to_owned(),
+        );
+        let stable = format!(
+            r#"{{"tag_name":"v99.0.1","prerelease":false,"draft":false,"assets":[{}]}}"#,
+            assets.join(",")
+        );
+        let h = yerd_update::sha256_hex(b"test");
+        let sums = STAGE_ALL
+            .iter()
+            .map(|n| format!("{h}  {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        StageDl::new(&stable, sums)
+    }
+
+    fn host_has_update_artifact() -> bool {
+        matches!(
             yerd_update::Platform::current(),
             yerd_update::Platform::MacOsAarch64
                 | yerd_update::Platform::LinuxX86_64
                 | yerd_update::Platform::LinuxAarch64
-        ) {
-            return;
+        )
+    }
+
+    /// The staged kind and basename the host platform should pick from
+    /// [`full_stage_dl`] for a package or headless install.
+    fn expected_staged(headless: bool) -> (yerd_ipc::StagedArtifact, &'static str) {
+        let format = yerd_update::PkgFormat::resolve(headless, yerd_update::PkgFormat::current());
+        match (yerd_update::Platform::current(), format) {
+            (yerd_update::Platform::MacOsAarch64, yerd_update::PkgFormat::Tarball) => {
+                (yerd_ipc::StagedArtifact::HeadlessTarGz, STAGE_HL_MAC)
+            }
+            (yerd_update::Platform::LinuxX86_64, yerd_update::PkgFormat::Tarball) => {
+                (yerd_ipc::StagedArtifact::HeadlessTarGz, STAGE_HL_X86)
+            }
+            (yerd_update::Platform::LinuxAarch64, yerd_update::PkgFormat::Tarball) => {
+                (yerd_ipc::StagedArtifact::HeadlessTarGz, STAGE_HL_ARM)
+            }
+            (yerd_update::Platform::MacOsAarch64, _) => {
+                (yerd_ipc::StagedArtifact::AppTarGz, STAGE_MAC)
+            }
+            (yerd_update::Platform::LinuxX86_64, yerd_update::PkgFormat::Deb) => {
+                (yerd_ipc::StagedArtifact::Deb, STAGE_DEB)
+            }
+            (yerd_update::Platform::LinuxX86_64, yerd_update::PkgFormat::Pacman) => {
+                (yerd_ipc::StagedArtifact::Pacman, STAGE_PKG)
+            }
+            (yerd_update::Platform::LinuxAarch64, yerd_update::PkgFormat::Deb) => {
+                (yerd_ipc::StagedArtifact::Deb, STAGE_ARM)
+            }
+            (yerd_update::Platform::LinuxAarch64, yerd_update::PkgFormat::Pacman) => {
+                (yerd_ipc::StagedArtifact::Pacman, STAGE_PKG_ARM)
+            }
+            (yerd_update::Platform::LinuxX86_64, yerd_update::PkgFormat::Rpm) => {
+                (yerd_ipc::StagedArtifact::Rpm, STAGE_RPM)
+            }
+            (yerd_update::Platform::LinuxAarch64, yerd_update::PkgFormat::Rpm) => {
+                (yerd_ipc::StagedArtifact::Rpm, STAGE_RPM_ARM)
+            }
+            (other, _) => panic!("unexpected platform for fixture: {other:?}"),
         }
+    }
+
+    async fn assert_stages_for_mode(mode: InstallMode) {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
+        let dl = full_stage_dl();
 
-        let mac = "Yerd_MacOS_AppleSilicon_v99-0-1.app.tar.gz";
-        let deb = "Yerd_Linux_x86_64_v99-0-1.deb";
-        let arm = "Yerd_Linux_Arm64_v99-0-1.deb";
-        let pkg = "Yerd_Linux_x86_64_v99-0-1.pkg.tar.zst";
-        let pkg_arm = "Yerd_Linux_Arm64_v99-0-1.pkg.tar.zst";
-        let rpm = "Yerd_Linux_x86_64_v99-0-1.rpm";
-        let rpm_arm = "Yerd_Linux_Arm64_v99-0-1.rpm";
-        let stable = format!(
-            r#"{{"tag_name":"v99.0.1","prerelease":false,"draft":false,"assets":[
-                {{"name":"{mac}","browser_download_url":"https://h/{mac}","size":4}},
-                {{"name":"{mac}.minisig","browser_download_url":"https://h/{mac}.minisig","size":1}},
-                {{"name":"{deb}","browser_download_url":"https://h/{deb}","size":4}},
-                {{"name":"{deb}.minisig","browser_download_url":"https://h/{deb}.minisig","size":1}},
-                {{"name":"{arm}","browser_download_url":"https://h/{arm}","size":4}},
-                {{"name":"{arm}.minisig","browser_download_url":"https://h/{arm}.minisig","size":1}},
-                {{"name":"{pkg}","browser_download_url":"https://h/{pkg}","size":4}},
-                {{"name":"{pkg}.minisig","browser_download_url":"https://h/{pkg}.minisig","size":1}},
-                {{"name":"{pkg_arm}","browser_download_url":"https://h/{pkg_arm}","size":4}},
-                {{"name":"{pkg_arm}.minisig","browser_download_url":"https://h/{pkg_arm}.minisig","size":1}},
-                {{"name":"{rpm}","browser_download_url":"https://h/{rpm}","size":4}},
-                {{"name":"{rpm}.minisig","browser_download_url":"https://h/{rpm}.minisig","size":1}},
-                {{"name":"{rpm_arm}","browser_download_url":"https://h/{rpm_arm}","size":4}},
-                {{"name":"{rpm_arm}.minisig","browser_download_url":"https://h/{rpm_arm}.minisig","size":1}},
-                {{"name":"SHA256SUMS","browser_download_url":"https://h/SHA256SUMS","size":1}}
-            ]}}"#
-        );
-        let h = yerd_update::sha256_hex(b"test");
-        let sums = format!(
-            "{h}  {mac}\n{h}  {deb}\n{h}  {arm}\n{h}  {pkg}\n{h}  {pkg_arm}\n{h}  {rpm}\n{h}  {rpm_arm}\n"
-        );
-        let dl = StageDl::new(&stable, sums);
-
-        let resp = crate::self_update::stage_update(None, &state, &dl, dl.key()).await;
+        let resp = crate::self_update::stage_update(None, &state, &dl, dl.key(), Ok(mode)).await;
         match resp {
             Response::Staged {
                 path,
@@ -6792,33 +6859,7 @@ Subject: Captured\r\n\r\nhi\r\n";
                     "staged .minisig sibling should exist at {}",
                     sibling.display()
                 );
-                let (expected_kind, expected_name) = match (
-                    yerd_update::Platform::current(),
-                    yerd_update::PkgFormat::current(),
-                ) {
-                    (yerd_update::Platform::MacOsAarch64, _) => {
-                        (yerd_ipc::StagedArtifact::AppTarGz, mac)
-                    }
-                    (yerd_update::Platform::LinuxX86_64, yerd_update::PkgFormat::Deb) => {
-                        (yerd_ipc::StagedArtifact::Deb, deb)
-                    }
-                    (yerd_update::Platform::LinuxX86_64, yerd_update::PkgFormat::Pacman) => {
-                        (yerd_ipc::StagedArtifact::Pacman, pkg)
-                    }
-                    (yerd_update::Platform::LinuxAarch64, yerd_update::PkgFormat::Deb) => {
-                        (yerd_ipc::StagedArtifact::Deb, arm)
-                    }
-                    (yerd_update::Platform::LinuxAarch64, yerd_update::PkgFormat::Pacman) => {
-                        (yerd_ipc::StagedArtifact::Pacman, pkg_arm)
-                    }
-                    (yerd_update::Platform::LinuxX86_64, yerd_update::PkgFormat::Rpm) => {
-                        (yerd_ipc::StagedArtifact::Rpm, rpm)
-                    }
-                    (yerd_update::Platform::LinuxAarch64, yerd_update::PkgFormat::Rpm) => {
-                        (yerd_ipc::StagedArtifact::Rpm, rpm_arm)
-                    }
-                    (other, _) => panic!("unexpected platform for fixture: {other:?}"),
-                };
+                let (expected_kind, expected_name) = expected_staged(mode == InstallMode::Headless);
                 assert_eq!(kind, expected_kind);
                 assert_eq!(
                     p.file_name().and_then(|n| n.to_str()),
@@ -6828,6 +6869,41 @@ Subject: Captured\r\n\r\nhi\r\n";
             }
             other => panic!("expected Staged, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn stage_update_downloads_verifies_and_writes_artifact() {
+        if !host_has_update_artifact() {
+            return;
+        }
+        assert_stages_for_mode(InstallMode::Package).await;
+    }
+
+    #[tokio::test]
+    async fn stage_update_headless_install_stages_the_headless_tarball() {
+        if !host_has_update_artifact() {
+            return;
+        }
+        assert_stages_for_mode(InstallMode::Headless).await;
+    }
+
+    #[tokio::test]
+    async fn stage_update_refuses_an_unknown_receipt_and_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let dl = full_stage_dl();
+        for err in [ReceiptError::Unrecognised, ReceiptError::ExeUnresolved] {
+            match crate::self_update::stage_update(None, &state, &dl, dl.key(), Err(err)).await {
+                Response::Error { message, .. } => {
+                    assert!(message.contains(&err.to_string()), "got: {message}");
+                }
+                other => panic!("expected Error for {err:?}, got {other:?}"),
+            }
+        }
+        assert!(
+            !state.dirs.cache.join("update").exists(),
+            "must not stage anything when the receipt is unusable"
+        );
     }
 
     /// A pre-N release layout carries only `.sig` signatures. An N-built client
@@ -6878,7 +6954,15 @@ Subject: Captured\r\n\r\nhi\r\n";
         );
         let dl = StageDl::new(&stable, sums);
 
-        match crate::self_update::stage_update(None, &state, &dl, dl.key()).await {
+        match crate::self_update::stage_update(
+            None,
+            &state,
+            &dl,
+            dl.key(),
+            Ok(InstallMode::Package),
+        )
+        .await
+        {
             Response::Staged { path, .. } => {
                 let p = std::path::Path::new(&path);
                 assert!(p.exists(), "staged file should exist at {path}");
@@ -6938,7 +7022,15 @@ Subject: Captured\r\n\r\nhi\r\n";
             "{bad}  {mac}\n{bad}  {deb}\n{bad}  {arm}\n{bad}  {pkg}\n{bad}  {pkg_arm}\n{bad}  {rpm}\n{bad}  {rpm_arm}\n"
         );
         let dl = StageDl::new(&stable, sums);
-        match crate::self_update::stage_update(None, &state, &dl, dl.key()).await {
+        match crate::self_update::stage_update(
+            None,
+            &state,
+            &dl,
+            dl.key(),
+            Ok(InstallMode::Package),
+        )
+        .await
+        {
             Response::Error { message, .. } => assert!(
                 message.contains("checksum verification failed"),
                 "expected a checksum verification failure, got: {message}"

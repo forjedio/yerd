@@ -9,10 +9,15 @@
 //!   `launchctl kickstart -k …` to (re)start the registered `LaunchAgent`. The
 //!   `SMAppService` *registration* itself is the GUI's job (it owns the objc
 //!   bindings); this crate only drives `launchctl` against the already-known
-//!   label.
+//!   label. When the headless install's system-domain job
+//!   (`/Library/LaunchDaemons/dev.yerd.daemon.plist`) exists, the target is
+//!   `system/dev.yerd.daemon` instead: start and restart need root there
+//!   ([`ServiceError::NeedsRoot`]), and stop just SIGTERMs the user's daemon,
+//!   which exits 0 so launchd leaves it down.
 //! - **Linux:** `systemctl --user {stop,restart} yerd` when a systemd user
-//!   instance is reachable, else SIGTERM the running pid and (for start) a
-//!   detached `yerdd serve`.
+//!   instance is reachable and the `yerd.service` unit exists, else SIGTERM
+//!   the running pid and (for start) a detached `yerdd serve`. A headless
+//!   install registers the same unit with [`install_linux_unit`].
 //!
 //! No `unsafe`, no async, no IPC, no network - it shells out to the platform
 //! tools and uses `nix` safe wrappers for `kill`/`getuid`, so its dependency
@@ -31,6 +36,10 @@ const DAEMON_LABEL: &str = "dev.yerd.daemon";
 const SYSTEMD_UNIT: &str = "yerd";
 /// The exact process name to match when falling back to signalling by pid.
 const DAEMON_PROCESS: &str = "yerdd";
+/// The headless install's system-domain daemon plist (macOS). Duplicates
+/// `yerd_platform::pure::launchd_daemon::DAEMON_PLIST` so this crate stays
+/// dependency-light; keep the two in sync.
+pub const SYSTEM_DAEMON_PLIST: &str = "/Library/LaunchDaemons/dev.yerd.daemon.plist";
 
 /// A daemon service-control failure.
 #[derive(Debug, Error)]
@@ -51,6 +60,19 @@ pub enum ServiceError {
     /// The platform has no supported daemon-management mechanism.
     #[error("daemon service control is not supported on this platform")]
     Unsupported,
+    /// The daemon is a system-domain launchd job, which only root can start.
+    #[error("the daemon is a system launchd job; starting it needs root")]
+    NeedsRoot,
+}
+
+/// Whether `loginctl enable-linger` took effect, so the user's systemd
+/// manager (and the daemon) starts at boot with nobody logged in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LingerOutcome {
+    /// Linger is on.
+    Enabled,
+    /// Linger stayed off (typically polkit refused the unprivileged request).
+    NotEnabled,
 }
 
 /// Controls the `yerdd` daemon service. Construct with the path to the `yerdd`
@@ -88,8 +110,9 @@ impl ServiceCtl {
     /// Restart the daemon so it picks up a freshly-swapped binary.
     ///
     /// macOS uses `launchctl kickstart -k` (kill-then-restart of the registered
-    /// job in one step). Linux uses `systemctl --user restart` when available,
-    /// else stop → wait-for-exit → start.
+    /// job in one step), or [`ServiceError::NeedsRoot`] for the system job.
+    /// Linux uses `systemctl --user restart` when the unit is usable, else
+    /// stop → wait-for-exit → start.
     pub fn restart(&self) -> Result<(), ServiceError> {
         #[cfg(target_os = "macos")]
         {
@@ -97,7 +120,7 @@ impl ServiceCtl {
         }
         #[cfg(target_os = "linux")]
         {
-            if systemd_user_available() {
+            if systemd_unit_usable() {
                 return run_ok("systemctl", &["--user", "restart", SYSTEMD_UNIT]);
             }
             self.stop();
@@ -122,7 +145,9 @@ impl ServiceCtl {
 fn service_stop() {
     #[cfg(target_os = "macos")]
     {
-        let _ = run_ok("launchctl", &["kill", "SIGTERM", &service_target()]);
+        if !system_job_registered() {
+            let _ = run_ok("launchctl", &["kill", "SIGTERM", &service_target()]);
+        }
     }
     #[cfg(target_os = "linux")]
     {
@@ -157,7 +182,7 @@ fn service_start(yerdd_path: &Path) -> Result<(), ServiceError> {
     }
     #[cfg(target_os = "linux")]
     {
-        if systemd_user_available() {
+        if systemd_unit_usable() {
             return run_ok("systemctl", &["--user", "start", SYSTEMD_UNIT]);
         }
         spawn_detached(yerdd_path)
@@ -171,6 +196,9 @@ fn service_start(yerdd_path: &Path) -> Result<(), ServiceError> {
 
 #[cfg(target_os = "macos")]
 fn kickstart() -> Result<(), ServiceError> {
+    if system_job_registered() {
+        return Err(ServiceError::NeedsRoot);
+    }
     run_ok("launchctl", &["kickstart", "-k", &service_target()])
 }
 
@@ -196,7 +224,145 @@ fn spawn_detached(yerdd_path: &Path) -> Result<(), ServiceError> {
 
 #[cfg(target_os = "macos")]
 fn service_target() -> String {
-    format!("gui/{}/{DAEMON_LABEL}", current_uid())
+    macos_target(system_job_registered(), current_uid())
+}
+
+#[cfg(target_os = "macos")]
+fn system_job_registered() -> bool {
+    Path::new(SYSTEM_DAEMON_PLIST).exists()
+}
+
+/// The launchd service target for the daemon: the headless system-domain job
+/// when its plist exists, else the desktop app's per-user agent.
+#[must_use]
+pub fn macos_target(system_plist_exists: bool, uid: u32) -> String {
+    if system_plist_exists {
+        format!("system/{DAEMON_LABEL}")
+    } else {
+        format!("gui/{uid}/{DAEMON_LABEL}")
+    }
+}
+
+/// The systemd `--user` unit text for `yerd.service` running `yerdd serve`.
+///
+/// Same text as the desktop app's `autostart::render_unit`, which keeps its
+/// own copy; the two must stay identical so either install's unit reads the
+/// same.
+#[must_use]
+pub fn render_systemd_unit(yerdd: &Path) -> String {
+    format!(
+        "[Unit]\nDescription=Yerd local PHP development daemon\n\n[Service]\nType=simple\nExecStart={} serve\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n",
+        yerdd.display()
+    )
+}
+
+/// The program path from a unit's `ExecStart=<path> serve` line, or `None`
+/// when the unit has no `ExecStart`.
+#[must_use]
+pub fn unit_exec_start(unit: &str) -> Option<&str> {
+    unit.lines()
+        .find_map(|line| line.trim().strip_prefix("ExecStart="))
+        .map(|value| {
+            let value = value.trim();
+            value.strip_suffix(" serve").unwrap_or(value).trim_end()
+        })
+}
+
+/// True when `loginctl show-user --property=Linger` output says linger is on.
+#[must_use]
+pub fn linger_enabled(show_user_out: &str) -> bool {
+    show_user_out
+        .lines()
+        .any(|line| line.trim() == "Linger=yes")
+}
+
+/// Where the `yerd.service` user unit lives: `$XDG_CONFIG_HOME/systemd/user`
+/// or `~/.config/systemd/user`. `None` when neither base resolves.
+#[must_use]
+pub fn systemd_unit_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .map(|home| home.join(".config"))
+        })?;
+    Some(
+        base.join("systemd")
+            .join("user")
+            .join(format!("{SYSTEMD_UNIT}.service")),
+    )
+}
+
+/// Write the `yerd.service` user unit for `yerdd`, enable and start it, then
+/// ask for linger so it starts at boot without a login.
+///
+/// Linger is requested as the user (polkit-mediated); a refusal is not an
+/// error, it is reported as [`LingerOutcome::NotEnabled`] after re-checking
+/// with `loginctl show-user`.
+///
+/// # Errors
+///
+/// [`ServiceError::Tool`] when no systemd user manager is reachable, the unit
+/// can't be written, or `systemctl` fails.
+#[cfg(target_os = "linux")]
+pub fn install_linux_unit(yerdd: &Path) -> Result<LingerOutcome, ServiceError> {
+    if !systemd_user_available() {
+        return Err(ServiceError::Tool {
+            tool: "systemctl",
+            message: "no systemd --user manager is reachable for this user".to_owned(),
+        });
+    }
+    let path = systemd_unit_path().ok_or_else(|| ServiceError::Tool {
+        tool: "systemctl",
+        message: "cannot resolve the systemd user unit directory (HOME unset)".to_owned(),
+    })?;
+    let write_err = |e: std::io::Error| ServiceError::Tool {
+        tool: "systemctl",
+        message: format!("cannot write {}: {e}", path.display()),
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(write_err)?;
+    }
+    std::fs::write(&path, render_systemd_unit(yerdd)).map_err(write_err)?;
+    run_ok("systemctl", &["--user", "daemon-reload"])?;
+    run_ok("systemctl", &["--user", "enable", "--now", SYSTEMD_UNIT])?;
+    let _ = run_ok("loginctl", &["enable-linger"]);
+    Ok(query_linger())
+}
+
+/// Unsupported off Linux.
+///
+/// # Errors
+///
+/// Always [`ServiceError::Unsupported`].
+#[cfg(not(target_os = "linux"))]
+pub fn install_linux_unit(yerdd: &Path) -> Result<LingerOutcome, ServiceError> {
+    let _ = yerdd;
+    Err(ServiceError::Unsupported)
+}
+
+#[cfg(target_os = "linux")]
+fn query_linger() -> LingerOutcome {
+    let uid = current_uid().to_string();
+    let out = Command::new("loginctl")
+        .args(["show-user", &uid, "--property=Linger"])
+        .output();
+    match out {
+        Ok(o) if o.status.success() && linger_enabled(&String::from_utf8_lossy(&o.stdout)) => {
+            LingerOutcome::Enabled
+        }
+        _ => LingerOutcome::NotEnabled,
+    }
+}
+
+/// True when `systemctl --user` can drive the daemon: a user manager is
+/// reachable and the `yerd.service` unit file exists.
+#[cfg(target_os = "linux")]
+fn systemd_unit_usable() -> bool {
+    systemd_unit_path().is_some_and(|p| p.is_file()) && systemd_user_available()
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -226,12 +392,14 @@ fn parse_pids(stdout: &str) -> Vec<i32> {
         .collect()
 }
 
-/// Block (bounded) until no `yerdd` is running, so a restart spawns onto a freed
-/// binary. Returns `true` once it exits, or `false` on the ~5s timeout (the
-/// daemon normally exits well under a second). The caller must not start a new
-/// daemon on `false` - the old one may still hold the socket/ports.
+/// Block (bounded) until no `yerdd` owned by the current user is running, so a
+/// restart spawns onto a freed binary. Returns `true` once it exits, or `false`
+/// on the ~5s timeout (the daemon normally exits well under a second). The
+/// caller must not start a new daemon on `false` - the old one may still hold
+/// the socket/ports.
 #[cfg(target_os = "linux")]
-fn wait_for_exit() -> bool {
+#[must_use]
+pub fn wait_for_exit() -> bool {
     use std::time::Duration;
     for _ in 0..50 {
         if running_pids().is_empty() {
@@ -239,6 +407,22 @@ fn wait_for_exit() -> bool {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+    false
+}
+
+/// True when a systemd `--user` manager is reachable for the current user, the
+/// precondition [`install_linux_unit`] checks first. Lets a caller refuse
+/// before stopping a running daemon.
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn systemd_user_manager_reachable() -> bool {
+    systemd_user_available()
+}
+
+/// Always `false` off Linux: there is no systemd user manager.
+#[cfg(not(target_os = "linux"))]
+#[must_use]
+pub fn systemd_user_manager_reachable() -> bool {
     false
 }
 
@@ -292,10 +476,69 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_service_target_is_gui_scoped() {
+    fn macos_service_target_ends_with_the_label() {
         let t = service_target();
-        assert!(t.starts_with("gui/"), "{t}");
+        assert!(t.starts_with("gui/") || t.starts_with("system/"), "{t}");
         assert!(t.ends_with("/dev.yerd.daemon"), "{t}");
+    }
+
+    #[test]
+    fn macos_target_picks_system_job_when_its_plist_exists() {
+        assert_eq!(macos_target(true, 501), "system/dev.yerd.daemon");
+        assert_eq!(macos_target(false, 501), "gui/501/dev.yerd.daemon");
+    }
+
+    #[test]
+    fn rendered_unit_runs_yerdd_serve_at_default_target() {
+        let unit = render_systemd_unit(Path::new("/home/u/.yerd/bin/yerdd"));
+        assert!(
+            unit.contains("ExecStart=/home/u/.yerd/bin/yerdd serve\n"),
+            "{unit}"
+        );
+        assert!(unit.contains("WantedBy=default.target\n"), "{unit}");
+        assert!(unit.contains("Restart=on-failure\n"), "{unit}");
+        assert_eq!(unit_exec_start(&unit), Some("/home/u/.yerd/bin/yerdd"));
+    }
+
+    #[test]
+    fn unit_exec_start_table() {
+        let gui = "[Unit]\nDescription=Yerd local PHP development daemon\n\n[Service]\nType=simple\nExecStart=/usr/bin/yerdd serve\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n";
+        let cases = [
+            (gui, Some("/usr/bin/yerdd")),
+            ("ExecStart=/opt/yerdd\n", Some("/opt/yerdd")),
+            ("  ExecStart=/x/yerdd serve  \n", Some("/x/yerdd")),
+            ("[Service]\nType=simple\n", None),
+            ("", None),
+        ];
+        for (unit, want) in cases {
+            assert_eq!(unit_exec_start(unit), want, "{unit:?}");
+        }
+    }
+
+    #[test]
+    fn linger_enabled_table() {
+        let cases = [
+            ("Linger=yes\n", true),
+            ("Linger=yes", true),
+            ("  Linger=yes  \n", true),
+            ("Linger=no\n", false),
+            ("", false),
+            ("garbage\nLinger=maybe\n", false),
+            ("Linger=yesterday\n", false),
+        ];
+        for (out, want) in cases {
+            assert_eq!(linger_enabled(out), want, "{out:?}");
+        }
+    }
+
+    #[test]
+    fn needs_root_display() {
+        assert!(ServiceError::NeedsRoot.to_string().contains("needs root"));
+    }
+
+    #[test]
+    fn system_plist_matches_platform_constant() {
+        assert!(SYSTEM_DAEMON_PLIST.ends_with(&format!("/{DAEMON_LABEL}.plist")));
     }
 
     /// `parse_pids` is total: it skips blank interior lines, trims whitespace

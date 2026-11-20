@@ -52,7 +52,7 @@ The exceptions are the two passthrough commands. Anything after [`coverage`](./c
 | [Tunnel](./tunnel) | `tunnel install`, `tunnel share`, `tunnel stop`, `tunnel status`, `tunnel login`, `tunnel create`, `tunnel delete`, `tunnel list`, `tunnel route`, `tunnel set-host`, `tunnel password`, `tunnel publish`, `tunnel unpublish` |
 | [Diagnostics](./diagnostics) | `ping`, `status`, `doctor`, `doctor fix` |
 | [Elevation](./elevation) | `elevate`, `unelevate` |
-| [Daemon control](./daemon) | `restart daemon` |
+| [Daemon control](./daemon) | `restart daemon`, `daemon install`, `daemon start`, `daemon stop` |
 | [Self-Update](./update) | `update` (check/apply a Yerd self-update) |
 | [Uninstall](./uninstall) | `uninstall` (full self-uninstall), `uninstall php`, `uninstall tool` |
 

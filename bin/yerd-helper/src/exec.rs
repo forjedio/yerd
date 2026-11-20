@@ -37,6 +37,8 @@ pub fn dispatch(inv: HelperInvocation) -> Result<(), HelperError> {
         HelperInvocation::UninstallLanPortRedirect => {
             ops::lan_port_redirect::uninstall_lan_port_redirect()
         }
+        HelperInvocation::InstallDaemonJob { uid } => ops::daemon_job::install(uid),
+        HelperInvocation::UninstallDaemonJob => ops::daemon_job::uninstall(),
         _ => Err(HelperError::Unsupported {
             operation: "unknown-variant",
         }),

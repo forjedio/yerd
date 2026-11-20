@@ -18,7 +18,7 @@ Skip setup and Yerd still works: it falls back to [rootless ports `8080`/`8443`]
 
 ## The one command
 
-Run this once for the full experience. It's the only Yerd command that uses root:
+Run this once for the full experience. It's the only Yerd command you need root for (a macOS [headless install](./headless) also runs `yerd daemon install` with `sudo`, once):
 
 ```sh
 sudo yerd elevate
@@ -33,6 +33,14 @@ sudo yerd elevate trust       # add the local CA to the system trust store
 sudo yerd elevate resolver    # route *.test to yerd's DNS responder
 sudo yerd elevate ports       # allow the daemon to serve on 80/443
 ```
+
+::: tip Headless installs: use the absolute path
+`sudo` resets `PATH` to a fixed `secure_path`, which doesn't include a [headless install](./headless)'s `~/.yerd/bin`, so `sudo yerd ...` reports `command not found`. Give the full path instead, for every `sudo` command on this page:
+
+```sh
+sudo ~/.yerd/bin/yerd elevate
+```
+:::
 
 Resolver elevation first checks the daemon's DNS health. If Yerd could not bind
 its configured DNS port, the command stops before changing OS resolver files and
@@ -129,7 +137,7 @@ The platforms diverge most here.
 - **Linux:** grants `cap_net_bind_service=+ep` on the `yerdd` binary (`setcap`). The unprivileged daemon can then bind 80/443 directly. Restart the daemon (as your user) for it to take effect.
 
   ::: warning setcap is reset by upgrades
-  The capability lives on the binary file, so replacing that file (a package upgrade) clears it. The Linux packages re-apply it on every upgrade (the `.deb`'s post-install and the Arch package's `.install` scriptlet); other install methods need `sudo yerd elevate ports` again after upgrading. There's no clean reverse, so `sudo yerd unelevate ports` only prints the manual command (`sudo setcap -r <path-to-yerdd>`).
+  The capability lives on the binary file, so replacing that file (a package upgrade) clears it. The Linux packages re-apply it on every upgrade (the `.deb`'s post-install and the Arch package's `.install` scriptlet); other install methods need `sudo yerd elevate ports` again after upgrading. That includes a [headless install](./headless): `yerd update --yes` swaps in a new `yerdd` without root, so the daemon drops back to `8080`/`8443` until you re-run `sudo ~/.yerd/bin/yerd elevate ports` (the updater prints the command). If `/home` is mounted `nosuid`, the kernel ignores the capability altogether; see the headless page. There's no clean reverse, so `sudo yerd unelevate ports` only prints the manual command (`sudo setcap -r <path-to-yerdd>`).
   :::
 
 - **macOS:** no `setcap`. The helper installs two root-owned LaunchDaemons in `/Library/LaunchDaemons`, `dev.yerd.ports.http` and `dev.yerd.ports.https`, whose sockets make **launchd** listen on `127.0.0.1:80` and `127.0.0.1:443`. On the first connection launchd starts `yerd-forward` (a tiny forwarder shipped in `Yerd.app/Contents/MacOS/` next to `yerd-helper`) **as your user, never root**, and hands it the listening socket. The forwarder relays each connection to the rootless ports the daemon already bound (`8080`/`8443` by default). The daemon keeps its high ports; the forwarder carries the privileged ones. launchd loads the jobs at boot, so the setup survives a reboot. It's live immediately (no restart) and fully reversible via `sudo yerd unelevate ports`. The daemon also polls for the redirect every few seconds, so a secure site's `http://` → `https://` redirect drops the `:8443`-style port from the URL shortly after you elevate (and brings it back if you `unelevate`) - no restart needed for that either.
@@ -208,8 +216,8 @@ The desktop app is also just a daemon client and never runs as root; its "Fix" a
 The helper trusts no caller, not even the daemon:
 
 - **Effective-UID gate.** Refuses to run unless its effective UID is 0 (Linux reads `/proc/self/status`; macOS shells out to `/usr/bin/id` by absolute path). If `/proc` is missing it reports "not root" rather than assuming privilege.
-- **Frozen, typed argv contract.** The CLI hands it one typed operation (`install-ca`, `uninstall-ca`, `install-resolver`, `uninstall-resolver`, `setcap`, `install-port-redirect`, `uninstall-port-redirect`, `install-lan-port-redirect`, `uninstall-lan-port-redirect`), nothing else.
-- **Re-validation.** Every argument is re-parsed before any side effect: paths must be absolute and existing, the TLD goes through `yerd-core`'s `Tld` type, `setcap` is refused on any binary whose basename isn't `yerdd`, and the port-forwarder ops take the invoking user's uid (never `0`) so `yerd-forward` never runs as root.
+- **Frozen, typed argv contract.** The CLI hands it one typed operation (`install-ca`, `uninstall-ca`, `install-resolver`, `uninstall-resolver`, `setcap`, `install-port-redirect`, `uninstall-port-redirect`, `install-lan-port-redirect`, `uninstall-lan-port-redirect`, and on a macOS headless install `install-daemon-job`, `uninstall-daemon-job`), nothing else.
+- **Re-validation.** Every argument is re-parsed before any side effect: paths must be absolute and existing, the TLD goes through `yerd-core`'s `Tld` type, `setcap` is refused on any binary whose basename isn't `yerdd`, and the port-forwarder and daemon-job ops take the invoking user's uid (never `0`) so neither `yerd-forward` nor `yerdd` ever runs as root.
 - **Fingerprint-pinned CA install.** The helper reads the PEM, requires exactly one `CERTIFICATE` block, and verifies its SHA-256 matches the fingerprint passed on argv. This blocks swapping in a different PEM.
 - **Hardened subprocesses.** Any tool it runs (`security`, `launchctl`, `update-ca-certificates`, `systemctl`, ...) is spawned with `env_clear()` and a pinned `PATH` (`/usr/sbin:/usr/bin:/sbin:/bin`), with the working directory set to `/`. It never touches the network.
 - **Atomic writes.** Files are written to a temp sibling, `fsync`'d, and `rename(2)`'d into place with the mode set at creation, so there's no create-then-chmod race.

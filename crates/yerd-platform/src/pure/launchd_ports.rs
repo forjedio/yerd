@@ -235,7 +235,7 @@ fn string_values(plist: &str) -> impl Iterator<Item = &str> {
         .filter_map(|chunk| chunk.split_once("</string>").map(|(value, _)| value.trim()))
 }
 
-fn xml_escape(value: &str) -> String {
+pub(crate) fn xml_escape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {
         match c {

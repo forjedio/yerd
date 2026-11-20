@@ -155,6 +155,14 @@ pub enum HelperInvocation {
     /// Remove the macOS LAN port forwarder installed by
     /// `InstallLanPortRedirect`, plus any legacy pf redirect.
     UninstallLanPortRedirect,
+    /// Install the macOS headless daemon job: a root-owned system-domain
+    /// `LaunchDaemon` that runs the `yerdd` beside the helper as `uid` from boot.
+    InstallDaemonJob {
+        /// The user the daemon runs as. Never 0.
+        uid: u32,
+    },
+    /// Remove the macOS headless daemon job installed by `InstallDaemonJob`.
+    UninstallDaemonJob,
 }
 
 impl HelperInvocation {
@@ -181,6 +189,8 @@ impl HelperInvocation {
             t if t == ops::UNINSTALL_PORT_REDIRECT => parse_uninstall_port_redirect(rest),
             t if t == ops::INSTALL_LAN_PORT_REDIRECT => parse_install_lan_port_redirect(rest),
             t if t == ops::UNINSTALL_LAN_PORT_REDIRECT => parse_uninstall_lan_port_redirect(rest),
+            t if t == ops::INSTALL_DAEMON_JOB => parse_install_daemon_job(rest),
+            t if t == ops::UNINSTALL_DAEMON_JOB => parse_uninstall_daemon_job(rest),
             _ => Err(ArgvParseError::UnknownOp(head.clone())),
         }
     }
@@ -269,6 +279,14 @@ impl HelperInvocation {
             }
             Self::UninstallLanPortRedirect => {
                 v.push(OsString::from(ops::UNINSTALL_LAN_PORT_REDIRECT));
+            }
+            Self::InstallDaemonJob { uid } => {
+                v.push(OsString::from(ops::INSTALL_DAEMON_JOB));
+                v.push(OsString::from("--uid"));
+                v.push(OsString::from(uid.to_string()));
+            }
+            Self::UninstallDaemonJob => {
+                v.push(OsString::from(ops::UNINSTALL_DAEMON_JOB));
             }
         }
         v
@@ -550,6 +568,37 @@ fn parse_uninstall_lan_port_redirect(
         return Err(ArgvParseError::Trailing(trailing.clone()));
     }
     Ok(HelperInvocation::UninstallLanPortRedirect)
+}
+
+fn parse_install_daemon_job(rest: &[OsString]) -> Result<HelperInvocation, ArgvParseError> {
+    let mut uid: Option<u32> = None;
+    let mut iter = rest.iter();
+    while let Some((flag, value)) = next_pair(&mut iter) {
+        match flag.to_str() {
+            Some("--uid") => uid = Some(parse_uid(value)?),
+            _ => {
+                return Err(ArgvParseError::UnknownFlag {
+                    op: ops::INSTALL_DAEMON_JOB,
+                    flag: flag.to_owned(),
+                });
+            }
+        }
+    }
+    if let Some(trailing) = iter.next() {
+        return Err(ArgvParseError::Trailing(trailing.clone()));
+    }
+    let uid = uid.ok_or(ArgvParseError::MissingFlag {
+        op: ops::INSTALL_DAEMON_JOB,
+        flag: "--uid",
+    })?;
+    Ok(HelperInvocation::InstallDaemonJob { uid })
+}
+
+fn parse_uninstall_daemon_job(rest: &[OsString]) -> Result<HelperInvocation, ArgvParseError> {
+    if let Some(trailing) = rest.first() {
+        return Err(ArgvParseError::Trailing(trailing.clone()));
+    }
+    Ok(HelperInvocation::UninstallDaemonJob)
 }
 
 #[cfg(test)]
