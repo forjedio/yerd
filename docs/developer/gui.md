@@ -71,6 +71,8 @@ apps/yerd-gui/
     │                       share/ (ShareList, ShareInspector, ShareSiteDialog, ShareSetupDialog,
     │                       CloudflareLoginDialog),
     │                       doctor/ (DoctorList, DoctorInspector),
+    │                       settings/ (SettingsGroup, SettingRow, UpdateActions, ConnectAgentDialog, GuiLogsDialog,
+    │                       DiagnosticsDialog, MadeByForjed),
     │                       PhpVersionPanel, AddExtensionModal, DaemonDownHero, DaemonDiagnosticsPanel,
     │                       overview/ (status, favourites, setup checklist, release notes and contributors cards),
     │                       ui/ (incl. AsyncState, EmptyState, InfoBanner, ConfirmDialog, DialogFrame,
@@ -87,6 +89,7 @@ apps/yerd-gui/
                             share (Share sections, state labels, facts copy, tunnel chip),
                             elevation (OS-privilege rows, the single source for the Doctor dot),
                             doctor (Doctor finding groups, default selection, permission copy),
+                            settings (Settings banners, the update headline, socket-address ports),
                             php (PHP list order, status and update labels, banner, install choices
                             and the install-progress line),
                             tooling (Tooling split, descriptions, Composer gate, PATH copy),
@@ -566,8 +569,8 @@ not listed there, it has its own page), **ServicesView**,
 plus the OS-privilege rows - CA trust / resolver / ports - via `useElevation`),
 and **IntegrationsView** (`/integrations`, Share). `/about` redirects to
 `/general` (the tray's About and Update items still navigate there; the build
-info, updates and troubleshooting cards now live at the end of Settings in
-`AboutSection.vue`). Plus two **standalone** routes that the auxiliary windows load:
+info, updates, links and troubleshooting live in `AboutSection.vue`, the right
+column of Settings in a wide window and its first card in a narrow one). Plus two **standalone** routes that the auxiliary windows load:
 
 - **DumpsWindowView** (`/dumps-window`) and **LaravelDumpsView** (the in-shell
   `/dumps` page) both compose `components/dumps/` (`DumpsRequestList`,

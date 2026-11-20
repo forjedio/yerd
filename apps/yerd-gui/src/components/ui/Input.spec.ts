@@ -10,4 +10,14 @@ describe("Input", () => {
     expect(document.activeElement).toBe(wrapper.find("input").element);
     wrapper.unmount();
   });
+
+  it("lets a caller's classes replace the conflicting defaults", () => {
+    const wrapper = mount(Input, {
+      props: { class: "h-[34px] pl-8 disabled:opacity-100" },
+    });
+    const classes = wrapper.find("input").classes();
+    expect(classes).toEqual(expect.arrayContaining(["h-[34px]", "pl-8", "disabled:opacity-100"]));
+    expect(classes).not.toContain("h-9");
+    expect(classes).not.toContain("disabled:opacity-50");
+  });
 });

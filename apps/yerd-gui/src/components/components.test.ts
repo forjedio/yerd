@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import ComingSoon from "./ComingSoon.vue";
 import SegmentedControl from "./ui/SegmentedControl.vue";
+import Select from "./ui/Select.vue";
 import StatusPill from "./StatusPill.vue";
 
 describe("ComingSoon", () => {
@@ -54,11 +55,37 @@ describe("SegmentedControl", () => {
     expect(w.emitted("update:modelValue")).toEqual([["8.3"]]);
   });
 
+  it("renders sans options at size md and mono by default", () => {
+    const md = mount(SegmentedControl, {
+      props: { modelValue: "8.4", options, ariaLabel: "PHP version", size: "md" },
+    });
+    const sm = mount(SegmentedControl, {
+      props: { modelValue: "8.4", options, ariaLabel: "PHP version" },
+    });
+    expect(md.find('[role="radio"]').classes()).toContain("font-sans");
+    expect(sm.find('[role="radio"]').classes()).toContain("font-mono");
+  });
+
   it("emits nothing while disabled", async () => {
     const w = mount(SegmentedControl, {
       props: { modelValue: "8.4", options, ariaLabel: "PHP version", disabled: true },
     });
     await w.findAll('[role="radio"]')[0]?.trigger("click");
     expect(w.emitted("update:modelValue")).toBeUndefined();
+  });
+});
+
+describe("Select", () => {
+  it("lets a caller's classes replace the conflicting defaults", () => {
+    const w = mount(Select, {
+      props: {
+        modelValue: "a",
+        options: [{ value: "a", label: "A" }],
+        class: "h-[34px] w-[200px]",
+      },
+    });
+    const classes = w.find("select").classes();
+    expect(classes).toEqual(expect.arrayContaining(["h-[34px]", "w-[200px]"]));
+    expect(classes).not.toContain("h-8");
   });
 });

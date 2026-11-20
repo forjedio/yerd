@@ -99,7 +99,7 @@ unlocks. This is the one required step - everything after it is skippable.
 
 Installing the daemon here also sets sensible login defaults: the **daemon and
 the app both start at login**, with the **app started minimized** to the tray.
-Change any of the three later under **Settings → Start at login**.
+Change any of the three later under **Settings → Startup**.
 
 ::: tip macOS background approval
 On macOS the daemon registers as a background **SMAppService** login item (it

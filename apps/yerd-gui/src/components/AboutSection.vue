@@ -1,35 +1,56 @@
+<script lang="ts">
+import { ref } from "vue";
+
+/**
+ * Whether an update is being applied. Module-scoped so the copy that mounts
+ * when the window crosses the wide breakpoint mid-apply keeps Update disabled.
+ */
+const applyingUpdate = ref(false);
+</script>
+
 <script setup lang="ts">
 import { getVersion } from "@tauri-apps/api/app";
-import { ArrowUpRight, Download, FileText, RefreshCw, Stethoscope } from "lucide-vue-next";
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import {
+  ArrowUpRight,
+  CircleCheck,
+  Download,
+  FileText,
+  GitFork,
+  Globe,
+  Scale,
+  Stethoscope,
+} from "lucide-vue-next";
+import { computed, onMounted, type Component } from "vue";
 
 import logoUrl from "@/assets/logo.svg";
 import mdbinMarkUrl from "@/assets/mdbin-mark.svg";
+import UpdateActions from "@/components/settings/UpdateActions.vue";
 import Button from "@/components/ui/Button.vue";
-import Card from "@/components/ui/Card.vue";
-import CardContent from "@/components/ui/CardContent.vue";
-import CardDescription from "@/components/ui/CardDescription.vue";
-import CardHeader from "@/components/ui/CardHeader.vue";
-import CardTitle from "@/components/ui/CardTitle.vue";
-import Modal from "@/components/ui/Modal.vue";
-import Select from "@/components/ui/Select.vue";
-import Spinner from "@/components/ui/Spinner.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
   applyUpdate,
   cachedUpdateStatus,
   checkUpdates,
-  getDiagnostics,
-  getGuiLogs,
   IpcError,
   openInBrowser,
   protocolVersion,
   setUpdateChannel,
   status,
 } from "@/ipc/client";
-import type { GuiLogs, UpdateChannel, UpdateStatusResponse } from "@/ipc/types";
+import type { UpdateChannel, UpdateStatusResponse } from "@/ipc/types";
+import { updateHeadline } from "@/lib/settings";
 import { humaniseAgo } from "@/lib/utils";
+
+/**
+ * Settings' About content: versions, self-update with the release channel,
+ * links, and the Logs / Diagnostics entry points (the dialogs live in the
+ * parent so a layout switch doesn't close them). `column` is the 302px right
+ * column of the wide layout; `card` is the header card of the compact one.
+ */
+withDefaults(defineProps<{ layout?: "column" | "card" }>(), { layout: "column" });
+
+const emit = defineEmits<{ logs: []; diagnostics: [] }>();
 
 const toast = useToast();
 const { connected } = useDaemon();
@@ -39,103 +60,106 @@ const appVersion = ref("");
 const protocol = ref<number | null>(null);
 const daemonVersion = ref("");
 
-/** The mdbin capabilities worth naming in the cross-promo, in their own
- *  wording. Short enough to read as tags rather than a second paragraph. */
-const mdbinFeatures = [
-  "Highlighted code",
-  "Mermaid + FreeDraw",
-  "Line comments",
-  "Forkable edits",
-  "MCP server",
-] as const;
-
-// ── self-update ──
-const channelOptions = [
-  { value: "stable", label: "Stable" },
-  { value: "edge", label: "Edge (pre-release)" },
-] as const;
 const updateChannel = ref<UpdateChannel>("stable");
 const updateStatus = ref<UpdateStatusResponse | null>(null);
 const checkingUpdates = ref(false);
-const applyingUpdate = ref(false);
 
-const updateSummary = computed(() => {
-  const s = updateStatus.value;
-  if (!s) return "";
-  if (s.available && s.target) return `Update available: ${s.target}`;
-  if (s.ahead_of_stable) return "Up to date (on a pre-release ahead of stable)";
-  return "Up to date";
-});
+const headline = computed(() =>
+  updateHeadline(updateStatus.value, {
+    running: running.value,
+    applying: applyingUpdate.value,
+  }),
+);
 
-// "Last checked …" from the persisted timestamp on the (cached or live) result.
-const lastCheckedAgo = computed(() => {
+const checkedAgo = computed(() => {
   const at = updateStatus.value?.checked_at_epoch;
   return at ? humaniseAgo(at) : null;
 });
 
-// Set once the user triggers a live check or changes the channel, so the slower
-// cached prefetch can't clobber fresher state when it resolves later.
+const LINKS: { label: string; url: string; icon: Component | string }[] = [
+  { label: "yerd.app", url: "https://yerd.app", icon: Globe },
+  { label: "GitHub", url: "https://github.com/forjedio/yerd", icon: GitFork },
+  {
+    label: "MIT licence",
+    url: "https://github.com/forjedio/yerd/blob/main/LICENSE.md",
+    icon: Scale,
+  },
+  { label: "mdbin.app", url: "https://mdbin.app/?utm=yerdapp", icon: mdbinMarkUrl },
+];
+
+/**
+ * Set once the user triggers a live check or changes the channel, so the slower
+ * cached prefetch can't clobber fresher state when it resolves later.
+ */
 let liveUpdateFlow = false;
 
-// Monotonic guard for overlapping live checks. The channel Select stays enabled
-// while a check is in flight (only `!running` disables it), so a second channel
-// change / check can start before the first resolves. Each check captures the
-// current seq before awaiting and only commits if it's still the latest, so an
-// older response that resolves last can't overwrite newer state out of order.
+/**
+ * Monotonic guard for overlapping live checks. The channel picker stays enabled
+ * while a check is in flight (only `!running` disables it), so a second channel
+ * change / check can start before the first resolves. Each check captures the
+ * current seq before awaiting and only commits if it's still the latest, so an
+ * older response that resolves last can't overwrite newer state out of order.
+ */
 let checkSeq = 0;
 
-// Pre-fill the section from the daemon's persisted last-check result (no network)
-// so the channel + status + "last checked" show immediately on load.
+/**
+ * Pre-fill the section from the daemon's persisted last-check result (no
+ * network) so the channel, status and "last checked" show immediately. A down
+ * or older daemon leaves the section in its "Not checked" state.
+ */
 async function loadCachedUpdate(): Promise<void> {
-  try {
-    const s = await cachedUpdateStatus();
-    if (liveUpdateFlow) return; // a newer check / channel change already won the race
-    updateStatus.value = s;
-    updateChannel.value = s.channel;
-  } catch {
-    // Daemon down / older daemon: leave the section in its "Not checked" state.
+  const s = await cachedUpdateStatus().catch(() => null);
+  if (!s || liveUpdateFlow) return;
+  updateStatus.value = s;
+  updateChannel.value = s.channel;
+}
+
+/** The toast for an explicit "Check now". A `cached` source means the daemon
+ *  couldn't reach the update server, so it doesn't claim "latest version". */
+function notifyCheckResult(s: UpdateStatusResponse): void {
+  if (s.available && s.target) {
+    toast.success("Update available", `Version ${s.target} can be installed.`);
+  } else if (s.ahead_of_stable) {
+    toast.info("Up to date", "You're on a pre-release ahead of stable.");
+  } else if (s.source === "cached") {
+    toast.info(
+      "Couldn't reach the update server",
+      "Showing the last cached result - you may be offline.",
+    );
+  } else {
+    toast.success("Up to date", "You're on the latest version.");
   }
 }
 
-// Notify only on an explicit "Check now" (notify=true). A check triggered any
-// other way (channel change) updates the shown status silently.
+/**
+ * A live update check. Notifies only on an explicit "Check now" (`notify`); a
+ * check triggered by a channel change updates the shown status silently. A
+ * superseded check neither commits nor toasts, and only the latest in-flight
+ * check clears the spinner.
+ */
 async function runUpdateCheck(notify = false): Promise<void> {
   liveUpdateFlow = true;
   checkingUpdates.value = true;
   const seq = ++checkSeq;
   try {
     const s = await checkUpdates();
-    if (seq !== checkSeq) return; // a newer check superseded this one
+    if (seq !== checkSeq) return;
     updateStatus.value = s;
     updateChannel.value = s.channel;
-    if (!notify) return;
-    if (s.available && s.target) {
-      toast.success("Update available", `Version ${s.target} can be installed.`);
-    } else if (s.ahead_of_stable) {
-      toast.info("Up to date", "You're on a pre-release ahead of stable.");
-    } else if (s.source === "cached") {
-      // The daemon couldn't reach the update server and served its last cached
-      // result - don't claim "latest version" off possibly-stale data.
-      toast.info(
-        "Couldn't reach the update server",
-        "Showing the last cached result - you may be offline.",
-      );
-    } else {
-      toast.success("Up to date", "You're on the latest version.");
-    }
+    if (notify) notifyCheckResult(s);
   } catch (e) {
-    if (seq !== checkSeq) return; // superseded; stay quiet, the latest owns the UI
+    if (seq !== checkSeq) return;
     if (notify) toast.error("Couldn't check for updates", (e as IpcError).message);
   } finally {
-    // Only the latest in-flight check clears the spinner; an older one resolving
-    // first must leave it spinning until the newer check finishes.
     if (seq === checkSeq) checkingUpdates.value = false;
   }
 }
 
-// Download + verify + apply. The app quits during the swap and the applier
-// relaunches it, so `applyUpdate` usually never returns; a thrown error means
-// staging failed (offline, verification, or a non-writable /Applications).
+/**
+ * Download, verify and apply. The app quits during the swap and the applier
+ * relaunches it, so `applyUpdate` usually never returns; a thrown error means
+ * staging failed (offline, verification, or a non-writable /Applications).
+ */
 async function onUpdateNow(): Promise<void> {
   applyingUpdate.value = true;
   try {
@@ -146,410 +170,206 @@ async function onUpdateNow(): Promise<void> {
   }
 }
 
-// Persist the channel on change, then re-check so the shown status reflects it.
-async function onUpdateChannelChange(value: UpdateChannel): Promise<void> {
+/** Persist the channel (optimistically, reverting on failure), then re-check so
+ *  the shown status reflects it. */
+async function onUpdateChannelChange(value: string): Promise<void> {
+  if (value !== "stable" && value !== "edge") return;
   liveUpdateFlow = true;
   const previous = updateChannel.value;
-  updateChannel.value = value; // optimistic
+  updateChannel.value = value;
   try {
     await setUpdateChannel(value);
     await runUpdateCheck();
   } catch (e) {
-    updateChannel.value = previous; // revert on failure
+    updateChannel.value = previous;
     toast.error("Couldn't change the update channel", (e as IpcError).message);
   }
 }
 
-onMounted(async () => {
-  try {
-    appVersion.value = await getVersion();
-  } catch {
-    /* not in a Tauri context (e.g. tests) - leave blank */
-  }
+/**
+ * Loads the versions and the cached update status. Outside Tauri (tests) the
+ * app version stays blank; a down daemon degrades quietly (its fields read
+ * "unknown" / "-"), so only an unexpected error toasts.
+ */
+async function loadVersions(): Promise<void> {
+  appVersion.value = await getVersion().catch(() => "");
   try {
     const [p, report] = await Promise.all([protocolVersion(), status()]);
     protocol.value = p;
     daemonVersion.value = report.daemon_version;
   } catch (e) {
-    // The page degrades gracefully (daemon fields read "unknown"/"-"), so a
-    // down daemon needs no alarm here - only surface a real, unexpected error.
     const err = e as IpcError;
     if (!err.unreachable) toast.error("Couldn't load daemon info", err.message);
   }
+}
+
+onMounted(() => {
+  void loadVersions();
   void loadCachedUpdate();
 });
-
-// ── GUI Logs dialog ─────────────────────────────────────────────────────────
-
-const logsOpen = ref(false);
-const logs = ref<GuiLogs | null>(null);
-const activeTab = ref<"gui" | "daemon">("gui");
-let logsTimer: ReturnType<typeof setInterval> | undefined;
-
-const activeLines = computed(() =>
-  activeTab.value === "gui" ? (logs.value?.guiLog ?? []) : (logs.value?.daemonLog ?? []),
-);
-const activePath = computed(() =>
-  activeTab.value === "gui" ? logs.value?.guiPath : logs.value?.daemonPath,
-);
-
-async function fetchLogs(silent = false): Promise<void> {
-  try {
-    logs.value = await getGuiLogs();
-  } catch (e) {
-    // The 2s poll passes silent=true so a transient read failure doesn't spam a
-    // toast every tick; only the initial/manual load surfaces the error.
-    if (!silent) toast.error("Couldn't read logs", (e as IpcError).message);
-  }
-}
-
-function openLogs(): void {
-  logsOpen.value = true;
-  void fetchLogs();
-  // Light polling while open so a live daemon-start trail streams in.
-  stopLogPolling();
-  logsTimer = setInterval(() => void fetchLogs(true), 2000);
-}
-
-function stopLogPolling(): void {
-  if (logsTimer) {
-    clearInterval(logsTimer);
-    logsTimer = undefined;
-  }
-}
-
-async function copyActive(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(activeLines.value.join("\n"));
-    toast.success("Copied logs", "Paste this when reporting the problem.");
-  } catch {
-    toast.error("Couldn't copy", "Your browser blocked clipboard access.");
-  }
-}
-
-onUnmounted(stopLogPolling);
-
-// ── Diagnostics dialog ──────────────────────────────────────────────────────
-
-const diagOpen = ref(false);
-const diagText = ref("");
-const diagLoading = ref(false);
-
-async function openDiagnostics(): Promise<void> {
-  diagOpen.value = true;
-  diagLoading.value = true;
-  diagText.value = "";
-  try {
-    diagText.value = await getDiagnostics();
-  } catch (e) {
-    toast.error("Couldn't gather diagnostics", (e as IpcError).message);
-    diagText.value = "";
-  } finally {
-    diagLoading.value = false;
-  }
-}
-
-async function copyDiagnostics(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(diagText.value);
-    toast.success("Copied diagnostics", "Paste this when reporting the problem.");
-  } catch {
-    toast.error("Couldn't copy", "Your browser blocked clipboard access.");
-  }
-}
 </script>
 
 <template>
-  <div class="space-y-4">
-    <!-- Identity + build: the wordmark and the version list share one line,
-         split by a hairline; both stack on a narrow window. -->
-    <Card class="p-6 sm:p-8">
-      <div
-        class="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between lg:gap-10"
-      >
-        <div class="flex items-center gap-4">
-          <img :src="logoUrl" alt="" class="size-16 shrink-0" />
-          <div>
-            <p class="pt-2 font-display text-3xl font-normal leading-none tracking-wide">
-              YERD
-            </p>
-            <p class="mt-0.5 text-sm text-muted-foreground">
-              Local PHP, without the friction.
-            </p>
-          </div>
-        </div>
-
-        <dl
-          class="space-y-2 border-t pt-6 text-sm lg:min-w-[15rem] lg:border-l lg:border-t-0 lg:pl-10 lg:pt-0"
-        >
-          <div class="flex items-center justify-between gap-8 whitespace-nowrap">
-            <dt class="text-muted-foreground">App version</dt>
-            <dd class="font-mono">{{ appVersion || "-" }}</dd>
-          </div>
-          <div class="flex items-center justify-between gap-8 whitespace-nowrap">
-            <dt class="text-muted-foreground">Daemon version</dt>
-            <dd class="font-mono">{{ daemonVersion || "unknown" }}</dd>
-          </div>
-          <div class="flex items-center justify-between gap-8 whitespace-nowrap">
-            <dt class="text-muted-foreground">IPC protocol</dt>
-            <dd class="font-mono">{{ protocol ?? "-" }}</dd>
-          </div>
-        </dl>
+  <div v-if="layout === 'column'" data-testid="about-column">
+    <div class="flex items-center gap-3.5">
+      <img :src="logoUrl" alt="" class="size-11 shrink-0" />
+      <div class="min-w-0">
+        <p class="pt-1 font-display text-[27px] font-normal leading-none tracking-wide">YERD</p>
+        <p class="mt-1 text-[12.5px] text-muted-foreground">Local PHP, without the friction.</p>
       </div>
+    </div>
 
-      <div
-        class="mt-6 flex flex-col gap-3 border-t pt-4 text-sm sm:flex-row sm:items-center sm:justify-between"
+    <dl class="mt-5 grid grid-cols-[110px_1fr] gap-y-2 text-[12.5px]">
+      <dt class="text-muted-foreground">App</dt>
+      <dd class="font-mono" data-testid="about-app-version">{{ appVersion || "-" }}</dd>
+      <dt class="text-muted-foreground">Daemon</dt>
+      <dd class="font-mono" data-testid="about-daemon-version">{{ daemonVersion || "unknown" }}</dd>
+      <dt class="text-muted-foreground">IPC protocol</dt>
+      <dd class="font-mono" data-testid="about-protocol">{{ protocol ?? "-" }}</dd>
+    </dl>
+
+    <section class="mt-[22px] border-t pt-[22px]">
+      <h2 class="text-[11px] font-semibold uppercase tracking-[0.6px] text-faint">Updates</h2>
+      <p
+        class="mt-3 flex items-center gap-2 text-[13.5px] font-semibold"
+        :title="headline.tooltip ?? undefined"
+        data-testid="update-headline"
       >
-        <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
-          <button class="text-brand hover:underline" @click="openInBrowser('https://yerd.app')">
-            yerd.app
-          </button>
+        <CircleCheck v-if="headline.tone === 'ok'" class="size-4 shrink-0 text-success" />
+        <Download v-else-if="headline.tone === 'available'" class="size-4 shrink-0 text-brand" />
+        <span :class="headline.tone === 'none' && 'text-[12.5px] font-normal text-muted-foreground'">
+          {{ headline.title }}
+        </span>
+      </p>
+      <p v-if="headline.detail" class="mt-1 text-[12.5px] text-muted-foreground">
+        {{ headline.detail }}
+      </p>
+      <UpdateActions
+        class="mt-3 flex-wrap"
+        :channel="updateChannel"
+        :running="running"
+        :available="updateStatus?.available === true"
+        :applying="applyingUpdate"
+        :checking="checkingUpdates"
+        @channel="onUpdateChannelChange"
+        @update="onUpdateNow"
+        @check="runUpdateCheck(true)"
+      />
+    </section>
+
+    <section class="mt-[22px] border-t pt-[22px]">
+      <h2 class="text-[11px] font-semibold uppercase tracking-[0.6px] text-faint">Links</h2>
+      <ul class="mt-3 space-y-1">
+        <li v-for="link in LINKS" :key="link.url">
           <button
-            class="text-brand hover:underline"
-            @click="openInBrowser('https://github.com/forjedio/yerd')"
+            type="button"
+            class="flex w-full items-center gap-2.5 rounded-md py-1 text-left text-[13px] font-medium hover:text-brand"
+            @click="openInBrowser(link.url)"
           >
-            GitHub
+            <img
+              v-if="typeof link.icon === 'string'"
+              :src="link.icon"
+              alt=""
+              class="size-3.5 shrink-0 rounded-[3px]"
+            />
+            <component :is="link.icon" v-else class="size-3.5 shrink-0 text-muted-foreground" />
+            <span class="flex-1">{{ link.label }}</span>
+            <ArrowUpRight class="size-3.5 shrink-0 text-faint" />
           </button>
-        </div>
-        <p class="text-xs text-muted-foreground">Licensed under MIT.</p>
-      </div>
-    </Card>
+        </li>
+      </ul>
+    </section>
 
-    <!-- Maker: developed by Forjed, with a call to action to the studio site,
-         plus a short cross-promo for another free Forjed tool. -->
-    <Card class="space-y-5 border-brand/30 bg-brand/5 dark:bg-brand/10">
-      <div
-        class="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between sm:gap-6"
-      >
-        <div>
-          <p class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Created by
-          </p>
-          <p class="font-display text-2xl font-normal leading-tight tracking-wide">FORJED</p>
-          <p class="text-sm text-muted-foreground">
-            The independent studio behind Yerd.
-          </p>
-        </div>
-        <Button class="shrink-0" @click="openInBrowser('https://forjed.io')">
-          Visit forjed.io
-          <ArrowUpRight class="opacity-80" />
+    <section class="mt-[22px] border-t pt-[22px]">
+      <h2 class="text-[11px] font-semibold uppercase tracking-[0.6px] text-faint">
+        Troubleshooting
+      </h2>
+      <div class="mt-3 flex flex-wrap gap-2">
+        <Button variant="outline" size="sm" @click="emit('logs')"><FileText /> Logs</Button>
+        <Button variant="outline" size="sm" @click="emit('diagnostics')">
+          <Stethoscope /> Diagnostics
         </Button>
       </div>
+    </section>
+  </div>
 
-      <!-- Cross-promo for mdbin, the studio's other free tool. Its own brand
-           mark and wordmark (lowercase, mono) rather than ours, so it reads as
-           a product being recommended and not another Yerd feature. -->
-      <div class="border-t border-brand/20 pt-5">
-        <p class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Also from Forjed
-        </p>
-
-        <div class="mt-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-4">
-          <img
-            :src="mdbinMarkUrl"
-            alt=""
-            aria-hidden="true"
-            class="size-9 shrink-0 rounded-lg"
-          />
-
-          <div class="min-w-0 flex-1">
-            <p class="font-mono text-lg font-extrabold leading-none tracking-tight">mdbin</p>
-            <p class="mt-1.5 text-sm font-medium">Share Markdown with a link.</p>
-            <p class="mt-1 text-sm text-muted-foreground">
-              Paste a README, a deploy note, an RFC - publish it and send the URL. Code is
-              highlighted, Mermaid diagrams render themselves, and anyone can comment on a
-              line or fork the doc to suggest an edit. No account needed.
-            </p>
-
-            <ul class="mt-3 flex flex-wrap gap-1.5">
-              <li
-                v-for="feature in mdbinFeatures"
-                :key="feature"
-                class="rounded-full border border-brand/20 bg-background/60 px-2.5 py-0.5 text-[11px] text-muted-foreground"
-              >
-                {{ feature }}
-              </li>
-            </ul>
-
-            <div class="mt-4 flex flex-wrap items-center gap-2">
-              <Button
-                variant="outline"
-                @click="openInBrowser('https://mdbin.app/new?utm=yerdapp')"
-              >
-                Create a document
-                <ArrowUpRight class="opacity-80" />
-              </Button>
-              <button
-                class="rounded-md px-2 py-1 text-sm text-muted-foreground hover:text-foreground"
-                @click="openInBrowser('https://mdbin.app/?utm=yerdapp')"
-              >
-                mdbin.app
-              </button>
-            </div>
-          </div>
+  <div v-else class="overflow-hidden rounded-[10px] border bg-card" data-testid="about-card">
+    <div class="flex flex-wrap items-center gap-4 px-[18px] py-4">
+      <img :src="logoUrl" alt="" class="size-11 shrink-0" />
+      <div class="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
+        <div class="flex items-baseline gap-3">
+          <p class="font-display text-[20px] font-normal leading-none tracking-wide">YERD</p>
+          <p class="text-[12.5px] text-muted-foreground">Local PHP, without the friction.</p>
+        </div>
+        <div class="flex flex-wrap items-center gap-1.5 font-mono text-[11px]">
+          <span class="rounded border bg-background px-2 py-0.5">
+            <span class="text-faint">App</span>
+            <span class="ml-1.5" data-testid="about-app-version">{{ appVersion || "-" }}</span>
+          </span>
+          <span class="rounded border bg-background px-2 py-0.5">
+            <span class="text-faint">Daemon</span>
+            <span class="ml-1.5" data-testid="about-daemon-version">{{ daemonVersion || "unknown" }}</span>
+          </span>
+          <span class="rounded border bg-background px-2 py-0.5">
+            <span class="text-faint">IPC</span>
+            <span class="ml-1.5" data-testid="about-protocol">{{ protocol ?? "-" }}</span>
+          </span>
         </div>
       </div>
-    </Card>
 
-    <!-- Updates -->
-    <Card>
-      <CardHeader>
-        <CardTitle>Updates</CardTitle>
-        <CardDescription>
-          Keep Yerd up to date. Choose a release channel and check for new
-          versions.
-        </CardDescription>
-      </CardHeader>
-      <CardContent class="space-y-4">
-        <div class="flex items-center justify-between gap-4">
-          <div>
-            <p class="text-sm font-medium">Release channel</p>
-            <p class="text-xs text-muted-foreground">
-              Stable tracks final releases; Edge opts in to pre-releases and
-              release candidates.
-            </p>
-          </div>
-          <Select
-            :model-value="updateChannel"
-            :options="channelOptions"
-            aria-label="Update channel"
-            :disabled="!running"
-            @update:model-value="(v: UpdateChannel) => onUpdateChannelChange(v)"
-          />
-        </div>
-
-        <div class="flex items-center justify-between gap-4">
-          <div class="min-w-0 text-sm">
-            <template
-              v-if="
-                updateStatus &&
-                (updateStatus.checked_at_epoch || updateStatus.latest_stable || updateStatus.latest_edge)
-              "
-            >
-              <p class="font-medium">{{ updateSummary }}</p>
-              <p class="text-xs text-muted-foreground">
-                Current {{ updateStatus.current }} · stable
-                {{ updateStatus.latest_stable ?? "-" }} · edge
-                {{ updateStatus.latest_edge ?? "-" }}
-              </p>
-              <p v-if="lastCheckedAgo" class="text-xs text-muted-foreground">
-                Last checked {{ lastCheckedAgo }}.
-              </p>
-            </template>
-            <p v-else class="text-xs text-muted-foreground">
-              {{ running ? "Not checked yet." : "Start the daemon to check for updates." }}
-            </p>
-          </div>
-          <Button variant="outline" :disabled="!running || checkingUpdates" @click="runUpdateCheck(true)">
-            <Spinner v-if="checkingUpdates" class="size-4" />
-            <RefreshCw v-else class="size-4" />
-            Check now
-          </Button>
-        </div>
-
-        <div
-          v-if="updateStatus?.available"
-          class="flex items-center justify-between gap-4 rounded-lg border border-success/40 bg-success/10 p-3"
+      <div class="ml-auto flex flex-col items-end gap-2">
+        <p
+          class="flex items-center gap-1.5 text-[12px] font-semibold"
+          :title="headline.tooltip ?? undefined"
+          data-testid="update-headline"
         >
-          <p class="text-sm">
-            <template v-if="applyingUpdate">
-              Updating to <strong>{{ updateStatus.target }}</strong> - Yerd will restart…
-            </template>
-            <template v-else>
-              Yerd <strong>{{ updateStatus.target }}</strong> is available.
-            </template>
-          </p>
-          <Button :disabled="!running || applyingUpdate" @click="onUpdateNow">
-            <Spinner v-if="applyingUpdate" class="size-4" />
-            <Download v-else class="size-4" />
-            {{ applyingUpdate ? "Updating…" : "Update" }}
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
-
-    <!-- Troubleshooting -->
-    <Card>
-      <CardHeader><CardTitle>Troubleshooting</CardTitle></CardHeader>
-      <CardContent class="space-y-3">
-        <p class="text-sm text-muted-foreground">
-          The GUI logs everything it does this session - including the daemon
-          install, upgrade, and start steps. Open the logs to see what
-          happened, or generate a diagnostics snapshot to share when reporting
-          a problem.
+          <CircleCheck v-if="headline.tone === 'ok'" class="size-3.5 shrink-0 text-success" />
+          <Download v-else-if="headline.tone === 'available'" class="size-3.5 shrink-0 text-brand" />
+          <span :class="headline.tone === 'none' && 'font-normal text-muted-foreground'">
+            {{ headline.title }}
+          </span>
+          <span v-if="headline.tone === 'ok' && checkedAgo" class="font-normal text-faint">
+            · checked {{ checkedAgo }}
+          </span>
         </p>
-        <div class="flex flex-wrap justify-end gap-2">
-          <Button variant="outline" @click="openLogs">
-            <FileText class="size-4" /> Logs
-          </Button>
-          <Button variant="outline" @click="openDiagnostics">
-            <Stethoscope class="size-4" /> Diagnostics
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
-
-    <Modal
-      v-model:open="logsOpen"
-      title="Logs"
-      size="full"
-      @update:open="(o: boolean) => { if (!o) stopLogPolling(); }"
-    >
-      <div class="flex h-full flex-col gap-3">
-        <!-- Tabs + actions -->
-        <div class="flex shrink-0 items-center justify-between gap-2">
-          <div class="flex gap-1">
-            <Button
-              :variant="activeTab === 'gui' ? 'default' : 'outline'"
-              size="sm"
-              @click="activeTab = 'gui'"
-            >
-              GUI
-            </Button>
-            <Button
-              :variant="activeTab === 'daemon' ? 'default' : 'outline'"
-              size="sm"
-              @click="activeTab = 'daemon'"
-            >
-              Daemon
-            </Button>
-          </div>
-          <div class="flex gap-1">
-            <Button variant="outline" size="sm" @click="fetchLogs()">Refresh</Button>
-            <Button variant="outline" size="sm" @click="copyActive">Copy</Button>
-          </div>
-        </div>
-        <p v-if="activePath" class="shrink-0 truncate font-mono text-xs text-muted-foreground">
-          {{ activePath }}
+        <p v-if="headline.tone === 'available'" class="text-[12px] text-muted-foreground">
+          {{ headline.detail }}
         </p>
-        <pre
-          class="min-h-0 flex-1 overflow-auto rounded-md bg-muted p-3 text-xs leading-relaxed"
-        >{{ activeLines.length ? activeLines.join("\n") : "No log entries yet." }}</pre>
+        <UpdateActions
+          :channel="updateChannel"
+          :running="running"
+          :available="updateStatus?.available === true"
+          :applying="applyingUpdate"
+          :checking="checkingUpdates"
+          @channel="onUpdateChannelChange"
+          @update="onUpdateNow"
+          @check="runUpdateCheck(true)"
+        />
       </div>
+    </div>
 
-      <template #footer="{ close }">
-        <Button variant="ghost" @click="close">Close</Button>
-      </template>
-    </Modal>
-
-    <Modal v-model:open="diagOpen" title="Diagnostics" size="full">
-      <div class="flex h-full flex-col gap-3">
-        <div class="flex shrink-0 items-center justify-between gap-2">
-          <p class="text-xs text-muted-foreground">
-            A snapshot of paths, service configuration, and recent errors.
-          </p>
-          <Button variant="outline" size="sm" :disabled="diagLoading" @click="copyDiagnostics">
-            Copy
-          </Button>
-        </div>
-        <pre
-          class="min-h-0 flex-1 overflow-auto rounded-md bg-muted p-3 text-xs leading-relaxed"
-        >{{ diagLoading ? "Gathering…" : diagText || "No diagnostics available." }}</pre>
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-2 border-t px-[18px] py-2.5">
+      <button
+        v-for="link in LINKS"
+        :key="link.url"
+        type="button"
+        class="flex items-center gap-1.5 text-[12.5px] font-medium hover:text-brand"
+        @click="openInBrowser(link.url)"
+      >
+        <img
+          v-if="typeof link.icon === 'string'"
+          :src="link.icon"
+          alt=""
+          class="size-3.5 shrink-0 rounded-[3px]"
+        />
+        <component :is="link.icon" v-else class="size-3.5 shrink-0 text-muted-foreground" />
+        {{ link.label }}
+        <ArrowUpRight class="size-3 shrink-0 text-faint" />
+      </button>
+      <div class="ml-auto flex gap-2">
+        <Button variant="outline" size="sm" @click="emit('logs')">Logs</Button>
+        <Button variant="outline" size="sm" @click="emit('diagnostics')">Diagnostics</Button>
       </div>
-
-      <template #footer="{ close }">
-        <Button variant="ghost" @click="close">Close</Button>
-      </template>
-    </Modal>
+    </div>
   </div>
 </template>
