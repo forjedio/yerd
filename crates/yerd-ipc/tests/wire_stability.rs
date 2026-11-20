@@ -4040,10 +4040,29 @@ fn response_proxies_byte_shape() {
             site: "app".into(),
             prefix: "/app".into(),
             target: "http://127.0.0.1:9000".into(),
+            managed_by: None,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = r#"{"type":"proxies","proxies":[{"name":"reverb","target":"http://127.0.0.1:8080","secure":false}],"rules":[{"site":"app","prefix":"/app","target":"http://127.0.0.1:9000"}]}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+/// A service-managed rule appends `managed_by` after the pre-existing fields.
+#[test]
+fn response_proxies_managed_rule_byte_shape() {
+    let r = Response::Proxies {
+        proxies: vec![],
+        rules: vec![ProxyRuleEntry {
+            site: "app".into(),
+            prefix: "/app".into(),
+            target: "http://127.0.0.1:8080".into(),
+            managed_by: Some("Reverb".into()),
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"proxies","proxies":[],"rules":[{"site":"app","prefix":"/app","target":"http://127.0.0.1:8080","managed_by":"Reverb"}]}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
@@ -4198,4 +4217,33 @@ fn response_php_versions_xdebug_byte_shape() {
         r#"{"type":"php_versions","installed":["8.4","8.5"],"default":"8.4","xdebug":{"8.4":{"enabled":true,"modes":["debug","trace"],"start":"trigger"}},"xdebug_versions":["8.4","8.5"]}"#
     );
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_update_proxy_byte_shape() {
+    let r = Request::UpdateProxy {
+        name: "grafana".into(),
+        url: "http://localhost:3001".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"update_proxy","name":"grafana","url":"http://localhost:3001"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_update_proxy_rule_byte_shape() {
+    let r = Request::UpdateProxyRule {
+        site: "codestash".into(),
+        prefix: "/live".into(),
+        url: "http://127.0.0.1:8082".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"update_proxy_rule","site":"codestash","prefix":"/live","url":"http://127.0.0.1:8082"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
 }

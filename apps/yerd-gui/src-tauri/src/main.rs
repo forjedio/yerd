@@ -85,6 +85,8 @@ fn main() {
             commands::remove_proxy,
             commands::add_proxy_rule,
             commands::remove_proxy_rule,
+            commands::update_proxy,
+            commands::update_proxy_rule,
             commands::list_routes,
             commands::add_route_rule,
             commands::remove_route_rule,

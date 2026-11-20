@@ -286,6 +286,17 @@ export async function removeProxyRule(site: string, prefix: string): Promise<voi
   ensureOk(await call<Response>("remove_proxy_rule", { site, prefix }));
 }
 
+/** Replace a whole-host proxy's upstream in place; its domains and HTTPS
+ *  setting are kept. The daemon validates the URL exactly as on add. */
+export async function updateProxy(name: string, url: string): Promise<void> {
+  ensureOk(await call<Response>("update_proxy", { name, url }));
+}
+
+/** Replace a site path rule's upstream in place; its site and prefix are kept. */
+export async function updateProxyRule(site: string, prefix: string, url: string): Promise<void> {
+  ensureOk(await call<Response>("update_proxy_rule", { site, prefix, url }));
+}
+
 // ── routing rules ────────────────────────────────────────────────────────────
 
 /** Every site's path-prefix routing rules. Unlike a proxy rule, a routing rule's

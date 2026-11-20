@@ -570,6 +570,10 @@ export interface ProxyRuleEntry {
   site: string;
   prefix: string;
   target: string;
+  /** Display name of the per-site service that owns this rule (e.g. `Reverb`
+   *  for its `/app` rule). The daemon refuses to edit it, since the service
+   *  re-points it at its own port. Omitted for an ordinary rule. */
+  managed_by?: string;
 }
 
 /** One per-site path-prefix routing rule (`{site}{prefix}` → a file at `target`,

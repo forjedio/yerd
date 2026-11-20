@@ -16,8 +16,8 @@ use yerd_ipc::{
     decode_message, encode_message,
     types::{PhpVersion, Site},
     CaStatus, Diagnosis, DiagnosisCode, ErrorCode, FixReport, FixResult, IpcError, PhpPoolStatus,
-    PoolRunState, PortStatus, Request, Response, ResponseHeaderEntry, RouteRuleEntry, Severity,
-    SiteCounts, StatusReport,
+    PoolRunState, PortStatus, ProxyRuleEntry, Request, Response, ResponseHeaderEntry,
+    RouteRuleEntry, Severity, SiteCounts, StatusReport,
 };
 
 fn assert_request_roundtrips(r: Request) {
@@ -30,6 +30,27 @@ fn assert_response_roundtrips(r: Response) {
     let bytes = encode_message(&r).unwrap();
     let back: Response = decode_message(&bytes).unwrap();
     assert_eq!(back, r);
+}
+
+#[test]
+fn proxies_response_with_managed_rule_roundtrips() {
+    assert_response_roundtrips(Response::Proxies {
+        proxies: vec![],
+        rules: vec![
+            ProxyRuleEntry {
+                site: "app".into(),
+                prefix: "/app".into(),
+                target: "http://127.0.0.1:8080".into(),
+                managed_by: Some("Reverb".into()),
+            },
+            ProxyRuleEntry {
+                site: "app".into(),
+                prefix: "/live".into(),
+                target: "http://127.0.0.1:8082".into(),
+                managed_by: None,
+            },
+        ],
+    });
 }
 
 #[test]
@@ -99,6 +120,15 @@ fn encode_then_decode_request_roundtrip() {
     assert_request_roundtrips(Request::Diagnose);
     assert_request_roundtrips(Request::DoctorFix);
     assert_request_roundtrips(Request::SetMcpEnabled { enabled: true });
+    assert_request_roundtrips(Request::UpdateProxy {
+        name: "grafana".into(),
+        url: "http://localhost:3001".into(),
+    });
+    assert_request_roundtrips(Request::UpdateProxyRule {
+        site: "codestash".into(),
+        prefix: "/live".into(),
+        url: "http://127.0.0.1:8082".into(),
+    });
     assert_request_roundtrips(Request::CheckUpdate {
         channel: Some(yerd_ipc::Channel::Edge),
     });

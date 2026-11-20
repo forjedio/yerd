@@ -87,14 +87,23 @@ function button(w: VueWrapper, text: string) {
 }
 
 describe("ProxyInspector for a whole-domain proxy", () => {
-  it("shows the host, subtitle and read-only upstream with no Edit", () => {
+  it("shows the host, subtitle and upstream with an Edit button on Forward to", () => {
     const w = mountInspector(proxyItem());
     expect(w.get('[data-testid="proxy-title"]').text()).toBe("mydocker.test");
     expect(w.get('[data-testid="proxy-subtitle"]').text()).toBe(
       "Whole-domain proxy · every request goes to the upstream",
     );
     expect(w.get('[data-testid="forward-to"]').text()).toBe("http://localhost:9011");
-    expect(w.findAll("button").some((b) => b.text().trim() === "Edit")).toBe(false);
+    expect(w.get('[data-testid="edit-upstream"]').text()).toBe("Edit");
+  });
+
+  it("emits edit from Edit, and disables it while busy", async () => {
+    const item = proxyItem();
+    const w = mountInspector(item);
+    await w.get('[data-testid="edit-upstream"]').trigger("click");
+    expect(w.emitted("edit")).toEqual([[item]]);
+    await w.setProps({ busy: true });
+    expect(w.get('[data-testid="edit-upstream"]').attributes("disabled")).toBeDefined();
   });
 
   it("opens and copies the proxy URL", async () => {
@@ -176,6 +185,26 @@ describe("ProxyInspector for a path rule", () => {
     expect(action.text()).toBe("Remove path…");
     await action.trigger("click");
     expect(w.emitted("remove")).toEqual([[ruleItem]]);
+  });
+
+  it("emits edit from Edit on Forward to", async () => {
+    const w = mountInspector(ruleItem);
+    await w.get('[data-testid="edit-upstream"]').trigger("click");
+    expect(w.emitted("edit")).toEqual([[ruleItem]]);
+    expect(w.find('[data-testid="managed-by"]').exists()).toBe(false);
+  });
+
+  it("offers no Edit for a service-managed rule and says which service owns it", () => {
+    const managed: ProxyItem = {
+      kind: "rule",
+      key: "rule:codestash/app",
+      rule: { site: "codestash", prefix: "/app", target: "http://127.0.0.1:8080", managed_by: "Reverb" },
+    };
+    const w = mountInspector(managed);
+    expect(w.find('[data-testid="edit-upstream"]').exists()).toBe(false);
+    expect(w.get('[data-testid="managed-by"]').text()).toBe("Managed by Reverb");
+    expect(w.get('[data-testid="forward-to"]').text()).toBe("http://127.0.0.1:8080");
+    expect(w.get('[data-testid="inspector-footer-action"]').text()).toBe("Remove path…");
   });
 });
 

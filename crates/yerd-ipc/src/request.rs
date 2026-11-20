@@ -144,6 +144,24 @@ pub enum Request {
         /// The path prefix to remove.
         prefix: String,
     },
+    /// Replace a whole-host proxy's upstream in place, keeping its domains and
+    /// HTTPS setting. Replies `Ok`.
+    UpdateProxy {
+        /// The proxy name to update.
+        name: String,
+        /// The new upstream URL (validated by the daemon).
+        url: String,
+    },
+    /// Replace a site path rule's upstream in place, keeping its site and
+    /// prefix. Replies `Ok`.
+    UpdateProxyRule {
+        /// The site the rule is on.
+        site: String,
+        /// The path prefix of the rule to update.
+        prefix: String,
+        /// The new upstream URL (validated by the daemon).
+        url: String,
+    },
     /// Enumerate whole-host proxies and per-site path-prefix rules.
     ListProxies,
     /// Fetch read-only daemon runtime facts (DNS address, TLD, CA path +
@@ -1110,6 +1128,8 @@ mod variant_name_pinning {
             Request::RemoveProxy { .. } => {}
             Request::AddProxyRule { .. } => {}
             Request::RemoveProxyRule { .. } => {}
+            Request::UpdateProxy { .. } => {}
+            Request::UpdateProxyRule { .. } => {}
             Request::ListProxies => {}
             Request::SetMcpEnabled { .. } => {}
             Request::GetNetworkSettings => {}
@@ -1435,6 +1455,15 @@ mod variant_name_pinning {
         pin(Request::RemoveProxyRule {
             site: "app".to_owned(),
             prefix: "/app".to_owned(),
+        });
+        pin(Request::UpdateProxy {
+            name: "reverb".to_owned(),
+            url: "http://localhost:8081".to_owned(),
+        });
+        pin(Request::UpdateProxyRule {
+            site: "app".to_owned(),
+            prefix: "/app".to_owned(),
+            url: "http://127.0.0.1:8081".to_owned(),
         });
         pin(Request::ListProxies);
         pin(Request::AddRouteRule {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Copy, CornerDownRight, ExternalLink, Globe, Trash2, X } from "lucide-vue-next";
+import { Copy, CornerDownRight, ExternalLink, Globe, Pencil, Trash2, X } from "lucide-vue-next";
 import { computed } from "vue";
 
 import SiteDomainsCard from "@/components/sites/SiteDomainsCard.vue";
@@ -14,11 +14,13 @@ import { proxyAsSite, proxyHost, type ProxyItem } from "@/lib/proxies";
 import { httpsDetail } from "@/lib/sites";
 import { isUnbound, openTitle, siteUrl } from "@/lib/siteUrl";
 import { copyUrlWithToast, toastOnError } from "@/lib/toastActions";
+import { cn } from "@/lib/utils";
 
 /**
  * The selected proxy's inspector. A whole-domain proxy shows Open and Copy URL,
- * the ROUTE card (its upstream, read-only, and the HTTPS switch), the DOMAINS
- * card and Remove proxy. A path rule shows its upstream and Remove path. In
+ * the ROUTE card (its upstream with an Edit button, and the HTTPS switch), the
+ * DOMAINS card and Remove proxy. A path rule shows its upstream with Edit (or a
+ * "Managed by" note in its place for a service-owned rule), and Remove path. In
  * `panel` mode it sits beside the list; in `drawer` mode it slides over the
  * window (see `InspectorFrame`). Writes go up as events; the view owns them.
  */
@@ -36,6 +38,7 @@ const emit = defineEmits<{
   close: [];
   toggleSecure: [proxy: ProxyEntry];
   remove: [item: ProxyItem];
+  edit: [item: ProxyItem];
   domainsChanged: [];
 }>();
 
@@ -43,6 +46,8 @@ const drawer = computed(() => props.mode === "drawer");
 const shown = computed(() => (drawer.value ? !!props.open : true) && props.item !== null);
 const proxy = computed(() => (props.item?.kind === "proxy" ? props.item.proxy : null));
 const rule = computed(() => (props.item?.kind === "rule" ? props.item.rule : null));
+/** A rule a per-site service owns follows the service's port, so it offers no Edit. */
+const managedBy = computed(() => rule.value?.managed_by ?? null);
 
 const url = computed(() => (proxy.value ? siteUrl(proxyAsSite(proxy.value), props.report) : ""));
 const unbound = computed(() => isUnbound(props.report));
@@ -139,6 +144,19 @@ const LABEL = `mb-2 px-1 ${SECTION_LABEL}`;
                   {{ proxy ? proxy.target : rule?.target }}
                 </p>
               </div>
+              <p v-if="managedBy" class="shrink-0 text-[11px] text-faint" data-testid="managed-by">
+                Managed by {{ managedBy }}
+              </p>
+              <Button
+                v-else
+                variant="outline"
+                :class="cn(INSPECTOR_TOOL, 'shrink-0')"
+                :disabled="busy"
+                data-testid="edit-upstream"
+                @click="emit('edit', item)"
+              >
+                <Pencil /> Edit
+              </Button>
             </div>
             <div v-if="proxy" :class="ROW">
               <div class="min-w-0">

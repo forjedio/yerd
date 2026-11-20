@@ -83,6 +83,8 @@ function stubIpc(opts: {
       case "remove_proxy":
       case "add_proxy_rule":
       case "remove_proxy_rule":
+      case "update_proxy":
+      case "update_proxy_rule":
       case "set_secure":
       case "add_domain":
       case "remove_domain":
@@ -519,5 +521,58 @@ describe("ProxiesView inspector", () => {
     expect(lastCall("add_domain")).toEqual({ name: "api.account", domain: "extra.test" });
     const after = invokeMock.mock.calls.filter((c) => c[0] === "list_proxies").length;
     expect(after).toBeGreaterThan(before);
+  });
+});
+
+describe("ProxiesView edit upstream", () => {
+  async function editUpstream(w: View, key: string, typed: string) {
+    await openRow(w, key);
+    await w.get('[data-testid="edit-upstream"]').trigger("click");
+    await flushPromises();
+    await w.get("#edit-upstream-url").setValue(typed);
+    await click(w, "Save");
+  }
+
+  it("edits a whole-domain proxy's upstream", async () => {
+    stubIpc({ proxies: [reverb()] });
+    const w = await mountView();
+    await openRow(w, "proxy:reverb");
+    await w.get('[data-testid="edit-upstream"]').trigger("click");
+    await flushPromises();
+    expect((w.get("#edit-upstream-url").element as HTMLInputElement).value).toBe("localhost:9011");
+    const before = invokeMock.mock.calls.filter((c) => c[0] === "list_proxies").length;
+    await w.get("#edit-upstream-url").setValue("3001");
+    await click(w, "Save");
+    expect(lastCall("update_proxy")).toEqual({ name: "reverb", url: "http://127.0.0.1:3001" });
+    expect(toastSuccess).toHaveBeenCalledWith("Updated reverb.test", "Forwarding to 127.0.0.1:3001");
+    const after = invokeMock.mock.calls.filter((c) => c[0] === "list_proxies").length;
+    expect(after).toBeGreaterThan(before);
+  });
+
+  it("edits a path rule's upstream", async () => {
+    stubIpc({ rules: [appRule()] });
+    const w = await mountView();
+    await editUpstream(w, "rule:app/app", "127.0.0.1:8082");
+    expect(lastCall("update_proxy_rule")).toEqual({
+      site: "app",
+      prefix: "/app",
+      url: "http://127.0.0.1:8082",
+    });
+    expect(toastSuccess).toHaveBeenCalledWith("Updated app.test/app", "Forwarding to 127.0.0.1:8082");
+  });
+
+  it("shows an error toast when the update fails", async () => {
+    stubIpc({ proxies: [reverb()], failures: ["update_proxy"] });
+    const w = await mountView();
+    await editUpstream(w, "proxy:reverb", "3001");
+    expect(toastError).toHaveBeenCalledWith("Couldn't update proxy", "update_proxy failed");
+    expect(toastSuccess).not.toHaveBeenCalled();
+  });
+
+  it("shows an error toast when a path update fails", async () => {
+    stubIpc({ rules: [appRule()], failures: ["update_proxy_rule"] });
+    const w = await mountView();
+    await editUpstream(w, "rule:app/app", "3001");
+    expect(toastError).toHaveBeenCalledWith("Couldn't update path", "update_proxy_rule failed");
   });
 });

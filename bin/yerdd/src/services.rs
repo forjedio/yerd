@@ -49,12 +49,12 @@ pub fn new_manager(dirs: yerd_platform::PlatformDirs) -> DaemonServiceManager {
 }
 
 /// The built-in service-type registry (cheap - a `Vec` of five `Arc`s).
-fn registry() -> ServiceRegistry {
+pub(crate) fn registry() -> ServiceRegistry {
     ServiceRegistry::builtin()
 }
 
 /// Split an instance wire id into `(type_id, site)`.
-fn parse_wire_id(id: &str) -> (String, Option<String>) {
+pub(crate) fn parse_wire_id(id: &str) -> (String, Option<String>) {
     match id.split_once(':') {
         Some((ty, site)) => (ty.to_owned(), Some(site.to_owned())),
         None => (id.to_owned(), None),

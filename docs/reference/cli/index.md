@@ -36,7 +36,7 @@ The exceptions are the two passthrough commands. Anything after [`coverage`](./c
 | --- | --- |
 | [Sites](./sites) | `sites`, `park`, `unpark`, `link`, `unlink`, `root` |
 | [Domains](./domains) | `domain list`, `domain add`, `domain remove`, `domain primary`, `domain reset` |
-| [Proxies](./proxies) | `proxy add`, `proxy remove`, `proxy list` |
+| [Proxies](./proxies) | `proxy add`, `proxy edit`, `proxy remove`, `proxy list` |
 | [Routing rules](./routes) | `route add`, `route remove`, `route list` |
 | [Response headers](./headers) | `header set`, `header remove`, `header list` |
 | [HTTPS](./https) | `secure`, `unsecure` |

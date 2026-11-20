@@ -187,7 +187,10 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         | Request::RemoveRouteRule { .. }
         | Request::SetResponseHeader { .. }
         | Request::RemoveResponseHeader { .. } => handle_mutation(req, state).await,
-        Request::AddProxy { ref url, .. } | Request::AddProxyRule { ref url, .. } => {
+        Request::AddProxy { ref url, .. }
+        | Request::AddProxyRule { ref url, .. }
+        | Request::UpdateProxy { ref url, .. }
+        | Request::UpdateProxyRule { ref url, .. } => {
             if is_self_forward(url, &[state.http.bound, state.https.bound]) {
                 Response::Error {
                     code: ErrorCode::InvalidPath,
@@ -3121,7 +3124,8 @@ fn is_self_forward(url: &str, bound_ports: &[u16]) -> bool {
 /// document-root, which is resolved through the live router to the current site
 /// name (mirroring `ListSites`) so the output round-trips through
 /// `yerd proxy remove <site> <prefix>`. A parked docroot with no current site
-/// falls back to the raw key.
+/// falls back to the raw key. A rule a per-site service owns (Reverb's `/app`)
+/// carries that service's name in `managed_by`.
 ///
 /// Domain fields are reported only for a proxy the router actually holds. A
 /// name-shadowed proxy stays in the config but is never inserted, and the shared
@@ -3149,25 +3153,34 @@ async fn list_proxies(state: &DaemonState) -> Response {
         })
         .collect();
     let mut rules = Vec::new();
+    let managed_by = |site: &str, prefix: &str| {
+        crate::mutate::managed_rule_service(&cfg, &site.to_ascii_lowercase(), prefix)
+            .map(|m| m.service.to_owned())
+    };
     for (site, site_rules) in &cfg.proxy_rules.linked {
         for r in site_rules {
             rules.push(yerd_ipc::ProxyRuleEntry {
                 site: site.clone(),
                 prefix: r.prefix().to_owned(),
                 target: r.target().to_string(),
+                managed_by: managed_by(site, r.prefix()),
             });
         }
     }
     for (docroot, site_rules) in &cfg.proxy_rules.parked {
         let site_name = router
             .iter()
-            .find(|s| s.document_root().to_string_lossy().as_ref() == docroot.as_str())
+            .find(|s| {
+                s.kind() == yerd_core::SiteKind::Parked
+                    && s.document_root().to_string_lossy().as_ref() == docroot.as_str()
+            })
             .map_or_else(|| docroot.clone(), |s| s.name().to_owned());
         for r in site_rules {
             rules.push(yerd_ipc::ProxyRuleEntry {
                 site: site_name.clone(),
                 prefix: r.prefix().to_owned(),
                 target: r.target().to_string(),
+                managed_by: managed_by(&site_name, r.prefix()),
             });
         }
     }
@@ -4139,9 +4152,185 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn update_proxy_over_dispatch_keeps_domains_and_https_and_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let steps = [
+            Request::AddProxy {
+                name: "grafana".into(),
+                url: "http://localhost:3000".into(),
+            },
+            Request::AddDomain {
+                name: "grafana".into(),
+                domain: "custom.test".into(),
+            },
+            Request::SetSecure {
+                name: "grafana".into(),
+                secure: true,
+            },
+            Request::UpdateProxy {
+                name: "grafana".into(),
+                url: "http://localhost:3001".into(),
+            },
+        ];
+        for req in steps {
+            let resp = dispatch(req.clone(), &state).await;
+            assert!(matches!(resp, Response::Ok), "{req:?} got {resp:?}");
+        }
+
+        match dispatch(Request::ListProxies, &state).await {
+            Response::Proxies { proxies, .. } => {
+                let grafana = proxies.iter().find(|p| p.name == "grafana").unwrap();
+                assert_eq!(grafana.target, "http://localhost:3001");
+                assert!(grafana.secure);
+                assert!(grafana.domains.iter().any(|d| d == "custom.test"));
+            }
+            other => panic!("expected Proxies, got {other:?}"),
+        }
+        let saved = std::fs::read_to_string(&state.config_path).unwrap();
+        assert!(saved.contains("localhost:3001"), "{saved}");
+    }
+
+    #[tokio::test]
+    async fn update_proxy_self_forward_is_rejected_and_leaves_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let added = dispatch(
+            Request::AddProxy {
+                name: "grafana".into(),
+                url: "http://localhost:3000".into(),
+            },
+            &state,
+        )
+        .await;
+        assert!(matches!(added, Response::Ok), "got {added:?}");
+
+        let resp = dispatch(
+            Request::UpdateProxy {
+                name: "grafana".into(),
+                url: "http://127.0.0.1:8080".into(),
+            },
+            &state,
+        )
+        .await;
+        match resp {
+            Response::Error { code, .. } => assert_eq!(code, ErrorCode::InvalidPath),
+            other => panic!("expected InvalidPath error, got {other:?}"),
+        }
+
+        match dispatch(Request::ListProxies, &state).await {
+            Response::Proxies { proxies, .. } => {
+                let grafana = proxies.iter().find(|p| p.name == "grafana").unwrap();
+                assert_eq!(grafana.target, "http://localhost:3000");
+            }
+            other => panic!("expected Proxies, got {other:?}"),
+        }
+    }
+
     /// A name-shadowed proxy is never inserted, so its name in the shared domain
     /// maps belongs to the site that shadowed it. Reporting it must stay empty
     /// rather than advertising the site's domains as the proxy's.
+    #[tokio::test]
+    async fn list_proxies_marks_service_managed_rules_on_linked_and_parked_sites() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let rule = |prefix: &str| {
+            yerd_core::ProxyRule::new(
+                prefix,
+                yerd_core::UpstreamTarget::from_url_str("http://127.0.0.1:8080").unwrap(),
+            )
+            .unwrap()
+        };
+        {
+            let mut cfg = state.config.lock().await;
+            cfg.proxy_rules
+                .linked
+                .insert("app".into(), vec![rule("/app"), rule("/live")]);
+            cfg.proxy_rules
+                .parked
+                .insert("/srv/blog".into(), vec![rule("/app")]);
+            for site in ["app", "blog"] {
+                cfg.services.instances.insert(
+                    format!("reverb:{site}"),
+                    yerd_config::ServiceInstance {
+                        site: Some(site.into()),
+                        ..yerd_config::ServiceInstance::default()
+                    },
+                );
+            }
+        }
+        {
+            let site =
+                yerd_core::Site::parked("blog", "/srv/blog", yerd_core::PhpVersion::new(8, 3))
+                    .unwrap();
+            state.router.write().await.insert(site).unwrap();
+        }
+
+        match dispatch(Request::ListProxies, &state).await {
+            Response::Proxies { rules, .. } => {
+                let managed: Vec<_> = rules
+                    .iter()
+                    .map(|r| (r.site.as_str(), r.prefix.as_str(), r.managed_by.as_deref()))
+                    .collect();
+                assert_eq!(
+                    managed,
+                    [
+                        ("app", "/app", Some("Reverb")),
+                        ("app", "/live", None),
+                        ("blog", "/app", Some("Reverb")),
+                    ]
+                );
+            }
+            other => panic!("expected Proxies, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_proxies_resolves_a_parked_rule_past_a_linked_alias_on_the_same_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        {
+            let mut cfg = state.config.lock().await;
+            let rule = yerd_core::ProxyRule::new(
+                "/app",
+                yerd_core::UpstreamTarget::from_url_str("http://127.0.0.1:8080").unwrap(),
+            )
+            .unwrap();
+            cfg.proxy_rules
+                .parked
+                .insert("/srv/blog".into(), vec![rule]);
+            cfg.services.instances.insert(
+                "reverb:blog".into(),
+                yerd_config::ServiceInstance {
+                    site: Some("blog".into()),
+                    ..yerd_config::ServiceInstance::default()
+                },
+            );
+        }
+        {
+            let v = yerd_core::PhpVersion::new(8, 3);
+            let mut router = state.router.write().await;
+            router
+                .insert(yerd_core::Site::linked("alias", "/srv/blog", v).unwrap())
+                .unwrap();
+            router
+                .insert(yerd_core::Site::parked("blog", "/srv/blog", v).unwrap())
+                .unwrap();
+        }
+
+        match dispatch(Request::ListProxies, &state).await {
+            Response::Proxies { rules, .. } => {
+                let listed: Vec<_> = rules
+                    .iter()
+                    .map(|r| (r.site.as_str(), r.prefix.as_str(), r.managed_by.as_deref()))
+                    .collect();
+                assert_eq!(listed, [("blog", "/app", Some("Reverb"))]);
+            }
+            other => panic!("expected Proxies, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn list_proxies_reports_nothing_for_a_name_shadowed_proxy() {
         let tmp = tempfile::tempdir().unwrap();

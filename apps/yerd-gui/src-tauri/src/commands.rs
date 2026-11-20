@@ -182,6 +182,23 @@ pub async fn remove_proxy_rule(site: String, prefix: String) -> Result<Response,
     finish(exchange(&Request::RemoveProxyRule { site, prefix }).await?)
 }
 
+/// Replace the upstream of the whole-host proxy `name`, keeping its domains and
+/// HTTPS setting.
+#[tauri::command]
+pub async fn update_proxy(name: String, url: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::UpdateProxy { name, url }).await?)
+}
+
+/// Replace the upstream of `site`'s path-prefix rule `prefix`.
+#[tauri::command]
+pub async fn update_proxy_rule(
+    site: String,
+    prefix: String,
+    url: String,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::UpdateProxyRule { site, prefix, url }).await?)
+}
+
 // ── routing rules ──────────────────────────────────────────────────────────
 
 /// List every site's path-prefix routing rules.

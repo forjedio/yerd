@@ -35,7 +35,9 @@ yerd secure reverb
 # https://reverb.test/  (trusted cert, HTTP redirects to HTTPS)
 ```
 
-Remove it with `yerd proxy remove reverb`.
+Point it somewhere else with `yerd proxy edit reverb http://localhost:8081`.
+Its extra domains, wildcards and HTTPS setting stay as they are. Remove it with
+`yerd proxy remove reverb`.
 
 ### Names and extra domains
 
@@ -61,7 +63,7 @@ yerd domain primary account-dev custom-domain.test
 primary; `yerd domain list` stays site-only. In the desktop app the same controls
 are the **Domains** card in a proxy's inspector on the Proxies page.
 
-<ThemedImage light="/images/proxies-light.png" dark="/images/proxies-dark.png" alt="The Proxies page: whole-domain proxies and paths on sites, with a proxy's route, HTTPS switch and domains in the inspector" />
+<ThemedImage light="/images/proxies-light.png" dark="/images/proxies-dark.png" alt="The Proxies page: whole-domain proxies and paths on sites, with a proxy's route (Forward to with its Edit button), HTTPS switch and domains in the inspector" />
 
 A domain can only be claimed by one site or proxy. If two claim the same one,
 every **site** is considered before any proxy, and a domain added explicitly
@@ -86,13 +88,26 @@ too - your JS client connects to `wss://myapp.test/app` on the same origin. The
 full path is passed through to the upstream unchanged (`/app/...` reaches
 Reverb as `/app/...`), which is what Reverb expects.
 
-Remove a rule with `yerd proxy remove myapp /app`.
+Point a rule at a different upstream with
+`yerd proxy edit myapp /app http://127.0.0.1:8081`; the site and path stay as
+they are. Rules a service manages (such as the `/app` rule a site's Reverb
+service adds) follow the service's port and can't be edited directly: change it
+with `yerd service set-port reverb:myapp <port>` instead. Remove a rule with
+`yerd proxy remove myapp /app`.
 
 In the desktop app, **New proxy** on the Proxies page adds either shape: pick
 **A whole domain** or **A path on a site**, then the name or the site and path,
 and the upstream.
 
 <ThemedImage light="/images/proxies-new-light.png" dark="/images/proxies-new-dark.png" alt="The New proxy dialog in A path on a site mode, forwarding invoicing.test/app to 127.0.0.1:8081" />
+
+To change an existing proxy's or path's upstream, select it and use the
+**Edit** button on its "Forward to" row in the inspector. The dialog takes the
+same `http://` address as New proxy, and **Save** stays disabled until the
+address actually changes. A path a service manages shows "Managed by" in place
+of the button.
+
+<ThemedImage light="/images/proxies-edit-light.png" dark="/images/proxies-edit-dark.png" alt="The Edit upstream dialog for account.test, changing its Forward to address from 127.0.0.1:48087 to 127.0.0.1:48088" />
 
 ## Upstreams and headers
 
