@@ -104,7 +104,7 @@ describe("ProxyInspector for a whole-domain proxy", () => {
     await flushPromises();
     expect(openInBrowser).toHaveBeenCalledWith("https://mydocker.test");
     expect(clipboardWriteText).toHaveBeenCalledWith("https://mydocker.test");
-    expect(toastSuccess).toHaveBeenCalledWith("Copied URL");
+    expect(toastSuccess).toHaveBeenCalledWith("Copied URL", undefined);
   });
 
   it("disables Open while unbound", () => {

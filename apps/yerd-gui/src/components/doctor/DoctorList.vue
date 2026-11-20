@@ -4,6 +4,7 @@ import type { Component } from "vue";
 
 import Button from "@/components/ui/Button.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import { LIST_LABEL } from "@/components/ui/styles";
 import type { Severity } from "@/ipc/types";
 import { type FindingGroup, permissionCopy, permissionKey } from "@/lib/doctor";
 import type { PrivilegeItem } from "@/lib/elevation";
@@ -40,7 +41,6 @@ function permissionTile(value: boolean | null): { icon: Component; class: string
   return { icon: CircleHelp, class: "bg-muted text-faint" };
 }
 
-const LABEL = "px-2 pb-1.5 pt-4 text-[11px] font-semibold uppercase tracking-[0.6px] text-faint";
 const ROW =
   "flex h-[58px] w-full items-center gap-3 rounded-lg border px-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 const TILE = "flex size-8 shrink-0 items-center justify-center rounded-md border";
@@ -61,7 +61,7 @@ function rowClass(selected: boolean): string {
         :aria-label="group.label"
         :data-group="group.severity"
       >
-        <p :class="LABEL">{{ group.label }} · {{ group.items.length }}</p>
+        <p :class="LIST_LABEL">{{ group.label }} · {{ group.items.length }}</p>
         <div class="flex flex-col gap-1">
           <button
             v-for="{ key, finding } in group.items"
@@ -86,7 +86,7 @@ function rowClass(selected: boolean): string {
 
     <section v-if="items.length" role="group" aria-label="System permissions" data-group="permissions">
       <div class="flex items-end justify-between">
-        <p :class="LABEL">System permissions</p>
+        <p :class="LIST_LABEL">System permissions</p>
         <Button
           v-if="canFixAll"
           variant="ghost"

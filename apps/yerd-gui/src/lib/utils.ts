@@ -1,7 +1,7 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 
-import type { PoolRunState } from "@/ipc/types";
+import type { PoolRunState, ServiceRunState } from "@/ipc/types";
 
 /** shadcn-vue's `cn`: merge conditional class lists, de-duping Tailwind utils. */
 export function cn(...inputs: ClassValue[]): string {
@@ -19,8 +19,25 @@ export function joinWithAnd(names: readonly string[]): string {
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
-/** Status-dot tones (mirrors StatusPill's `Tone`). */
-export type StatusTone = "ok" | "warn" | "bad" | "unknown" | "muted";
+/** The colour family of a tinted chip or tag, mapped to theme tokens by {@link CHIP_TONE}. */
+export type ChipTone = "neutral" | "brand" | "success" | "warning" | "danger";
+
+/** Tailwind background and text classes per chip tone. */
+export const CHIP_TONE: Record<ChipTone, string> = {
+  neutral: "bg-muted text-muted-foreground",
+  brand: "bg-brand/15 text-brand",
+  success: "bg-success/15 text-success",
+  warning: "bg-warning/15 text-warning",
+  danger: "bg-destructive/15 text-destructive",
+};
+
+/** The status dot's colour for an FPM pool or a service: green running, red
+ *  failed, faint otherwise (stopped or not yet reported). */
+export function runStateDotClass(state: PoolRunState | ServiceRunState | null | undefined): string {
+  if (state === "running") return "bg-success";
+  if (state === "failed") return "bg-destructive";
+  return "bg-faint";
+}
 
 /**
  * Human label for an FPM pool's run state. PHP-FPM is started **on demand** when
@@ -38,17 +55,6 @@ export function poolStateLabel(state: PoolRunState | null | undefined): string {
       return "failed";
     default:
       return "idle"; // stopped / not-yet-reported → idle, ready on demand
-  }
-}
-
-export function poolStateTone(state: PoolRunState | null | undefined): StatusTone {
-  switch (state) {
-    case "running":
-      return "ok";
-    case "failed":
-      return "bad";
-    default:
-      return "muted"; // stopped / unknown → idle, neutral
   }
 }
 

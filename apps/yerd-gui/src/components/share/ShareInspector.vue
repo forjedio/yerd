@@ -2,7 +2,7 @@
 import { computed } from "vue";
 import { Copy, ExternalLink, Info, KeyRound, RotateCw, Square, TriangleAlert, X } from "lucide-vue-next";
 
-import { CARD } from "@/components/services/styles";
+import { CARD } from "@/components/ui/styles";
 import Button from "@/components/ui/Button.vue";
 import InspectorFrame from "@/components/ui/InspectorFrame.vue";
 import Spinner from "@/components/ui/Spinner.vue";

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ChevronDown, ChevronRight, CircleCheck, Wrench } from "lucide-vue-next";
-import { computed, ref, watch } from "vue";
+import { computed, ref } from "vue";
 
 import Button from "@/components/ui/Button.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import { useAutoScroll } from "@/composables/useAutoScroll";
 import type { ActiveStarter } from "@/composables/useSiteStarters";
 import type { ToolPrereqs } from "@/composables/useToolPrereqs";
 
@@ -27,15 +28,7 @@ const title = computed(() => {
 });
 
 const showLog = ref(false);
-const logBox = ref<HTMLElement | null>(null);
-
-watch(
-  () => props.prereqs.installLog.length,
-  () => {
-    if (logBox.value) logBox.value.scrollTop = logBox.value.scrollHeight;
-  },
-  { flush: "post" },
-);
+const logBox = useAutoScroll(() => props.prereqs.installLog.length);
 </script>
 
 <template>

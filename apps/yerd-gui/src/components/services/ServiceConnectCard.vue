@@ -3,9 +3,10 @@ import { computed, ref, watch } from "vue";
 import { ChevronsUpDown, Copy, Plug } from "lucide-vue-next";
 
 import Button from "@/components/ui/Button.vue";
-import { CARD, FIELD } from "@/components/services/styles";
-import { useToast } from "@/composables/useToast";
+import { FIELD } from "@/components/services/styles";
+import { CARD } from "@/components/ui/styles";
 import type { ServiceStatus, SiteEntry, StatusReport } from "@/ipc/types";
+import { copyWithToast } from "@/lib/toastActions";
 import {
   connectKind,
   envText,
@@ -37,8 +38,6 @@ const props = defineProps<{
 }>();
 
 const database = defineModel<string>("database", { default: "" });
-
-const toast = useToast();
 
 const kind = computed(() => connectKind(props.service));
 const typeId = computed(() => props.service.type_id ?? props.service.service);
@@ -88,12 +87,10 @@ const dbHint = computed(() => {
 });
 
 async function copy(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(envText(reverb.value ?? block.value));
-    toast.success("Copied to clipboard", "Paste these into your Laravel .env");
-  } catch {
-    toast.error("Couldn't copy");
-  }
+  await copyWithToast(envText(reverb.value ?? block.value), {
+    title: "Copied to clipboard",
+    detail: "Paste these into your Laravel .env",
+  });
 }
 
 const ENV = "rounded-md bg-sidebar font-mono text-[12px] leading-5";

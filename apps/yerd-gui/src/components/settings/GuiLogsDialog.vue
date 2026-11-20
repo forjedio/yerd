@@ -8,6 +8,7 @@ import SegmentedControl from "@/components/ui/SegmentedControl.vue";
 import { useToast } from "@/composables/useToast";
 import { getGuiLogs, IpcError } from "@/ipc/client";
 import type { GuiLogs } from "@/ipc/types";
+import { copyWithToast } from "@/lib/toastActions";
 
 /**
  * The GUI and daemon logs from About ▸ Troubleshooting. While open it re-reads
@@ -72,12 +73,10 @@ function onTab(value: string): void {
 }
 
 async function copyActive(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(activeLines.value.join("\n"));
-    toast.success("Copied logs", "Paste this when reporting the problem.");
-  } catch {
-    toast.error("Couldn't copy", "Your browser blocked clipboard access.");
-  }
+  await copyWithToast(activeLines.value.join("\n"), {
+    title: "Copied logs",
+    detail: "Paste this when reporting the problem.",
+  });
 }
 </script>
 

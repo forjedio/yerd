@@ -4,6 +4,7 @@ import { computed, nextTick, ref } from "vue";
 
 import DumpsEventCard from "@/components/dumps/DumpsEventCard.vue";
 import Button from "@/components/ui/Button.vue";
+import Input from "@/components/ui/Input.vue";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   CATEGORY_CHIPS,
@@ -17,9 +18,8 @@ import {
   requestTitle,
   statusTone,
   TAG,
-  TAG_TONE,
 } from "@/lib/dumps";
-import { cn } from "@/lib/utils";
+import { CHIP_TONE, cn } from "@/lib/utils";
 
 /**
  * One request: method, status and path (or the site when the request summary
@@ -39,7 +39,7 @@ const query = defineModel<string>("query", { required: true });
 const emit = defineEmits<{ close: [] }>();
 
 const filterOpen = ref(false);
-const filterInput = ref<HTMLInputElement | null>(null);
+const filterInput = ref<InstanceType<typeof Input> | null>(null);
 const filterShown = computed(() => filterOpen.value || query.value !== "");
 
 const counts = computed(() => (props.request ? requestCategoryCounts(props.request) : null));
@@ -89,10 +89,10 @@ const CHIP =
         <div class="min-w-0 flex-1">
           <div class="flex min-w-0 items-center gap-2">
             <template v-if="request.summary">
-              <span v-if="request.summary.method" :class="cn(TAG, TAG_TONE.brand)">{{ request.summary.method }}</span>
+              <span v-if="request.summary.method" :class="cn(TAG, CHIP_TONE.brand)">{{ request.summary.method }}</span>
               <span
                 v-if="request.summary.status"
-                :class="cn(TAG, TAG_TONE[statusTone(request.summary.status)])"
+                :class="cn(TAG, CHIP_TONE[statusTone(request.summary.status)])"
               >
                 {{ request.summary.status }}
               </span>
@@ -150,11 +150,10 @@ const CHIP =
             class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
             aria-hidden="true"
           />
-          <input
+          <Input
             ref="filterInput"
             v-model="query"
-            type="text"
-            class="h-[30px] w-full rounded-md border border-input bg-transparent pl-8 pr-2.5 text-[13px] shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            class="h-[30px] pl-8 pr-2.5 text-[13px]"
             placeholder="Filter events…"
             aria-label="Filter events"
             data-testid="event-filter"

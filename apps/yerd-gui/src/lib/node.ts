@@ -5,6 +5,7 @@ import type {
   NodeSiteEntry,
   NodeSource,
 } from "@/ipc/types";
+import { plural } from "@/lib/utils";
 
 /**
  * Pure derivations for the Node screen: labels, release tags, used-by counts
@@ -34,7 +35,7 @@ export function usedByCounts(entries: NodeSiteEntry[] | null): Record<string, nu
 /** The USED BY cell: `1 site`, `N sites`, or a dash for none or unknown. */
 export function usedByLabel(count: number | undefined): string {
   if (!count) return "—";
-  return count === 1 ? "1 site" : `${count} sites`;
+  return plural(count, "site", "sites");
 }
 
 /** Which release-index chips a release gets. */

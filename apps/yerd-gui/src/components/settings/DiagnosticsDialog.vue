@@ -6,6 +6,7 @@ import Button from "@/components/ui/Button.vue";
 import DialogFrame from "@/components/ui/DialogFrame.vue";
 import { useToast } from "@/composables/useToast";
 import { getDiagnostics, IpcError } from "@/ipc/client";
+import { copyWithToast } from "@/lib/toastActions";
 
 /**
  * The diagnostics snapshot from About ▸ Troubleshooting, gathered fresh each
@@ -41,12 +42,10 @@ watch(
 );
 
 async function copyDiagnostics(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(diagText.value);
-    toast.success("Copied diagnostics", "Paste this when reporting the problem.");
-  } catch {
-    toast.error("Couldn't copy", "Your browser blocked clipboard access.");
-  }
+  await copyWithToast(diagText.value, {
+    title: "Copied diagnostics",
+    detail: "Paste this when reporting the problem.",
+  });
 }
 </script>
 

@@ -19,6 +19,9 @@ export interface UpdateHeadline {
   tooltip: string | null;
 }
 
+/** The note for a build on a pre-release ahead of the stable channel. */
+export const PRERELEASE_NOTE = "On a pre-release ahead of stable.";
+
 /**
  * The About section's update headline. A status that was never checked (no
  * timestamp and no figures) reads as "Not checked yet", or asks for the daemon
@@ -50,9 +53,7 @@ export function updateHeadline(
   const checked = s.checked_at_epoch
     ? `Last checked ${humaniseAgo(s.checked_at_epoch, opts.now)}.`
     : "";
-  const detail = s.ahead_of_stable
-    ? `On a pre-release ahead of stable.${checked ? ` ${checked}` : ""}`
-    : checked;
+  const detail = s.ahead_of_stable ? `${PRERELEASE_NOTE}${checked ? ` ${checked}` : ""}` : checked;
   return { tone: "ok", title: "Up to date", detail, tooltip };
 }
 

@@ -15,11 +15,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import InspectorFrame from "@/components/ui/InspectorFrame.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import { INSPECTOR_TOOL } from "@/components/ui/styles";
 import type { PhpExtensionsMap } from "@/ipc/client";
 import type { PhpExtInfo, PhpPoolStatus, PhpUpdate, PhpVersion, PhpVersionsResponse } from "@/ipc/types";
 import { statusLine, updateLabel } from "@/lib/php";
 import { isLegacyVersion } from "@/lib/phpVersion";
-import { cn } from "@/lib/utils";
+import { CHIP_TONE, cn, runStateDotClass } from "@/lib/utils";
 
 /**
  * The PHP inspector: the Shared defaults pane or the selected version's header
@@ -75,12 +76,7 @@ function isLayerOpen(): boolean {
   return headerMenuOpen.value || Object.values(menuOpenByVersion.value).some(Boolean);
 }
 
-const dotClass = computed(() => {
-  const s = pool.value?.state;
-  if (s === "running") return "bg-success";
-  if (s === "failed") return "bg-destructive";
-  return "bg-faint";
-});
+const dotClass = computed(() => runStateDotClass(pool.value?.state));
 
 const makeDefaultTitle = computed(() => {
   if (version.value === props.defaultVersion) return "Already the default";
@@ -92,7 +88,6 @@ function extensionsFor(v: PhpVersion): PhpExtInfo[] {
   return props.extensions?.[v] ?? [];
 }
 
-const TOOL = "h-[34px] gap-1.5 px-3 text-[13px] font-semibold";
 const CHIP = "inline-flex h-5 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] font-medium";
 </script>
 
@@ -136,10 +131,10 @@ const CHIP = "inline-flex h-5 shrink-0 items-center gap-1 rounded px-1.5 text-[1
             <span class="truncate font-mono text-[22px] font-semibold leading-tight tracking-[-0.2px]">
               PHP {{ version }}
             </span>
-            <span v-if="version === defaultVersion" :class="cn(CHIP, 'bg-brand/15 text-brand')">
+            <span v-if="version === defaultVersion" :class="cn(CHIP, CHIP_TONE.brand)">
               <Star class="size-3" aria-hidden="true" /> Default
             </span>
-            <span v-if="legacy" :class="cn(CHIP, 'bg-warning/15 text-warning')">Legacy</span>
+            <span v-if="legacy" :class="cn(CHIP, CHIP_TONE.warning)">Legacy</span>
           </h2>
           <p class="mt-1.5 flex items-center gap-1.5 text-xs text-faint" data-testid="version-status">
             <template v-if="isInstalled">
@@ -154,7 +149,7 @@ const CHIP = "inline-flex h-5 shrink-0 items-center gap-1 rounded px-1.5 text-[1
         <template v-if="isInstalled">
           <Button
             variant="outline"
-            :class="TOOL"
+            :class="INSPECTOR_TOOL"
             :disabled="!canRestart || busy === `restart:${version}`"
             :title="canRestart ? undefined : 'The pool is idle; it starts on the next request'"
             @click="emit('restart', version)"

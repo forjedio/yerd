@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { Check, CheckCircle2, ChevronDown, ChevronRight, Circle, Copy, Loader2, Lock, LockOpen } from "lucide-vue-next";
-import { computed, ref, watch } from "vue";
+import { computed, ref } from "vue";
 
+import { useAutoScroll } from "@/composables/useAutoScroll";
 import { phaseStatus } from "@/composables/useCreateSiteJob";
-import { useToast } from "@/composables/useToast";
 import type { JobState } from "@/ipc/types";
 import { formatDuration } from "@/lib/createSite";
+import { copyUrlWithToast } from "@/lib/toastActions";
 import { cn } from "@/lib/utils";
 
 /**
@@ -27,17 +28,8 @@ const props = defineProps<{
   finishedAt: number | null;
 }>();
 
-const toast = useToast();
 const showLog = ref(true);
-const logBox = ref<HTMLElement | null>(null);
-
-watch(
-  () => props.log.length,
-  () => {
-    if (logBox.value) logBox.value.scrollTop = logBox.value.scrollHeight;
-  },
-  { flush: "post" },
-);
+const logBox = useAutoScroll(() => props.log.length);
 
 const latestLine = computed(() => props.log[props.log.length - 1] ?? "");
 
@@ -55,12 +47,7 @@ const took = computed(() =>
 );
 
 async function copyUrl(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(props.openUrl);
-    toast.success("Copied URL");
-  } catch {
-    toast.error("Couldn't copy URL", "Your browser blocked clipboard access.");
-  }
+  await copyUrlWithToast(props.openUrl);
 }
 </script>
 

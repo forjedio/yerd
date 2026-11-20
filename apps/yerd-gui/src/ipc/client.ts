@@ -889,10 +889,6 @@ export async function wordpressAdminUsers(site: string): Promise<WordPressAdminU
   return r.type === "wordpress_admin_users" ? r.users : [];
 }
 
-export async function installService(service: string, version: string): Promise<void> {
-  ensureOk(await call<Response>("install_service", { service, version }));
-}
-
 export async function changeServiceVersion(service: string, version: string): Promise<void> {
   ensureOk(await call<Response>("change_service_version", { service, version }));
 }

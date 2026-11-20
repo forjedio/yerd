@@ -6,12 +6,13 @@ import SiteDomainsCard from "@/components/sites/SiteDomainsCard.vue";
 import Button from "@/components/ui/Button.vue";
 import InspectorFrame from "@/components/ui/InspectorFrame.vue";
 import Switch from "@/components/ui/Switch.vue";
-import { useToast } from "@/composables/useToast";
-import { IpcError, openInBrowser } from "@/ipc/client";
+import { INSPECTOR_TOOL, SECTION_LABEL } from "@/components/ui/styles";
+import { openInBrowser } from "@/ipc/client";
 import type { ProxyEntry, StatusReport } from "@/ipc/types";
 import { proxyAsSite, proxyHost, type ProxyItem } from "@/lib/proxies";
 import { httpsDetail } from "@/lib/sites";
 import { isUnbound, openTitle, siteUrl } from "@/lib/siteUrl";
+import { copyUrlWithToast, toastOnError } from "@/lib/toastActions";
 
 /**
  * The selected proxy's inspector. A whole-domain proxy shows Open and Copy URL,
@@ -37,8 +38,6 @@ const emit = defineEmits<{
   domainsChanged: [];
 }>();
 
-const toast = useToast();
-
 const drawer = computed(() => props.mode === "drawer");
 const shown = computed(() => (drawer.value ? !!props.open : true) && props.item !== null);
 const proxy = computed(() => (props.item?.kind === "proxy" ? props.item.proxy : null));
@@ -58,25 +57,15 @@ const openHint = computed(() => {
 });
 
 async function openProxy(): Promise<void> {
-  try {
-    await openInBrowser(url.value);
-  } catch (error) {
-    toast.error("Couldn't open proxy", (error as IpcError).message);
-  }
+  await toastOnError("Couldn't open proxy", () => openInBrowser(url.value));
 }
 
 async function copyUrl(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(url.value);
-    toast.success("Copied URL");
-  } catch {
-    toast.error("Couldn't copy URL", "Your browser blocked clipboard access.");
-  }
+  await copyUrlWithToast(url.value);
 }
 
-const TOOL = "h-[34px] gap-1.5 px-3 text-[13px] font-semibold";
 const ROW = "flex min-h-14 items-center justify-between gap-4 px-4 py-2.5";
-const LABEL = "mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.6px] text-faint";
+const LABEL = `mb-2 px-1 ${SECTION_LABEL}`;
 </script>
 
 <template>
@@ -125,7 +114,7 @@ const LABEL = "mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.6px] te
 
       <div v-if="proxy" class="mt-5 flex flex-wrap items-center gap-2">
         <Button
-          :class="TOOL"
+          :class="INSPECTOR_TOOL"
           :disabled="unbound"
           :title="openHint"
           :aria-label="openHint"
@@ -133,7 +122,7 @@ const LABEL = "mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.6px] te
         >
           <ExternalLink /> Open
         </Button>
-        <Button variant="outline" :class="TOOL" @click="copyUrl">
+        <Button variant="outline" :class="INSPECTOR_TOOL" @click="copyUrl">
           <Copy /> Copy URL
         </Button>
       </div>

@@ -2,7 +2,8 @@
 import { computed, nextTick, ref, watch } from "vue";
 import { Download, Ellipsis, Plug, Plus, Search, Trash2, Upload } from "lucide-vue-next";
 
-import { CARD, FIELD } from "@/components/services/styles";
+import { FIELD } from "@/components/services/styles";
+import { CARD } from "@/components/ui/styles";
 import Button from "@/components/ui/Button.vue";
 import {
   DropdownMenu,

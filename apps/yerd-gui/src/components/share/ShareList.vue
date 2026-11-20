@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ChevronRight, Globe, KeyRound, Link } from "lucide-vue-next";
 
+import { LIST_LABEL } from "@/components/ui/styles";
 import { type ShareItem, type ShareSection, stateDotClass, stateLabel, typeFacts } from "@/lib/share";
 import { cn } from "@/lib/utils";
 
@@ -23,7 +24,6 @@ function hostText(item: ShareItem): string {
   return item.host ?? "Waiting for URL…";
 }
 
-const LABEL = "px-2 pb-1.5 pt-4 text-[11px] font-semibold uppercase tracking-[0.6px] text-faint";
 const TABLE_COLS = "grid grid-cols-[minmax(0,1fr)_120px_minmax(0,1.6fr)_140px_20px] items-center gap-x-3";
 </script>
 
@@ -46,7 +46,7 @@ const TABLE_COLS = "grid grid-cols-[minmax(0,1fr)_120px_minmax(0,1.6fr)_140px_20
         :data-section="sec.kind"
       >
         <template v-if="layout === 'list'">
-          <p :class="cn(LABEL, sec === sections[0] && 'pt-0')">{{ sec.label }}</p>
+          <p :class="cn(LIST_LABEL, sec === sections[0] && 'pt-0')">{{ sec.label }}</p>
           <div class="flex flex-col gap-1">
             <button
               v-for="item in sec.items"

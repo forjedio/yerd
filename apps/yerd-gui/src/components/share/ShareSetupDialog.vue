@@ -6,9 +6,10 @@ import Button from "@/components/ui/Button.vue";
 import DialogFrame from "@/components/ui/DialogFrame.vue";
 import Input from "@/components/ui/Input.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import { SECTION_LABEL } from "@/components/ui/styles";
 import type { CloudflaredStatus, NamedTunnelMeta, TunnelInfo } from "@/ipc/types";
 import { canStartNamed, tunnelChip } from "@/lib/share";
-import { cn } from "@/lib/utils";
+import { CHIP_TONE, cn } from "@/lib/utils";
 
 /**
  * Share setup: the cloudflared binary (install, update, or switch from a PATH
@@ -60,14 +61,13 @@ const showChip = computed(() => props.entry !== null || props.exposedCount > 0);
 
 const chipClass = computed(() => {
   const state = props.entry?.state;
-  if (state === "running") return "bg-success/15 text-success";
-  if (state === "failed") return "bg-destructive/15 text-destructive";
-  if (state === "connecting" || state === "reconnecting") return "bg-warning/15 text-warning";
-  return "bg-muted text-muted-foreground";
+  if (state === "running") return CHIP_TONE.success;
+  if (state === "failed") return CHIP_TONE.danger;
+  if (state === "connecting" || state === "reconnecting") return CHIP_TONE.warning;
+  return CHIP_TONE.neutral;
 });
 
 const SECTION = "py-4 first:pt-0";
-const LABEL = "text-[11px] font-semibold uppercase tracking-[0.6px] text-faint";
 const CHIP = "inline-flex shrink-0 items-center gap-1.5 rounded px-2 py-0.5 text-[11px] font-semibold";
 const LINK =
   "shrink-0 rounded text-xs font-medium hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50";
@@ -77,7 +77,7 @@ const LINK =
   <DialogFrame :open="open" title="Share setup" width="lg" @update:open="(v: boolean) => emit('update:open', v)">
     <div class="divide-y">
       <section :class="SECTION" data-testid="setup-cloudflared">
-        <p :class="LABEL">cloudflared</p>
+        <p :class="SECTION_LABEL">cloudflared</p>
         <div class="mt-2.5 flex items-center gap-3">
           <div class="min-w-0 flex-1">
             <template v-if="installed">
@@ -112,7 +112,7 @@ const LINK =
       </section>
 
       <section :class="SECTION" data-testid="setup-account">
-        <p :class="LABEL">Cloudflare account</p>
+        <p :class="SECTION_LABEL">Cloudflare account</p>
         <div class="mt-2.5 flex items-center gap-3">
           <div class="min-w-0 flex-1">
             <template v-if="loggedIn">
@@ -126,7 +126,7 @@ const LINK =
               </p>
             </template>
           </div>
-          <span v-if="loggedIn" :class="cn(CHIP, 'bg-success/15 text-success')">
+          <span v-if="loggedIn" :class="cn(CHIP, CHIP_TONE.success)">
             <span class="size-1.5 rounded-full bg-success" aria-hidden="true" /> Connected
           </span>
           <Button v-else size="sm" :disabled="locked || !installed" @click="emit('login')">
@@ -137,7 +137,7 @@ const LINK =
       </section>
 
       <section :class="SECTION" data-testid="setup-tunnel">
-        <p :class="LABEL">Tunnel for your domain</p>
+        <p :class="SECTION_LABEL">Tunnel for your domain</p>
         <template v-if="tunnel">
           <div class="mt-2.5 flex items-center gap-3">
             <div class="min-w-0 flex-1">

@@ -12,13 +12,12 @@ import Button from "@/components/ui/Button.vue";
 import InspectorFrame from "@/components/ui/InspectorFrame.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { useDumps } from "@/composables/useDumps";
-import { useToast } from "@/composables/useToast";
 import { useWideLayout } from "@/composables/useWideLayout";
-import { IpcError, showDumpsWindow } from "@/ipc/client";
+import { showDumpsWindow } from "@/ipc/client";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
+import { toastOnError } from "@/lib/toastActions";
 import { cn } from "@/lib/utils";
 
-const toast = useToast();
 const router = useRouter();
 const wide = useWideLayout();
 const dumps = useDumps({ pollWhileHidden: false, follow: () => wide.value });
@@ -55,11 +54,7 @@ function changePort(): void {
 }
 
 async function openWindow(): Promise<void> {
-  try {
-    await showDumpsWindow();
-  } catch (e) {
-    toast.error("Couldn't open the dumps window", (e as IpcError).message);
-  }
+  await toastOnError("Couldn't open the dumps window", () => showDumpsWindow());
 }
 </script>
 

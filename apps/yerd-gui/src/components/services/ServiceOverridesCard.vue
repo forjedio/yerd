@@ -12,7 +12,8 @@ import {
   unsetServiceOverride,
 } from "@/ipc/client";
 import type { ServiceStatus } from "@/ipc/types";
-import { CARD, FIELD } from "@/components/services/styles";
+import { FIELD } from "@/components/services/styles";
+import { CARD } from "@/components/ui/styles";
 import { cn } from "@/lib/utils";
 
 /**

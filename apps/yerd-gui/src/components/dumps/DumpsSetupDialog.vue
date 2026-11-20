@@ -4,10 +4,11 @@ import { computed } from "vue";
 import Button from "@/components/ui/Button.vue";
 import DialogFrame from "@/components/ui/DialogFrame.vue";
 import Switch from "@/components/ui/Switch.vue";
+import { SECTION_LABEL } from "@/components/ui/styles";
 import type { DumpsBusy } from "@/composables/useDumps";
 import type { DumpExtStatus, DumpsStatusResponse } from "@/ipc/types";
 import { DUMP_SIGNALS } from "@/lib/dumps";
-import { cn } from "@/lib/utils";
+import { CHIP_TONE, cn } from "@/lib/utils";
 
 /**
  * Dump setup, opened from the Dumps toolbar: the interception switch, the dump
@@ -36,12 +37,11 @@ function featureOn(key: string): boolean {
 }
 
 function extChip(ext: DumpExtStatus): { text: string; class: string } {
-  if (ext.legacy) return { text: "TOO OLD — NO DUMPS", class: "bg-warning/15 text-warning" };
-  if (ext.present) return { text: "INSTALLED", class: "bg-success/15 text-success" };
-  return { text: "NOT INSTALLED", class: "bg-warning/15 text-warning" };
+  if (ext.legacy) return { text: "TOO OLD — NO DUMPS", class: CHIP_TONE.warning };
+  if (ext.present) return { text: "INSTALLED", class: CHIP_TONE.success };
+  return { text: "NOT INSTALLED", class: CHIP_TONE.warning };
 }
 
-const LABEL = "text-[11px] font-semibold uppercase tracking-[0.6px] text-faint";
 </script>
 
 <template>
@@ -78,7 +78,7 @@ const LABEL = "text-[11px] font-semibold uppercase tracking-[0.6px] text-faint";
     </div>
 
     <div class="mt-5 border-t pt-4">
-      <p :class="LABEL">Captured signals</p>
+      <p :class="SECTION_LABEL">Captured signals</p>
       <div :class="cn('mt-3 grid gap-x-6 gap-y-3 sm:grid-cols-2 transition-opacity', !enabled && 'opacity-60')">
         <div v-for="signal in DUMP_SIGNALS" :key="signal.key" class="flex items-center justify-between gap-4">
           <span class="text-[13px]">{{ signal.label }}</span>
@@ -96,7 +96,7 @@ const LABEL = "text-[11px] font-semibold uppercase tracking-[0.6px] text-faint";
     </div>
 
     <div class="mt-5 border-t pt-4">
-      <p :class="LABEL">PHP extension</p>
+      <p :class="SECTION_LABEL">PHP extension</p>
       <p v-if="extensions.length === 0" class="mt-3 text-[13px] text-muted-foreground">No PHP versions installed.</p>
       <ul v-else class="mt-2 flex flex-col">
         <li

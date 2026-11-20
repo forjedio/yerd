@@ -34,6 +34,7 @@ import type { PhpPoolStatus, PhpUpdate, PhpVersion, PhpVersionsResponse } from "
 import { listVersions } from "@/lib/php";
 import { comparePhpVersions } from "@/lib/phpVersion";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
+import { joinWithAnd } from "@/lib/utils";
 
 const toast = useToast();
 const { report, refresh } = useDaemon();
@@ -127,10 +128,7 @@ const dirtyNames = computed<string[]>(() => {
 const discardOpen = ref(false);
 
 const discardBody = computed(() => {
-  const names = dirtyNames.value;
-  const list =
-    names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : (names[0] ?? "");
-  return `Your edits to ${list} haven't been saved.`;
+  return `Your edits to ${joinWithAnd(dirtyNames.value)} haven't been saved.`;
 });
 
 function select(key: PhpSelection): void {

@@ -40,6 +40,7 @@ import type { ServiceStatus, SiteEntry } from "@/ipc/types";
 import { isPerSite, purgeCopy, serviceSections, siteDomain } from "@/lib/services";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { siteUrl } from "@/lib/siteUrl";
+import { toastOnError } from "@/lib/toastActions";
 
 const toast = useToast();
 const { refresh, report } = useDaemon();
@@ -255,11 +256,7 @@ function doToggleAutostart(s: ServiceStatus, enabled: boolean): Promise<void> {
 }
 
 async function openSite(site: SiteEntry): Promise<void> {
-  try {
-    await openInBrowser(siteUrl(site, report.value));
-  } catch (e) {
-    toast.error("Couldn't open site", (e as IpcError).message);
-  }
+  await toastOnError("Couldn't open site", () => openInBrowser(siteUrl(site, report.value)));
 }
 
 // ── add ──

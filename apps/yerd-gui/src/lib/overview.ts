@@ -1,5 +1,5 @@
 import type { SiteEntry, SiteFramework, StatusReport } from "@/ipc/types";
-import { humaniseUptime } from "@/lib/utils";
+import { humaniseUptime, plural } from "@/lib/utils";
 
 /**
  * Pure derivations behind the Overview screen. Everything here reads the daemon's
@@ -72,17 +72,13 @@ export function statusKind(report: StatusReport, siteCount: number): StatusKind 
   return siteCount === 0 ? "ready" : "serving";
 }
 
-function sitesNoun(count: number): string {
-  return count === 1 ? "site" : "sites";
-}
-
 /** The headline for a status kind and site count. */
 export function siteHeadline(kind: StatusKind, siteCount: number): SiteHeadline {
   if (kind === "ready") return { text: "No sites yet", showTld: false };
   if (kind === "not-serving") {
-    return { text: `0 of ${siteCount} ${sitesNoun(siteCount)}`, showTld: true };
+    return { text: `0 of ${plural(siteCount, "site", "sites")}`, showTld: true };
   }
-  return { text: `${siteCount} ${sitesNoun(siteCount)}`, showTld: true };
+  return { text: plural(siteCount, "site", "sites"), showTld: true };
 }
 
 /** The mono meta line under the headline, as segments the template joins with ` · `. */
@@ -94,7 +90,7 @@ export function metaSegments(report: StatusReport): string[] {
   ];
   if (report.services && report.services.length > 0) {
     const running = report.services.filter((s) => s.state === "running").length;
-    out.push(`${running} ${running === 1 ? "service" : "services"} running`);
+    out.push(`${plural(running, "service", "services")} running`);
   }
   if (report.php.length === 0) out.push("no PHP installed");
   return out;

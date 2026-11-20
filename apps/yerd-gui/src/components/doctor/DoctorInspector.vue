@@ -13,13 +13,13 @@ import {
 import { computed } from "vue";
 
 import ComingSoon from "@/components/ComingSoon.vue";
-import { CARD } from "@/components/services/styles";
+import { CARD } from "@/components/ui/styles";
 import Button from "@/components/ui/Button.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import type { Diagnosis, ElevateTarget, Severity } from "@/ipc/types";
 import { permissionCopy, SEVERITY_CHIP } from "@/lib/doctor";
 import type { PrivilegeItem } from "@/lib/elevation";
-import { cn } from "@/lib/utils";
+import { CHIP_TONE, cn } from "@/lib/utils";
 
 /** What the Doctor inspector shows. */
 export type DoctorInspectorState = "loading" | "finding" | "permission" | "clear" | "error";
@@ -48,18 +48,18 @@ const emit = defineEmits<{
 }>();
 
 const SEVERITY_CHIP_CLASS: Record<Severity, string> = {
-  fail: "bg-destructive/15 text-destructive",
-  warn: "bg-warning/15 text-warning",
-  ok: "bg-brand/15 text-brand",
+  fail: CHIP_TONE.danger,
+  warn: CHIP_TONE.warning,
+  ok: CHIP_TONE.brand,
 };
 
 const copy = computed(() => (props.item ? permissionCopy(props.item) : null));
 
 const permissionTone = computed(() => {
   const v = props.item?.value;
-  if (v === true) return { chip: "bg-success/15 text-success", tile: "bg-success/10 text-success", icon: ShieldCheck };
-  if (v === false) return { chip: "bg-warning/15 text-warning", tile: "bg-warning/10 text-warning", icon: KeyRound };
-  return { chip: "bg-muted text-muted-foreground", tile: "bg-muted text-faint", icon: CircleHelp };
+  if (v === true) return { chip: CHIP_TONE.success, tile: "bg-success/10 text-success", icon: ShieldCheck };
+  if (v === false) return { chip: CHIP_TONE.warning, tile: "bg-warning/10 text-warning", icon: KeyRound };
+  return { chip: CHIP_TONE.neutral, tile: "bg-muted text-faint", icon: CircleHelp };
 });
 
 const CHIP = "shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-[0.4px]";

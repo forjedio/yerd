@@ -5,6 +5,7 @@
  */
 import type { DumpCategory, DumpEvent, DumpsResponse, DumpsStatusResponse } from "@/ipc/types";
 import { logRowBody } from "@/lib/dumpLog";
+import { type ChipTone, plural } from "@/lib/utils";
 
 /** A payload value as display text; `null` and `undefined` read as empty. */
 export function str(v: unknown): string {
@@ -80,7 +81,7 @@ export function rowCount(e: DumpEvent): string | null {
   if (e.category !== "query") return null;
   const rc = e.payload.row_count;
   if (typeof rc !== "number") return null;
-  return `${rc} ${rc === 1 ? "row" : "rows"}`;
+  return plural(rc, "row", "rows");
 }
 
 /** The card body: the SQL, dump text, log line, job, view, URL or cache key. */
@@ -111,29 +112,17 @@ export function rowBody(e: DumpEvent): string {
   }
 }
 
-/** The colour family of a tag, mapped to theme tokens by {@link TAG_TONE}. */
-export type TagTone = "neutral" | "brand" | "success" | "warning" | "danger";
-
 /** A tag's text and tone. */
 export interface Tag {
   text: string;
-  tone: TagTone;
+  tone: ChipTone;
 }
-
-/** Tailwind classes per tag tone, on the theme tokens. */
-export const TAG_TONE: Record<TagTone, string> = {
-  neutral: "bg-muted text-muted-foreground",
-  brand: "bg-brand/15 text-brand",
-  success: "bg-success/15 text-success",
-  warning: "bg-warning/15 text-warning",
-  danger: "bg-destructive/15 text-destructive",
-};
 
 /** The base class every tag shares. */
 export const TAG = "inline-flex h-[18px] shrink-0 items-center rounded px-1.5 font-mono text-[11px] font-medium";
 
 /** The tone of an HTTP status: 2xx success, 3xx warning, 4xx and 5xx danger. */
-export function statusTone(code: number): TagTone {
+export function statusTone(code: number): ChipTone {
   if (code >= 200 && code < 300) return "success";
   if (code >= 300 && code < 400) return "warning";
   if (code >= 400) return "danger";
@@ -348,7 +337,7 @@ export function formatClock(ms: number): string {
 
 /** "1 event" / "n events". */
 export function eventsLabel(n: number): string {
-  return `${n} ${n === 1 ? "event" : "events"}`;
+  return plural(n, "event", "events");
 }
 
 /** The detail's meta line; parts the request lacks are left out, and the site

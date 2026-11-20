@@ -108,7 +108,7 @@ const dialogStub = (name: string) => ({
 });
 const AboutStub = {
   name: "AboutSection",
-  props: ["layout"],
+  props: ["layout", "updates"],
   emits: ["logs", "diagnostics"],
   template: `<div :data-testid="'about-' + layout">
     <button @click="$emit('logs')">Logs</button>

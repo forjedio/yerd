@@ -3,15 +3,13 @@ import { ChevronDown, Copy, TriangleAlert } from "lucide-vue-next";
 import { computed } from "vue";
 
 import Button from "@/components/ui/Button.vue";
-import { useToast } from "@/composables/useToast";
 import type { DaemonDiagnostics } from "@/ipc/types";
+import { copyWithToast } from "@/lib/toastActions";
 
 // Shown when a daemon start attempt fails to connect. Leads with the
 // host-computed `hints` (the actionable verdict), then an expandable raw section
 // (service-manager status + log tail) for support, plus a Copy button.
 const props = defineProps<{ diagnostics: DaemonDiagnostics }>();
-
-const toast = useToast();
 
 const hasRaw = computed(
   () =>
@@ -53,12 +51,10 @@ function asText(): string {
 }
 
 async function copy(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(asText());
-    toast.success("Copied diagnostics", "Paste this when reporting the problem.");
-  } catch {
-    toast.error("Couldn't copy", "Your browser blocked clipboard access.");
-  }
+  await copyWithToast(asText(), {
+    title: "Copied diagnostics",
+    detail: "Paste this when reporting the problem.",
+  });
 }
 </script>
 

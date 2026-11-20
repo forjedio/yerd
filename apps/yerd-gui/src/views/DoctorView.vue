@@ -15,6 +15,7 @@ import { diagnose, doctorFix, IpcError } from "@/ipc/client";
 import type { Diagnosis } from "@/ipc/types";
 import { defaultSelection, findingGroups, hasActionable, permissionKey } from "@/lib/doctor";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
+import { copyWithToast } from "@/lib/toastActions";
 
 const toast = useToast();
 const { refresh: refreshStatus } = useDaemon();
@@ -115,12 +116,7 @@ async function runFixes(): Promise<void> {
 }
 
 async function copyRemedy(text: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(text);
-    toast.info("Copied to clipboard");
-  } catch {
-    toast.error("Couldn't copy");
-  }
+  await copyWithToast(text, { title: "Copied to clipboard" });
 }
 
 onMounted(() => void loadDiagnoses());

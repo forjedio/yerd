@@ -28,6 +28,8 @@ vi.mock("@/composables/useDaemon", async () => {
 
 import * as daemonModule from "@/composables/useDaemon";
 
+import { type UpdateCheck, useUpdateCheck } from "@/composables/useUpdateCheck";
+
 import AboutSection from "./AboutSection.vue";
 
 const daemon = (daemonModule as unknown as { daemonState: { connected: { value: boolean | null } } })
@@ -52,8 +54,8 @@ function upd(over: Partial<UpdateStatusResponse> = {}): UpdateStatusResponse {
   };
 }
 
-async function mountAbout(layout: "column" | "card") {
-  const w = mount(AboutSection, { props: { layout } });
+async function mountAbout(layout: "column" | "card", updates: UpdateCheck = useUpdateCheck()) {
+  const w = mount(AboutSection, { props: { layout, updates } });
   mounted.push(w);
   await flushPromises();
   return w;
@@ -117,17 +119,41 @@ describe("AboutSection", () => {
     let fail: (e: Error) => void = () => {};
     mocks.cachedUpdateStatus.mockResolvedValue(upd({ available: true, target: "2.1.0" }));
     mocks.applyUpdate.mockReturnValue(new Promise((_, reject) => (fail = reject)));
-    const first = await mountAbout("column");
+    const updates = useUpdateCheck();
+    const first = await mountAbout("column", updates);
     await button(first, "Update")?.trigger("click");
     first.unmount();
     mounted.length = 0;
 
-    const second = await mountAbout("card");
+    const second = await mountAbout("card", updates);
     expect(button(second, "Updating…")?.attributes("disabled")).toBeDefined();
 
     fail(new Error("offline"));
     await flushPromises();
     expect(button(second, "Update")?.attributes("disabled")).toBeUndefined();
+  });
+
+  it("keeps an in-flight Check now and its result across a layout switch", async () => {
+    let resolve: (s: UpdateStatusResponse) => void = () => {};
+    mocks.checkUpdates.mockReturnValue(new Promise((r) => (resolve = r)));
+    const updates = useUpdateCheck();
+    const first = await mountAbout("column", updates);
+    await button(first, "Check now")?.trigger("click");
+    first.unmount();
+    mounted.length = 0;
+
+    const second = await mountAbout("card", updates);
+    expect(button(second, "Check now")?.attributes("disabled")).toBeDefined();
+
+    resolve(upd({ available: true, target: "2.1.0" }));
+    await flushPromises();
+    expect(second.find('[data-testid="update-headline"]').text()).toContain("Yerd 2.1.0 is available");
+  });
+
+  it("card: shows the pre-release line when ahead of stable", async () => {
+    mocks.cachedUpdateStatus.mockResolvedValue(upd({ ahead_of_stable: true }));
+    const w = await mountAbout("card");
+    expect(w.find('[data-testid="update-prerelease"]').text()).toBe("On a pre-release ahead of stable.");
   });
 
   it.each(LAYOUTS)("%s: daemon down disables the channel and Check now", async (layout) => {

@@ -32,14 +32,22 @@ export type ButtonVariants = VariantProps<typeof buttonVariants>;
 </script>
 
 <script setup lang="ts">
+import type { HTMLAttributes } from "vue";
+
 import { cn } from "@/lib/utils";
 
-withDefaults(
+/**
+ * A button. `class` is a prop rather than a fallthrough attribute so a caller's
+ * utilities are merged with `cn` and replace the conflicting variant defaults
+ * (height, size, padding, gap, font size) instead of racing them in CSS order.
+ */
+const props = withDefaults(
   defineProps<{
     variant?: ButtonVariants["variant"];
     size?: ButtonVariants["size"];
     type?: "button" | "submit" | "reset";
     disabled?: boolean;
+    class?: HTMLAttributes["class"];
   }>(),
   { type: "button" },
 );
@@ -49,7 +57,7 @@ withDefaults(
   <button
     :type="type"
     :disabled="disabled"
-    :class="cn(buttonVariants({ variant, size }))"
+    :class="cn(buttonVariants({ variant, size }), props.class)"
   >
     <slot />
   </button>

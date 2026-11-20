@@ -9,6 +9,7 @@ import Modal from "@/components/ui/Modal.vue";
 import { useToast } from "@/composables/useToast";
 import { IpcError, pickDirectory } from "@/ipc/client";
 import type { SiteEntry } from "@/ipc/types";
+import { copyWithToast } from "@/lib/toastActions";
 
 /**
  * Change a site's served web root, relative to the site folder. An empty field
@@ -62,12 +63,7 @@ async function chooseWebRoot(): Promise<void> {
 }
 
 async function copyWebRoot(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(webRoot.value);
-    toast.success("Copied web root");
-  } catch {
-    toast.error("Couldn't copy web root", "Your browser blocked clipboard access.");
-  }
+  await copyWithToast(webRoot.value, { title: "Copied web root" }, "Couldn't copy web root");
 }
 
 function save(close: () => void): void {

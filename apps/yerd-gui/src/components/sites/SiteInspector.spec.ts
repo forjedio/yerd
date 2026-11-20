@@ -273,7 +273,7 @@ describe("SiteInspector header and actions", () => {
     await row.get('[aria-label="Copy URL"]').trigger("click");
     await flushPromises();
     expect(clipboardWriteText).toHaveBeenCalledWith("https://blog.test:8443");
-    expect(toastSuccess).toHaveBeenCalledWith("Copied URL");
+    expect(toastSuccess).toHaveBeenCalledWith("Copied URL", undefined);
   });
 
   it.each([

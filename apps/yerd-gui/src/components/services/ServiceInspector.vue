@@ -5,7 +5,6 @@ import { Ellipsis, FileText, Play, RotateCw, Square, Trash2, X } from "lucide-vu
 import ServiceConnectCard from "@/components/services/ServiceConnectCard.vue";
 import ServiceDatabasesCard from "@/components/services/ServiceDatabasesCard.vue";
 import ServiceOverridesCard from "@/components/services/ServiceOverridesCard.vue";
-import { CARD, stateDotClass } from "@/components/services/styles";
 import Button from "@/components/ui/Button.vue";
 import {
   DropdownMenu,
@@ -16,6 +15,7 @@ import {
 import InspectorFrame from "@/components/ui/InspectorFrame.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
+import { CARD, INSPECTOR_TOOL } from "@/components/ui/styles";
 import type { ServiceStatus, SiteEntry, StatusReport } from "@/ipc/types";
 import {
   address,
@@ -29,7 +29,7 @@ import {
   siteDomain,
   versionLabel,
 } from "@/lib/services";
-import { cn } from "@/lib/utils";
+import { cn, runStateDotClass } from "@/lib/utils";
 
 /** The view's database list for one SQL engine. */
 export interface DatabaseListState {
@@ -106,7 +106,6 @@ function actionBusy(action: string): boolean {
   return props.busy === `${action}:${id.value}`;
 }
 
-const TOOL = "h-[34px] gap-1.5 px-3 text-[13px] font-semibold";
 const CELL = "flex min-w-0 flex-col justify-center gap-1 px-[18px] py-3";
 const CELL_LABEL = "text-[11px] font-medium uppercase tracking-[0.6px] text-faint";
 const LINK =
@@ -139,7 +138,7 @@ const LINK =
             </span>
           </h2>
           <p class="mt-1.5 flex items-center gap-1.5 text-xs text-muted-foreground" data-testid="service-status">
-            <span :class="cn('size-1.5 shrink-0 rounded-full', stateDotClass(service.state))" aria-hidden="true" />
+            <span :class="cn('size-1.5 shrink-0 rounded-full', runStateDotClass(service.state))" aria-hidden="true" />
             {{ headerStatus(service) }}
           </p>
           <p
@@ -153,13 +152,13 @@ const LINK =
         </div>
 
         <div class="flex shrink-0 items-center gap-2">
-          <Button variant="outline" :class="TOOL" data-action="logs" @click="emit('logs')">
+          <Button variant="outline" :class="INSPECTOR_TOOL" data-action="logs" @click="emit('logs')">
             <FileText /> Logs
           </Button>
           <Button
             v-if="canStart(service)"
             :variant="state === 'stopped' ? 'default' : 'outline'"
-            :class="TOOL"
+            :class="INSPECTOR_TOOL"
             :disabled="rowBusy"
             data-action="start"
             @click="emit('start')"
@@ -171,7 +170,7 @@ const LINK =
           <Button
             v-if="state === 'running'"
             variant="outline"
-            :class="TOOL"
+            :class="INSPECTOR_TOOL"
             :disabled="rowBusy"
             data-action="restart"
             @click="emit('restart')"
@@ -183,7 +182,7 @@ const LINK =
           <Button
             v-if="canStop(service)"
             variant="outline"
-            :class="TOOL"
+            :class="INSPECTOR_TOOL"
             :disabled="rowBusy"
             data-action="stop"
             @click="emit('stop')"

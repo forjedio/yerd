@@ -2,8 +2,8 @@
 import { ChevronRight } from "lucide-vue-next";
 
 import ServiceIcon from "@/components/services/ServiceIcon.vue";
-import { stateDotClass } from "@/components/services/styles";
 import Spinner from "@/components/ui/Spinner.vue";
+import { LIST_LABEL } from "@/components/ui/styles";
 import type { ServiceRunState, ServiceStatus } from "@/ipc/types";
 import {
   detailsCell,
@@ -14,7 +14,7 @@ import {
   statusWord,
   versionLabel,
 } from "@/lib/services";
-import { cn } from "@/lib/utils";
+import { cn, runStateDotClass } from "@/lib/utils";
 
 /**
  * The Services list, grouped Databases / Cache & search / Per-site. `list` is
@@ -51,7 +51,6 @@ function statusClass(state: ServiceRunState): string {
   return "text-faint";
 }
 
-const LABEL = "px-2 pb-1.5 pt-4 text-[11px] font-semibold uppercase tracking-[0.6px] text-faint";
 const TABLE_COLS =
   "grid grid-cols-[minmax(0,1fr)_100px_90px_130px_170px_20px] items-center gap-x-2";
 </script>
@@ -75,7 +74,7 @@ const TABLE_COLS =
         :data-section="sec.group"
       >
         <template v-if="layout === 'list'">
-          <p :class="cn(LABEL, sec === sections[0] && 'pt-0')">{{ sec.label }}</p>
+          <p :class="cn(LIST_LABEL, sec === sections[0] && 'pt-0')">{{ sec.label }}</p>
           <div class="flex flex-col gap-1">
             <button
               v-for="s in sec.items"
@@ -119,7 +118,7 @@ const TABLE_COLS =
                   <span v-else-if="s.site" class="truncate font-mono text-xs text-faint">{{ siteDomain(s, tld) }}</span>
                 </span>
                 <span class="mt-1 flex items-center gap-1.5 text-xs" data-testid="row-status">
-                  <span :class="cn('size-1.5 shrink-0 rounded-full', stateDotClass(s.state))" aria-hidden="true" />
+                  <span :class="cn('size-1.5 shrink-0 rounded-full', runStateDotClass(s.state))" aria-hidden="true" />
                   <span :class="cn('truncate', statusClass(s.state))">{{ statusLine(s, count(s)) }}</span>
                 </span>
               </span>
@@ -158,7 +157,7 @@ const TABLE_COLS =
             </span>
             <span class="truncate font-mono text-xs text-muted-foreground">:{{ s.port }}</span>
             <span class="flex items-center gap-1.5 text-xs" data-testid="cell-status">
-              <span :class="cn('size-1.5 shrink-0 rounded-full', stateDotClass(s.state))" aria-hidden="true" />
+              <span :class="cn('size-1.5 shrink-0 rounded-full', runStateDotClass(s.state))" aria-hidden="true" />
               <span :class="statusClass(s.state)">{{ statusWord(s.state) }}</span>
             </span>
             <span class="truncate text-xs text-faint" data-testid="cell-details">{{ detailsCell(s, count(s)) }}</span>

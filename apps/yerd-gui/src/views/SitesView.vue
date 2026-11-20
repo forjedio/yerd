@@ -32,6 +32,8 @@ import {
 } from "@/lib/sites";
 import { useSitesGroupState } from "@/lib/sitesGroupState";
 import { siteHost, siteUrl } from "@/lib/siteUrl";
+import { copyUrlWithToast, toastOnError } from "@/lib/toastActions";
+import { plural } from "@/lib/utils";
 import { useDaemon } from "@/composables/useDaemon";
 import { loadPlatform, usePlatform } from "@/composables/usePlatform";
 import { usePoll } from "@/composables/usePoll";
@@ -237,11 +239,7 @@ function toggleFavouriteByName(name: string): void {
 async function openSite(name: string): Promise<void> {
   const site = siteByName(name);
   if (!site) return;
-  try {
-    await openInBrowser(siteUrl(site, report.value));
-  } catch (e) {
-    toast.error("Couldn't open site", (e as IpcError).message);
-  }
+  await toastOnError("Couldn't open site", () => openInBrowser(siteUrl(site, report.value)));
 }
 
 function openEditorFor(name: string): void {
@@ -251,30 +249,17 @@ function openEditorFor(name: string): void {
 async function openTerminalFor(name: string): Promise<void> {
   const site = siteByName(name);
   if (!site) return;
-  try {
-    await openInTerminal(site.document_root);
-  } catch (e) {
-    toast.error("Couldn't open terminal", (e as IpcError).message);
-  }
+  await toastOnError("Couldn't open terminal", () => openInTerminal(site.document_root));
 }
 
 async function copyUrlOf(name: string): Promise<void> {
   const site = siteByName(name);
   if (!site) return;
-  try {
-    await navigator.clipboard.writeText(siteUrl(site, report.value));
-    toast.success("Copied URL");
-  } catch {
-    toast.error("Couldn't copy URL", "Your browser blocked clipboard access.");
-  }
+  await copyUrlWithToast(siteUrl(site, report.value));
 }
 
 async function revealDir(dir: string): Promise<void> {
-  try {
-    await openPath(dir);
-  } catch (e) {
-    toast.error("Couldn't reveal folder", (e as IpcError).message);
-  }
+  await toastOnError("Couldn't reveal folder", () => openPath(dir));
 }
 
 // ── site mutations ──
@@ -577,7 +562,7 @@ const unparkBody = computed(() => {
 const unparkLabel = computed(() => {
   const n = unparkCount.value;
   if (n === 0) return "Unpark folder";
-  return n === 1 ? "Unpark 1 site" : `Unpark ${n} sites`;
+  return `Unpark ${plural(n, "site", "sites")}`;
 });
 
 async function confirmUnpark(): Promise<void> {

@@ -48,6 +48,7 @@ import {
   shareKey,
   shareSections,
 } from "@/lib/share";
+import { copyUrlWithToast } from "@/lib/toastActions";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 
 const toast = useToast();
@@ -461,12 +462,7 @@ async function savePassword(password: string | null, close: () => void): Promise
 }
 
 async function copyUrl(url: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(url);
-    toast.success("Copied URL");
-  } catch {
-    toast.error("Couldn't copy URL");
-  }
+  await copyUrlWithToast(url);
 }
 
 /** Open an external URL through the Tauri opener, surfacing any failure. */

@@ -7,6 +7,7 @@ import DialogFrame from "@/components/ui/DialogFrame.vue";
 import { useToast } from "@/composables/useToast";
 import { IpcError, serviceLogs } from "@/ipc/client";
 import type { ServiceStatus } from "@/ipc/types";
+import { copyWithToast } from "@/lib/toastActions";
 import { logLineTone } from "@/lib/services";
 import { cn } from "@/lib/utils";
 
@@ -98,12 +99,10 @@ watch(
 onUnmounted(stop);
 
 async function copy(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(lines.value.join("\n"));
-    toast.success("Copied to clipboard", `${lines.value.length} log lines`);
-  } catch {
-    toast.error("Couldn't copy");
-  }
+  await copyWithToast(lines.value.join("\n"), {
+    title: "Copied to clipboard",
+    detail: `${lines.value.length} log lines`,
+  });
 }
 </script>
 

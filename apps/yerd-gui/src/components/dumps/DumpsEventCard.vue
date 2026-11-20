@@ -18,9 +18,8 @@ import {
   str,
   type Tag,
   TAG,
-  TAG_TONE,
 } from "@/lib/dumps";
-import { cn } from "@/lib/utils";
+import { CHIP_TONE, cn } from "@/lib/utils";
 
 /**
  * One captured event: its category and measure tags, the caller badge and the
@@ -63,7 +62,7 @@ const BADGE = "ml-auto block h-[18px] min-w-0 truncate rounded bg-muted px-1.5 f
 <template>
   <div class="rounded-[10px] border bg-card p-3.5" :data-id="event.id" data-testid="dump-event">
     <div class="flex items-center gap-1.5">
-      <span v-for="(tag, i) in tags" :key="i" :class="cn(TAG, TAG_TONE[tag.tone])" data-testid="dump-tag">
+      <span v-for="(tag, i) in tags" :key="i" :class="cn(TAG, CHIP_TONE[tag.tone])" data-testid="dump-tag">
         {{ tag.text }}
       </span>
       <Tooltip v-if="caller">

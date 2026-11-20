@@ -36,13 +36,13 @@ import Input from "@/components/ui/Input.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
-import { useToast } from "@/composables/useToast";
-import { IpcError, showDumpsWindow } from "@/ipc/client";
+import { showDumpsWindow } from "@/ipc/client";
 import type { GroupsState, SiteEntry, StatusReport } from "@/ipc/types";
 import { formatChord } from "@/lib/shortcuts/format";
 import { isMac } from "@/lib/shortcuts/platform";
 import { groupNameAvailable, tildify } from "@/lib/sites";
 import { siteHost, siteUrl } from "@/lib/siteUrl";
+import { copyUrlWithToast, toastOnError } from "@/lib/toastActions";
 import { openWpAdmin } from "@/lib/wpAdmin";
 
 /**
@@ -88,7 +88,6 @@ const emit = defineEmits<{
 
 const layerOpen = defineModel<boolean>("layerOpen", { default: false });
 
-const toast = useToast();
 const copyHint = formatChord({ mod: true, key: "c" }, isMac());
 
 const host = computed(() => siteHost(props.site, props.tld));
@@ -127,20 +126,11 @@ function moveTo(group: string): void {
 }
 
 async function copyUrl(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(siteUrl(props.site, props.report));
-    toast.success("Copied URL");
-  } catch {
-    toast.error("Couldn't copy URL", "Your browser blocked clipboard access.");
-  }
+  await copyUrlWithToast(siteUrl(props.site, props.report));
 }
 
 async function openDumps(): Promise<void> {
-  try {
-    await showDumpsWindow();
-  } catch (error) {
-    toast.error("Couldn't open the dumps window", (error as IpcError).message);
-  }
+  await toastOnError("Couldn't open the dumps window", () => showDumpsWindow());
 }
 </script>
 

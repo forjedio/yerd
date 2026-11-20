@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from "vue";
 import { CheckCircle2, TriangleAlert } from "lucide-vue-next";
 
 import Button from "@/components/ui/Button.vue";
 import DialogFrame from "@/components/ui/DialogFrame.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import { useAutoScroll } from "@/composables/useAutoScroll";
 
 /**
  * A tool install's streamed log. The title is fixed when the install starts and
@@ -21,16 +21,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{ "update:open": [boolean] }>();
 
-const logBox = ref<HTMLElement | null>(null);
-
-watch(
-  () => props.lines.length,
-  async () => {
-    await nextTick();
-    const el = logBox.value;
-    if (el) el.scrollTop = el.scrollHeight;
-  },
-);
+const logBox = useAutoScroll(() => props.lines.length);
 </script>
 
 <template>

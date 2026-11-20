@@ -1,13 +1,3 @@
-<script lang="ts">
-import { ref } from "vue";
-
-/**
- * Whether an update is being applied. Module-scoped so the copy that mounts
- * when the window crosses the wide breakpoint mid-apply keeps Update disabled.
- */
-const applyingUpdate = ref(false);
-</script>
-
 <script setup lang="ts">
 import { getVersion } from "@tauri-apps/api/app";
 import {
@@ -20,61 +10,50 @@ import {
   Scale,
   Stethoscope,
 } from "lucide-vue-next";
-import { computed, onMounted, type Component } from "vue";
+import { onMounted, ref, type Component } from "vue";
 
 import logoUrl from "@/assets/logo.svg";
 import mdbinMarkUrl from "@/assets/mdbin-mark.svg";
 import UpdateActions from "@/components/settings/UpdateActions.vue";
 import Button from "@/components/ui/Button.vue";
-import { useDaemon } from "@/composables/useDaemon";
+import { SECTION_LABEL } from "@/components/ui/styles";
 import { useToast } from "@/composables/useToast";
-import {
-  applyUpdate,
-  cachedUpdateStatus,
-  checkUpdates,
-  IpcError,
-  openInBrowser,
-  protocolVersion,
-  setUpdateChannel,
-  status,
-} from "@/ipc/client";
-import type { UpdateChannel, UpdateStatusResponse } from "@/ipc/types";
-import { updateHeadline } from "@/lib/settings";
-import { humaniseAgo } from "@/lib/utils";
+import type { UpdateCheck } from "@/composables/useUpdateCheck";
+import { IpcError, openInBrowser, protocolVersion, status } from "@/ipc/client";
+import { PRERELEASE_NOTE } from "@/lib/settings";
 
 /**
  * Settings' About content: versions, self-update with the release channel,
  * links, and the Logs / Diagnostics entry points (the dialogs live in the
  * parent so a layout switch doesn't close them). `column` is the 302px right
  * column of the wide layout; `card` is the header card of the compact one.
+ * `updates` is owned by the parent for the same reason, and is fixed for the
+ * component's life.
  */
-withDefaults(defineProps<{ layout?: "column" | "card" }>(), { layout: "column" });
+const props = withDefaults(defineProps<{ updates: UpdateCheck; layout?: "column" | "card" }>(), {
+  layout: "column",
+});
 
 const emit = defineEmits<{ logs: []; diagnostics: [] }>();
 
 const toast = useToast();
-const { connected } = useDaemon();
-const running = computed(() => connected.value === true);
+const {
+  running,
+  channel: updateChannel,
+  status: updateStatus,
+  checking: checkingUpdates,
+  applying: applyingUpdate,
+  headline,
+  checkedAgo,
+  loadCached,
+  check: runUpdateCheck,
+  apply: onUpdateNow,
+  changeChannel: onUpdateChannelChange,
+} = props.updates;
 
 const appVersion = ref("");
 const protocol = ref<number | null>(null);
 const daemonVersion = ref("");
-
-const updateChannel = ref<UpdateChannel>("stable");
-const updateStatus = ref<UpdateStatusResponse | null>(null);
-const checkingUpdates = ref(false);
-
-const headline = computed(() =>
-  updateHeadline(updateStatus.value, {
-    running: running.value,
-    applying: applyingUpdate.value,
-  }),
-);
-
-const checkedAgo = computed(() => {
-  const at = updateStatus.value?.checked_at_epoch;
-  return at ? humaniseAgo(at) : null;
-});
 
 const LINKS: { label: string; url: string; icon: Component | string }[] = [
   { label: "yerd.app", url: "https://yerd.app", icon: Globe },
@@ -88,108 +67,9 @@ const LINKS: { label: string; url: string; icon: Component | string }[] = [
 ];
 
 /**
- * Set once the user triggers a live check or changes the channel, so the slower
- * cached prefetch can't clobber fresher state when it resolves later.
- */
-let liveUpdateFlow = false;
-
-/**
- * Monotonic guard for overlapping live checks. The channel picker stays enabled
- * while a check is in flight (only `!running` disables it), so a second channel
- * change / check can start before the first resolves. Each check captures the
- * current seq before awaiting and only commits if it's still the latest, so an
- * older response that resolves last can't overwrite newer state out of order.
- */
-let checkSeq = 0;
-
-/**
- * Pre-fill the section from the daemon's persisted last-check result (no
- * network) so the channel, status and "last checked" show immediately. A down
- * or older daemon leaves the section in its "Not checked" state.
- */
-async function loadCachedUpdate(): Promise<void> {
-  const s = await cachedUpdateStatus().catch(() => null);
-  if (!s || liveUpdateFlow) return;
-  updateStatus.value = s;
-  updateChannel.value = s.channel;
-}
-
-/** The toast for an explicit "Check now". A `cached` source means the daemon
- *  couldn't reach the update server, so it doesn't claim "latest version". */
-function notifyCheckResult(s: UpdateStatusResponse): void {
-  if (s.available && s.target) {
-    toast.success("Update available", `Version ${s.target} can be installed.`);
-  } else if (s.ahead_of_stable) {
-    toast.info("Up to date", "You're on a pre-release ahead of stable.");
-  } else if (s.source === "cached") {
-    toast.info(
-      "Couldn't reach the update server",
-      "Showing the last cached result - you may be offline.",
-    );
-  } else {
-    toast.success("Up to date", "You're on the latest version.");
-  }
-}
-
-/**
- * A live update check. Notifies only on an explicit "Check now" (`notify`); a
- * check triggered by a channel change updates the shown status silently. A
- * superseded check neither commits nor toasts, and only the latest in-flight
- * check clears the spinner.
- */
-async function runUpdateCheck(notify = false): Promise<void> {
-  liveUpdateFlow = true;
-  checkingUpdates.value = true;
-  const seq = ++checkSeq;
-  try {
-    const s = await checkUpdates();
-    if (seq !== checkSeq) return;
-    updateStatus.value = s;
-    updateChannel.value = s.channel;
-    if (notify) notifyCheckResult(s);
-  } catch (e) {
-    if (seq !== checkSeq) return;
-    if (notify) toast.error("Couldn't check for updates", (e as IpcError).message);
-  } finally {
-    if (seq === checkSeq) checkingUpdates.value = false;
-  }
-}
-
-/**
- * Download, verify and apply. The app quits during the swap and the applier
- * relaunches it, so `applyUpdate` usually never returns; a thrown error means
- * staging failed (offline, verification, or a non-writable /Applications).
- */
-async function onUpdateNow(): Promise<void> {
-  applyingUpdate.value = true;
-  try {
-    await applyUpdate(updateChannel.value);
-  } catch (e) {
-    applyingUpdate.value = false;
-    toast.error("Couldn't apply the update", (e as IpcError).message);
-  }
-}
-
-/** Persist the channel (optimistically, reverting on failure), then re-check so
- *  the shown status reflects it. */
-async function onUpdateChannelChange(value: string): Promise<void> {
-  if (value !== "stable" && value !== "edge") return;
-  liveUpdateFlow = true;
-  const previous = updateChannel.value;
-  updateChannel.value = value;
-  try {
-    await setUpdateChannel(value);
-    await runUpdateCheck();
-  } catch (e) {
-    updateChannel.value = previous;
-    toast.error("Couldn't change the update channel", (e as IpcError).message);
-  }
-}
-
-/**
- * Loads the versions and the cached update status. Outside Tauri (tests) the
- * app version stays blank; a down daemon degrades quietly (its fields read
- * "unknown" / "-"), so only an unexpected error toasts.
+ * Loads the versions. Outside Tauri (tests) the app version stays blank; a down
+ * daemon degrades quietly (its fields read "unknown" / "-"), so only an
+ * unexpected error toasts.
  */
 async function loadVersions(): Promise<void> {
   appVersion.value = await getVersion().catch(() => "");
@@ -205,7 +85,7 @@ async function loadVersions(): Promise<void> {
 
 onMounted(() => {
   void loadVersions();
-  void loadCachedUpdate();
+  void loadCached();
 });
 </script>
 
@@ -229,7 +109,7 @@ onMounted(() => {
     </dl>
 
     <section class="mt-[22px] border-t pt-[22px]">
-      <h2 class="text-[11px] font-semibold uppercase tracking-[0.6px] text-faint">Updates</h2>
+      <h2 :class="SECTION_LABEL">Updates</h2>
       <p
         class="mt-3 flex items-center gap-2 text-[13.5px] font-semibold"
         :title="headline.tooltip ?? undefined"
@@ -258,7 +138,7 @@ onMounted(() => {
     </section>
 
     <section class="mt-[22px] border-t pt-[22px]">
-      <h2 class="text-[11px] font-semibold uppercase tracking-[0.6px] text-faint">Links</h2>
+      <h2 :class="SECTION_LABEL">Links</h2>
       <ul class="mt-3 space-y-1">
         <li v-for="link in LINKS" :key="link.url">
           <button
@@ -281,7 +161,7 @@ onMounted(() => {
     </section>
 
     <section class="mt-[22px] border-t pt-[22px]">
-      <h2 class="text-[11px] font-semibold uppercase tracking-[0.6px] text-faint">
+      <h2 :class="SECTION_LABEL">
         Troubleshooting
       </h2>
       <div class="mt-3 flex flex-wrap gap-2">
@@ -334,6 +214,13 @@ onMounted(() => {
         </p>
         <p v-if="headline.tone === 'available'" class="text-[12px] text-muted-foreground">
           {{ headline.detail }}
+        </p>
+        <p
+          v-else-if="headline.tone === 'ok' && updateStatus?.ahead_of_stable"
+          class="text-[12px] text-muted-foreground"
+          data-testid="update-prerelease"
+        >
+          {{ PRERELEASE_NOTE }}
         </p>
         <UpdateActions
           :channel="updateChannel"

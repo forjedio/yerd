@@ -17,13 +17,14 @@ import SiteDomainsCard from "@/components/sites/SiteDomainsCard.vue";
 import SiteEnvironmentCard from "@/components/sites/SiteEnvironmentCard.vue";
 import Button from "@/components/ui/Button.vue";
 import InspectorFrame from "@/components/ui/InspectorFrame.vue";
+import { INSPECTOR_TOOL } from "@/components/ui/styles";
 import { loadPlatform, usePlatform } from "@/composables/usePlatform";
 import { useSiteEditor } from "@/composables/useSiteEditor";
-import { useToast } from "@/composables/useToast";
-import { IpcError, openInBrowser, openInTerminal, openPath } from "@/ipc/client";
+import { openInBrowser, openInTerminal, openPath } from "@/ipc/client";
 import type { GroupsState, SiteEntry, StatusReport } from "@/ipc/types";
 import { servedPath, servingState, tildify, urlParts } from "@/lib/sites";
 import { siteHost, siteUrl } from "@/lib/siteUrl";
+import { copyUrlWithToast, toastOnError } from "@/lib/toastActions";
 import { cn } from "@/lib/utils";
 
 /**
@@ -75,7 +76,6 @@ const emit = defineEmits<{
   nodeChanged: [];
 }>();
 
-const toast = useToast();
 const { supportsPathInstall, isMac } = usePlatform();
 
 const drawer = computed(() => props.mode === "drawer");
@@ -94,33 +94,20 @@ const url = computed(() => (props.site ? siteUrl(props.site, props.report) : "")
 const urlSplit = computed(() => urlParts(url.value));
 const status = computed(() => (props.site ? servingState(props.site, props.report) : null));
 
-async function run(action: () => Promise<void>, failure: string): Promise<void> {
-  try {
-    await action();
-  } catch (error) {
-    toast.error(failure, (error as IpcError).message);
-  }
-}
-
 function openSite(site: SiteEntry): void {
-  void run(() => openInBrowser(siteUrl(site, props.report)), "Couldn't open site");
+  void toastOnError("Couldn't open site", () => openInBrowser(siteUrl(site, props.report)));
 }
 
 function openTerminal(site: SiteEntry): void {
-  void run(() => openInTerminal(site.document_root), "Couldn't open terminal");
+  void toastOnError("Couldn't open terminal", () => openInTerminal(site.document_root));
 }
 
 function reveal(site: SiteEntry): void {
-  void run(() => openPath(site.document_root), "Couldn't reveal site folder");
+  void toastOnError("Couldn't reveal site folder", () => openPath(site.document_root));
 }
 
 async function copyUrl(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(url.value);
-    toast.success("Copied URL");
-  } catch {
-    toast.error("Couldn't copy URL", "Your browser blocked clipboard access.");
-  }
+  await copyUrlWithToast(url.value);
 }
 
 /** Forwards the card's arguments as given, so an absent `options` stays absent. */
@@ -138,7 +125,6 @@ onMounted(() => {
   void loadPlatform();
 });
 
-const TOOL = "h-[34px] gap-1.5 px-3 text-[13px] font-semibold";
 </script>
 
 <template>
@@ -199,7 +185,7 @@ const TOOL = "h-[34px] gap-1.5 px-3 text-[13px] font-semibold";
         </div>
 
         <div class="mt-5 flex flex-wrap items-center gap-2">
-          <Button :class="TOOL" @click="openSite(site)">
+          <Button :class="INSPECTOR_TOOL" @click="openSite(site)">
             <ExternalLink /> Open site
           </Button>
           <Button
@@ -221,16 +207,16 @@ const TOOL = "h-[34px] gap-1.5 px-3 text-[13px] font-semibold";
           <Button
             v-if="supportsPathInstall"
             variant="outline"
-            :class="TOOL"
+            :class="INSPECTOR_TOOL"
             :title="editor.editorTooltip.value"
             @click="editor.openEditor(site)"
           >
             <Code2 /> Editor
           </Button>
-          <Button variant="outline" :class="TOOL" @click="openTerminal(site)">
+          <Button variant="outline" :class="INSPECTOR_TOOL" @click="openTerminal(site)">
             <SquareTerminal /> Terminal
           </Button>
-          <Button variant="outline" :class="TOOL" @click="reveal(site)">
+          <Button variant="outline" :class="INSPECTOR_TOOL" @click="reveal(site)">
             <FolderOpen /> {{ isMac ? "Finder" : "Files" }}
           </Button>
           <SiteActionsMenu

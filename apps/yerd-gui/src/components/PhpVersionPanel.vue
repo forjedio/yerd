@@ -26,6 +26,7 @@ import Input from "@/components/ui/Input.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
+import { SECTION_LABEL } from "@/components/ui/styles";
 import { useResource } from "@/composables/useResource";
 import { useStagedField } from "@/composables/useStagedField";
 import { useToast } from "@/composables/useToast";
@@ -645,7 +646,6 @@ const panelDirty = computed(() => {
 
 watch(panelDirty, (d) => emit("dirty", d), { immediate: true });
 
-const LABEL = "text-[11px] font-semibold uppercase tracking-[0.6px] text-faint";
 const CARD = "min-w-0 rounded-[10px] border bg-card p-4";
 const LINK =
   "mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-brand hover:underline disabled:pointer-events-none disabled:opacity-50";
@@ -665,7 +665,7 @@ function discard(): void {
   <div class="flex flex-1 flex-col">
     <template v-if="installedVersion">
       <div class="flex h-6 items-center justify-between gap-3 px-1">
-        <h3 :class="LABEL">Settings</h3>
+        <h3 :class="SECTION_LABEL">Settings</h3>
         <p class="flex items-center gap-1.5 text-xs text-faint" data-testid="changed-count">
           <template v-if="changed > 0">
             <span class="size-1.5 rounded-full bg-brand" aria-hidden="true" />
@@ -918,7 +918,7 @@ function discard(): void {
     <template v-if="installedVersion">
       <section class="mt-7" data-testid="xdebug-section">
         <div class="flex h-6 items-center justify-between gap-3 px-1">
-          <h3 :class="LABEL">Xdebug</h3>
+          <h3 :class="SECTION_LABEL">Xdebug</h3>
           <p
             v-if="xdebugAvailable"
             class="truncate text-xs text-faint"

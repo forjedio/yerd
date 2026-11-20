@@ -22,9 +22,10 @@ import { useMailbox } from "@/composables/useMailbox";
 import { useToast } from "@/composables/useToast";
 import { useWideLayout } from "@/composables/useWideLayout";
 import { IpcError, setMailEnabled, showMailsWindow } from "@/ipc/client";
+import { copyWithToast, toastOnError } from "@/lib/toastActions";
 import { captureStatus, laravelEnv } from "@/lib/mail";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
-import { cn } from "@/lib/utils";
+import { CHIP_TONE, cn } from "@/lib/utils";
 
 const toast = useToast();
 const router = useRouter();
@@ -53,8 +54,8 @@ const capture = computed(() => {
 const pillClass = computed(() =>
   cn(
     "inline-flex h-7 shrink-0 items-center gap-2 rounded-full px-3 text-xs font-semibold",
-    capture.value.tone === "ok" && "bg-success/15 text-success",
-    capture.value.tone === "warn" && "bg-warning/15 text-warning",
+    capture.value.tone === "ok" && CHIP_TONE.success,
+    capture.value.tone === "warn" && CHIP_TONE.warning,
     (capture.value.tone === "off" || capture.value.tone === "pending") && "border bg-muted text-muted-foreground",
   ),
 );
@@ -84,12 +85,10 @@ const envText = computed(() =>
 );
 
 async function copyEnv(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(envText.value);
-    toast.success("Copied to clipboard", "Paste these into your Laravel .env");
-  } catch {
-    toast.error("Couldn't copy");
-  }
+  await copyWithToast(envText.value, {
+    title: "Copied to clipboard",
+    detail: "Paste these into your Laravel .env",
+  });
 }
 
 function changePort(): void {
@@ -98,11 +97,7 @@ function changePort(): void {
 }
 
 async function openWindow(): Promise<void> {
-  try {
-    await showMailsWindow();
-  } catch (e) {
-    toast.error("Couldn't open the mail viewer", (e as IpcError).message);
-  }
+  await toastOnError("Couldn't open the mail viewer", () => showMailsWindow());
 }
 
 const drawerOpen = ref(false);

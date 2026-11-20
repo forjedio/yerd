@@ -49,6 +49,8 @@ apps/yerd-gui/
     │   ├── client.ts       typed wrappers around invoke() + IpcError
     │   └── client.test.ts  command-mapping + error-categorisation tests
     ├── composables/        useDaemon (singleton poller), usePoll, useToast, useWideLayout, useIdes, useSiteEditor,
+    │                       useUpdateCheck (Settings ▸ About self-update state, owned by the Settings view),
+    │                       useAutoScroll (pins a streamed log box to its bottom),
     │                       useElevation (OS-privilege Fix / Fix all / Revert, shared by Welcome and Doctor),
     │                       useCreateSiteJob / useToolPrereqs / useSiteBasics and the starters
     │                       (useSiteStarters, useLaravelStarter, useWordPressStarter) behind New site
@@ -76,9 +78,12 @@ apps/yerd-gui/
     │                       PhpVersionPanel, AddExtensionModal, DaemonDownHero, DaemonDiagnosticsPanel,
     │                       overview/ (status, favourites, setup checklist, release notes and contributors cards),
     │                       ui/ (incl. AsyncState, EmptyState, InfoBanner, ConfirmDialog, DialogFrame,
-    │                       SegmentedControl, SuffixInput, FilterChips, InspectorFrame)
+    │                       SegmentedControl, SuffixInput, FilterChips, InspectorFrame,
+    │                       styles.ts with the shared CARD / INSPECTOR_TOOL / SECTION_LABEL / LIST_LABEL classes)
     ├── views/              OverviewView, GeneralView, PhpView, NodeView, SitesView, ProxiesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView
-    └── lib/                utils (cn, humanisers), theme, desktop chrome, domainValidation,
+    └── lib/                utils (cn, plural / joinWithAnd, humanisers, CHIP_TONE and the run-state dot), theme,
+                            desktop chrome, domainValidation,
+                            toastActions (copy-to-clipboard and fire-and-forget actions that toast the outcome),
                             overview (status, health-row and favourites derivations for the Overview),
                             sites (Sites list sections, chips, warnings and inspector labels),
                             proxies (Proxies chips, sections, upstream labels and name/prefix checks),
@@ -551,6 +556,7 @@ does that resolution.
 | `usePoll` | Generic mount-scoped poller. Never overlaps in-flight calls, **pauses while the document is hidden** (background tab / tray), refreshes on becoming visible, and clears its timer on unmount. Default cadence 4s; callers should not go below ~3s for `status`. |
 | `useToast` | Module-level toast store rendered by the single `<Toaster>` in `App.vue`. Errors linger (8s), success/info auto-dismiss (4s). |
 | `useIdes` | **Singleton** cache of the host's detected editors, in rank order. Detection is a filesystem scan, so it runs once per session (`loadIdes`) and every editor picker reads the same list rather than re-probing on open; `rescanIdes` backs the Settings **Rescan** button. Each run carries a monotonic generation token and publishes only while it is still the newest, so a slow initial load can never overwrite a rescan the user triggered after it. |
+| `useUpdateCheck` | The About section's self-update flow (channel, cached and live checks, apply). `GeneralView` owns one instance and passes it to whichever `AboutSection` layout is showing, so crossing the wide breakpoint mid-check keeps the spinner and the result; a stale or superseded check never overwrites a newer one. |
 
 Both pollers gate on `document.visibilityState === "hidden"` to avoid hammering
 the daemon when the window is hidden to the tray - a real cost, since each
@@ -601,9 +607,12 @@ Components are split into app components (`AppShell`, `SideNav`, `TitleBar`,
 **shadcn-vue-style `ui/` primitives** (`Button`, `Card`, `Input`, `Select`,
 `Switch`, `Modal`, `Spinner`, `Toaster`, `Badge`, plus `dropdown-menu/`,
 `tabs/` and `tooltip/` built on `reka-ui`). `lib/utils.ts` holds the shadcn `cn` helper and
-the display humanisers - note `poolStateLabel`/`poolStateTone`, which render an
+the display humanisers - note `poolStateLabel` and `runStateDotClass`, which render an
 installed-but-not-serving FPM pool as **"idle"** (neutral) rather than the
 alarming wire value `stopped`, reserving red **"failed"** for an actual crash.
+`Button`, `Input` and `Select` take `class` as a prop merged through `cn`, so a
+caller's height, size, padding or font-size utilities replace the variant
+defaults instead of racing them in CSS order.
 
 ### "Coming soon" affordances
 

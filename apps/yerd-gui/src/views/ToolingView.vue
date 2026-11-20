@@ -9,6 +9,7 @@ import Button from "@/components/ui/Button.vue";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import { SECTION_LABEL } from "@/components/ui/styles";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
 import { useOperations } from "@/composables/useOperations";
@@ -23,6 +24,7 @@ import {
   uninstallTool,
 } from "@/ipc/client";
 import type { ToolStatus } from "@/ipc/types";
+import { toastOnError } from "@/lib/toastActions";
 import {
   commandList,
   needsComposer,
@@ -31,6 +33,7 @@ import {
   statusText,
   toolDescription,
 } from "@/lib/tooling";
+import { CHIP_TONE } from "@/lib/utils";
 
 const toast = useToast();
 const { refresh: refreshDaemon } = useDaemon();
@@ -175,11 +178,7 @@ function showLog(id: string): void {
 }
 
 async function reveal(path: string): Promise<void> {
-  try {
-    await openPath(path);
-  } catch (e) {
-    toast.error(`Couldn't reveal ${path}`, e instanceof Error ? e.message : String(e));
-  }
+  await toastOnError(`Couldn't reveal ${path}`, () => openPath(path));
 }
 
 const uninstallOpen = ref(false);
@@ -209,7 +208,6 @@ async function confirmUninstall(): Promise<void> {
   }
 }
 
-const LABEL = "text-[11px] font-semibold uppercase tracking-[0.6px] text-faint";
 const CHIP = "inline-flex h-5 shrink-0 items-center gap-1.5 rounded px-1.5 font-mono text-[11px] font-medium";
 const UPDATE_CHIP =
   "inline-flex h-5 shrink-0 items-center rounded border border-warning/40 bg-warning/15 px-1.5 font-mono text-[11px] font-medium text-warning";
@@ -233,7 +231,7 @@ onUnmounted(registerViewActions({ refresh: () => void reload({ force: true }) })
         class="grid gap-7 xl:grid-cols-[minmax(0,1fr)_286px] xl:items-start xl:gap-5"
       >
         <section data-testid="tooling-installed">
-          <h2 :class="[LABEL, 'mb-3 flex gap-2']">
+          <h2 :class="[SECTION_LABEL, 'mb-3 flex gap-2']">
             <span>Installed</span>
             <span data-testid="tooling-installed-count">{{ split.installed.length }}</span>
           </h2>
@@ -251,7 +249,7 @@ onUnmounted(registerViewActions({ refresh: () => void reload({ force: true }) })
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-2">
                   <span class="text-sm font-semibold">{{ t.display_name }}</span>
-                  <span :class="[CHIP, 'bg-success/15 text-success']">
+                  <span :class="[CHIP, CHIP_TONE.success]">
                     <span class="size-1.5 rounded-full bg-success" aria-hidden="true" />
                     {{ t.version ?? "installed" }}
                   </span>
@@ -311,7 +309,7 @@ onUnmounted(registerViewActions({ refresh: () => void reload({ force: true }) })
         </section>
 
         <section data-testid="tooling-available">
-          <h2 :class="[LABEL, 'mb-3 flex gap-2']">
+          <h2 :class="[SECTION_LABEL, 'mb-3 flex gap-2']">
             <span>Available</span>
             <span data-testid="tooling-available-count">{{ split.available.length }}</span>
           </h2>

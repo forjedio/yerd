@@ -4,7 +4,7 @@ import { Copy } from "lucide-vue-next";
 import Button from "@/components/ui/Button.vue";
 import DialogFrame from "@/components/ui/DialogFrame.vue";
 import InfoBanner from "@/components/ui/InfoBanner.vue";
-import { useToast } from "@/composables/useToast";
+import { copyWithToast } from "@/lib/toastActions";
 
 /**
  * The registration snippets for Yerd's MCP server, opened from the AI agents
@@ -16,8 +16,6 @@ defineProps<{ open: boolean; needsCliPath: boolean }>();
 
 const emit = defineEmits<{ "update:open": [boolean] }>();
 
-const toast = useToast();
-
 const MCP_CLAUDE_SNIPPET = "claude mcp add --scope user yerd -- yerd mcp";
 const MCP_JSON_SNIPPET = JSON.stringify(
   { mcpServers: { yerd: { command: "yerd", args: ["mcp"] } } },
@@ -26,12 +24,7 @@ const MCP_JSON_SNIPPET = JSON.stringify(
 );
 
 async function copyMcpSnippet(snippet: string, label: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(snippet);
-    toast.success(`${label} copied`);
-  } catch {
-    toast.error("Couldn't copy to the clipboard");
-  }
+  await copyWithToast(snippet, { title: `${label} copied` });
 }
 </script>
 

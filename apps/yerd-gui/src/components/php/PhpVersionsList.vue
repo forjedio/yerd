@@ -3,10 +3,11 @@ import { computed } from "vue";
 import { ChevronRight, Plus, SlidersHorizontal, Star } from "lucide-vue-next";
 
 import Spinner from "@/components/ui/Spinner.vue";
+import { LIST_LABEL } from "@/components/ui/styles";
 import type { PhpExtInfo, PhpPoolStatus, PhpUpdate, PhpVersion, PhpVersionsResponse } from "@/ipc/types";
 import { bannerCopy, configuredCount, statusLine, updateLabel, xdebugCell } from "@/lib/php";
 import { isLegacyVersion } from "@/lib/phpVersion";
-import { cn, humaniseBytes, poolStateLabel } from "@/lib/utils";
+import { CHIP_TONE, cn, humaniseBytes, plural, poolStateLabel, runStateDotClass } from "@/lib/utils";
 
 /** What the list can select: the Shared defaults pane or a version. */
 export type PhpSelection = "shared" | PhpVersion;
@@ -62,13 +63,6 @@ function state(v: PhpVersion) {
   return props.pools[v]?.state;
 }
 
-function dotClass(v: PhpVersion): string {
-  const s = state(v);
-  if (s === "running") return "bg-success";
-  if (s === "failed") return "bg-destructive";
-  return "bg-faint";
-}
-
 function statusClass(v: PhpVersion): string {
   const s = state(v);
   if (s === "running") return "text-muted-foreground";
@@ -83,7 +77,6 @@ function update(v: PhpVersion) {
 const CHIP = "inline-flex h-[18px] shrink-0 items-center gap-1 rounded px-1.5 text-[11px] font-medium";
 const UPDATE_CHIP =
   "inline-flex h-5 shrink-0 items-center rounded border border-warning/40 bg-warning/15 px-1.5 font-mono text-[11px] font-medium text-warning";
-const LABEL = "px-2 pb-1.5 pt-4 text-[11px] font-semibold uppercase tracking-[0.6px] text-faint";
 const TABLE_COLS =
   "grid grid-cols-[minmax(0,1fr)_90px_110px_90px_100px_110px_20px] items-center gap-x-2";
 </script>
@@ -129,7 +122,7 @@ const TABLE_COLS =
           :key="group.key"
         >
           <template v-if="group.rows.length">
-            <p :class="LABEL">{{ group.label }}</p>
+            <p :class="LIST_LABEL">{{ group.label }}</p>
             <div class="flex flex-col gap-1">
               <button
                 v-for="v in group.rows"
@@ -148,22 +141,22 @@ const TABLE_COLS =
                 <span class="min-w-0 flex-1">
                   <span class="flex items-center gap-2">
                     <span class="font-mono text-sm font-bold">PHP {{ v }}</span>
-                    <span v-if="v === defaultVersion" :class="cn(CHIP, 'bg-brand/15 text-brand')" data-testid="chip-default">
+                    <span v-if="v === defaultVersion" :class="cn(CHIP, CHIP_TONE.brand)" data-testid="chip-default">
                       <Star class="size-3" aria-hidden="true" /> Default
                     </span>
-                    <span v-if="isLegacyVersion(v)" :class="cn(CHIP, 'bg-warning/15 text-warning')" data-testid="chip-legacy">
+                    <span v-if="isLegacyVersion(v)" :class="cn(CHIP, CHIP_TONE.warning)" data-testid="chip-legacy">
                       Legacy
                     </span>
                   </span>
                   <span class="mt-1 flex items-center gap-1.5 text-xs" data-testid="row-status">
                     <template v-if="installed.includes(v)">
-                      <span :class="cn('size-1.5 shrink-0 rounded-full', dotClass(v))" aria-hidden="true" />
+                      <span :class="cn('size-1.5 shrink-0 rounded-full', runStateDotClass(state(v)))" aria-hidden="true" />
                       <span :class="cn('truncate', statusClass(v))">
                         {{ statusLine(pools[v], "row") }}<template v-if="data?.xdebug?.[v]?.enabled"> · Xdebug on</template>
                       </span>
                     </template>
                     <span v-else class="truncate text-faint">
-                      not installed · {{ count(v) }} extension{{ count(v) === 1 ? "" : "s" }}
+                      not installed · {{ plural(count(v), "extension", "extensions") }}
                     </span>
                   </span>
                 </span>
@@ -178,7 +171,7 @@ const TABLE_COLS =
                 <span
                   v-else-if="installed.includes(v) && count(v) > 0"
                   class="shrink-0 text-[11px] text-faint"
-                  :title="`${count(v)} configured item${count(v) === 1 ? '' : 's'}`"
+                  :title="plural(count(v), 'configured item', 'configured items')"
                   data-testid="row-customised"
                 >
                   customised
@@ -212,10 +205,10 @@ const TABLE_COLS =
         >
           <span class="flex min-w-0 items-center gap-2">
             <span class="truncate font-mono text-sm font-bold">PHP {{ v }}</span>
-            <span v-if="v === defaultVersion" :class="cn(CHIP, 'bg-brand/15 text-brand')" data-testid="chip-default">
+            <span v-if="v === defaultVersion" :class="cn(CHIP, CHIP_TONE.brand)" data-testid="chip-default">
               <Star class="size-3" aria-hidden="true" /> Default
             </span>
-            <span v-if="isLegacyVersion(v)" :class="cn(CHIP, 'bg-warning/15 text-warning')" data-testid="chip-legacy">
+            <span v-if="isLegacyVersion(v)" :class="cn(CHIP, CHIP_TONE.warning)" data-testid="chip-legacy">
               Legacy
             </span>
             <span v-if="dirty[v]" class="flex items-center">
@@ -229,7 +222,7 @@ const TABLE_COLS =
               {{ pools[v]?.installed_patch ?? "-" }}
             </span>
             <span class="flex items-center gap-1.5 text-xs" data-testid="cell-fpm">
-              <span :class="cn('size-1.5 shrink-0 rounded-full', dotClass(v))" aria-hidden="true" />
+              <span :class="cn('size-1.5 shrink-0 rounded-full', runStateDotClass(state(v)))" aria-hidden="true" />
               <span :class="statusClass(v)">{{ poolStateLabel(state(v)) }}</span>
             </span>
             <span class="truncate font-mono text-xs text-muted-foreground" data-testid="cell-memory">

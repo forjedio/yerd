@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from "vue";
 import { Globe } from "lucide-vue-next";
 
-import { CARD } from "@/components/services/styles";
+import { CARD } from "@/components/ui/styles";
 import Button from "@/components/ui/Button.vue";
 import DialogFrame from "@/components/ui/DialogFrame.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import { useAutoScroll } from "@/composables/useAutoScroll";
 import { cn } from "@/lib/utils";
 
 /**
@@ -22,16 +22,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{ "update:open": [boolean]; openUrl: [url: string] }>();
 
-const logBox = ref<HTMLElement | null>(null);
-
-watch(
-  () => props.lines.length,
-  async () => {
-    await nextTick();
-    const el = logBox.value;
-    if (el) el.scrollTop = el.scrollHeight;
-  },
-);
+const logBox = useAutoScroll(() => props.lines.length);
 </script>
 
 <template>

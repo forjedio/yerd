@@ -16,9 +16,8 @@ import {
   requestTitle,
   statusTone,
   TAG,
-  TAG_TONE,
 } from "@/lib/dumps";
-import { cn } from "@/lib/utils";
+import { CHIP_TONE, cn } from "@/lib/utils";
 
 /**
  * The captured requests: a "Requests" header with Keep history and Clear, then
@@ -168,8 +167,8 @@ const TABLE_COLS = "grid grid-cols-[70px_64px_minmax(0,1fr)_140px_70px_80px_80px
         >
           <span class="flex w-full min-w-0 items-center gap-2">
             <template v-if="r.summary">
-              <span v-if="r.summary.method" :class="cn(TAG, TAG_TONE.brand)">{{ r.summary.method }}</span>
-              <span v-if="r.summary.status" :class="cn(TAG, TAG_TONE[statusTone(r.summary.status)])">
+              <span v-if="r.summary.method" :class="cn(TAG, CHIP_TONE.brand)">{{ r.summary.method }}</span>
+              <span v-if="r.summary.status" :class="cn(TAG, CHIP_TONE[statusTone(r.summary.status)])">
                 {{ r.summary.status }}
               </span>
             </template>
@@ -201,10 +200,10 @@ const TABLE_COLS = "grid grid-cols-[70px_64px_minmax(0,1fr)_140px_70px_80px_80px
           @click="emit('select', r.key)"
         >
           <span>
-            <span v-if="r.summary?.method" :class="cn(TAG, TAG_TONE.brand)">{{ r.summary.method }}</span>
+            <span v-if="r.summary?.method" :class="cn(TAG, CHIP_TONE.brand)">{{ r.summary.method }}</span>
           </span>
           <span>
-            <span v-if="r.summary?.status" :class="cn(TAG, TAG_TONE[statusTone(r.summary.status)])">
+            <span v-if="r.summary?.status" :class="cn(TAG, CHIP_TONE[statusTone(r.summary.status)])">
               {{ r.summary.status }}
             </span>
           </span>

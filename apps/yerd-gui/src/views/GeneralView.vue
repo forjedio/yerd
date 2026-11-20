@@ -34,6 +34,7 @@ import { MIN_PORT, MAX_PORT, useFallbackPorts } from "@/composables/useFallbackP
 import { loadIdes, rescanIdes, useIdes } from "@/composables/useIdes";
 import { loadPlatform, usePlatform } from "@/composables/usePlatform";
 import { useToast } from "@/composables/useToast";
+import { useUpdateCheck } from "@/composables/useUpdateCheck";
 import { useWideLayout } from "@/composables/useWideLayout";
 import {
   cliPathStatus,
@@ -59,9 +60,12 @@ import { SYSTEM_LABEL } from "@/lib/ideChoice";
 import { portFromAddr, settingsBanners } from "@/lib/settings";
 import { useTheme } from "@/lib/theme";
 import { useTitleBarStyle } from "@/lib/titleBarStyle";
+import { toastOnError } from "@/lib/toastActions";
+import { plural } from "@/lib/utils";
 
 const { connected, report, refresh: refreshStatus } = useDaemon();
 const toast = useToast();
+const updates = useUpdateCheck();
 const { pref, setTheme } = useTheme();
 const { style: titleBarStyle, setTitleBarStyle } = useTitleBarStyle();
 
@@ -195,7 +199,7 @@ async function rescanEditors(): Promise<void> {
   try {
     const found = await rescanIdes();
     toast.success(
-      found === 0 ? "No editors found" : `Found ${found} editor${found === 1 ? "" : "s"}`,
+      found === 0 ? "No editors found" : `Found ${plural(found, "editor", "editors")}`,
       undefined,
       RESCAN_TOAST_MS,
     );
@@ -232,11 +236,7 @@ async function toggleCliPath(): Promise<void> {
 }
 
 async function openApproval(): Promise<void> {
-  try {
-    await openLoginItems();
-  } catch (e) {
-    toast.error("Couldn't open Login Items", (e as IpcError).message);
-  }
+  await toastOnError("Couldn't open Login Items", () => openLoginItems());
 }
 
 onMounted(() => {
@@ -602,6 +602,7 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
         <AboutSection
           v-if="!wide"
           layout="card"
+          :updates="updates"
           @logs="logsOpen = true"
           @diagnostics="diagnosticsOpen = true"
         />
@@ -890,6 +891,7 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
       >
         <AboutSection
           layout="column"
+          :updates="updates"
           @logs="logsOpen = true"
           @diagnostics="diagnosticsOpen = true"
         />
