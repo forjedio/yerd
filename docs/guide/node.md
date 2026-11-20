@@ -10,7 +10,7 @@ One release is the **global default**; a project can ask for another with an
 
 Open the **Node** page from the sidebar (under **Environment**):
 
-<ThemedImage light="/images/node-versions-light.png" dark="/images/node-versions-dark.png" alt="The Node page listing Node 26.13.1 (the default) and Node 24.22.3 with their LTS codenames" />
+<ThemedImage light="/images/node-versions-light.png" dark="/images/node-versions-dark.png" alt="The Node page: Node 24.11.1 (the default, LTS Krypton, used by 7 sites) and Node 22.21.0 (LTS Jod, 2 sites), the How a site picks its Node card, and Sites not on the default listing api.test and crm.test on Node 22 and legacy-app.test with Node 18 missing" />
 
 - **Refresh** and **Install** sit in the page toolbar. A banner notes that bare
   `node`, `npm` and `npx` always use the global default.
@@ -38,7 +38,7 @@ Open the **Node** page from the sidebar (under **Environment**):
   aren't offered. If the release schedule can't be fetched the list still
   loads, without EOL badges.
 
-<ThemedImage light="/images/node-install-light.png" dark="/images/node-install-dark.png" alt="The Install a Node version dialog, with the exact-version and end-of-life switches and Node 22 preselected" />
+<ThemedImage light="/images/node-install-light.png" dark="/images/node-install-dark.png" alt="The Install a Node version dialog, with the exact-version and end-of-life switches and Node 26 (LTS Lithium) preselected" />
 
 - Installs run in the background with a live log; **Hide** closes it while the
   install keeps going, and the operations indicator keeps tracking it. Other version actions are disabled until the
@@ -66,6 +66,14 @@ or `yerd exec npm …` in the project folder to use the site's version. Nothing 
 automatically: when the project file or saved preference names a version that
 isn't installed, the row shows the error with an **Install Node X** button that
 installs it right there (with live progress), and a link to the Node page.
+
+<ThemedImage light="/images/node-site-selectversion-light.png" dark="/images/node-site-selectversion-dark.png" alt="The inspector for api.test: Node version 24 saved as a preference, with a warning that the project's .nvmrc (22) takes precedence" />
+
+When you create a Laravel site from **New site**, its Options step has a **Node
+version** picker once two or more releases are installed: the build uses that
+release and it's saved as the new site's preference.
+
+<ThemedImage light="/images/node-newsite-version-light.png" dark="/images/node-newsite-version-dark.png" alt="The New Laravel site Options step with Node 22.21.0 picked as the Node version" />
 
 ## From the command line
 

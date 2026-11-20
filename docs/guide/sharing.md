@@ -48,6 +48,8 @@ use: if Yerd found one on your `PATH`, it reads **Found on PATH** and a **Use
 Yerd's copy** button switches to the managed, auto-updating copy; when a newer
 release of Yerd's copy is out, an **Update** button installs it.
 
+<ThemedImage light="/images/share-setup-light.png" dark="/images/share-setup-dark.png" alt="The Share setup dialog: cloudflared installed, the Cloudflare account connected and the domain tunnel live with two sites" />
+
 ## Quick share
 
 The fastest way to put a site online:
@@ -174,6 +176,9 @@ shows a count.
   (named after your Cloudflare zone). Each row shows the site, a status dot and
   its public address. On a narrower window the list becomes a table (site,
   type, public URL and status) and a share's details open in a drawer.
+
+  <ThemedImage light="/images/share-light.png" dark="/images/share-dark.png" alt="The Share page listing quick links and sites on your domain, with a password-protected quick link selected" />
+
 - Selecting a share shows its details: the **Public URL** with **Copy** and
   **Open**, a **Type** / **Local site** / **Status** strip with the tunnel's state
   (Connecting, Running, Reconnecting, Failed, retrying) and its last error, any
@@ -192,6 +197,9 @@ shows a count.
   Yerd knows your authorized domain the field stays empty and **Share** stays
   off. Sharing creates the DNS record and the daemon brings the tunnel up.
   Removing the last site takes it back down.
+
+  <ThemedImage light="/images/share-new-light.png" dark="/images/share-new-dark.png" alt="The Share a site dialog sharing portal on your domain, with the public hostname pre-filled" />
+
 - **Setup** holds the rest: the `cloudflared` in use (install, update, or switch
   to Yerd's copy), connecting your Cloudflare account, and creating, starting or
   removing the tunnel for your domain. Closing the connect dialog before you
@@ -200,7 +208,7 @@ shows a count.
   publicly…** shortcut that jumps straight to sharing that site, without going
   to the Share page first:
 
-  <ThemedImage light="/images/share-site-light.png" dark="/images/share-site-dark.png" alt="The Sites page row menu, with a Share publicly… action" />
+  <ThemedImage light="/images/share-site-light.png" dark="/images/share-site-dark.png" alt="The site inspector's ··· menu on the Sites page, with Share publicly… highlighted" />
 
 ## How requests reach your site
 

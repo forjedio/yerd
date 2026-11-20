@@ -29,6 +29,10 @@ Each page opens with a toolbar: the page title, a search box that opens the [com
 
 The landing dashboard, in two columns (they stack in a narrower window). On the left, **Your environment**: a status card showing whether Yerd is **serving**, how many `.test` sites it serves, the daemon's version, uptime, pid and running services, and health rows for the local CA, the `.test` resolver, the DNS port and the web ports (a problem row links to Doctor, or to Settings when the web or DNS ports can't be bound), with **Restart** and **Stop** buttons that ask before acting. Below it are your **favourite** sites (click one to open it in your browser, or its star to unfavourite it), and a short setup checklist (trust the CA, install PHP, park a folder) until PHP is installed and a folder is parked or a site linked. If the daemon answers but its status can't be read (for example after updating only one of the app and the daemon), the card shows the error with **Retry** and **Restart daemon**. On the right, the release notes for the version you're running, the two releases before it, and the people who contribute to Yerd. Release notes and contributors come through the daemon (and need a network connection the first time); while the daemon is down they show whatever was already loaded. When the daemon is down, the left column becomes a **Start Yerd** hero. While the daemon is running, this page polls it every 5 seconds, so a change made from the CLI or another window shows up without a manual refresh.
 
+<ThemedImage light="/images/overview-daemon-down-light.png" dark="/images/overview-daemon-down-dark.png" alt="The Overview while the daemon is down: the Start Yerd hero" />
+
+<ThemedImage light="/images/overview-restart-light.png" dark="/images/overview-restart-dark.png" alt="The Restart the daemon? confirmation on the Overview" />
+
 ### Settings
 
 <ThemedImage light="/images/settings-light.png" dark="/images/settings-dark.png" alt="Settings page" />
@@ -44,13 +48,15 @@ Warnings appear at the top of the column: on macOS, a reminder to approve the da
 - **Network** (while the daemon is running). The outbound proxy Yerd uses for downloads, updates, Composer, npm, pnpm, Bun, the Laravel installer and WP-CLI: detect automatically, a manual HTTP/HTTPS proxy, or none, plus a bypass list. **Test connection** checks the saved settings.
 - **About.** The app, daemon, and negotiated IPC protocol versions. **Updates** shows whether you're up to date and when Yerd last checked (hover the status for the current, latest stable and latest edge versions), a Stable / Edge release-channel switch, and **Check now**; when an update is available, **Update** takes its place and downloads, verifies, and installs it, restarting the app. **Links** open yerd.app, the GitHub repository, the MIT licence, and mdbin.app (Forjed's Markdown sharing tool). **Troubleshooting**: **Logs** opens a dialog tailing the GUI's own session log (`yerd-gui.log`) alongside the daemon log, switchable between the two, with refresh and copy buttons; **Diagnostics** gathers a shareable text snapshot of app/daemon state with its own copy button - useful when reporting a problem.
 
+<ThemedImage light="/images/settings-network-light.png" dark="/images/settings-network-dark.png" alt="Settings scrolled to Application ports, Integrations and security, and the Network proxy group" />
+
 <ThemedImage light="/images/yerd-logs-light.png" dark="/images/yerd-logs-dark.png" alt="The Logs dialog, tailing the GUI session log" />
 
 <ThemedImage light="/images/yerd-diagnostics-light.png" dark="/images/yerd-diagnostics-dark.png" alt="The Diagnostics dialog, a copyable JSON snapshot of app/daemon state" />
 
 ### PHP
 
-<ThemedImage light="/images/php-light.png" dark="/images/php-dark.png" alt="PHP versions page" />
+<ThemedImage light="/images/php-light.png" dark="/images/php-dark.png" alt="The PHP page: the version list with an update banner beside PHP 8.4's inspector (settings grid, extra extensions, ini directives and Xdebug)" />
 
 Manages your installed [PHP versions](./php-versions):
 
@@ -67,7 +73,7 @@ Manages your installed [PHP versions](./php-versions):
 
 Manages your installed [Node.js versions](./node):
 
-<ThemedImage light="/images/node-versions-light.png" dark="/images/node-versions-dark.png" alt="The Node page listing Node 26.13.1 (the default) and Node 24.22.3 with their LTS codenames" />
+<ThemedImage light="/images/node-versions-light.png" dark="/images/node-versions-dark.png" alt="The Node page: Node 24.11.1 (the default) and Node 22.21.0 with their LTS codenames and site counts, beside How a site picks its Node and Sites not on the default" />
 
 - **Refresh** and **Install** sit in the page toolbar. The Installed versions table shows each release with chips (a star on the global default, its LTS codename, and Current or EOL once Install or Refresh has loaded the release index), how many sites use it, and any pending update. Each row's `⋯` menu offers Update, Make default, and Uninstall. Pending updates show as a count on the sidebar's Node item and as an **Update Node** item in the tray menu. Uninstall is disabled while other releases exist if the global default would then resolve to nothing (for example an exact default naming that release); its confirmation lists any site preferences it would clear.
 - Beside the table (below it on narrow windows), **How a site picks its Node** shows the resolution order and **Sites not on the default** lists the sites resolving to another release, with the source (`.nvmrc`, `.node-version` or saved) and a red chip for any whose release isn't installed.
@@ -77,11 +83,13 @@ Manages your installed [Node.js versions](./node):
 
 ### Sites
 
-<ThemedImage light="/images/sites-light.png" dark="/images/sites-dark.png" alt="Sites page" />
+<ThemedImage light="/images/sites-light.png" dark="/images/sites-dark.png" alt="The Sites page: sites in a Client work group, a ~/Sites folder and Linked, beside the inspector for acme-shop.test" />
 
 The home base for [managing sites](./sites). Polls the daemon every 5 seconds while running, so sites added or changed elsewhere show up without a manual refresh.
 
-The toolbar has **Park folder** (a native directory picker) and **New site**, which opens one two-step dialog, **Project** then **Options**, for Laravel, WordPress, Slim, CodeIgniter or CakePHP, or links an **Existing folder**. It runs one create at a time: closing the dialog or leaving the page leaves it running (it shows in the sidebar footer and a notification announces the result), and reopening **New site** shows its progress. A name an existing site already uses is refused. See [Create a new site](./sites#create-a-new-site).
+The toolbar has **Park folder** (a native directory picker), **New group** and **New site**, which opens one two-step dialog, **Project** then **Options**, for Laravel, WordPress, Slim, CodeIgniter or CakePHP, or links an **Existing folder**. It runs one create at a time: closing the dialog or leaving the page leaves it running (it shows in the sidebar footer and a notification announces the result), and reopening **New site** shows its progress. A name an existing site already uses is refused. See [Create a new site](./sites#create-a-new-site).
+
+<ThemedImage light="/images/create-laravel-1-light.png" dark="/images/create-laravel-1-dark.png" alt="The New site dialog's Project step with Laravel selected, the project name storefront, the ~/Sites location, PHP 8.4 and HTTPS on" />
 
 An amber strip under the toolbar flags busy or unforwarded web ports and an untrusted local CA; its action opens the **Doctor** page, where one click runs the fix. See [HTTPS & Certificates](./https).
 
@@ -89,7 +97,7 @@ The list is grouped: your [groups](./sites#site-groups), then each parked folder
 
 #### The site inspector
 
-The selected site's details sit beside the list in a wide window, or slide in from the right when you click a row at the default size:
+The selected site's details sit beside the list at the default window size, or slide in from the right as a drawer when you click a row in a [smaller window](#smaller-windows):
 
 - **Actions.** **Open site**, a star that adds it to the Overview's favourites, the **Editor** button (macOS and Linux), **Terminal** (opens your terminal in the project directory) and **Finder** / **Files**, plus the site's URL with a copy button.
 - **Environment.** PHP version; **Node** (**Default** or a release, a warning when a project file overrides the saved preference, an **Install Node X** button when the requested version isn't installed, and a tooltip reminding you to run `yerd exec node …` / `yerd exec npm …` in the project for the site's version); the **HTTPS** switch; **WordPress auto-login** with an admin picker on WordPress sites; the detected framework and how requests reach PHP; and whether the site is parked or linked.
@@ -99,15 +107,19 @@ The selected site's details sit beside the list in a wide window, or slide in fr
 
 The **⋯** menu holds the rest: **Copy URL**; **Share publicly…** (a [Cloudflare Quick Tunnel](#share)); **Change web root…** (blank means auto-detect); **Move to group**, including **New group…**; **Routing rules…**, with the **Route through front controller** switch (on: everything funnels through `index.php`, as Laravel and Symfony want; off: named `.php` files execute directly) above the per-prefix [routing rules](../reference/cli/routes) that carve exceptions out of that default; **Editor**, the editor used for this site; **WP Admin** or the **Dumps viewer**; and **Unpark** or **Remove site…**.
 
+<ThemedImage light="/images/site-actions-menu-light.png" dark="/images/site-actions-menu-dark.png" alt="The site inspector's ⋯ menu open, with the Move to group submenu showing No group, Client work and New group…" />
+
 The **Editor** submenu defaults to the Preferred editor set in [Settings](#settings), shown as `Use default (…)`; pick a specific editor to override it for that one site, and the choice is remembered.
 
 ### Tooling
 
-<ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="Tooling page" />
+<ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="The Tooling page: installed Composer (update available), Laravel installer and WP-CLI, with Bun (external) and pnpm available" />
 
 Installs self-contained developer tools - Composer, Bun, pnpm, the Laravel installer, and WP-CLI - onto your PATH alongside PHP, each managed by Yerd (install / update / uninstall) so they don't collide with system installs. Node.js isn't listed here: it has its own [Node](#node) page. See [Tooling](./tooling).
 
 ### Proxies
+
+<ThemedImage light="/images/proxies-light.png" dark="/images/proxies-dark.png" alt="Proxies page" />
 
 Puts a `.test` address in front of a service Yerd doesn't run itself. The list has two sections, matching the two shapes of [reverse proxy](./proxies), and **All / Domains / Paths** chips to filter them:
 
@@ -128,13 +140,13 @@ The **Config overrides** card lists the engine's stored [configuration overrides
 
 ### Mail
 
-<ThemedImage light="/images/mail-light.png" dark="/images/mail-dark.png" alt="Mail capture page" />
+<ThemedImage light="/images/mail-light.png" dark="/images/mail-dark.png" alt="The Mail page: captured mail beside an HTML order confirmation" />
 
 The built-in SMTP **mail capture** server - point your app's mailer at `127.0.0.1` on the shown port and every outgoing email is captured for preview instead of being sent. The page is an inbox: the messages beside a reader with **Preview**, **Text** and **Headers** tabs, remote images blocked until you **Load** them (images from your `.test` sites always load), attachments and **Delete** (a table and a drawer in a narrow window). An **All apps** menu filters by sending app and the trash button clears the mailbox. The toolbar shows whether capture is running, **Setup** toggles capture, links to the port in Settings ▸ Application Ports and emits the Laravel `.env` mail keys (`MAIL_HOST`, `MAIL_PORT`, …) with editable From name/address, and the pop-out button opens the same inbox in the separate **Mails** window. Captured mail is tracked read/unread: the sidebar **Mail** item shows an unread-count pill (click it to open the Mails window), and opening a message marks it read. See [Mail Capture](./mail).
 
 ### Dumps
 
-<ThemedImage light="/images/dumps-light.png" dark="/images/dumps-dark.png" alt="Dumps page" />
+<ThemedImage light="/images/dumps-light.png" dark="/images/dumps-dark.png" alt="The Dumps page: captured requests beside a request's dump, query, cache, HTTP, job and log events" />
 
 Laravel telemetry interception - `dump()`/`dd()` plus queries, jobs, views, requests, logs, cache, and outgoing HTTP - captured by a per-version PHP extension with no code changes. The page lists captured requests beside the selected request's events, with category chips, an event filter and clickable callers (a table and a drawer in a narrow window); **Keep history** keeps older requests and the trash button clears the buffer. The toolbar shows whether capture is live, **Pause / Resume** toggles it, **Setup** holds the interception switch, the captured signals, the per-version extension status and a link to the port in Settings ▸ Application Ports, and the pop-out button opens the same list and detail in the separate **Dumps** window (with pin on top). See [Laravel ▸ Dumps](./laravel-dumps).
 
@@ -153,11 +165,25 @@ Mirrors [`yerd doctor`](./diagnostics):
 - **Findings.** The list groups every finding under **Problems**, **Warnings** and **Info**, each with a count. The first problem or warning is selected; the panel beside the list shows its severity, the full detail and, where there is one, a **Fix it yourself** command with a copy button. **Run safe fixes** in the toolbar applies the safe one-click repairs, and the **Re-check** button re-runs diagnostics and refreshes the permissions below. With nothing to fix, the panel shows **No problems found**; if the daemon can't run diagnostics, it shows **Health check unavailable** with a **Re-check** button.
 - **System permissions.** Below the findings: Local CA trusted, `.test` resolver installed, and Privileged ports 80/443. Select one to see its state and, where it isn't granted, a **Fix** button that runs the privileged action. Once a permission *is* granted by Yerd, **Revert** undoes it, behind an in-app confirm dialog and the OS prompt. When two or more need fixing, **Fix all** on the System permissions label fixes them together (on macOS with a single password prompt for the resolver and ports). Reverting the `.test` resolver restores your previous resolver on macOS; reverting privileged ports is macOS-only (Linux `setcap` has no clean reverse, so no button is shown there).
 
+<ThemedImage light="/images/doctor-permissions-light.png" dark="/images/doctor-permissions-dark.png" alt="Doctor with the Local CA permission selected, showing its Fix button and Fix all" />
+
 ::: info "Fix" actions never run the GUI as root
 The Fix buttons run the audited `yerd elevate` helper under an OS prompt; the GUI never runs elevated. On Linux this uses `pkexec`, on macOS an `osascript … with administrator privileges` prompt. You may be asked for your password. See [Elevation & Privileges](./elevation).
 
 On macOS, fixing Privileged ports from the app also removes any `pf` LAN redirect left by an older Yerd, without a message. If you use [LAN access](../reference/cli/lan), run `sudo yerd elevate lan` from a terminal afterwards.
 :::
+
+## Smaller windows
+
+The pages are laid out for the default window size. Below about 1280 pixels wide, on a small laptop screen or with the window resized narrower, the list pages switch to a compact layout: the list becomes a full-width table with more columns, and the inspector that normally sits beside it becomes a drawer that slides in from the right when you click a row. Escape, the drawer's close button or a click on the backdrop closes it again. Widen the window past the breakpoint and the side-by-side layout comes back.
+
+On the Sites page the table shows each site's **PHP**, **Node**, **Framework** and **TLS** columns, still in the same sections, and with a row selected **Space** or **→** opens its drawer:
+
+<ThemedImage light="/images/sites-compact-light.png" dark="/images/sites-compact-dark.png" alt="The Sites page in a narrower window: filter chips above a full-width table of sites with PHP, Node, Framework and TLS columns" />
+
+<ThemedImage light="/images/sites-compact-drawer-light.png" dark="/images/sites-compact-drawer-dark.png" alt="The same narrow Sites page with the acme-shop.test inspector pulled out as a drawer from the right over a dimmed table" />
+
+The same applies to the other list pages: **PHP**, **Services**, **Proxies**, **Mail**, **Dumps** and **Share**.
 
 ## Keyboard shortcuts
 

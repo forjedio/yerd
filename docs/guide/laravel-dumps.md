@@ -27,7 +27,7 @@ Laravel app served through Yerd as a `.test` site.
 The fastest way to use Dumps is from the [desktop app](./desktop-app). Open the
 **Dumps** page under the **Developer** group in the side navigation.
 
-<ThemedImage light="/images/dumps-light.png" dark="/images/dumps-dark.png" alt="The Dumps page in the Yerd desktop app" />
+<ThemedImage light="/images/dumps-light.png" dark="/images/dumps-dark.png" alt="The Dumps page: captured requests beside a POST /checkout request with its dump, queries, cache, HTTP, job, log and view events" />
 
 The page lists captured **requests**, newest first: method, status, path, site,
 event count and duration. Pick one to see its events beside the list; in a
@@ -54,6 +54,8 @@ restarts, the list starts over with the new daemon's events.
   matches a request's method, path and status), and a
   **caller badge** on each event: hover it for the project-relative path, click
   it to open the file in your default editor.
+
+<ThemedImage light="/images/dumps-category-light.png" dark="/images/dumps-category-dark.png" alt="The Cache chip selected: the request's cache hit, forget, miss and write events, with the request list narrowed to requests that touched the cache" />
 
 ## What you get
 
@@ -91,6 +93,8 @@ navigation). Enabling it does two things:
    verifies it by SHA-256, and stores it alongside your PHP installs at
    `{data}/php-ext/php-<version>/yerd-dump.so`.
 2. **Restarts your PHP-FPM pools** so they load the extension.
+
+<ThemedImage light="/images/dumps-setup-light.png" dark="/images/dumps-setup-dark.png" alt="The Dump setup dialog: the Intercept dumps switch, the dump server on 127.0.0.1:2304, the eight captured-signal switches and the PHP extension status per installed version" />
 
 After that, dumps flow into the viewer as you exercise your app.
 
@@ -155,7 +159,7 @@ The desktop app gives Dumps its own space:
   It shows the same request list and detail, with Pause / Resume and **pin on
   top** in its title bar.
 
-<ThemedImage light="/images/dumps-dialog-light.png" dark="/images/dumps-dialog-dark.png" alt="The Yerd Dumps window showing captured dump events" />
+<ThemedImage light="/images/dumps-dialog-light.png" dark="/images/dumps-dialog-dark.png" alt="The standalone Dumps window with the live capture pill, Pause and pin-on-top in its title bar, showing a GET /dashboard request" />
 
 In either place you can filter a request's events by category and text, keep
 history, and clear the buffer.

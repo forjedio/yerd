@@ -82,7 +82,7 @@ const LINK =
           <div class="min-w-0 flex-1">
             <template v-if="installed">
               <p class="text-[13px] font-semibold">
-                cloudflared<template v-if="cloudflared?.version"> {{ cloudflared.version }}</template>
+                {{ cloudflared?.version ? `cloudflared ${cloudflared.version}` : "cloudflared" }}
               </p>
               <p class="text-xs text-muted-foreground">
                 {{ system ? "Found on PATH" : "Yerd's copy" }} · used for every tunnel

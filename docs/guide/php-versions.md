@@ -6,15 +6,27 @@ Yerd runs **any number of PHP versions side by side** and lets you pick which on
 
 The fastest way to manage PHP is the **PHP** page (under the **Environment** group) in the [desktop app](./desktop-app#php). It's a live view of every installed version and the controls to change them, with no commands to remember.
 
-<ThemedImage light="/images/php-light.png" dark="/images/php-dark.png" alt="The PHP page in the Yerd desktop app" />
+<ThemedImage light="/images/php-light.png" dark="/images/php-dark.png" alt="The PHP page: Shared defaults and PHP 8.4, 8.3 and 7.4 in the list, an update banner for 8.3, and PHP 8.4's inspector with its settings grid, extra extensions, ini directives and Xdebug switch" />
 
 - The list starts with a **Shared defaults** row, then your installed versions, newest first. Each version shows a **Default** or **Legacy** chip, its patch and live FPM pool state (running, idle or failed), **Xdebug on** when its pool loads [Xdebug](./xdebug), and either an update chip (e.g. `↑ 8.4.15`) or a faint **customised** tag when it has its own configuration. **Install another version** sits at the end. On a narrower window the list becomes a table (patch, FPM, memory (RSS), Xdebug and update columns) and picking a row opens its details in a drawer.
+
+  <ThemedImage light="/images/php-compact-light.png" dark="/images/php-compact-dark.png" alt="The PHP page at a narrower window size: a table with patch, FPM, memory, Xdebug and update columns for each version" />
+
 - **Check for updates** re-checks for patch updates. When any are pending, a banner under the list offers **Update** (one version) or **Update all** - [updates are notify-only](#updates-are-notify-only).
 - **Install PHP** opens one list of installable versions: supported ones first, then the [legacy minors](#legacy-php-versions) (7.4 / 8.0 / 8.1), with installed versions marked. Picking a legacy version shows an out-of-support warning and an **I understand — install it anyway** checkbox that must be ticked before **Install** is enabled. A progress dialog shows the download; you can close it and Yerd keeps installing in the background (the sidebar shows the install, and a notification says when it's done).
+
+  <ThemedImage light="/images/php-install-light.png" dark="/images/php-install-dark.png" alt="The Install PHP dialog: supported versions 8.5 to 8.2 above the legacy 8.1, 8.0 and 7.4, with legacy 8.1 picked and its out-of-support warning and confirmation checkbox" />
+
 - Picking a version shows its inspector: its status, **Restart pool** (when the pool is running or failed), and a `···` menu with **Make default** (disabled for the default and for legacy versions), **Update to …** (when available) and **Uninstall PHP …**.
 - The inspector's **Settings** grid overrides the [shared defaults](#tuning-php-settings) for that version (empty fields inherit them; see [Per-version configuration](#per-version-configuration)). Changed rows get a blue dot, and **Reset to shared** blanks them all. The grid also holds **FPM workers** (how many PHP workers that version may run at once) and, when the build includes FFI, **FFI in web requests**. **Save changes**, in a bar pinned to the bottom of the inspector, applies the fields you changed (anything set meanwhile from the CLI is kept) and restarts only that version's pool.
+
+  <ThemedImage light="/images/php-version-settings-light.png" dark="/images/php-version-settings-dark.png" alt="PHP 8.3's inspector with two unsaved changes: Memory limit 1G and FPM workers 24 marked with blue dots, the other fields showing the inherited shared values, and the pinned Save changes bar" />
+
 - Below the grid, **Extra extensions** registers [custom extensions](#custom-extensions) and **Other ini directives** edits free-form directives (e.g. `apc.shm_size = 128M`); both apply as you add, edit or remove. The **Xdebug** section holds the [bundled Xdebug](./xdebug) switch, its modes and its start trigger.
 - The **Shared defaults** pane edits the [global ini defaults](#tuning-php-settings) applied to every version, plus the FFI switch and **Restart all pools**. Leave a field blank to use PHP's built-in default; **Save changes** (pinned at the bottom) applies only the fields you changed and restarts every running pool.
+
+  <ThemedImage light="/images/php-shared-defaults-light.png" dark="/images/php-shared-defaults-dark.png" alt="The Shared defaults pane: memory, upload, execution and error settings applied to every version, the FFI in web requests switch and Restart all pools" />
+
 - Unsaved edits are marked in the list and survive switching between versions; closing the drawer with unsaved edits asks first.
 
 ## From the command line
@@ -266,6 +278,10 @@ yerd php ext add 8.5 /opt/homebrew/lib/php/pecl/20250925/scrypt.so
 yerd php ext list
 yerd php ext remove 8.5 scrypt
 ```
+
+In the desktop app, **Add extension** in a version's inspector does the same: choose the `.so`, optionally name it, and switch on **Load as a Zend extension** for Zend extensions.
+
+<ThemedImage light="/images/php-add-extension-light.png" dark="/images/php-add-extension-dark.png" alt="The Add an extension to PHP 8.4 dialog, with a swoole.so path chosen, the name swoole and the Zend extension switch off" />
 
 - **Extensions are tied to a PHP version.** A native `.so` is compiled against one
   PHP *minor*, so you register it under the version it was built for (`8.5` above);

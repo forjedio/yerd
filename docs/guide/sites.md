@@ -11,18 +11,18 @@ Both route identically; only the registration differs.
 
 ## In the desktop app
 
-The **Sites** page (under **Environment** in the sidebar) is the home base for managing your sites. It lists every `.test` site in grouped sections beside an inspector for the selected site, with **Park folder** and **New site** in the toolbar. Most day-to-day site work happens here without touching the terminal.
+The **Sites** page (under **Environment** in the sidebar) is the home base for managing your sites. It lists every `.test` site in grouped sections beside an inspector for the selected site, with **Park folder**, **New group** and **New site** in the toolbar. Most day-to-day site work happens here without touching the terminal.
 
 <ThemedImage light="/images/sites-light.png" dark="/images/sites-dark.png" alt="The Sites page in the Yerd desktop app" />
 
-- **Park folder** opens a directory picker and parks it; **New site** opens the [New site](#create-a-new-site) dialog.
+- **Park folder** opens a directory picker and parks it; **New group** creates an empty [group](#site-groups); **New site** opens the [New site](#create-a-new-site) dialog.
 - An **amber strip** under the toolbar flags anything that makes sites harder to reach: web ports 80/443 busy or not forwarded (so URLs carry a port), or Yerd's local CA not trusted (browsers warn on HTTPS). Its **Run Doctor** / **Trust now** action opens Doctor (see [Diagnostics](./diagnostics)).
 - **Filter chips** across the top narrow the list: **All**, **HTTPS**, **Linked**, one chip per detected framework (Laravel, WordPress, ...), and **Not on** the default PHP, each with its count. The filter field beside them (⌘F / Ctrl+F) searches names, paths and every domain a site answers on. When nothing matches, you can **Create** a site with that name or **Clear filter**.
 - The list is **sectioned**: your [groups](#site-groups) first, then one section per parked folder (with its ungrouped sites), then **Linked** sites. Sections collapse, and a long section shows its first ten sites with a **+ N more** line. A folder section's header has **Reveal** and **Unpark…** (shown on hover).
 - Each row shows the site's domain and path, a `+N alias` count when it answers on extra domains, a lock when it's served over HTTPS, and its PHP version (amber when it differs from the default).
 - With the list focused, **↑/↓** move the selection, **Return** opens the site in your browser, **⌘E** / **Ctrl+E** opens it in your editor and **⌘T** / **Ctrl+T** in a terminal; **⌘C** / **Ctrl+C** copies its URL. In the narrow table, **Space** or **→** opens the selected site's inspector. These keys only act on a site you can see in the list.
 
-In a wide window (the default size) the inspector sits beside the list. It keeps showing the site you picked even when a filter or a change (say, turning HTTPS off under the **HTTPS** chip) hides it from the list. In a narrower window the list becomes a table with **PHP**, **Node**, **Framework** and **TLS** columns, and clicking a row slides the inspector in from the right (Escape or the backdrop closes it).
+In a wide window (the default size) the inspector sits beside the list. It keeps showing the site you picked even when a filter or a change (say, turning HTTPS off under the **HTTPS** chip) hides it from the list. In a narrower window the list becomes a table with **PHP**, **Node**, **Framework** and **TLS** columns, and clicking a row slides the inspector in from the right (Escape or the backdrop closes it). See [Smaller windows](./desktop-app#smaller-windows).
 
 ### The site inspector
 
@@ -33,7 +33,13 @@ In a wide window (the default size) the inspector sits beside the list. It keeps
 - **Response headers**: the site's custom response headers, each with **Edit** and **Remove**; **Add header** opens a dialog.
 - **Unpark folder…** (a parked site) or **Remove site…** (a linked site) at the bottom. Unpark stops serving the whole parked folder, every site in it, not just this one; the confirmation says how many sites that is. Both ask for confirmation; your files are never deleted.
 
+<ThemedImage light="/images/site-inspector-domains-light.png" dark="/images/site-inspector-domains-dark.png" alt="The site inspector scrolled to its Domains card (a primary domain, an alias, a subdomain and a wildcard) and its Response headers card" />
+
+<ThemedImage light="/images/site-unpark-confirm-light.png" dark="/images/site-unpark-confirm-dark.png" alt="The Unpark ~/Sites? confirmation, saying 8 sites in the folder stop being served" />
+
 The **⋯** menu has **Copy URL**, **Share publicly…**, **Change web root…** (not for WordPress), **Move to group**, **Routing rules…** (including the front-controller switch), **Editor** (a per-site editor override), **WP Admin** for WordPress sites or the **Dumps viewer** for others, and **Unpark** or **Remove site…**.
+
+<ThemedImage light="/images/site-actions-menu-light.png" dark="/images/site-actions-menu-dark.png" alt="The site inspector's ⋯ menu open, with the Move to group submenu showing No group, Client work and New group…" />
 
 For the full tour of the app, see [Features](./desktop-app#sites).
 
@@ -41,7 +47,7 @@ For the full tour of the app, see [Features](./desktop-app#sites).
 
 Sites can be organised into named groups - a GUI-only, cosmetic layer for scanning a large site list (client work, personal projects, whatever grouping makes sense to you). Groups don't affect routing, PHP, or HTTPS; the CLI has no concept of them.
 
-- **Create a group and move a site into it** from the site's **⋯** menu → **Move to group** → **New group…**, then **Create & move**.
+- **Create a group and move a site into it** from the site's **⋯** menu → **Move to group** → **New group…**, then **Create & move**. **New group** in the toolbar creates an empty one.
 - **Move a site** between groups, or back out with **No group**, from the same **Move to group** menu.
 - **Reorder groups** with the up/down arrows next to a group's name (shown on hover).
 - **Rename or delete a group** from the pencil icon next to it, which opens one **Edit group** dialog: change the name and **Save**, or click **Delete group** for a second confirmation step naming the group. Deleting a group doesn't remove its sites - they go back to their folder's section (or **Linked**).
@@ -50,9 +56,13 @@ Sites can be organised into named groups - a GUI-only, cosmetic layer for scanni
 
 Group names are unique case-insensitively (like site names) and can't be `Unallocated`, which stays reserved.
 
+<ThemedImage light="/images/site-new-group-light.png" dark="/images/site-new-group-dark.png" alt="The New group popover from Move to group, naming a new group Side projects with a Create & move button" />
+
 ### Link an existing folder
 
 **New site** → **Existing folder** (or the command palette's **Link site**) opens **Link an existing folder**: choose the project folder, name the site (prefilled from the folder), and pick its PHP version and HTTPS. **Link site** registers it as a [linked](#linking-a-directory) site.
+
+<ThemedImage light="/images/site-link-folder-light.png" dark="/images/site-link-folder-dark.png" alt="The Link an existing folder dialog with ~/Code/storefront chosen, the site name storefront, PHP 8.4 and the HTTPS switch" />
 
 ## Create a new site
 
@@ -66,9 +76,13 @@ Beyond registering folders you already have, the app can **scaffold a brand-new 
 - **PHP version** - the version the site (and the installer) runs on. Only versions the starter supports are offered.
 - **HTTPS** - serve it over TLS from day one (you can toggle this later too).
 
+<ThemedImage light="/images/create-laravel-1-light.png" dark="/images/create-laravel-1-dark.png" alt="The New site dialog's Project step with Laravel selected, the project name storefront, the ~/Sites location, PHP 8.4 and HTTPS on" />
+
 **Next** checks the starter's toolchain. If something is missing, a **Missing tools** step lists each tool and **Install missing tools** installs them (once, without touching your shell profile), then continues to **Options**. Tools you already have [installed externally](./tooling#external-tools), such as a global Composer, count.
 
 **Create site** switches the dialog to a progress view: each phase ticks off with the installer's latest output under the running one, and **Hide log** / **Show log** toggles the full log. You can close the dialog, or leave the Sites page, while it runs - creation keeps going in the background, shows in the sidebar's activity indicator, and a notification announces when it finishes or fails - and reopening **New site** shows its progress. Only one site is created at a time. Likewise, closing the dialog while **Install missing tools** runs leaves the install going, and reopening shows it. When it's done, the dialog shows the URL and a summary, with **Open in editor**, **Finder** and **Open site**. If it fails, **Back** returns to Options with your choices kept.
+
+<ThemedImage light="/images/create-laravel-3-light.png" dark="/images/create-laravel-3-dark.png" alt="The New site dialog creating storefront.test: Preflight done, Scaffolding running, and the installer's log below" />
 
 ### Laravel
 
@@ -88,11 +102,19 @@ Creating a Laravel site needs a PHP version between 8.3 and 8.5, **Composer**, a
 
 A **What Yerd will do** strip shows the `laravel new` command your choices produce and what Yerd installs around it. The progress phases are **Preflight → Scaffolding → Registering with Yerd → Ready**.
 
+<ThemedImage light="/images/create-laravel-2-light.png" dark="/images/create-laravel-2-dark.png" alt="The New Laravel site Options step with the Vue starter kit, built-in auth, Pest, SQLite, npm, the Node version picker and the What Yerd will do strip" />
+
+<ThemedImage light="/images/create-laravel-4-light.png" dark="/images/create-laravel-4-dark.png" alt="The finished New Laravel site dialog: storefront.test is ready, with Open in editor, Finder and Open site" />
+
 ### WordPress
 
 ::: tip Prerequisites
 Creating a WordPress site needs a PHP version and **WP-CLI**. WP-CLI must be Yerd's own build - Yerd runs it directly rather than through a `wp` on your `PATH`, so an [externally installed](./tooling#external-tools) `wp` doesn't count and your own copy is left alone. Yerd's **Composer** builds WP-CLI, so it's listed too while WP-CLI still needs installing - see [Tooling](./tooling).
 :::
+
+Pick **WordPress** under **Start from** on the Project step; only PHP versions WordPress supports are offered.
+
+<ThemedImage light="/images/create-wordpress-1-light.png" dark="/images/create-wordpress-1-dark.png" alt="The New site dialog's Project step with WordPress selected and the project name journal" />
 
 **Options** for WordPress:
 
@@ -103,6 +125,12 @@ Creating a WordPress site needs a PHP version and **WP-CLI**. WP-CLI must be Yer
 - **Database name** and **table prefix** - the name is derived from the project name until you edit it.
 
 Yerd provisions the database as part of creating the site, installing/starting the chosen engine first if it isn't already running - see [Services & Databases](./services). It then runs WP-CLI's `core download`/`config create`/`core install` and sets pretty permalinks. The phases are **Preflight → Provisioning database → Downloading WordPress → Configuring → Installing → Registering with Yerd → Ready**, and the Done screen adds **WP Admin** to sign in as the administrator you just created (see below).
+
+<ThemedImage light="/images/create-wordpress-2-light.png" dark="/images/create-wordpress-2-dark.png" alt="The New WordPress site Options step: site title, admin username, email and password, core version, locale, and the MySQL database settings" />
+
+<ThemedImage light="/images/create-wordpress-3-light.png" dark="/images/create-wordpress-3-dark.png" alt="The New site dialog creating journal.test, with the database provisioned, WordPress downloaded and Configuring running" />
+
+<ThemedImage light="/images/create-wordpress-4-light.png" dark="/images/create-wordpress-4-dark.png" alt="The finished New WordPress site dialog: journal.test is ready, with Open in editor, Finder, WP Admin and Open site" />
 
 ### CodeIgniter, CakePHP and Slim
 
@@ -126,6 +154,8 @@ A WordPress site created through **New site** has **one-click admin login** turn
 
 - A WordPress site's inspector has **WP Admin** in its **⋯** menu, which opens the site's `/wp-admin/` pre-authenticated when one-click login is on.
 - Turn it on or off, and choose **who** to sign in as, from the inspector's **Environment** card: the **WordPress auto-login** switch and a **Sign in as** picker (defaults to the earliest-created administrator). If the admin list can't be read (for example, the site's database is stopped), the card says so with a **Retry** link and leaves your setting as it is.
+
+<ThemedImage light="/images/site-wordpress-light.png" dark="/images/site-wordpress-dark.png" alt="The inspector for blog.test, a WordPress site, with the WordPress auto-login switch on and Sign in as set to Alex Morgan" />
 
 ::: info How it works
 Opening **WP Admin** mints a short-lived, single-use login token and appends it to the `/wp-admin/` URL. The proxy recognises and consumes the token on the first request, signing you in before redirecting - it's never valid a second time, and it does nothing outside that one request. If the resolver is off ([Localhost Access](./localhost-access)) or minting fails for any reason, **WP Admin** falls back to WordPress's ordinary login screen instead.
@@ -313,7 +343,11 @@ yerd domain remove blog blog.test      # drop a domain (a site keeps >=1 exact)
 yerd domain reset blog                 # back to the default apex only
 ```
 
-For a WordPress site, changing the primary domain also rewrites its `siteurl`/`home`. In the desktop app the same lives in the site inspector's **Domains** card. See the [domains reference](../reference/cli/domains) for the full command surface and rules.
+For a WordPress site, changing the primary domain also rewrites its `siteurl`/`home`. In the desktop app the same lives in the site inspector's **Domains** card, where **Add domain** and each row's **Edit** open this dialog:
+
+<ThemedImage light="/images/site-domain-dialog-light.png" dark="/images/site-domain-dialog-dark.png" alt="The Add domain dialog with api.acme-shop.test typed in" />
+
+See the [domains reference](../reference/cli/domains) for the full command surface and rules.
 
 ### Document roots and the served web root
 
@@ -376,6 +410,8 @@ yerd root my-app --auto      # forget the override; go back to auto-detection
 The [Sites view](./desktop-app#sites) shows the served path in the site inspector, and its **⋯** menu → **Change web root…** sets it directly - leave the field blank to go back to auto-detection.
 :::
 
+<ThemedImage light="/images/site-web-root-light.png" dark="/images/site-web-root-dark.png" alt="The Change web root dialog with public as the web root" />
+
 ## Routing rules
 
 Detection and the web root cover the common layouts, but two shapes need a rule.
@@ -397,6 +433,10 @@ yerd route add dashboard / index.html
 
 A rule only applies when the request matched no real file, so assets and real directories keep winning. A site whose web root holds an `index.html` and no `index.php` gets the SPA behaviour automatically, with no rule at all.
 
+In the desktop app, the site's **⋯** menu → **Routing rules…** lists the rules, adds and removes them, and holds the **Route through front controller** switch:
+
+<ThemedImage light="/images/site-routing-rules-light.png" dark="/images/site-routing-rules-dark.png" alt="The Routing rules dialog for portal.test, with the front-controller switch on and rules sending /api to api/index.php and /reports to reports/index.html" />
+
 See [Routing rules](../reference/cli/routes) for the full semantics, and note this is different from a [reverse proxy path rule](./proxies), which forwards to a separate running service rather than to a file inside the site.
 
 ## Response headers
@@ -409,6 +449,8 @@ yerd header set api Access-Control-Allow-Origin https://app.test
 ```
 
 A configured header replaces any same-named header the app sends, and applies to PHP responses, static files, Yerd's own error pages and redirects alike. Set headers from the **Response headers** card in the desktop app's site inspector (each row has **Edit** and **Remove**; **Add header** opens a dialog), or see [Response headers](../reference/cli/headers) for the full semantics.
+
+<ThemedImage light="/images/site-header-dialog-light.png" dark="/images/site-header-dialog-dark.png" alt="The Add response header dialog with the name Access-Control-Allow-Credentials and the value true" />
 
 ## Streaming responses (SSE / Livewire `wire:stream`)
 

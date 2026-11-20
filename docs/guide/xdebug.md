@@ -22,7 +22,7 @@ Open the **PHP** page, pick a version in the list, and flip the switch in the
 time, Yerd downloads Xdebug for that version, checks it loads, and restarts that
 version's pool with it. The list then shows **Xdebug on** for the version.
 
-<ThemedImage light="/images/xdebug-settings-light.png" dark="/images/xdebug-settings-dark.png" alt="The Xdebug section of PHP 8.5's per-version configuration: the on/off switch, mode checkboxes with Step debugging selected, the On every request start option with an Apply button, and the IDE port hint" />
+<ThemedImage light="/images/xdebug-settings-light.png" dark="/images/xdebug-settings-dark.png" alt="The PHP page with PHP 8.4 selected and scrolled to its Xdebug section: the switch on, Step debugging and Development helpers modes selected, the Only with a trigger start option with an Apply button, and the IDE port hint; the list shows Xdebug on for 8.4" />
 
 The same section lets you pick the [modes](#modes) and choose whether Xdebug
 starts on **every request** or only **on a trigger**. Those are staged: change

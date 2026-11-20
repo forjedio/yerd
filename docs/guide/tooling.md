@@ -32,7 +32,7 @@ removes them cleanly on uninstall.
 Open the **Tooling** page from the sidebar (under the **Developer** group). It
 lists the developer tools Yerd manages in two groups:
 
-<ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="The Tooling page in the Yerd desktop app" />
+<ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="The Tooling page: Composer (with an update to 2.9.1), the Laravel installer and WP-CLI installed, and Bun (found externally in /opt/homebrew/bin) and pnpm available" />
 
 - **Installed** lists each installed tool (**Composer**, **Bun**, **pnpm**, the
   **Laravel installer**, **WP-CLI**) with its version and the commands it
@@ -52,6 +52,9 @@ lists the developer tools Yerd manages in two groups:
 - While a tool installs its card shows progress and **Show log**; if the install
   fails the card shows the error with **Show log** and **Try again**. Closing
   the log doesn't stop the install.
+
+  <ThemedImage light="/images/tooling-install-log-light.png" dark="/images/tooling-install-log-dark.png" alt="The Updating Composer log dialog streaming the download, checksum and install steps, with Keeps going if you close this" />
+
 - Each tool is placed on your `PATH` alongside PHP and managed entirely by Yerd,
   so it won't collide with a system install.
 

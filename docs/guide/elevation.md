@@ -51,7 +51,7 @@ helper under an OS prompt, and once a row is configured a **Revert** button
 reverts it.
 :::
 
-<ThemedImage light="/images/doctor-light.png" dark="/images/doctor-dark.png" alt="The Doctor page in the desktop app, with Fix and Revert buttons per row" />
+<ThemedImage light="/images/doctor-permissions-light.png" dark="/images/doctor-permissions-dark.png" alt="The Doctor page's System permissions: the local CA and .test resolver not yet granted, with Fix and Fix all" />
 
 Reverse any of it with `unelevate`, using the same targets:
 

@@ -9,7 +9,9 @@ Both read from the daemon, which owns all runtime state. The CLI is a thin clien
 
 ## In the desktop app
 
-The **Doctor** page (under the **System** group) mirrors the CLI's diagnostics as a list with a details panel beside it. The list groups every finding under **Problems**, **Warnings** and **Info**; select one to see its full detail and a copyable remedy command. **Run safe fixes** in the toolbar applies the safe one-click repairs (restarting a failed PHP-FPM pool), and **Re-check** re-runs diagnostics. On a healthy machine the panel shows **No problems found**; if the daemon can't run diagnostics it shows **Health check unavailable** with a **Re-check** button.
+The **Doctor** page (pinned at the bottom of the sidebar) mirrors the CLI's diagnostics as a list with a details panel beside it. The list groups every finding under **Problems**, **Warnings** and **Info**; select one to see its full detail and a copyable remedy command. **Run safe fixes** in the toolbar applies the safe one-click repairs (restarting a failed PHP-FPM pool), and **Re-check** re-runs diagnostics. On a healthy machine the panel shows **No problems found**; if the daemon can't run diagnostics it shows **Health check unavailable** with a **Re-check** button.
+
+<ThemedImage light="/images/doctor-light.png" dark="/images/doctor-dark.png" alt="The Doctor page in the Yerd desktop app, a PHP update warning selected with its fix command" />
 
 Below the findings, **System permissions** lists the OS-level state, each with a one-click action behind an OS prompt (the GUI never runs as root):
 
@@ -19,13 +21,15 @@ Below the findings, **System permissions** lists the OS-level state, each with a
 
 Select a permission that isn't granted and **Fix** runs the privileged action; once Yerd has granted it, **Revert** undoes it after an in-app confirm and the OS prompt. **Fix all** on the System permissions label appears when two or more need fixing. Reverting the resolver restores your previous one on macOS; port revert is macOS-only.
 
-<ThemedImage light="/images/doctor-light.png" dark="/images/doctor-dark.png" alt="The Doctor page in the Yerd desktop app" />
+<ThemedImage light="/images/doctor-permissions-light.png" dark="/images/doctor-permissions-dark.png" alt="Doctor with two problems and two warnings, the Local CA permission selected and its Fix button" />
 
 See [Features](./desktop-app#doctor) for the rest of the GUI.
 
 ### When the daemon won't start
 
 If the app fails to start the daemon, it shows a diagnostics panel with hints derived from the daemon's own logs plus the last few lines of the macOS self-repair trail (`yerd-gui-repair.log` - see [The Daemon](./daemon#autostart)). One case it recognizes: a running daemon whose config schema is newer than what the daemon build understands (an upgrade that didn't fully take effect) - the panel names it explicitly and suggests toggling the daemon's login item off then on in Settings to force re-registration, or removing any leftover old `Yerd.app` copies.
+
+<ThemedImage light="/images/overview-start-failed-light.png" dark="/images/overview-start-failed-dark.png" alt="The Overview after a failed daemon start: the hint, the spawn log excerpt, and Copy diagnostics" />
 
 "Copy diagnostics" in that panel bundles the daemon log tail, the repair log tail, and the detected hints together, so a bug report carries everything in one paste.
 

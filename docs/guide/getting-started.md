@@ -33,14 +33,34 @@ macOS builds.
 Grab the latest **stable release** from the
 [releases page](https://github.com/forjedio/yerd/releases):
 
-| Platform | Download | Install |
+| Platform | Architecture | Download |
 |---|---|---|
-| macOS (Apple Silicon) | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` | open, drag Yerd to Applications |
-| Linux · Debian/Ubuntu (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
-| Linux · Debian/Ubuntu (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_Arm64_v<ver>.deb` |
-| Linux · Arch (x86-64) | `Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` | `sudo pacman -U ./Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` |
-| Linux · Fedora (x86-64) | `Yerd_Linux_x86_64_v<ver>.rpm` | `sudo dnf install ./Yerd_Linux_x86_64_v<ver>.rpm` |
-| Linux · Fedora (arm64) | `Yerd_Linux_Arm64_v<ver>.rpm` | `sudo dnf install ./Yerd_Linux_Arm64_v<ver>.rpm` |
+| macOS | Apple Silicon | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` |
+| Debian / Ubuntu | x86-64 | `Yerd_Linux_x86_64_v<ver>.deb` |
+| Debian / Ubuntu | arm64 | `Yerd_Linux_Arm64_v<ver>.deb` |
+| Arch | x86-64 | `Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` |
+| Fedora | x86-64 | `Yerd_Linux_x86_64_v<ver>.rpm` |
+| Fedora | arm64 | `Yerd_Linux_Arm64_v<ver>.rpm` |
+
+Then install it. On macOS, open the `.dmg` and drag Yerd to Applications. On
+Linux, install the package with your package manager (use `Arm64` in place of
+`x86_64` on an arm64 machine):
+
+::: code-group
+
+```sh [Debian / Ubuntu]
+sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb
+```
+
+```sh [Arch]
+sudo pacman -U ./Yerd_Linux_x86_64_v<ver>.pkg.tar.zst
+```
+
+```sh [Fedora]
+sudo dnf install ./Yerd_Linux_x86_64_v<ver>.rpm
+```
+
+:::
 
 ::: tip Arch Linux
 Remove any leftover `/usr/bin/yerd` from the old v1 (Go) project first - pacman

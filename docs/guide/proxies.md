@@ -61,6 +61,8 @@ yerd domain primary account-dev custom-domain.test
 primary; `yerd domain list` stays site-only. In the desktop app the same controls
 are the **Domains** card in a proxy's inspector on the Proxies page.
 
+<ThemedImage light="/images/proxies-light.png" dark="/images/proxies-dark.png" alt="The Proxies page: whole-domain proxies and paths on sites, with a proxy's route, HTTPS switch and domains in the inspector" />
+
 A domain can only be claimed by one site or proxy. If two claim the same one,
 every **site** is considered before any proxy, and a domain added explicitly
 beats a claim on a default apex - a proxy that loses one domain keeps its
@@ -85,6 +87,12 @@ full path is passed through to the upstream unchanged (`/app/...` reaches
 Reverb as `/app/...`), which is what Reverb expects.
 
 Remove a rule with `yerd proxy remove myapp /app`.
+
+In the desktop app, **New proxy** on the Proxies page adds either shape: pick
+**A whole domain** or **A path on a site**, then the name or the site and path,
+and the upstream.
+
+<ThemedImage light="/images/proxies-new-light.png" dark="/images/proxies-new-dark.png" alt="The New proxy dialog in A path on a site mode, forwarding invoicing.test/app to 127.0.0.1:8081" />
 
 ## Upstreams and headers
 

@@ -48,13 +48,17 @@ Service support follows the same model as [PHP versions](./php-versions):
 ## In the desktop app
 
 The [desktop app](./desktop-app) surfaces every engine on its **Services** page,
-under the **Developer** group in the sidebar. **Add service** opens a one-step
+under the **Developer** group in the sidebar.
+
+<ThemedImage light="/images/services-light.png" dark="/images/services-dark.png" alt="The Services page in the Yerd desktop app" />
+
+**Add service** opens a one-step
 dialog: pick a tile (installed engines read *Added*), then the version (or, for
 Reverb, the Laravel site), the port (the next free one is filled in) and whether
 it starts with Yerd. The daemon auto-starts every engine set to start with Yerd,
 so what you install stays running across reboots.
 
-<ThemedImage light="/images/services-light.png" dark="/images/services-dark.png" alt="The Services page in the Yerd desktop app" />
+<ThemedImage light="/images/services-add-light.png" dark="/images/services-add-dark.png" alt="The Add a service dialog with MariaDB picked, its version, the next free port and Start with Yerd" />
 
 The list groups services under **Databases**, **Cache & search** and
 **Per-site**, each row showing its version, state, port and (for a running SQL
@@ -63,6 +67,9 @@ engine) how many databases it holds. Selecting one opens its inspector:
 - **Logs** opens a live tail of the service log (the last 500 lines, refreshed
   every two seconds, with Copy). **Start**, **Restart** and **Stop** appear when
   they apply.
+
+  <ThemedImage light="/images/services-logs-light.png" dark="/images/services-logs-dark.png" alt="The MySQL logs dialog, a live tail of the service log with an error line in red" />
+
 - The `···` menu holds **Uninstall** for an engine, with an *Also delete the
   stored data* option (without it your data stays on disk for a reinstall), or
   **Remove this instance** for a per-site Reverb.
@@ -77,21 +84,32 @@ engine) how many databases it holds. Selecting one opens its inspector:
   with an empty cluster: the old major's databases stay on disk (each major has
   its own data directory) and come back if you switch back to that major.
   Meilisearch indexes don't carry over; rebuild them with Laravel Scout.
+
+  <ThemedImage light="/images/services-change-version-light.png" dark="/images/services-change-version-dark.png" alt="The Change MySQL version dialog, preselecting a newer version" />
+
 - **Databases** (SQL engines): **New database**, a filter, and **Hide test
   copies**, which folds Laravel's parallel-testing copies (`app_test_1`, …)
   under the database they came from. Each row's `···` menu offers **Back up to
   file…**, **Restore from file…**, **Use in Connect** and **Delete database**;
   delete and restore confirm in the row itself.
+
+  <ThemedImage light="/images/manage-databases-light.png" dark="/images/manage-databases-dark.png" alt="The MySQL Databases card with a database's menu open: Back up to file, Restore from file, Use in Connect and Delete database" />
+
 - **Connect a Laravel app**: the ready-made `.env` block for the engine, with a
   database picker that fills in `DB_DATABASE` for SQL engines, and **Copy for
   .env**. A Reverb instance shows its server and browser (Echo) halves side by
   side.
+
+  <ThemedImage light="/images/services-reverb-light.png" dark="/images/services-reverb-dark.png" alt="A per-site Reverb instance in the Services inspector, with its server and browser .env blocks side by side" />
+
 - **Config overrides**: your own engine config directives (config-backed engines
   only; see [below](#service-configuration-overrides)). They apply on the next
   restart.
 
 In a narrow window the list becomes a table (version, port, status, details)
 and the inspector slides in as a drawer when you click a row.
+
+<ThemedImage light="/images/services-compact-light.png" dark="/images/services-compact-dark.png" alt="The Services page in a narrow window, listing services as a table with version, port, status and details" />
 
 ## From the command line
 

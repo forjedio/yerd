@@ -12,7 +12,7 @@ already runs your sites, PHP, HTTPS, and DNS.
 
 ## In the desktop app
 
-<ThemedImage light="/images/mail-light.png" dark="/images/mail-dark.png" alt="The Mail page in the Yerd desktop app" />
+<ThemedImage light="/images/mail-light.png" dark="/images/mail-dark.png" alt="The Mail page: the inbox beside an HTML order confirmation on the Preview tab, with its PDF attachment and one blocked remote image" />
 
 The [desktop app](./desktop-app) surfaces mail capture on its own **Mail** page,
 under the **Developer** group in the sidebar. It's the richest way to drive
@@ -36,6 +36,13 @@ capture and read what's been caught.
   every captured message.
 - The pop-out button opens the separate **Mails** window with the same inbox and
   reader, so you can keep captured mail next to your editor and browser.
+
+<ThemedImage light="/images/mail-setup-light.png" dark="/images/mail-setup-dark.png" alt="The Mail setup dialog: the capture switch, the SMTP address with Change port, and the Laravel .env keys filled in from the From name and address" />
+
+In a narrow window the inbox becomes a table with the sending app, recipient
+and time, and a message opens in a drawer over it:
+
+<ThemedImage light="/images/mail-compact-light.png" dark="/images/mail-compact-dark.png" alt="The Mail page in a narrow window, listing captured mail as a table" />
 
 Captured mail is tracked as **read or unread**. New messages count toward an
 unread badge that shows in three places: a pill on the sidebar **Mail** item
@@ -148,7 +155,7 @@ messages, clear everything, open **file attachments**, and follow **http(s) /
 mailto / tel** links in both HTML and plain-text bodies (they open in your OS
 browser / handler).
 
-<ThemedImage light="/images/mails-light.png" dark="/images/mails-dark.png" alt="A captured email open in the Yerd Mails viewer" />
+<ThemedImage light="/images/mails-light.png" dark="/images/mails-dark.png" alt="The standalone Mails window with a password-reset email open" />
 
 The HTML body is sanitized with **DOMPurify** and rendered in a **Shadow DOM**
 in the reader (so link clicks work reliably on macOS WKWebView). Openable
@@ -164,7 +171,11 @@ load: anything on your Yerd TLD (a logo at `https://shop.test/logo.png`),
 `localhost` or a loopback address is served by your own machine. A bar beside the
 tabs says what was blocked (for example "1 remote image blocked"); use **Load**
 when you want it, and **Hide** to block it again. The **Headers** tab lists those
-URLs under **Remote content**. Non-inline attachments appear in a band under the
+URLs under **Remote content**.
+
+<ThemedImage light="/images/mail-headers-light.png" dark="/images/mail-headers-dark.png" alt="The Headers tab of a captured email, listing every header and the blocked tracking image under Remote content" />
+
+Non-inline attachments appear in a band under the
 message header and open with the OS default app; **Delete** removes the open
 message after a confirmation. A message whose body can't be read (for example a
 missing `.eml` file) still offers **Delete** in the reader.
