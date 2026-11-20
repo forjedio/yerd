@@ -1,5 +1,5 @@
 import { flushPromises } from "@vue/test-utils";
-import { effectScope, reactive, ref } from "vue";
+import { effectScope, nextTick, reactive, ref } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const listTools = vi.hoisted(() => vi.fn());
@@ -161,6 +161,46 @@ describe("useLaravelStarter spec", () => {
       teams: true,
       livewire_class_components: true,
     });
+  });
+
+  it("drops teams and class components with no authentication", async () => {
+    const { starter } = await setup();
+    starter.kitChoice = "livewire";
+    starter.form.auth = "none";
+    starter.form.teams = true;
+    starter.form.livewireClassComponents = true;
+    expect(starter.noAuth).toBe(true);
+    expect(options(starter)).toMatchObject({
+      auth: "none",
+      teams: false,
+      livewire_class_components: false,
+    });
+    expect(starter.command).toContain("--livewire --no-authentication");
+  });
+
+  it.each([
+    ["none", false],
+    ["react", true],
+    ["vue", true],
+    ["livewire", true],
+    ["svelte", true],
+    ["community", false],
+  ] as const)("offers no authentication for the %s kit: %s", async (kit, offered) => {
+    const { starter } = await setup();
+    starter.kitChoice = kit;
+    expect(starter.offersNoAuth).toBe(offered);
+  });
+
+  it("resets no authentication to built-in on switching to a community kit", async () => {
+    const { starter } = await setup();
+    starter.kitChoice = "vue";
+    starter.form.auth = "none";
+    await nextTick();
+    starter.kitChoice = "community";
+    expect(starter.noAuth).toBe(false);
+    expect(options(starter).auth).toBe("laravel");
+    await nextTick();
+    expect(starter.form.auth).toBe("laravel");
   });
 });
 

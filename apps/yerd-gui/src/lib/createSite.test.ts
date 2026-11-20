@@ -43,6 +43,23 @@ describe("laravelCommand", () => {
       "laravel new crm --livewire --workos --livewire-class-components --teams --phpunit --database=pgsql --bun --boost",
     ],
     [
+      "the daemon's no-auth case",
+      "x",
+      opts({
+        starter_kit: "react",
+        auth: "none",
+        teams: true,
+        livewire_class_components: true,
+      }),
+      "laravel new x --react --no-authentication --pest --database=sqlite",
+    ],
+    [
+      "the daemon's no-auth without an official kit case",
+      "x",
+      opts({ starter_kit: { community: "acme/kit" }, auth: "none", teams: true }),
+      "laravel new x --using=acme/kit --teams --pest --database=sqlite",
+    ],
+    [
       "a community kit",
       "x",
       opts({ starter_kit: { community: "acme/kit" }, js: "pnpm" }),

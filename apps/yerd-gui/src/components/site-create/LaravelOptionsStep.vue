@@ -6,7 +6,7 @@ import Switch from "@/components/ui/Switch.vue";
 import { DATABASE_LABELS, KIT_OPTIONS, type LaravelStarter } from "@/composables/useLaravelStarter";
 import type { AuthProvider, Database, JsRuntime, Testing } from "@/ipc/types";
 import { cn } from "@/lib/utils";
-import type { UnwrapNestedRefs } from "vue";
+import { computed, type UnwrapNestedRefs } from "vue";
 
 /**
  * Step 2 of New site for Laravel: the starter kit tiles, the option rows and the
@@ -14,10 +14,11 @@ import type { UnwrapNestedRefs } from "vue";
  */
 const props = defineProps<{ starter: UnwrapNestedRefs<LaravelStarter> }>();
 
-const AUTH_OPTIONS = [
+const authOptions = computed(() => [
   { value: "laravel", label: "Built-in" },
   { value: "work_os", label: "WorkOS" },
-];
+  ...(props.starter.offersNoAuth ? [{ value: "none", label: "None" }] : []),
+]);
 const TESTING_OPTIONS = [
   { value: "pest", label: "Pest" },
   { value: "php_unit", label: "PHPUnit" },
@@ -95,17 +96,17 @@ const ROW = "flex min-h-[52px] items-center justify-between gap-4 px-3.5 py-2";
         <p class="text-[13px] font-semibold">Authentication</p>
         <SegmentedControl
           :model-value="starter.form.auth"
-          :options="AUTH_OPTIONS"
+          :options="authOptions"
           variant="plain"
           aria-label="Authentication provider"
           @update:model-value="setAuth"
         />
       </div>
-      <div v-if="starter.hasAuthKit" :class="ROW">
+      <div v-if="starter.hasAuthKit && !starter.noAuth" :class="ROW">
         <p class="text-[13px] font-semibold">Team support</p>
         <Switch v-model="starter.form.teams" aria-label="Team support" />
       </div>
-      <div v-if="starter.isLivewire" :class="ROW">
+      <div v-if="starter.isLivewire && !starter.noAuth" :class="ROW">
         <p class="text-[13px] font-semibold">Standalone Livewire class components</p>
         <Switch
           v-model="starter.form.livewireClassComponents"

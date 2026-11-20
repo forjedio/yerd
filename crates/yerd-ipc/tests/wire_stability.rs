@@ -2926,6 +2926,23 @@ fn js_runtime_byte_shapes() {
 }
 
 #[test]
+fn auth_provider_wire_tags() {
+    use yerd_ipc::AuthProvider;
+    let cases = [
+        (AuthProvider::Laravel, r#""laravel""#),
+        (AuthProvider::WorkOs, r#""work_os""#),
+        (AuthProvider::None, r#""none""#),
+    ];
+    for (auth, expected) in cases {
+        assert_eq!(serde_json::to_string(&auth).unwrap(), expected);
+        assert_eq!(
+            serde_json::from_str::<AuthProvider>(expected).unwrap(),
+            auth
+        );
+    }
+}
+
+#[test]
 fn request_create_site_community_kit_byte_shape() {
     use yerd_ipc::StarterKit;
     let s = serde_json::to_string(&StarterKit::Community("acme/kit".into())).unwrap();

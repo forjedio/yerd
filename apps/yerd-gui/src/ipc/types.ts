@@ -434,7 +434,7 @@ export type StarterKitTag = "none" | "react" | "vue" | "livewire" | "svelte";
 /** StarterKit: a unit tag, or a community kit `{ community: "<package>" }`. */
 export type StarterKit = StarterKitTag | { community: string };
 
-export type AuthProvider = "laravel" | "work_os";
+export type AuthProvider = "laravel" | "work_os" | "none";
 export type Testing = "pest" | "php_unit";
 export type Database = "sqlite" | "mysql" | "mariadb" | "pgsql" | "sqlsrv";
 export type JsRuntime = "npm" | "bun" | "pnpm" | "skip";

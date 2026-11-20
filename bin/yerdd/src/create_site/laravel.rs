@@ -196,6 +196,10 @@ fn chosen_node(
 /// pnpm rejects the flag, so a pnpm job strips it in a per-job wrapper (see
 /// `super::write_pnpm_wrapper`). Anything that still slips through is stripped defensively in
 /// `crate::jobs::JobRegistry::push_log`.
+///
+/// No authentication only applies to the official kits (see [`no_auth`]) and
+/// drops `--teams` and `--livewire-class-components`: the installer turns them
+/// into `:dev-*` branches that the blank kits do not have.
 fn build_new_args(name: &str, o: &LaravelOptions) -> Vec<String> {
     let mut a = vec![
         "new".to_owned(),
@@ -214,13 +218,16 @@ fn build_new_args(name: &str, o: &LaravelOptions) -> Vec<String> {
             a.push(pkg.clone());
         }
     }
-    if matches!(o.auth, AuthProvider::WorkOs) {
+    let no_auth = no_auth(o);
+    if no_auth {
+        a.push("--no-authentication".to_owned());
+    } else if o.auth == AuthProvider::WorkOs {
         a.push("--workos".to_owned());
     }
-    if o.livewire_class_components {
+    if !no_auth && o.livewire_class_components {
         a.push("--livewire-class-components".to_owned());
     }
-    if o.teams {
+    if !no_auth && o.teams {
         a.push("--teams".to_owned());
     }
     match o.testing {
@@ -240,6 +247,17 @@ fn build_new_args(name: &str, o: &LaravelOptions) -> Vec<String> {
     }
     a.push(if o.boost { "--boost" } else { "--no-boost" }.to_owned());
     a
+}
+
+/// Whether `--no-authentication` applies: only the official kits have blank
+/// variants, so the installer ignores it with `--using` or no kit, and Yerd
+/// treats it as built-in auth there.
+fn no_auth(o: &LaravelOptions) -> bool {
+    o.auth == AuthProvider::None
+        && matches!(
+            o.starter_kit,
+            StarterKit::React | StarterKit::Vue | StarterKit::Livewire | StarterKit::Svelte
+        )
 }
 
 fn database_flag(d: Database) -> &'static str {
@@ -390,6 +408,64 @@ mod tests {
                 "--no-boost",
             ]
         );
+    }
+
+    #[test]
+    fn no_auth_args() {
+        let cases = [
+            (StarterKit::React, "--react"),
+            (StarterKit::Vue, "--vue"),
+            (StarterKit::Livewire, "--livewire"),
+            (StarterKit::Svelte, "--svelte"),
+        ];
+        for (kit, flag) in cases {
+            let mut o = opts();
+            o.starter_kit = kit;
+            o.auth = AuthProvider::None;
+            o.teams = true;
+            o.livewire_class_components = true;
+            assert_eq!(
+                build_new_args("x", &o),
+                vec![
+                    "new",
+                    "x",
+                    "--no-interaction",
+                    "--no-ansi",
+                    flag,
+                    "--no-authentication",
+                    "--pest",
+                    "--database",
+                    "sqlite",
+                    "--no-boost",
+                ],
+                "{flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_auth_is_ignored_without_an_official_kit() {
+        let mut o = opts();
+        o.auth = AuthProvider::None;
+        o.teams = true;
+        assert_eq!(
+            build_new_args("x", &o),
+            vec![
+                "new",
+                "x",
+                "--no-interaction",
+                "--no-ansi",
+                "--teams",
+                "--pest",
+                "--database",
+                "sqlite",
+                "--no-boost",
+            ]
+        );
+        o.starter_kit = StarterKit::Community("acme/kit".to_owned());
+        let a = build_new_args("x", &o);
+        assert!(!a.iter().any(|f| f == "--no-authentication"), "{a:?}");
+        assert!(a.iter().any(|f| f == "--teams"), "{a:?}");
     }
 
     #[test]
