@@ -248,9 +248,6 @@ enum MacStart {
     ServiceCtl,
     /// Under sudo, re-bootstrap the system job through the helper for `uid`.
     Helper(u32),
-    /// Under sudo, `uid`'s daemon is already up: re-bootstrapping would boot
-    /// it out (stopping every site) only to load it again, so do nothing.
-    AlreadyRunning,
 }
 
 /// macOS `start` under sudo re-registers the system job for this install, so
@@ -280,9 +277,23 @@ fn registered_job_matches(
     }
 }
 
+/// macOS `start` under sudo: whether the system job needs re-bootstrapping.
+/// The job must belong to this install and user first; when `uid`'s daemon is
+/// already up, re-bootstrapping would boot it out (stopping every site) only
+/// to load it again, so `Ok(false)` leaves it alone.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn helper_start_needed(
+    registered: Option<&DaemonJobIdentity>,
+    user: &str,
+    yerdd: &Path,
+    daemon_running: bool,
+) -> Result<bool, Refusal> {
+    registered_job_matches(registered, user, yerdd)?;
+    Ok(!daemon_running)
+}
+
 /// macOS `start`. A headless install without its system job has nothing for
 /// `launchctl` to start, so it is pointed at `daemon install` instead.
-/// `daemon_running` is asked only on the sudo path, for the invoking user.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn macos_start_plan(
     root: bool,
@@ -290,7 +301,6 @@ fn macos_start_plan(
     system_plist: bool,
     headless: bool,
     yerd: &Path,
-    daemon_running: impl FnOnce(u32) -> bool,
 ) -> Result<MacStart, Refusal> {
     let not_registered = || {
         Refusal::new(
@@ -304,7 +314,6 @@ fn macos_start_plan(
     match (root, sudo_uid, system_plist) {
         (false, _, false) if headless => Err(not_registered()),
         (false, _, _) => Ok(MacStart::ServiceCtl),
-        (true, Some(uid), true) if daemon_running(uid) => Ok(MacStart::AlreadyRunning),
         (true, Some(uid), true) => Ok(MacStart::Helper(uid)),
         (true, Some(_), false) => Err(not_registered()),
         (true, None, _) => Err(Refusal::new(
@@ -535,7 +544,6 @@ mod unix_impl {
                 Ok(yerd_platform::pure::install_receipt::InstallMode::Headless)
             ),
             &yerd,
-            os::daemon_running_for,
         )?;
         match plan {
             super::MacStart::ServiceCtl => yerd_service_ctl::ServiceCtl::new(dir.join("yerdd"))
@@ -547,16 +555,16 @@ mod unix_impl {
                     other => Refusal::new(format!("starting the daemon failed: {other}"), 1),
                 })?,
             super::MacStart::Helper(uid) => {
-                super::registered_job_matches(
+                if !super::helper_start_needed(
                     os::registered_job().as_ref(),
                     &user_name(uid),
                     &dir.join("yerdd"),
-                )?;
+                    os::daemon_running_for(uid),
+                )? {
+                    println!("yerd: the daemon is already running");
+                    return Ok(());
+                }
                 os::run_install_daemon_job(uid)?;
-            }
-            super::MacStart::AlreadyRunning => {
-                println!("yerd: the daemon is already running");
-                return Ok(());
             }
         }
         println!("yerd: daemon started");
@@ -907,67 +915,60 @@ mod tests {
         }
     }
 
-    type StartCase = (bool, Option<u32>, bool, bool, bool, Result<MacStart, u8>);
+    type StartCase = (bool, Option<u32>, bool, bool, Result<MacStart, u8>);
 
     #[test]
     fn macos_start_plan_table() {
         let yerd = Path::new(YERD);
-        let cases: [StartCase; 14] = [
-            (false, None, true, true, false, Ok(MacStart::ServiceCtl)),
-            (false, None, true, false, false, Ok(MacStart::ServiceCtl)),
-            (
-                false,
-                Some(501),
-                false,
-                false,
-                false,
-                Ok(MacStart::ServiceCtl),
-            ),
-            (false, None, false, false, false, Ok(MacStart::ServiceCtl)),
-            (false, None, true, true, true, Ok(MacStart::ServiceCtl)),
-            (false, None, false, true, false, Err(EX_CONFIG)),
-            (false, Some(501), false, true, false, Err(EX_CONFIG)),
-            (
-                true,
-                Some(501),
-                true,
-                true,
-                false,
-                Ok(MacStart::Helper(501)),
-            ),
-            (
-                true,
-                Some(501),
-                true,
-                true,
-                true,
-                Ok(MacStart::AlreadyRunning),
-            ),
-            (true, Some(501), false, true, false, Err(EX_CONFIG)),
-            (true, Some(501), false, true, true, Err(EX_CONFIG)),
-            (true, None, true, true, false, Err(EX_NOPERM)),
-            (true, None, true, true, true, Err(EX_NOPERM)),
-            (true, None, false, false, false, Err(EX_NOPERM)),
+        let cases: [StartCase; 10] = [
+            (false, None, true, true, Ok(MacStart::ServiceCtl)),
+            (false, None, true, false, Ok(MacStart::ServiceCtl)),
+            (false, Some(501), false, false, Ok(MacStart::ServiceCtl)),
+            (false, None, false, false, Ok(MacStart::ServiceCtl)),
+            (false, None, false, true, Err(EX_CONFIG)),
+            (false, Some(501), false, true, Err(EX_CONFIG)),
+            (true, Some(501), true, true, Ok(MacStart::Helper(501))),
+            (true, Some(501), false, true, Err(EX_CONFIG)),
+            (true, None, true, true, Err(EX_NOPERM)),
+            (true, None, false, false, Err(EX_NOPERM)),
         ];
-        for (root, sudo_uid, plist, headless, running, want) in cases {
-            let got = macos_start_plan(root, sudo_uid, plist, headless, yerd, |uid| {
-                assert_eq!(Some(uid), sudo_uid);
-                running
-            })
-            .map_err(|r| r.code);
+        for (root, sudo_uid, plist, headless, want) in cases {
+            let got = macos_start_plan(root, sudo_uid, plist, headless, yerd).map_err(|r| r.code);
             assert_eq!(
                 got, want,
-                "root={root} sudo_uid={sudo_uid:?} plist={plist} headless={headless} \
-                 running={running}"
+                "root={root} sudo_uid={sudo_uid:?} plist={plist} headless={headless}"
             );
         }
         for root in [false, true] {
-            let r = macos_start_plan(root, Some(501), false, true, yerd, |_| false).unwrap_err();
+            let r = macos_start_plan(root, Some(501), false, true, yerd).unwrap_err();
             assert_eq!(
                 r.message,
                 "no headless daemon job is registered; run \
                  `sudo /Users/me/.yerd/bin/yerd daemon install` first"
             );
+        }
+    }
+
+    #[test]
+    fn helper_start_checks_the_job_before_skipping_a_running_daemon() {
+        let yerdd = Path::new("/Users/me/.yerd/bin/yerdd");
+        let ours = DaemonJobIdentity {
+            yerdd: yerdd.display().to_string(),
+            user: "me".to_owned(),
+        };
+        let theirs = DaemonJobIdentity {
+            yerdd: "/opt/yerd/yerdd".to_owned(),
+            user: "me".to_owned(),
+        };
+        for (registered, running, want) in [
+            (Some(&ours), false, Ok(true)),
+            (Some(&ours), true, Ok(false)),
+            (Some(&theirs), false, Err(EX_CONFIG)),
+            (Some(&theirs), true, Err(EX_CONFIG)),
+            (None, true, Err(EX_CONFIG)),
+        ] {
+            let got = helper_start_needed(registered, "me", yerdd, running).map_err(|r| r.code);
+            assert_eq!(got, want, "{registered:?} running={running}");
         }
     }
 

@@ -1536,7 +1536,7 @@ async fn refresh_php_binaries(state: &DaemonState) {
 /// `yerdd` (mirrors `yerd`'s own `elevate::sibling_binaries`). This is the target
 /// the cover shims (`phpcover`/`php<ver>cover`) symlink to.
 fn yerd_sibling() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
+    let exe = yerd_platform::install_mode::current_exe().ok()?;
     Some(exe.parent()?.join("yerd"))
 }
 

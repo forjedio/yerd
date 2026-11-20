@@ -190,19 +190,69 @@ install_files() {
     done
 }
 
-# Re-running the installer over a live install replaces the binaries under a
-# running daemon, which keeps running the old version until it restarts.
-restart_running_daemon() {
-    "$DIR/yerd" ping >/dev/null 2>&1 || return 0
-    if "$DIR/yerd" restart daemon >/dev/null 2>&1; then
-        say "Restarted the running daemon on Yerd $TAG"
-        if [ "$OS" = "Linux" ]; then
-            say "If you had granted ports 80/443, run \`sudo $DIR/yerd elevate ports\`,"
-            say "then \`$DIR/yerd restart daemon\`: replacing yerdd resets that grant."
-        fi
+# A field from `yerd status --json` (pretty-printed, one key per line).
+status_field() {
+    "$DIR/yerd" status --json 2>/dev/null \
+        | sed -n "s/^ *\"$1\": *\"\{0,1\}\([^\",]*\)\"\{0,1\},\{0,1\}\$/\1/p" \
+        | head -n 1
+}
+
+# The executable a pid runs. Linux appends " (deleted)" once that file has
+# been renamed over, which is exactly the upgrade case, so drop it.
+pid_exe() {
+    if [ "$OS" = "Linux" ]; then
+        exe=$(readlink "/proc/$1/exe" 2>/dev/null) || return 1
+        say "${exe% (deleted)}"
     else
-        say "The daemon is still running the previous version; run"
-        say "\`$DIR/yerd restart daemon\` to load $TAG."
+        ps -o comm= -p "$1" 2>/dev/null
+    fi
+}
+
+# The pid of a daemon running from this install's directory, if any. Another
+# install's daemon (a different YERD_INSTALL_DIR) is left alone.
+own_daemon_pid() {
+    pid=$(status_field daemon_pid)
+    [ -n "$pid" ] || return 1
+    real_dir=$(cd "$DIR" && pwd -P) || return 1
+    [ "$(pid_exe "$pid")" = "$real_dir/yerdd" ] || return 1
+    say "$pid"
+}
+
+port_cap_granted() {
+    [ "$OS" = "Linux" ] && command -v getcap >/dev/null 2>&1 \
+        && getcap "$DIR/yerdd" 2>/dev/null | grep -q cap_net_bind_service
+}
+
+# Re-running the installer over a live install replaces the binaries under a
+# running daemon, which keeps the old version until it restarts. On Linux the
+# old daemon can't re-exec its renamed-over binary, so it is stopped and
+# started (through systemd when registered); on macOS it re-execs in place.
+restart_own_daemon() {
+    [ -n "$OLD_PID" ] || return 0
+    want=${TAG#v}
+    if [ "$OS" = "Linux" ]; then
+        "$DIR/yerd" daemon stop >/dev/null 2>&1 && "$DIR/yerd" daemon start >/dev/null 2>&1
+    else
+        "$DIR/yerd" restart daemon >/dev/null 2>&1
+    fi
+    tries=0
+    while [ "$tries" -lt 10 ]; do
+        if [ "$(status_field daemon_version)" = "$want" ]; then
+            say "Restarted the running daemon on Yerd $TAG"
+            if [ "$HAD_PORT_CAP" = "1" ]; then
+                say "Replacing yerdd reset its ports 80/443 grant; run"
+                say "\`sudo $DIR/yerd elevate ports\`, then \`$DIR/yerd restart daemon\`."
+            fi
+            return 0
+        fi
+        tries=$((tries + 1))
+        sleep 1
+    done
+    say "The daemon isn't running Yerd $TAG yet; check \`$DIR/yerd status\` and"
+    if [ "$OS" = "Linux" ]; then
+        say "run \`$DIR/yerd daemon start\` if it is down."
+    else
+        say "run \`sudo $DIR/yerd daemon start\` if it is down."
     fi
 }
 
@@ -243,9 +293,17 @@ main() {
     verify_checksum
     say "Checksum OK"
     extract_and_check
+    OLD_PID=""
+    HAD_PORT_CAP=0
+    if [ -x "$DIR/yerd" ]; then
+        OLD_PID=$(own_daemon_pid) || OLD_PID=""
+        if port_cap_granted; then
+            HAD_PORT_CAP=1
+        fi
+    fi
     install_files
     say "Installed Yerd $TAG into $DIR"
-    restart_running_daemon
+    restart_own_daemon
 
     yerd_cmd="$DIR/yerd"
     if [ "${YERD_NO_MODIFY_PATH:-}" = "1" ]; then

@@ -6,6 +6,7 @@
 
 pub mod cert_identity;
 pub mod dns_probe;
+pub mod exe_path;
 pub mod firefox;
 pub mod ide_spec;
 pub mod install_receipt;

@@ -12,9 +12,10 @@ use crate::pure::install_receipt::{self, InstallMode, ReceiptError, ReceiptRead,
 
 /// The running executable's path, as [`std::env::current_exe`] but surviving a
 /// rename-over: Linux then reports `"<path> (deleted)"`, so when that path is
-/// gone and the launch path (the suffix stripped) holds a file, that file is
-/// returned. This is what an update or package upgrade leaves behind, and it is
-/// the binary a restart should load.
+/// gone and the launch path holds a file, that file is returned. Use it to
+/// re-exec onto an updated binary. Install-mode detection deliberately keeps
+/// the raw path, so a daemon whose binary was replaced is told to restart
+/// before it stages an update for a version that may already be installed.
 ///
 /// # Errors
 ///
@@ -27,17 +28,19 @@ fn resolve_reported_exe(reported: PathBuf) -> PathBuf {
     if reported.exists() {
         return reported;
     }
-    install_receipt::strip_deleted_suffix(&reported)
+    crate::pure::exe_path::strip_deleted_suffix(&reported)
         .filter(|launch| launch.is_file())
         .unwrap_or(reported)
 }
 
-/// The canonical directory holding the running executable (see
-/// [`current_exe`]), or `None` when the path cannot be resolved, e.g. the
-/// binary was deleted and nothing replaced it.
+/// The canonical directory holding the running executable, or `None` when the
+/// path cannot be resolved (e.g. Linux reports `"<path> (deleted)"` after the
+/// binary was renamed over).
 #[must_use]
 pub fn current_exe_dir() -> Option<PathBuf> {
-    let exe = current_exe().and_then(std::fs::canonicalize).ok()?;
+    let exe = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .ok()?;
     exe.parent().map(Path::to_path_buf)
 }
 
