@@ -42,12 +42,13 @@ These are not aspirational - they are enforced by code structure, lints, and tes
 | `src/privilege.rs` | `is_privileged()` - effective-UID == 0 check, per-OS |
 | `src/validate.rs` | Defence-in-depth validators (absolute path, file exists, basename, TLD, PEM↔fingerprint) |
 | `src/exec.rs` | `dispatch(HelperInvocation)` → the right `ops::*` function |
-| `src/ops/mod.rs` | `run_command` (pinned-`PATH` subprocess) and `atomic_write` |
+| `src/ops/mod.rs` | `run_command` (pinned-`PATH` subprocess) and `atomic_write`, plus the macOS launchd helpers shared by the job ops (`resolve_user`, `bootstrap_system`, `bootout_system`) |
 | `src/ops/ca.rs` | `install-ca` / `uninstall-ca` (Linux trust anchors, macOS System keychain) |
 | `src/ops/resolver.rs` | `install-resolver` / `uninstall-resolver` (systemd-resolved, NetworkManager dnsmasq, `/etc/resolver/<tld>`) |
 | `src/ops/setcap.rs` | `setcap` (Linux only) |
 | `src/ops/port_redirect.rs` | `install-port-redirect` / `uninstall-port-redirect` (macOS only, loopback forwarder) |
 | `src/ops/lan_port_redirect.rs` | `install-lan-port-redirect` / `uninstall-lan-port-redirect` (macOS only, LAN forwarder) |
+| `src/ops/daemon_job.rs` | `install-daemon-job` / `uninstall-daemon-job` (macOS only, the headless install's boot-time daemon job) |
 | `src/ops/forwarder_job.rs` | Shared install/uninstall of the launchd port-forwarder jobs for a scope |
 | `src/ops/legacy_pf.rs` | One-shot removal of the pf redirects older Yerd installed, plus the gated release of pf enable references |
 | `src/error.rs` | `HelperError`, `ValidationReason`, `CommandReason`, and the exhaustive `exit_code` mapping |
@@ -155,6 +156,8 @@ The clap layer mirrors the enum one-for-one:
 | `setcap` | `--binary <PATH>` | Linux only (macOS → `Unsupported`) |
 | `install-port-redirect` | `--http-from` `--http-to` `--https-from` `--https-to` (all `<PORT>`) | macOS only |
 | `uninstall-port-redirect` | (none) | macOS only |
+| `install-daemon-job` | `--uid <n>` (non-zero) | macOS only |
+| `uninstall-daemon-job` | (none) | macOS only |
 
 The parser is configured `arg_required_else_help = true` and `disable_help_subcommand = true`. Unknown subcommands and unknown flags are rejected by clap and surface as `HelperError::ArgvUsage` (exit `64`).
 
@@ -276,6 +279,18 @@ Uninstall boots out and deletes the scope's two plists (absent is fine), then ru
 Older Yerd used pf `rdr` anchors (`dev.yerd`, `dev.yerd.lan`). Every forwarder install and uninstall, for either scope, removes **all** of that state for both anchors. When there is no legacy state (no plist, anchor file, `pf.conf` hook or loaded anchor rules) it does nothing else. Otherwise it boots out `dev.yerd.pf.plist` / `dev.yerd.lan.pf.plist`, strips the `# yerd-managed` / `# yerd-lan-managed` lines from `/etc/pf.conf` and reloads it, flushes both anchors (`pfctl -a <anchor> -F all`, the step that restores iCloud Private Relay without a reboot), and deletes the anchor files and plists. Only a failure to read or rewrite `/etc/pf.conf` or delete a file is an error; the `pfctl` and `launchctl` steps are best effort.
 
 It then releases the pf enable references taken through `pfctl` (`pfctl -X <token>` for every token owned by a process named `pfctl`) **only** when `pf_anchor::only_apple_and_yerd_pf_state` proves the remaining state is just Apple's defaults. Otherwise it leaves them and prints `yerd-helper: note: pf may stay enabled until the next reboot (pf state Yerd doesn't recognise is present)`. References don't record which tool took them, so another tool's `pfctl -E` reference is released too when the gate passes; the gate is what makes that safe, since it only passes when no other pf rules or anchors are loaded. The helper never runs `pfctl -d`.
+
+### install-daemon-job / uninstall-daemon-job (macOS only)
+
+A [headless install](../../guide/headless) has no app to register the daemon, and a per-user LaunchAgent doesn't run until someone logs in. So `sudo yerd daemon install` asks the helper for a root-owned system LaunchDaemon, `/Library/LaunchDaemons/dev.yerd.daemon.plist`, that launchd starts at boot and runs **as the user**. Plist text is composed by `yerd_platform::pure::launchd_daemon` (`ProgramArguments` = `[<yerdd>, serve]`, `UserName`, `EnvironmentVariables.HOME`, `RunAtLoad`, `KeepAlive{SuccessfulExit: false}`, `ThrottleInterval 5`, every value XML-escaped).
+
+`install-daemon-job --uid <n>` validates before any I/O:
+
+1. Resolve the account from the uid, as the forwarder ops do: uid `0`, an unknown uid, or a name that resolves to root is `ValidationReason::UidInvalid`.
+2. The helper's own canonical directory must hold a `yerd-install-receipt` that parses as `headless` (`ValidationReason::NotHeadlessInstall`), so an app-bundle install never gets a system job competing with its LaunchAgent.
+3. `yerdd` next to the helper must be a regular file with no group/world write bit, on a persistent path (`ValidationReason::DaemonBinaryInvalid`).
+
+It then atomically writes the plist, `chown root:wheel` (mode `0644`), boots out any existing `system/dev.yerd.daemon`, and `launchctl bootstrap system` (retried briefly). If loading fails, the job is booted out and the plist deleted again, so service control never targets a job that isn't there. Re-running it is how `sudo yerd daemon start` restarts a stopped job. `uninstall-daemon-job` (run by `sudo yerd uninstall`) boots the job out and deletes the plist; absent is fine. On Linux both return `Unsupported` (the Linux registration is a systemd user unit, written without root).
 
 ## Errors and exit codes
 

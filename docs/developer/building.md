@@ -453,9 +453,15 @@ which lands in `Yerd.app/Contents/MacOS/` next to `yerd-helper`. Tauri builds th
 headless step (`apps/yerd-gui/scripts/build-macos-dmg.sh`, via `appdmg`) after
 the `.app`, not by Tauri's own dmg bundler - see
 [macOS code signing & notarisation](#macos-code-signing-notarisation) below
-for why. The CLI and daemon are never shipped on their own - there is no
-CLI-only artifact (tarball or `.deb`) separate from the GUI bundle and the
-Arch package.
+for why. The same binaries also ship on their own as the **headless tarball**
+(`Yerd_<OS>_<Arch>_v<ver>.headless.tar.gz`, Linux x86-64/arm64 and macOS Apple
+Silicon): each GUI leg of `build.yml` packages its just-built
+`yerd`/`yerdd`/`yerd-helper` (plus `yerd-forward` on macOS) and a
+`yerd-install-receipt` saying `headless` under a top-level `yerd/` directory,
+then checks the file set, that no GTK/WebKit library is linked, and that
+`yerd --version` runs. It's installed by `docs/public/install.sh` (served at
+`https://yerd.app/install.sh`); see the [headless install guide](../guide/headless).
+There is no CLI-only `.deb`.
 
 `bump` keeps three files in sync - `Cargo.toml`,
 `apps/yerd-gui/src-tauri/tauri.conf.json`, and `apps/yerd-gui/package.json` - so

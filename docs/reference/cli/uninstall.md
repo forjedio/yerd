@@ -31,6 +31,20 @@ It removes, in order:
 
 When something can't be removed automatically, it's listed at the end as a leftover to handle manually.
 
+## Headless installs
+
+For a [headless install](../../guide/headless), run it with the absolute path, since `sudo` won't find `~/.yerd/bin` on its `PATH`:
+
+```sh
+sudo ~/.yerd/bin/yerd uninstall
+```
+
+On top of the steps above:
+
+- **macOS:** under `sudo`, the helper first removes the boot-time LaunchDaemon that `yerd daemon install` registered (`system/dev.yerd.daemon`, `/Library/LaunchDaemons/dev.yerd.daemon.plist`). If that fails, uninstall stops there (exit `1`) without removing anything else, so the helper is still around to retry. Without root it can't remove the job, and launchd would restart a killed daemon, so `yerd uninstall` refuses up front (exit `77`, nothing changed) and tells you to run `sudo <path>/yerd uninstall`.
+- **Linux:** the `yerd` systemd user unit is stopped, disabled and removed like the desktop app's, from wherever systemd loaded it (asked before disabling it, so a custom `$XDG_CONFIG_HOME` is found even under `sudo`), `$XDG_CONFIG_HOME/systemd/user` (when set) and `~/.config/systemd/user`. A unit file that can't be removed is listed in the summary. Lingering is left enabled, because other user services may rely on it; the command reminds you, and `sudo loginctl disable-linger <user>` turns it off.
+- The `yerd-install-receipt` is removed with the binaries, along with any other `yerd-*` file a later update added there, and so is the install directory (`~/.yerd/bin`) once it's empty. Files without the `yerd-` prefix are left alone, so a shared `YERD_INSTALL_DIR` keeps your own files.
+
 ## Run it with `sudo`
 
 The `elevate` changes (trust store, resolver, ports) need root to reverse - and they **can't be reversed after yerd is uninstalled**, because the `yerd-helper` binary is gone. So:

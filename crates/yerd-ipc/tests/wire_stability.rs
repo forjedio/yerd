@@ -3471,6 +3471,14 @@ fn staged_artifact_each_variant_byte_shape() {
         serde_json::from_str::<StagedArtifact>(r#""rpm""#).unwrap(),
         StagedArtifact::Rpm
     );
+    assert_eq!(
+        serde_json::to_string(&StagedArtifact::HeadlessTarGz).unwrap(),
+        r#""headless_tar_gz""#
+    );
+    assert_eq!(
+        serde_json::from_str::<StagedArtifact>(r#""headless_tar_gz""#).unwrap(),
+        StagedArtifact::HeadlessTarGz
+    );
 }
 
 #[test]
@@ -3489,10 +3497,25 @@ fn response_staged_byte_shape() {
         path: "/x/Yerd.app.tar.gz".into(),
         version: "2.0.5".into(),
         kind: StagedArtifact::AppTarGz,
+        install_dir: None,
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected =
         r#"{"type":"staged","path":"/x/Yerd.app.tar.gz","version":"2.0.5","kind":"app_tar_gz"}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_staged_carries_the_install_dir_when_known() {
+    let r = Response::Staged {
+        path: "/x/Yerd_Linux_x86_64_v2-2-0.headless.tar.gz".into(),
+        version: "2.2.0".into(),
+        kind: StagedArtifact::HeadlessTarGz,
+        install_dir: Some("/home/u/.yerd/bin".into()),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"staged","path":"/x/Yerd_Linux_x86_64_v2-2-0.headless.tar.gz","version":"2.2.0","kind":"headless_tar_gz","install_dir":"/home/u/.yerd/bin"}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }

@@ -154,6 +154,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The headless installer served at https://yerd.app/install.sh must stay
+      # POSIX sh. shellcheck is preinstalled on the ubuntu runners.
+      - name: Shellcheck install.sh
+        run: shellcheck -s sh public/install.sh
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22

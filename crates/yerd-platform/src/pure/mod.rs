@@ -8,6 +8,8 @@ pub mod cert_identity;
 pub mod dns_probe;
 pub mod firefox;
 pub mod ide_spec;
+pub mod install_receipt;
+pub mod launchd_daemon;
 pub mod launchd_ports;
 pub mod libvips;
 pub mod networkmanager_dnsmasq;

@@ -54,7 +54,8 @@ jobs:
       # ─────────────────────────────── GUI targets ──────────────────────────────
       # Build the GUI bundles (.deb on Linux, per-arch .dmg on macOS) — the ONLY
       # shipped desktop artifact. The daemon + CLI + helper are embedded in the
-      # bundle (Tauri externalBin); there is no standalone CLI tarball/.deb.
+      # bundle (Tauri externalBin). The same binaries are also packaged as the
+      # headless (CLI-only) `.headless.tar.gz`; there is no standalone CLI .deb.
       # No authenticated git op in the GUI build (npm ci / cargo / tauri), so
       # don't leave the token in .git/config where third-party build code runs.
       - uses: actions/checkout@v4
@@ -149,6 +150,68 @@ jobs:
             cargo build --release -p yerd-forward
             cp target/release/yerd-forward "apps/yerd-gui/src-tauri/binaries/yerd-forward-$triple"
           fi
+
+      # The headless (CLI-only) tarball: the same just-built binaries plus the
+      # `yerd-install-receipt` that marks the install as headless, under one
+      # top-level `yerd/` dir. The file set must match `required_files` in
+      # bin/yerd/src/apply.rs exactly (the self-update applier rejects anything
+      # else) and what docs/public/install.sh installs. The arch token is
+      # lowercase `aarch64` on Linux arm64 so release.yml's rename `case` maps it
+      # to `Arm64`. Gate: unpack a fresh copy, assert the exact file set, prove
+      # no GUI library is linked, and run `yerd --version`.
+      - name: Package + check headless tarball
+        if: matrix.kind == 'gui'
+        working-directory: .
+        run: |
+          set -euo pipefail
+          files="yerd yerdd yerd-helper"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            files="$files yerd-forward"
+            name=Yerd_MacOS_AppleSilicon.headless.tar.gz
+          elif [ "$(uname -m)" = "aarch64" ]; then
+            name=Yerd_Linux_aarch64.headless.tar.gz
+          else
+            name=Yerd_Linux_x86_64.headless.tar.gz
+          fi
+          rm -rf headless-stage headless-out headless-check
+          mkdir -p headless-stage/yerd headless-out headless-check
+          for b in $files; do
+            install -m 0755 "target/release/$b" "headless-stage/yerd/$b"
+          done
+          printf 'headless\n' > headless-stage/yerd/yerd-install-receipt
+          chmod 0644 headless-stage/yerd/yerd-install-receipt
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # No AppleDouble `._*` files or xattr headers in the archive.
+            COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs \
+              -czf "headless-out/$name" -C headless-stage yerd
+          else
+            tar -czf "headless-out/$name" -C headless-stage yerd
+          fi
+
+          tar -xzf "headless-out/$name" -C headless-check
+          got=$(cd headless-check && find . -mindepth 1 | sort | tr '\n' ' ')
+          want=$( { echo ./yerd; for f in $files yerd-install-receipt; do echo "./yerd/$f"; done; } | sort | tr '\n' ' ')
+          [ "$got" = "$want" ] \
+            || { echo "::error::headless tarball file set is '$got', expected '$want'"; exit 1; }
+          for f in $files; do
+            if [ ! -f "headless-check/yerd/$f" ] || [ -L "headless-check/yerd/$f" ]; then
+              echo "::error::headless tarball: yerd/$f is not a regular file"; exit 1
+            fi
+          done
+          [ "$(cat headless-check/yerd/yerd-install-receipt)" = "headless" ] \
+            || { echo "::error::headless tarball receipt does not say headless"; exit 1; }
+          for b in yerd yerdd; do
+            if [ "$RUNNER_OS" = "macOS" ]; then
+              libs=$(otool -L "headless-check/yerd/$b")
+            else
+              libs=$(ldd "headless-check/yerd/$b")
+            fi
+            if grep -Eiq 'gtk|gdk|webkit' <<<"$libs"; then
+              echo "::error::headless $b links a GUI library:"; printf '%s\n' "$libs"; exit 1
+            fi
+          done
+          headless-check/yerd/yerd --version
+          echo "Headless tarball OK: headless-out/$name"
 
       - name: Build Tauri bundles (signed + notarised on macOS)
         if: matrix.kind == 'gui'
@@ -572,3 +635,4 @@ jobs:
             apps/yerd-gui/src-tauri/target/release/bundle/updater/*.app.tar.gz
             arch-out/*.pkg.tar.zst
             fedora-out/*.rpm
+            headless-out/*.headless.tar.gz

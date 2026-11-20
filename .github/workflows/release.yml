@@ -131,7 +131,7 @@ jobs:
         run: |
           set -euo pipefail
           find . -mindepth 2 -type f \
-            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' -o -name '*.rpm' \) \
+            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' -o -name '*.rpm' -o -name '*.headless.tar.gz' \) \
             -exec mv -t . {} +
           # Drop the now-redundant nested dirs so `dist/*` is files-only.
           find . -mindepth 1 -type d -exec rm -rf {} +
@@ -140,7 +140,10 @@ jobs:
           # Tauri emits Yerd_<ver>_<arch>.deb (the macOS .dmg is built by
           # scripts/build-macos-dmg.sh, matching the same naming); the .app.tar.gz is already
           # Yerd_MacOS_AppleSilicon.app.tar.gz; the arch job emits
-          # Yerd_<ver>_x86_64.pkg.tar.zst. We relabel OS+arch and dash the version
+          # Yerd_<ver>_x86_64.pkg.tar.zst; the GUI legs also emit
+          # Yerd_<MacOS_AppleSilicon|Linux_x86_64|Linux_aarch64>.headless.tar.gz,
+          # whose final names docs/public/install.sh rebuilds from a tag (keep the
+          # two in sync). We relabel OS+arch and dash the version
           # (dots → dashes) so the Releases page reads cleanly.
           ver="v$(printf '%s' "${GITHUB_REF_NAME#v}" | tr '.' '-')"
           for f in Yerd_* yerd-gui_* yerd_*; do
@@ -148,6 +151,9 @@ jobs:
             # Compound extensions first (`.app.tar.gz`/`.pkg.tar.zst` would
             # otherwise collapse to `gz`/`zst`).
             case "$f" in
+              *.headless.tar.gz)
+                ext="headless.tar.gz"
+                case "$f" in *MacOS*) os="MacOS" ;; *) os="Linux" ;; esac ;;
               *.app.tar.gz)  ext="app.tar.gz";  os="MacOS" ;;
               *.pkg.tar.zst) ext="pkg.tar.zst"; os="Linux" ;;
               *.dmg)         ext="dmg";         os="MacOS" ;;
@@ -205,7 +211,7 @@ jobs:
           trap 'rm -f "$RUNNER_TEMP/minisign.key"' EXIT
           umask 077; printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
           shopt -s nullglob
-          for f in *.app.tar.gz *.deb *.pkg.tar.zst *.rpm; do
+          for f in *.app.tar.gz *.deb *.pkg.tar.zst *.rpm *.headless.tar.gz; do
             minisign -S -H -s "$RUNNER_TEMP/minisign.key" -m "$f" -x "$f.minisig"
             echo "signed $f -> $f.minisig"
           done
@@ -241,7 +247,7 @@ jobs:
             exit 1
           fi
           shopt -s nullglob
-          for f in *.app.tar.gz *.deb *.pkg.tar.zst *.rpm; do
+          for f in *.app.tar.gz *.deb *.pkg.tar.zst *.rpm *.headless.tar.gz; do
             minisign -V -H -P "$KEY" -m "$f" -x "$f.minisig" \
               || { echo "::error::embedded UPDATE_PUBLIC_KEY does not verify $f.minisig (key/secret mismatch)"; exit 1; }
             echo "verified $f against embedded key"
@@ -264,7 +270,7 @@ jobs:
         working-directory: dist
         run: |
           find . -maxdepth 1 -type f \
-            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' -o -name '*.rpm' \) \
+            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' -o -name '*.rpm' -o -name '*.headless.tar.gz' \) \
             -printf '%P\n' | sort | xargs -r sha256sum > SHA256SUMS
           echo "Artifacts:" && cat SHA256SUMS
 

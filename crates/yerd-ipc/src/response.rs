@@ -458,6 +458,12 @@ pub enum Response {
         version: String,
         /// What kind of artifact it is (drives the applier's install method).
         kind: crate::StagedArtifact,
+        /// The directory the daemon's own binaries run from, so a headless
+        /// applier can refuse to swap a different install's files. Absent
+        /// from older daemons; `skip_serializing_if` keeps their bytes
+        /// unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        install_dir: Option<String>,
     },
     /// Reply to [`crate::Request::StartQuickTunnel`] / [`crate::Request::StopTunnel`]
     /// / [`crate::Request::TunnelStatus`] - the live tunnels plus `cloudflared`
@@ -1172,6 +1178,7 @@ mod variant_name_pinning {
             path: "/x/Yerd.app.tar.gz".into(),
             version: "2.0.5".into(),
             kind: crate::StagedArtifact::AppTarGz,
+            install_dir: None,
         });
         pin_response(Response::Tunnels {
             tunnels: vec![crate::status::TunnelInfo {

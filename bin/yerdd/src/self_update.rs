@@ -20,6 +20,7 @@
 
 use yerd_ipc::{Response, StagedArtifact, UpdateSource};
 use yerd_php::Downloader;
+use yerd_platform::pure::install_receipt::{InstallMode, ReceiptError};
 use yerd_platform::PlatformDirs;
 use yerd_release_manifest::LatestManifest;
 use yerd_update::{
@@ -368,12 +369,21 @@ pub async fn check_update(
 /// [`fetch_releases`]) and the artifact signature here. The privileged
 /// install/swap is the applier's job, not the daemon's - this only produces a
 /// verified local file.
+///
+/// `install_mode` (production passes [`yerd_platform::install_mode::detect`]) picks the headless tarball
+/// over the compiled package format; it is injected so tests don't depend on the
+/// test binary's directory. An `Err` refuses before anything is fetched.
 pub async fn stage_update(
     channel_override: Option<yerd_ipc::Channel>,
     state: &DaemonState,
     dl: &dyn Downloader,
     public_key: &str,
+    install_mode: Result<InstallMode, ReceiptError>,
 ) -> Response {
+    let mode = match install_mode {
+        Ok(m) => m,
+        Err(e) => return internal(format!("cannot determine the install mode: {e}")),
+    };
     let current = current_version();
     let channel = match channel_override {
         Some(c) => from_ipc(c),
@@ -390,7 +400,11 @@ pub async fn stage_update(
     let Some(target_rel) = releases.iter().find(|r| r.version == target_ver) else {
         return internal("internal: resolved target release vanished".to_owned());
     };
-    let sel = match select_asset(target_rel, Platform::current(), PkgFormat::current()) {
+    let sel = match select_asset(
+        target_rel,
+        Platform::current(),
+        PkgFormat::resolve(mode == InstallMode::Headless, PkgFormat::current()),
+    ) {
         Ok(s) => s,
         Err(e) => return internal(format!("no installable artifact: {e}")),
     };
@@ -437,12 +451,19 @@ pub async fn stage_update(
         ArtifactKind::Deb => StagedArtifact::Deb,
         ArtifactKind::Pacman => StagedArtifact::Pacman,
         ArtifactKind::Rpm => StagedArtifact::Rpm,
+        ArtifactKind::HeadlessTarGz => StagedArtifact::HeadlessTarGz,
     };
     tracing::info!(version = %target_ver, path = %path.display(), "staged verified update artifact");
+    let install_dir = tokio::task::spawn_blocking(yerd_platform::install_mode::current_exe_dir)
+        .await
+        .ok()
+        .flatten()
+        .map(|dir| dir.to_string_lossy().into_owned());
     Response::Staged {
         path: path.to_string_lossy().into_owned(),
         version: target_ver.to_string(),
         kind,
+        install_dir,
     }
 }
 

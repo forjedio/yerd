@@ -12,18 +12,16 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-use nix::unistd::{Uid, User};
 use yerd_platform::pure::launchd_ports::{self, Job, Role, Scope};
 
 use crate::error::{HelperError, ValidationReason};
-use crate::ops::{atomic_write, ignore_command_failure, legacy_pf, remove_if_present, run_command};
+use crate::ops::{
+    atomic_write, bootout_system, bootstrap_system, invalid, legacy_pf, remove_if_present,
+    resolve_user, run_command,
+};
 
-const LAUNCHCTL: &str = "/bin/launchctl";
 const PRIVILEGED_CEILING: u16 = 1024;
-const BOOTSTRAP_ATTEMPTS: u32 = 5;
-const BOOTSTRAP_RETRY_DELAY: Duration = Duration::from_millis(200);
 
 /// Validated install parameters for one scope.
 #[derive(Debug)]
@@ -49,7 +47,7 @@ pub fn install(
     uid: u32,
 ) -> Result<(), HelperError> {
     let plan = validate_ports(http_from, http_to, https_from, https_to)?;
-    let user = resolve_user(uid)?;
+    let user = resolve_user(uid)?.name;
     let forwarder = locate_forwarder()?;
 
     let jobs = scope.jobs();
@@ -69,7 +67,7 @@ pub fn install(
 /// redirect.
 pub fn uninstall(scope: Scope) -> Result<(), HelperError> {
     for job in &scope.jobs() {
-        bootout(job.label);
+        bootout_system(job.label);
         remove_if_present(job.plist)?;
     }
     legacy_pf::remove_all_legacy()
@@ -121,17 +119,6 @@ fn validate_ports(
     })
 }
 
-/// The account name for `uid`, which must exist and not be root.
-fn resolve_user(uid: u32) -> Result<String, HelperError> {
-    if uid == 0 {
-        return Err(invalid(ValidationReason::UidInvalid));
-    }
-    match User::from_uid(Uid::from_raw(uid)) {
-        Ok(Some(user)) if user.uid.as_raw() == uid && !user.uid.is_root() => Ok(user.name),
-        _ => Err(invalid(ValidationReason::UidInvalid)),
-    }
-}
-
 /// `yerd-forward` next to this helper: a regular file that only its owner can
 /// write, on a path that survives reboot.
 fn locate_forwarder() -> Result<PathBuf, HelperError> {
@@ -169,44 +156,13 @@ fn install_job(
     let plist = launchd_ports::compose_forwarder_plist(scope, job.label, forwarder, user, from, to);
     atomic_write(Path::new(job.plist), plist.as_bytes(), true)?;
     run_command("chown", "/usr/sbin/chown", ["root:wheel", job.plist])?;
-    bootout(job.label);
-    bootstrap(job.plist)
-}
-
-/// `launchctl bootstrap` can briefly fail right after a `bootout` of the same
-/// label while launchd finishes tearing the old job down, so retry a few
-/// times before giving up.
-fn bootstrap(plist: &str) -> Result<(), HelperError> {
-    let mut attempt = 1;
-    loop {
-        match run_command("launchctl", LAUNCHCTL, ["bootstrap", "system", plist]) {
-            Ok(_) => return Ok(()),
-            Err(e) if attempt >= BOOTSTRAP_ATTEMPTS => return Err(e),
-            Err(_) => {
-                attempt += 1;
-                std::thread::sleep(BOOTSTRAP_RETRY_DELAY);
-            }
-        }
-    }
-}
-
-/// Unload by service target rather than plist path, so a job whose plist is
-/// already gone can still be unloaded.
-fn bootout(label: &str) {
-    ignore_command_failure(run_command(
-        "launchctl",
-        LAUNCHCTL,
-        ["bootout", &format!("system/{label}")],
-    ));
+    bootout_system(job.label);
+    bootstrap_system(job.plist)
 }
 
 fn remove_job(job: &Job) {
-    bootout(job.label);
+    bootout_system(job.label);
     let _ = remove_if_present(job.plist);
-}
-
-const fn invalid(reason: ValidationReason) -> HelperError {
-    HelperError::Validation { reason }
 }
 
 #[cfg(test)]
@@ -271,15 +227,5 @@ mod tests {
                 }
             ));
         }
-    }
-
-    #[test]
-    fn rejects_unknown_uid() {
-        assert!(matches!(
-            resolve_user(u32::MAX - 7),
-            Err(HelperError::Validation {
-                reason: ValidationReason::UidInvalid
-            })
-        ));
     }
 }

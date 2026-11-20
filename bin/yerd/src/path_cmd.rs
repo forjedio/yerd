@@ -65,29 +65,32 @@ mod unix {
     use std::path::{Path, PathBuf};
     use std::process::ExitCode;
 
+    use yerd_platform::pure::install_receipt::{InstallMode, ReceiptError};
     use yerd_platform::pure::shell_profile::{
-        self, detect_shell, rc_relpaths, render_block, HostOs, Shell,
+        self, bash_login_relpath, detect_shell, rc_relpaths, render_block, HostOs, Shell,
+        BASH_LOGIN_FILES,
     };
     use yerd_platform::{ActivePaths, Paths};
 
     use crate::cli::PathAction;
 
     pub fn run(action: PathAction) -> ExitCode {
-        let bin_dir = match ActivePaths::new().resolve() {
-            Ok(d) => d.data.join("bin"),
+        let bin_dirs = match ActivePaths::new().resolve() {
+            Ok(d) => own_path_dirs(d.data.join("bin")),
             Err(e) => return fail(format!("cannot resolve yerd directories: {e}")),
         };
+        let bin_dirs: Vec<&Path> = bin_dirs.iter().map(PathBuf::as_path).collect();
 
         let shell = detect_shell(&shell_basename());
         if matches!(action, PathAction::Print) {
-            print!("{}", render_block(shell.unwrap_or(Shell::Posix), &bin_dir));
+            print!("{}", render_block(shell.unwrap_or(Shell::Posix), &bin_dirs));
             return ExitCode::SUCCESS;
         }
 
         let Some(shell) = shell else {
             eprintln!(
                 "yerd: could not detect your shell from $SHELL. Add this to your shell's startup file:\n\n{}",
-                render_block(Shell::Posix, &bin_dir)
+                render_block(Shell::Posix, &bin_dirs)
             );
             return ExitCode::FAILURE;
         };
@@ -100,12 +103,17 @@ mod unix {
         let install = matches!(action, PathAction::Install);
         let mut touched = Vec::new();
         let mut any_err = false;
-        for rel in rc_relpaths(shell, host_os()) {
+        let rels = if install {
+            install_relpaths(shell, &home)
+        } else {
+            cleanup_relpaths(shell)
+        };
+        for rel in rels {
             let rc = home.join(&rel);
             if !install && !rc.exists() {
                 continue;
             }
-            match edit_one(&rc, shell, &bin_dir, install) {
+            match edit_one(&rc, shell, &bin_dirs, install) {
                 Ok(true) => touched.push(rc),
                 Ok(false) => {}
                 Err(e) => {
@@ -115,7 +123,7 @@ mod unix {
             }
         }
 
-        report(&touched, install, &bin_dir, any_err);
+        report(&touched, install, &bin_dirs, any_err);
         if any_err {
             ExitCode::FAILURE
         } else {
@@ -133,6 +141,8 @@ mod unix {
             return;
         };
         let bin_dir = d.data.join("bin");
+        let bin_dirs = own_path_dirs(bin_dir.clone());
+        let bin_dirs: Vec<&Path> = bin_dirs.iter().map(PathBuf::as_path).collect();
         let Some(shell) = detect_shell(&shell_basename()) else {
             return;
         };
@@ -143,8 +153,8 @@ mod unix {
             return;
         };
         let mut added = false;
-        for rel in rc_relpaths(shell, host_os()) {
-            if let Ok(true) = edit_one(&home.join(&rel), shell, &bin_dir, true) {
+        for rel in install_relpaths(shell, &home) {
+            if let Ok(true) = edit_one(&home.join(&rel), shell, &bin_dirs, true) {
                 added = true;
             }
         }
@@ -158,29 +168,63 @@ mod unix {
 
     /// Remove the yerd PATH block from `home`'s rc file(s) for the shell named
     /// by `shell_basename`. Daemon-free and home-explicit (the uninstall path
-    /// runs under sudo, where `$HOME`/`$SHELL` point at root). `bin_dir` is
+    /// runs under sudo, where `$HOME`/`$SHELL` point at root). The dirs are
     /// irrelevant to removal - `shell_profile::remove_block` matches the guarded
-    /// markers - so a placeholder is passed. Returns the files actually changed.
+    /// markers - so none are passed. Returns the files actually changed.
     pub fn remove_block_for_user(home: &Path, shell_basename: &str) -> Vec<PathBuf> {
         let Some(shell) = detect_shell(shell_basename) else {
             return Vec::new();
         };
-        let placeholder_bin = Path::new("");
         let mut touched = Vec::new();
-        for rel in rc_relpaths(shell, host_os()) {
+        for rel in cleanup_relpaths(shell) {
             let rc = home.join(&rel);
             if !rc.exists() {
                 continue;
             }
-            if let Ok(true) = edit_one(&rc, shell, placeholder_bin, false) {
+            if let Ok(true) = edit_one(&rc, shell, &[], false) {
                 touched.push(rc);
             }
         }
         touched
     }
 
+    /// The rc files to add the block to. Bash's login file is whichever one
+    /// Bash would actually read (see [`bash_login_relpath`]).
+    fn install_relpaths(shell: Shell, home: &Path) -> Vec<PathBuf> {
+        rc_relpaths(shell, host_os())
+            .into_iter()
+            .map(|rel| {
+                if shell == Shell::Bash && rel == Path::new(".bash_profile") {
+                    bash_login_relpath(|name| home.join(name).exists())
+                } else {
+                    rel
+                }
+            })
+            .collect()
+    }
+
+    /// The rc files a block may have been added to: for Bash, every login file
+    /// [`install_relpaths`] could have picked.
+    fn cleanup_relpaths(shell: Shell) -> Vec<PathBuf> {
+        let mut rels = rc_relpaths(shell, host_os());
+        if shell == Shell::Bash {
+            for name in BASH_LOGIN_FILES {
+                let rel = PathBuf::from(name);
+                if !rels.contains(&rel) {
+                    rels.push(rel);
+                }
+            }
+        }
+        rels
+    }
+
     /// Edit one rc file. Returns `Ok(true)` if the file's contents changed.
-    fn edit_one(rc: &Path, shell: Shell, bin_dir: &Path, install: bool) -> std::io::Result<bool> {
+    fn edit_one(
+        rc: &Path,
+        shell: Shell,
+        bin_dirs: &[&Path],
+        install: bool,
+    ) -> std::io::Result<bool> {
         let real = resolve_symlink(rc)?;
 
         let existing = match std::fs::read_to_string(&real) {
@@ -190,7 +234,7 @@ mod unix {
         };
 
         let updated = if install {
-            shell_profile::upsert_block(&existing, shell, bin_dir)
+            shell_profile::upsert_block(&existing, shell, bin_dirs)
         } else {
             shell_profile::remove_block(&existing)
         };
@@ -267,7 +311,7 @@ mod unix {
         std::fs::rename(&tmp, dest)
     }
 
-    fn report(touched: &[PathBuf], install: bool, bin_dir: &Path, had_errors: bool) {
+    fn report(touched: &[PathBuf], install: bool, bin_dirs: &[&Path], had_errors: bool) {
         if touched.is_empty() {
             if had_errors {
                 return;
@@ -288,12 +332,40 @@ mod unix {
                 .first()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
+            let dirs = bin_dirs
+                .iter()
+                .map(|d| d.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" and ");
+            let verb = if bin_dirs.len() > 1 { "are" } else { "is" };
             println!(
-                "\n{} is now on PATH for new shells. Open a new terminal, or run:\n  source {first}",
-                bin_dir.display(),
+                "\n{dirs} {verb} now on PATH for new shells. Open a new terminal, or run:\n  source {first}",
             );
         } else {
             println!("\nOpen a new terminal for the change to take effect.");
+        }
+    }
+
+    /// The dirs this `yerd` puts on PATH: `{data}/bin`, plus its own install
+    /// dir for a headless install.
+    fn own_path_dirs(data_bin: PathBuf) -> Vec<PathBuf> {
+        path_dirs(
+            data_bin,
+            yerd_platform::install_mode::detect(),
+            yerd_platform::install_mode::current_exe_dir(),
+        )
+    }
+
+    /// `{data}/bin`, then the install dir when the receipt says headless. A
+    /// receipt error falls back to the plain one-dir block.
+    fn path_dirs(
+        data_bin: PathBuf,
+        mode: Result<InstallMode, ReceiptError>,
+        exe_dir: Option<PathBuf>,
+    ) -> Vec<PathBuf> {
+        match (mode, exe_dir) {
+            (Ok(InstallMode::Headless), Some(dir)) if dir != data_bin => vec![data_bin, dir],
+            _ => vec![data_bin],
         }
     }
 
@@ -343,7 +415,44 @@ mod unix {
         /// Build the exact guarded PATH block `yerd path install` writes, so the
         /// removal path matches the real markers byte-for-byte.
         fn block_for(shell: Shell, bin: &Path) -> String {
-            render_block(shell, bin)
+            render_block(shell, &[bin])
+        }
+
+        #[test]
+        fn path_dirs_adds_the_install_dir_only_for_headless() {
+            let data = PathBuf::from("/home/u/.local/share/yerd/bin");
+            let exe = PathBuf::from("/home/u/.yerd/bin");
+            let cases = [
+                (
+                    Ok(InstallMode::Headless),
+                    Some(exe.clone()),
+                    vec![data.clone(), exe.clone()],
+                ),
+                (Ok(InstallMode::Headless), None, vec![data.clone()]),
+                (
+                    Ok(InstallMode::Headless),
+                    Some(data.clone()),
+                    vec![data.clone()],
+                ),
+                (
+                    Ok(InstallMode::Package),
+                    Some(exe.clone()),
+                    vec![data.clone()],
+                ),
+                (
+                    Err(ReceiptError::Unrecognised),
+                    Some(exe.clone()),
+                    vec![data.clone()],
+                ),
+                (Err(ReceiptError::ExeUnresolved), None, vec![data.clone()]),
+            ];
+            for (mode, exe_dir, want) in cases {
+                assert_eq!(
+                    path_dirs(data.clone(), mode, exe_dir.clone()),
+                    want,
+                    "{mode:?} {exe_dir:?}"
+                );
+            }
         }
 
         #[test]

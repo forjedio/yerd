@@ -289,6 +289,10 @@ pub mod ops {
     pub const INSTALL_LAN_PORT_REDIRECT: &str = "install-lan-port-redirect";
     /// Remove the macOS LAN port forwarder.
     pub const UNINSTALL_LAN_PORT_REDIRECT: &str = "uninstall-lan-port-redirect";
+    /// Install the macOS headless daemon's system-domain launchd job.
+    pub const INSTALL_DAEMON_JOB: &str = "install-daemon-job";
+    /// Remove the macOS headless daemon's system-domain launchd job.
+    pub const UNINSTALL_DAEMON_JOB: &str = "uninstall-daemon-job";
     /// Open a user terminal in a project directory.
     pub const OPEN_TERMINAL: &str = "open-terminal";
     /// Open a project directory in a selected IDE.

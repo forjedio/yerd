@@ -6,7 +6,9 @@
 //!
 //! The block adds `{data}/bin` (where yerd keeps its `php`/`composer` shims) to
 //! `PATH`, **prepended** so it wins over other managers (e.g. Herd) and
-//! **guarded** so re-sourcing an rc file never appends a duplicate entry.
+//! **guarded** so re-sourcing an rc file never appends a duplicate entry. A
+//! headless install also passes its install dir, so `yerd` itself lands on
+//! `PATH` through the same block.
 
 use std::path::{Path, PathBuf};
 
@@ -65,6 +67,25 @@ pub fn rc_relpaths(shell: Shell, _os: HostOs) -> Vec<PathBuf> {
     }
 }
 
+/// Bash's login files, in the order a login shell looks for them. It reads
+/// only the first that exists.
+pub const BASH_LOGIN_FILES: [&str; 3] = [".bash_profile", ".bash_login", ".profile"];
+
+/// The Bash login file to add the block to, given which of
+/// [`BASH_LOGIN_FILES`] exist: the first existing one (the only one Bash
+/// reads), else `.bash_profile`. Creating `.bash_profile` beside an existing
+/// `.profile` would make Bash stop reading `.profile`, dropping whatever it
+/// sets up (on Debian and Ubuntu, sourcing `.bashrc` and adding `~/bin`).
+#[must_use]
+pub fn bash_login_relpath(exists: impl Fn(&str) -> bool) -> PathBuf {
+    let name = BASH_LOGIN_FILES
+        .iter()
+        .copied()
+        .find(|name| exists(name))
+        .unwrap_or(".bash_profile");
+    PathBuf::from(name)
+}
+
 /// Escape a value for a **POSIX** double-quoted string: `\`, `$`, `` ` ``, and
 /// `"` are special inside `"…"`, so backslash-escape them. (Quoting alone only
 /// handles spaces; a data dir containing `$`/`` ` ``/`\` would otherwise expand
@@ -93,52 +114,57 @@ fn esc_fish_dq(s: &str) -> String {
     out
 }
 
-/// The shell body (no markers) that prepends `bin_dir` to `PATH` (guarded so a
-/// repeated `source` never stacks a duplicate entry) and exports `PHPRC` to
-/// Yerd's generated CLI ini (`{data}/php-cli.ini`, a sibling of `bin_dir`) so the
-/// `php` shim on this PATH picks up Yerd's opinionated CLI defaults (memory limit
-/// etc.). Values are double-quoted *and* metacharacter-escaped, so a data dir
-/// containing a space, `$`, `` ` ``, `\`, or `"` is emitted safely. An absent ini
-/// file is harmless - PHP ignores it.
+/// The shell body (no markers) that prepends each of `bin_dirs` to `PATH`, in
+/// order (each guarded so a repeated `source` never stacks a duplicate entry),
+/// and exports `PHPRC` to Yerd's generated CLI ini (`{data}/php-cli.ini`, a
+/// sibling of the first dir, `{data}/bin`) so the `php` shim on this PATH picks
+/// up Yerd's opinionated CLI defaults (memory limit etc.). Values are
+/// double-quoted *and* metacharacter-escaped, so a dir containing a space, `$`,
+/// `` ` ``, `\`, or `"` is emitted safely. An absent ini file is harmless - PHP
+/// ignores it.
 #[must_use]
-pub fn render_body(shell: Shell, bin_dir: &Path) -> String {
-    let raw_dir = bin_dir.display().to_string();
-    let raw_phprc = bin_dir
-        .parent()
+pub fn render_body(shell: Shell, bin_dirs: &[&Path]) -> String {
+    let raw_phprc = bin_dirs
+        .first()
+        .and_then(|d| d.parent())
         .map(|d| d.join("php-cli.ini").display().to_string());
+    let mut lines: Vec<String> = bin_dirs
+        .iter()
+        .map(|d| path_prepend(shell, &d.display().to_string()))
+        .collect();
+    if let Some(ini) = raw_phprc {
+        lines.push(match shell {
+            Shell::Fish => format!("set -gx PHPRC \"{}\"", esc_fish_dq(&ini)),
+            Shell::Zsh | Shell::Bash | Shell::Posix => {
+                format!("export PHPRC=\"{}\"", esc_posix_dq(&ini))
+            }
+        });
+    }
+    lines.join("\n")
+}
+
+/// One guarded PATH prepend of `raw_dir` in `shell`'s syntax.
+fn path_prepend(shell: Shell, raw_dir: &str) -> String {
     match shell {
         Shell::Fish => {
-            let dir = esc_fish_dq(&raw_dir);
-            let mut s =
-                format!("if not contains \"{dir}\" $PATH\n    set -gx PATH \"{dir}\" $PATH\nend");
-            if let Some(ini) = raw_phprc {
-                s.push_str("\nset -gx PHPRC \"");
-                s.push_str(&esc_fish_dq(&ini));
-                s.push('"');
-            }
-            s
+            let dir = esc_fish_dq(raw_dir);
+            format!("if not contains \"{dir}\" $PATH\n    set -gx PATH \"{dir}\" $PATH\nend")
         }
         Shell::Zsh | Shell::Bash | Shell::Posix => {
-            let dir = esc_posix_dq(&raw_dir);
-            let mut s = format!(
+            let dir = esc_posix_dq(raw_dir);
+            format!(
                 "case \":$PATH:\" in\n  *\":{dir}:\"*) ;;\n  *) export PATH=\"{dir}:$PATH\" ;;\nesac"
-            );
-            if let Some(ini) = raw_phprc {
-                s.push_str("\nexport PHPRC=\"");
-                s.push_str(&esc_posix_dq(&ini));
-                s.push('"');
-            }
-            s
+            )
         }
     }
 }
 
 /// The full managed block (markers + body), with a trailing newline.
 #[must_use]
-pub fn render_block(shell: Shell, bin_dir: &Path) -> String {
+pub fn render_block(shell: Shell, bin_dirs: &[&Path]) -> String {
     format!(
         "{MARKER_OPEN}\n{}\n{MARKER_CLOSE}\n",
-        render_body(shell, bin_dir)
+        render_body(shell, bin_dirs)
     )
 }
 
@@ -154,8 +180,8 @@ pub fn contains_block(existing: &str) -> bool {
 /// exactly one blank separator line and a trailing newline. Idempotent: calling
 /// twice with the same inputs yields identical output.
 #[must_use]
-pub fn upsert_block(existing: &str, shell: Shell, bin_dir: &Path) -> String {
-    let block = render_block(shell, bin_dir);
+pub fn upsert_block(existing: &str, shell: Shell, bin_dirs: &[&Path]) -> String {
+    let block = render_block(shell, bin_dirs);
     if let Some((open, close)) = marker_line_indices(existing) {
         let lines: Vec<&str> = existing.split('\n').collect();
         let before = join_lines(&lines, 0, open);
@@ -383,8 +409,27 @@ mod tests {
     }
 
     #[test]
+    fn bash_login_relpath_picks_the_file_bash_reads() {
+        let cases: [(&[&str], &str); 6] = [
+            (&[], ".bash_profile"),
+            (&[".profile"], ".profile"),
+            (&[".bash_login", ".profile"], ".bash_login"),
+            (&[".bash_profile", ".profile"], ".bash_profile"),
+            (&[".bash_profile", ".bash_login"], ".bash_profile"),
+            (&[".bashrc"], ".bash_profile"),
+        ];
+        for (existing, want) in cases {
+            assert_eq!(
+                bash_login_relpath(|name| existing.contains(&name)),
+                PathBuf::from(want),
+                "{existing:?}"
+            );
+        }
+    }
+
+    #[test]
     fn body_is_guarded_and_quotes_the_space() {
-        let posix = render_body(Shell::Zsh, &bin());
+        let posix = render_body(Shell::Zsh, &[bin().as_path()]);
         assert!(posix.contains("Application Support"));
         assert!(posix.contains(
             "export PATH=\"/Users/x/Library/Application Support/io.yerd.Yerd/bin:$PATH\""
@@ -396,7 +441,7 @@ mod tests {
             "export PHPRC=\"/Users/x/Library/Application Support/io.yerd.Yerd/php-cli.ini\""
         ));
 
-        let fish = render_body(Shell::Fish, &bin());
+        let fish = render_body(Shell::Fish, &[bin().as_path()]);
         assert!(fish.contains(
             "if not contains \"/Users/x/Library/Application Support/io.yerd.Yerd/bin\" $PATH"
         ));
@@ -410,18 +455,75 @@ mod tests {
     fn body_escapes_shell_metacharacters_in_the_path() {
         let dir = PathBuf::from(r#"/home/b$x/a`b/c\d/e"f/bin"#);
 
-        let posix = render_body(Shell::Zsh, &dir);
+        let posix = render_body(Shell::Zsh, &[dir.as_path()]);
         assert!(posix.contains(r#"export PATH="/home/b\$x/a\`b/c\\d/e\"f/bin:$PATH""#));
         assert!(posix.contains(r#"export PHPRC="/home/b\$x/a\`b/c\\d/e\"f/php-cli.ini""#));
 
-        let fish = render_body(Shell::Fish, &dir);
+        let fish = render_body(Shell::Fish, &[dir.as_path()]);
         assert!(fish.contains(r#"set -gx PATH "/home/b\$x/a`b/c\\d/e\"f/bin" $PATH"#));
         assert!(fish.contains(r#"set -gx PHPRC "/home/b\$x/a`b/c\\d/e\"f/php-cli.ini""#));
     }
 
+    fn legacy_one_dir_body(shell: Shell, dir: &str) -> String {
+        match shell {
+            Shell::Fish => format!(
+                "if not contains \"{dir}/bin\" $PATH\n    set -gx PATH \"{dir}/bin\" $PATH\nend\nset -gx PHPRC \"{dir}/php-cli.ini\""
+            ),
+            Shell::Zsh | Shell::Bash | Shell::Posix => format!(
+                "case \":$PATH:\" in\n  *\":{dir}/bin:\"*) ;;\n  *) export PATH=\"{dir}/bin:$PATH\" ;;\nesac\nexport PHPRC=\"{dir}/php-cli.ini\""
+            ),
+        }
+    }
+
+    #[test]
+    fn one_dir_body_is_unchanged_for_every_shell() {
+        for shell in [Shell::Zsh, Shell::Bash, Shell::Fish, Shell::Posix] {
+            assert_eq!(
+                render_body(shell, &[Path::new("/home/u/.local/share/yerd/bin")]),
+                legacy_one_dir_body(shell, "/home/u/.local/share/yerd"),
+                "{shell:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_dirs_render_both_prepends_in_order_and_one_phprc() {
+        let data_bin = Path::new("/home/u/.local/share/yerd/bin");
+        let install = Path::new("/home/u/.yerd/bin");
+        for shell in [Shell::Zsh, Shell::Bash, Shell::Fish, Shell::Posix] {
+            let body = render_body(shell, &[data_bin, install]);
+            let first = body.find("/home/u/.local/share/yerd/bin").unwrap();
+            let second = body.find("/home/u/.yerd/bin").unwrap();
+            assert!(first < second, "{shell:?}: {body}");
+            assert_eq!(body.matches("PHPRC").count(), 1, "{shell:?}: {body}");
+            assert!(
+                body.contains("/home/u/.local/share/yerd/php-cli.ini"),
+                "{shell:?}: {body}"
+            );
+            let prepends = if shell == Shell::Fish {
+                body.matches("set -gx PATH").count()
+            } else {
+                body.matches("export PATH=").count()
+            };
+            assert_eq!(prepends, 2, "{shell:?}: {body}");
+        }
+    }
+
+    #[test]
+    fn upsert_replaces_an_old_one_dir_block_with_two_dirs() {
+        let data_bin = Path::new("/home/u/.local/share/yerd/bin");
+        let install = Path::new("/home/u/.yerd/bin");
+        let old = upsert_block("export FOO=1\n", Shell::Bash, &[data_bin]);
+        let new = upsert_block(&old, Shell::Bash, &[data_bin, install]);
+        assert_eq!(new.matches(MARKER_OPEN).count(), 1);
+        assert!(new.starts_with("export FOO=1\n\n"));
+        assert!(new.contains("export PATH=\"/home/u/.yerd/bin:$PATH\""));
+        assert_eq!(remove_block(&new), "export FOO=1\n");
+    }
+
     #[test]
     fn upsert_into_empty_file() {
-        let out = upsert_block("", Shell::Zsh, &bin());
+        let out = upsert_block("", Shell::Zsh, &[bin().as_path()]);
         assert!(out.starts_with(MARKER_OPEN));
         assert!(out.trim_end().ends_with(MARKER_CLOSE));
         assert!(contains_block(&out));
@@ -429,23 +531,26 @@ mod tests {
 
     #[test]
     fn upsert_is_idempotent() {
-        let once = upsert_block("# my zshrc\nexport FOO=1\n", Shell::Zsh, &bin());
-        let twice = upsert_block(&once, Shell::Zsh, &bin());
+        let once = upsert_block("# my zshrc\nexport FOO=1\n", Shell::Zsh, &[bin().as_path()]);
+        let twice = upsert_block(&once, Shell::Zsh, &[bin().as_path()]);
         assert_eq!(once, twice);
         assert_eq!(once.matches(MARKER_OPEN).count(), 1);
     }
 
     #[test]
     fn upsert_appends_with_single_blank_separator_no_trailing_newline() {
-        let out = upsert_block("export FOO=1", Shell::Bash, &bin());
+        let out = upsert_block("export FOO=1", Shell::Bash, &[bin().as_path()]);
         assert!(out.starts_with("export FOO=1\n\n# >>> yerd PATH >>>"));
         assert!(out.matches(MARKER_OPEN).count() == 1);
     }
 
     #[test]
     fn upsert_replaces_in_place_preserving_surroundings() {
-        let original = format!("A\n\n{}B\nC\n", render_block(Shell::Zsh, &bin()));
-        let out = upsert_block(&original, Shell::Zsh, &bin());
+        let original = format!(
+            "A\n\n{}B\nC\n",
+            render_block(Shell::Zsh, &[bin().as_path()])
+        );
+        let out = upsert_block(&original, Shell::Zsh, &[bin().as_path()]);
         assert!(out.starts_with("A\n"));
         assert!(out.contains("B\nC\n"));
         assert_eq!(out.matches(MARKER_OPEN).count(), 1);
@@ -454,7 +559,7 @@ mod tests {
     #[test]
     fn remove_is_exact_inverse_of_append() {
         let before = "# my zshrc\nexport FOO=1\n";
-        let with = upsert_block(before, Shell::Zsh, &bin());
+        let with = upsert_block(before, Shell::Zsh, &[bin().as_path()]);
         let without = remove_block(&with);
         assert_eq!(without, before);
         assert!(!contains_block(&without));
@@ -462,7 +567,7 @@ mod tests {
 
     #[test]
     fn remove_does_not_eat_a_nonblank_line_above_the_marker() {
-        let block = render_block(Shell::Zsh, &bin());
+        let block = render_block(Shell::Zsh, &[bin().as_path()]);
         let text = format!("export KEEP=1\n{block}");
         let out = remove_block(&text);
         assert_eq!(out, "export KEEP=1\n");
@@ -470,7 +575,7 @@ mod tests {
 
     #[test]
     fn remove_on_block_only_file_yields_empty() {
-        let only = render_block(Shell::Fish, &bin());
+        let only = render_block(Shell::Fish, &[bin().as_path()]);
         assert_eq!(remove_block(&only), "");
     }
 
@@ -499,7 +604,7 @@ mod tests {
         let on_path = vec![PathBuf::from("/usr/bin"), d.clone()];
         let trailing = vec![PathBuf::from(format!("{}/", d.display()))];
         let off_path = vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")];
-        let block = vec![upsert_block("", Shell::Zsh, &d)];
+        let block = vec![upsert_block("", Shell::Zsh, &[d.as_path()])];
         let literal = vec![format!("export PATH=\"{}:$PATH\"", d.display())];
         let unrelated = vec!["export PATH=\"/usr/bin\"".to_owned()];
         let cases: [SetupCase<'_>; 9] = [

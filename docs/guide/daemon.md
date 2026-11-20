@@ -61,7 +61,7 @@ Start `yerdd` (via your service manager or `yerdd serve &`) before using the CLI
 
 ## Autostart
 
-How autostart is wired depends on your platform.
+How autostart is wired depends on your platform, and on whether you installed the desktop app or the [headless install](./headless). The sections below describe the desktop app; a headless install registers the daemon itself with `yerd daemon install` (see [Headless installs](#headless-installs)).
 
 ::: tip Starting the daemon from the app is bounded
 When the desktop app starts the daemon - at login or via the tray's Start button - it bounds the underlying service call to 15 seconds. A wedged `launchctl` or `systemctl` call can't hang the app indefinitely; past that, the app reports a timeout instead of spinning forever.
@@ -128,6 +128,20 @@ For a from-source / terminal run without the app, start the daemon directly:
 ```sh
 yerdd serve &
 ```
+
+### Headless installs
+
+A [headless install](./headless) has no app to register the daemon, so the CLI does it:
+
+```sh
+yerd daemon install                      # Linux, as your user
+sudo ~/.yerd/bin/yerd daemon install     # macOS
+```
+
+- **Linux** writes the same `~/.config/systemd/user/yerd.service` unit shown above (pointing at the headless `yerdd`), runs `systemctl --user enable --now yerd`, and enables lingering so it starts at boot with nobody logged in. If your distro only lets an administrator enable lingering, the command prints the `sudo loginctl enable-linger <user>` line to run.
+- **macOS** can't use a LaunchAgent, which only runs once someone logs in at the Mac. Instead `yerd-helper` writes a root-owned LaunchDaemon, `/Library/LaunchDaemons/dev.yerd.daemon.plist`, with `UserName` set to you, so launchd starts it at boot but `yerdd` still runs as your user.
+
+`yerd daemon start` and `yerd daemon stop` control it afterwards (on macOS, `start` needs `sudo` because the job lives in launchd's system domain). See [Daemon control](../reference/cli/daemon).
 
 ## Lifecycle: start, stop, restart
 

@@ -46,7 +46,8 @@ automated downgrade isn't implemented yet - it currently just says so.
    nothing is available, it reports and exits `0` - no download happens.
 3. Otherwise asks the daemon to download and verify the target release's
    artifact (`Request::StageUpdate`): the daemon fetches the platform-specific
-   asset (macOS `.app.tar.gz`, Linux `.deb`/`.pkg.tar.zst`/`.rpm`), checks its
+   asset (macOS `.app.tar.gz`, Linux `.deb`/`.pkg.tar.zst`/`.rpm`, or the
+   `.headless.tar.gz` for a [headless install](../../guide/headless)), checks its
    SHA-256 against the release's `SHA256SUMS` manifest, and verifies a
    detached minisign signature (the `<artifact>.minisig` asset, with a legacy
    `<artifact>.sig` accepted as a fallback) against an embedded public key.
@@ -58,11 +59,69 @@ automated downgrade isn't implemented yet - it currently just says so.
 progress output, not a single structured response.
 
 ::: warning Where Yerd must live
-On macOS, self-update only works when Yerd is installed at
+On macOS, the desktop app only self-updates when it is installed at
 `/Applications/Yerd.app` and that location is writable by you. Installs
 elsewhere (e.g. a dev build) are rejected with a clear error rather than
-silently failing.
+silently failing. A [headless install](#headless-installs) has no app bundle
+and updates its binaries in place, wherever you installed them.
 :::
+
+## Headless installs
+
+A [headless install](../../guide/headless) is recognised by the
+`yerd-install-receipt` file next to its binaries. The daemon reads it and
+stages the headless tarball for your platform
+(`Yerd_<OS>_<Arch>_v<ver>.headless.tar.gz`) instead of the desktop app's
+package, with the same SHA-256 and minisign checks. The CLI then:
+
+1. Takes the install directory's update lock (a second update running at the
+   same time stops without changing anything), copies the tarball into a
+   staging directory inside your install directory, checks the copy's
+   signature again, and unpacks that copy. It then checks the result holds the
+   required files (`yerd`, `yerdd`, `yerd-helper`, `yerd-forward` on macOS,
+   and a receipt that says `headless`). Extra files a newer release adds are
+   accepted and installed too, as long as each is a plain regular file
+   directly inside `yerd/` named `yerd-` followed by at least one more
+   character, using only ASCII letters, digits, `.`, `_` and `-`, and not
+   containing `.yerd-old-` (reserved for backups). Anything else (symlinks,
+   directories, hidden or nested names, other characters) rejects the whole
+   archive.
+2. Replaces each file with an atomic rename, keeping a backup until every file
+   is in place; if any step fails, the files already replaced are restored
+   and any newly added ones removed. If a restore itself fails, the error
+   says so and names the backup files left on disk.
+3. Restarts the daemon: on Linux through the `yerd` systemd user service (or a
+   stop/start fallback), on macOS with an in-place restart, the same as
+   `yerd restart daemon`, since the system LaunchDaemon can't be restarted
+   without root. If the daemon isn't running, the new version starts with it
+   next time. If the restart fails, the command exits `1` and says the new
+   files are installed (nothing is rolled back); run `yerd restart daemon` to
+   load them.
+
+No `sudo` is needed: the install directory is yours. On Linux, replacing
+`yerdd` drops its port capability. If you use ports 80/443, run
+`sudo ~/.yerd/bin/yerd elevate ports` and then `~/.yerd/bin/yerd restart daemon`
+afterwards: the capability only applies when `yerdd` next starts. If you
+installed somewhere else with `YERD_INSTALL_DIR`, use that directory's `yerd`
+in both commands. The updater prints both commands with your install's path
+when `yerdd` had the capability, or when `getcap` can't tell.
+
+The CLI also refuses, before changing anything, when the daemon belongs to a
+different headless install than the `yerd` you ran: either the running daemon
+reports a different directory with the staged update, or the registered
+daemon service (the systemd unit's `ExecStart=`, or the macOS LaunchDaemon's
+program) runs a `yerdd` from a different directory. Updating this install's
+files would leave that daemon on its old version.
+
+The CLI refuses to apply an update that belongs to the other kind of install:
+a desktop app `yerd` talking to a headless daemon is told to run the headless
+install's `yerd update --yes`, and a headless `yerd` talking to the desktop
+app's daemon is told to use the app's updater. On Linux, the package paths
+(`dpkg`/`pacman`/`rpm`) also refuse to run unless `yerd` itself lives where a
+package puts it: `/usr/bin/yerd`, or the Debian package's `/usr/lib/<dir>/yerd`
+fallback. A tarball install never pulls in the desktop package. A receipt
+Yerd can't read or doesn't recognise is an error, not a fallback: reinstall with the
+[install script](../../guide/headless#install).
 
 ## Platform support
 
@@ -72,6 +131,7 @@ silently failing.
 | Linux (`.deb` build) | Reinstalls via `dpkg -i`, elevated with `pkexec` if needed; restarts the daemon via `systemctl --user restart` (or a stop/start fallback with no systemd user instance). |
 | Linux (Arch `.pkg.tar.zst` build) | Reinstalls via `pacman -U`, same elevation and restart path as the `.deb` build. |
 | Linux (Fedora `.rpm` build) | Reinstalls via `rpm -U --oldpackage`, same elevation and restart path as the `.deb` build. |
+| Headless install (Linux x86-64/arm64, macOS Apple Silicon) | Swaps the binaries from the `.headless.tar.gz` in place, no elevation; restarts the daemon as described [above](#headless-installs). |
 | Intel macOS, other platforms | No self-update artifact is published; `yerd update` reports nothing available. |
 
 ## See also

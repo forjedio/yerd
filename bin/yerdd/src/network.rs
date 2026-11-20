@@ -1110,8 +1110,12 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         assert_eq!(probe_reachable(&manual_via(port)).await, Some(true));
-        drop(listener);
-        assert_eq!(probe_reachable(&manual_via(port)).await, Some(false));
+
+        let reserved = tokio::net::TcpSocket::new_v4().unwrap();
+        reserved.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let closed = reserved.local_addr().unwrap().port();
+        assert_eq!(probe_reachable(&manual_via(closed)).await, Some(false));
+        drop(reserved);
     }
 
     #[tokio::test]
