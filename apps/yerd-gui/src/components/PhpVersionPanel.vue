@@ -1,18 +1,21 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, useTemplateRef, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, useTemplateRef, watch } from "vue";
 import {
   Check,
-  Info,
+  FileText,
   MoreHorizontal,
   Pencil,
   Plus,
+  Puzzle,
   Trash2,
   TriangleAlert,
   X,
 } from "lucide-vue-next";
 
+import PhpSettingsGrid, { type SettingsGridRow } from "@/components/php/PhpSettingsGrid.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
+import InspectorFooter from "@/components/ui/InspectorFooter.vue";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,17 +27,14 @@ import Input from "@/components/ui/Input.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { SECTION_LABEL } from "@/components/ui/styles";
+import { useResource } from "@/composables/useResource";
 import { useStagedField } from "@/composables/useStagedField";
 import { useToast } from "@/composables/useToast";
 import {
   IpcError,
   listPhp,
+  listPhpExtensions,
   openInBrowser,
   type PhpExtensionsMap,
   removePhpExtension,
@@ -52,15 +52,21 @@ import type {
   XdebugStart,
 } from "@/ipc/types";
 import {
+  changedCount,
   DISPLAY_ERRORS_HINT,
   directiveNameProblem,
   directiveValueProblem,
+  displayErrorsOptions,
+  displayErrorsPick,
   effectiveValue,
   FFI_HINT,
   FFI_KEY,
-  FFI_LABEL,
+  FFI_SHORT_LABEL,
+  GRID_ORDER,
   LIBVIPS_HINT,
-  overrideCount,
+  POOL_DEFAULT,
+  POOL_HINT,
+  POOL_MAX_CHILDREN_KEY,
   poolMaxChildrenProblem,
   SETTING_KEYS,
   TEXT_SETTINGS,
@@ -72,9 +78,12 @@ import {
   XDEBUG_START_OPTIONS,
   XDEBUG_UNAVAILABLE_HINT,
 } from "@/lib/phpSettings";
+import { cn } from "@/lib/utils";
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   version: PhpVersion;
+  /** Whether this panel is the one on show, so its footer bar is too. */
+  active?: boolean;
   /** The global `[php.settings]` defaults this version inherits from. */
   globalSettings: Record<string, string>;
   /** This version's sparse setting overrides (may be empty). */
@@ -101,7 +110,7 @@ const props = defineProps<{
   xdebug: XdebugSettings | null;
   /** Whether a bundled Xdebug is published for this version on this host. */
   xdebugAvailable: boolean;
-}>();
+}>(), { active: true });
 
 const emit = defineEmits<{
   /** Fired with the daemon's refreshed version list after any successful save. */
@@ -115,6 +124,22 @@ const emit = defineEmits<{
 }>();
 
 const toast = useToast();
+
+/** True while any extension row's menu is open, so the drawer leaves Escape to it. */
+const layerOpen = defineModel<boolean>("layerOpen", { default: false });
+
+const phpCache = useResource("php", listPhp, { immediate: false });
+const extensionsCache = useResource("php-extensions", listPhpExtensions, { immediate: false });
+
+/**
+ * Write a reply into the shared cache, then hand it to the view. The cache
+ * outlives this panel, so a reply that lands after the drawer closed still
+ * reaches a reopened panel.
+ */
+function publish(r: PhpVersionsResponse): void {
+  phpCache.mutate(() => r);
+  emit("updated", r);
+}
 
 // Names the single in-flight mutation, so the control that started it can show
 // its own spinner. Every other control keys off `isBusy` instead: this panel's
@@ -136,57 +161,63 @@ watch(
 
 // ── per-version settings form ──
 // Fields hold only the override value; an empty field means "inherit" (the
-// placeholder shows what is inherited). Same pristine/seed discipline as the
-// global settings form: server refreshes only reseed while there are no
-// unsaved edits.
+// placeholder shows what is inherited). Server refreshes rebase the form: an
+// untouched field takes the fresh override, an edited one keeps the edit, and
+// Save sends only the edited fields, so an out-of-band change (CLI, MCP) to
+// another key is neither hidden nor reverted.
 const form = ref<Record<string, string>>({});
 const lastSeeded = ref<Record<string, string>>({});
 
-function seed(overrides: Record<string, string>): void {
+function seededFrom(overrides: Record<string, string>): Record<string, string> {
   const next: Record<string, string> = {};
   for (const k of SETTING_KEYS) next[k] = overrides[k] ?? "";
+  return next;
+}
+
+function seed(overrides: Record<string, string>): void {
+  const next = seededFrom(overrides);
   form.value = next;
   lastSeeded.value = { ...next };
 }
 
-/** Unsaved edits in the settings grid alone. */
-const settingsDirty = computed(() =>
-  SETTING_KEYS.some((k) => (form.value[k] ?? "") !== (lastSeeded.value[k] ?? "")),
-);
+function rebase(overrides: Record<string, string>): void {
+  const next = seededFrom(overrides);
+  const merged: Record<string, string> = {};
+  for (const k of SETTING_KEYS) {
+    const current = form.value[k] ?? "";
+    merged[k] = current === (lastSeeded.value[k] ?? "") ? (next[k] ?? "") : current;
+  }
+  form.value = merged;
+  lastSeeded.value = next;
+}
 
-// Guarded on `settingsDirty` rather than the wider `panelDirty`: a half-typed
-// directive must not stop an out-of-band ini change (e.g. via the CLI) from
-// self-correcting here.
-watch(
-  () => props.overrides,
-  (o) => {
-    if (!settingsDirty.value) seed(o);
-  },
-  { immediate: true },
-);
+/** The edited fields, as a save payload; a blank one removes its override. */
+function changedSettings(): Record<string, string> {
+  const changed: Record<string, string> = {};
+  for (const k of SETTING_KEYS) {
+    const v = form.value[k] ?? "";
+    if (v !== (lastSeeded.value[k] ?? "")) changed[k] = v;
+  }
+  return changed;
+}
+
+/** Unsaved edits in the settings grid alone. */
+const settingsDirty = computed(() => Object.keys(changedSettings()).length > 0);
+
+watch(() => props.overrides, rebase, { immediate: true });
 
 const directiveEntries = computed(() =>
   Object.entries(props.directives).sort(([a], [b]) => a.localeCompare(b)),
 );
 
-function inheritedLabel(key: string, fallback: string): string {
-  const inherited = effectiveValue(props.globalSettings, {}, key);
-  return `${inherited ?? fallback} (inherited)`;
-}
-
-const displayErrorsOptions = computed(() => {
-  const inherited = effectiveValue(props.globalSettings, {}, "display_errors");
-  return [
-    { value: "", label: `- inherit (${inherited ?? "default"}) -` },
-    { value: "On", label: "On" },
-    { value: "Off", label: "Off" },
-  ];
-});
+const inheritedDisplayErrors = computed(() =>
+  effectiveValue(props.globalSettings, {}, "display_errors"),
+);
 
 const ffiOptions = computed(() => {
   const inherited = effectiveValue(props.globalSettings, {}, FFI_KEY) ?? "Off";
   return [
-    { value: "", label: `- inherit (${inherited}) -` },
+    { value: "", label: `inherit (${inherited})` },
     { value: "On", label: "On" },
     { value: "Off", label: "Off" },
   ];
@@ -197,32 +228,6 @@ const showLibvipsHint = computed(
     props.libvipsFound === false &&
     effectiveValue(props.globalSettings, form.value, FFI_KEY) === "On",
 );
-
-const savedOverrides = computed(() => overrideCount(props.overrides));
-
-/**
- * Persist this version's overrides. Every field is sent, including the blank
- * ones: a blank value removes the override so the version inherits again.
- */
-async function saveSettings(): Promise<void> {
-  if (isBusy.value) return;
-  busy.value = "settings";
-  try {
-    const payload: Record<string, string> = { ...form.value };
-    if (!props.ffiAvailable) delete payload[FFI_KEY];
-    const r = await setPhpVersionSettings(props.version, payload);
-    seed(r.version_settings?.[props.version] ?? {});
-    toast.success(
-      `PHP ${props.version} settings updated`,
-      "The pool restarts to apply the changes.",
-    );
-    emit("updated", r);
-  } catch (e) {
-    toast.error(`Couldn't update PHP ${props.version} settings`, (e as IpcError).message);
-  } finally {
-    busy.value = null;
-  }
-}
 
 // ── FPM pool sizing ──
 // Same pristine/seed discipline as the settings grid: an empty field means the
@@ -249,24 +254,113 @@ watch(
   { immediate: true },
 );
 
-async function savePool(): Promise<void> {
-  if (isBusy.value || poolProblem.value) return;
-  busy.value = "pool";
+/** Whether Save changes has anything to send. */
+const canSave = computed(
+  () => (settingsDirty.value || poolDirty.value) && !poolProblem.value && !isBusy.value,
+);
+
+/**
+ * Persist the settings grid: the edited allowlisted overrides first (the daemon
+ * merges them; a blank one removes its override), then the worker ceiling. Each reseeds from
+ * its reply. A failure stops there and leaves the rest staged.
+ */
+async function save(): Promise<void> {
+  if (!canSave.value) return;
+  busy.value = "save";
   try {
-    const r = await setPhpPoolSettings(props.version, {
-      max_children: poolMaxChildren.value.trim(),
-    });
-    seedPool(r.pool?.[props.version] ?? {});
-    toast.success(
-      `PHP ${props.version} pool size updated`,
-      "The pool restarts to apply the change.",
-    );
-    emit("updated", r);
-  } catch (e) {
-    toast.error(`Couldn't update the PHP ${props.version} pool size`, (e as IpcError).message);
+    let settingsSaved = false;
+    if (settingsDirty.value) {
+      try {
+        const payload = changedSettings();
+        if (!props.ffiAvailable) delete payload[FFI_KEY];
+        const r = await setPhpVersionSettings(props.version, payload);
+        seed(r.version_settings?.[props.version] ?? {});
+        publish(r);
+        settingsSaved = true;
+      } catch (e) {
+        toast.error(`Couldn't update PHP ${props.version} settings`, (e as IpcError).message);
+        return;
+      }
+    }
+    if (poolDirty.value) {
+      try {
+        const r = await setPhpPoolSettings(props.version, {
+          max_children: poolMaxChildren.value.trim(),
+        });
+        seedPool(r.pool?.[props.version] ?? {});
+        publish(r);
+      } catch (e) {
+        const message = (e as IpcError).message;
+        toast.error(
+          `Couldn't update the PHP ${props.version} pool size`,
+          settingsSaved ? `The other settings were saved. ${message}` : message,
+        );
+        return;
+      }
+    }
+    toast.success(`PHP ${props.version} settings saved`, "The pool restarts to apply the changes.");
   } finally {
     busy.value = null;
   }
+}
+
+/** Stage a blank for every grid row, so Save makes the version inherit everything again. */
+function resetToShared(): void {
+  for (const k of SETTING_KEYS) form.value[k] = "";
+  poolMaxChildren.value = "";
+}
+
+const changed = computed(() => changedCount(form.value, poolMaxChildren.value, props.ffiAvailable));
+
+const gridRows = computed<SettingsGridRow[]>(() =>
+  GRID_ORDER.filter((k) => k !== FFI_KEY || props.ffiAvailable).map((key): SettingsGridRow => {
+    if (key === POOL_MAX_CHILDREN_KEY) {
+      return {
+        key,
+        label: "FPM workers",
+        hint: POOL_HINT,
+        kind: "text",
+        value: poolMaxChildren.value,
+        placeholder: POOL_DEFAULT,
+        changed: poolMaxChildren.value.trim() !== "",
+        problem: poolProblem.value,
+      };
+    }
+    const value = form.value[key] ?? "";
+    if (key === "display_errors") {
+      const inherited = inheritedDisplayErrors.value;
+      return {
+        key,
+        label: "Display errors",
+        hint: DISPLAY_ERRORS_HINT,
+        kind: "toggle",
+        value: value || inherited || "",
+        options: displayErrorsOptions(inherited),
+        changed: value !== "",
+      };
+    }
+    if (key === FFI_KEY) {
+      return { key, label: FFI_SHORT_LABEL, hint: FFI_HINT, kind: "ffi", value, changed: value !== "" };
+    }
+    const s = TEXT_SETTINGS.find((t) => t.key === key);
+    return {
+      key,
+      label: s?.label ?? key,
+      hint: s?.hint ?? "",
+      kind: "text",
+      value,
+      placeholder: effectiveValue(props.globalSettings, {}, key) ?? "PHP default",
+      unit: s?.unit,
+      changed: value.trim() !== "",
+    };
+  }),
+);
+
+function onGridUpdate(key: string, value: string): void {
+  if (key === POOL_MAX_CHILDREN_KEY) poolMaxChildren.value = value;
+  else if (key === "display_errors") {
+    form.value.display_errors = displayErrorsPick(value, inheritedDisplayErrors.value);
+  } else form.value[key] = value;
 }
 
 // ── Xdebug ──
@@ -300,6 +394,10 @@ watch(() => props.xdebug, syncXdebug, { immediate: true });
 /** Whether the mode's checkbox is locked: the last checked mode can't be cleared. */
 function modeLocked(m: XdebugMode): boolean {
   return xdebugModes.value.length === 1 && xdebugModes.value[0] === m;
+}
+
+function modeOn(m: XdebugMode): boolean {
+  return xdebugModes.value.includes(m);
 }
 
 function setMode(m: XdebugMode, checked: boolean): void {
@@ -339,13 +437,13 @@ async function reloadAfterFailure(): Promise<void> {
   const r = await Promise.race([read, timedOut]);
   clearTimeout(timer);
   if (r !== "timeout" && r !== null) {
-    emit("updated", r);
+    publish(r);
     return;
   }
   if (r === "timeout") {
     const seq = mutationSeq;
     void read.then((late) => {
-      if (late && seq === mutationSeq) emit("updated", late);
+      if (late && seq === mutationSeq) publish(late);
     });
   }
   toast.info(
@@ -371,7 +469,7 @@ async function toggleXdebug(on: boolean): Promise<void> {
       : await setXdebug(props.version, on);
     if (withStaged) seedXdebug(r.xdebug?.[props.version] ?? null);
     toast.success(`Xdebug ${on ? "on" : "off"} for PHP ${props.version}`, "Settings saved.");
-    emit("updated", r);
+    publish(r);
   } catch (e) {
     toast.error(
       `Couldn't turn Xdebug ${on ? "on" : "off"} for PHP ${props.version}`,
@@ -394,7 +492,7 @@ async function saveXdebug(): Promise<void> {
       `PHP ${props.version} Xdebug settings saved`,
       saved?.enabled ? undefined : "They apply the next time Xdebug is turned on.",
     );
-    emit("updated", r);
+    publish(r);
   } catch (e) {
     toast.error(`Couldn't update PHP ${props.version} Xdebug settings`, (e as IpcError).message);
     await reloadAfterFailure();
@@ -406,6 +504,9 @@ async function saveXdebug(): Promise<void> {
 // ── custom ini directives ──
 const dirName = ref("");
 const dirValue = ref("");
+/** Whether the add-directive row was opened with `+ Add directive` (or an extension's menu). */
+const addOpen = ref(false);
+const showAddRow = computed(() => addOpen.value || dirName.value !== "" || dirValue.value !== "");
 const dirNameInput = useTemplateRef<{ focus: () => void }>("dirNameInput");
 
 // Inline hint while typing; the daemon remains the authority on save. An empty
@@ -431,8 +532,9 @@ async function addDirective(): Promise<void> {
     const r = await setPhpDirectives(props.version, { [name]: value });
     dirName.value = "";
     dirValue.value = "";
+    addOpen.value = false;
     toast.success(`Set ${name} for PHP ${props.version}`);
-    emit("updated", r);
+    publish(r);
   } catch (e) {
     toast.error("Couldn't set the directive", (e as IpcError).message);
   } finally {
@@ -472,7 +574,7 @@ async function saveEdit(): Promise<void> {
     const r = await setPhpDirectives(props.version, { [name]: value });
     cancelEdit();
     toast.success(`Updated ${name} for PHP ${props.version}`);
-    emit("updated", r);
+    publish(r);
   } catch (e) {
     toast.error("Couldn't update the directive", (e as IpcError).message);
   } finally {
@@ -486,7 +588,7 @@ async function removeDirective(name: string): Promise<void> {
   try {
     const r = await setPhpDirectives(props.version, { [name]: "" });
     toast.success(`Removed ${name} for PHP ${props.version}`);
-    emit("updated", r);
+    publish(r);
   } catch (e) {
     toast.error("Couldn't remove the directive", (e as IpcError).message);
   } finally {
@@ -505,15 +607,44 @@ const sortedExtensions = computed(() =>
  * would otherwise pull focus straight back to the trigger.
  */
 function directiveFor(ext: PhpExtInfo): void {
+  addOpen.value = true;
   dirName.value = `${ext.name}.`;
   void nextTick(() => dirNameInput.value?.focus());
 }
+
+function openAddRow(): void {
+  addOpen.value = true;
+  void nextTick(() => dirNameInput.value?.focus());
+}
+
+function closeAddRow(): void {
+  addOpen.value = false;
+  dirName.value = "";
+  dirValue.value = "";
+}
+
+const extMenuOpen = ref<Record<string, boolean>>({});
+
+/** Only rows still on screen count: a row removed while its menu was open (an
+ *  out-of-band uninstall) never reports the close, and must not keep Escape. */
+watch(
+  [extMenuOpen, () => props.extensions],
+  ([menus, exts]) => {
+    layerOpen.value = exts.some((ext) => menus[ext.name] === true);
+  },
+  { deep: true },
+);
+
+onBeforeUnmount(() => {
+  layerOpen.value = false;
+});
 
 async function removeExtension(name: string): Promise<void> {
   if (isBusy.value) return;
   busy.value = `ext-remove:${name}`;
   try {
     const map = await removePhpExtension(props.version, name);
+    extensionsCache.mutate(() => map);
     toast.success("Extension removed");
     emit("extensionsUpdated", map);
   } catch (e) {
@@ -540,463 +671,385 @@ const panelDirty = computed(() => {
 
 watch(panelDirty, (d) => emit("dirty", d), { immediate: true });
 
+const CARD = "min-w-0 rounded-[10px] border bg-card p-4";
+const LINK =
+  "mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-brand hover:underline disabled:pointer-events-none disabled:opacity-50";
+const FIELD =
+  "h-7 rounded-md border bg-background px-2 font-mono text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50";
+
 function discard(): void {
   seed(props.overrides);
   seedPool(props.pool);
   seedXdebug(props.xdebug);
-  dirName.value = "";
-  dirValue.value = "";
+  closeAddRow();
   cancelEdit();
 }
 </script>
 
 <template>
-  <div>
+  <div class="flex flex-1 flex-col">
     <template v-if="installedVersion">
-      <TooltipProvider :delay-duration="0">
-        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div v-for="s in TEXT_SETTINGS" :key="s.key">
-            <div class="flex items-center gap-1">
-              <label class="text-xs font-medium" :for="`set-${version}-${s.key}`">
-                {{ s.label }}
-              </label>
-              <Tooltip>
-                <TooltipTrigger as-child>
-                  <span class="inline-flex cursor-help text-muted-foreground">
-                    <Info class="size-3.5" />
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent side="top">{{ s.hint }}</TooltipContent>
-              </Tooltip>
-            </div>
-            <Input
-              :id="`set-${version}-${s.key}`"
-              v-model="form[s.key]"
-              :placeholder="inheritedLabel(s.key, s.placeholder)"
+      <div class="flex h-6 items-center justify-between gap-3 px-1">
+        <h3 :class="SECTION_LABEL">Settings</h3>
+        <p class="flex items-center gap-1.5 text-xs text-faint" data-testid="changed-count">
+          <template v-if="changed > 0">
+            <span class="size-1.5 rounded-full bg-brand" aria-hidden="true" />
+            {{ changed }} changed for {{ version }}
+            <span aria-hidden="true">·</span>
+            <button
+              type="button"
+              class="font-medium text-brand hover:underline disabled:opacity-50"
               :disabled="isBusy"
-              class="mt-1"
+              data-testid="reset-to-shared"
+              @click="resetToShared"
+            >
+              Reset to shared
+            </button>
+          </template>
+          <template v-else>Same as shared</template>
+        </p>
+      </div>
+
+      <PhpSettingsGrid
+        class="mt-2"
+        :rows="gridRows"
+        markers
+        :disabled="isBusy"
+        :id-prefix="`set-${version}`"
+        :aria-suffix="` for PHP ${version}`"
+        @update="onGridUpdate"
+      >
+        <template #ffi>
+          <Select
+            class="w-[120px]"
+            :model-value="form[FFI_KEY] ?? ''"
+            :options="ffiOptions"
+            :disabled="isBusy"
+            :aria-label="`ffi.enable for PHP ${version}`"
+            @update:model-value="(v: string) => (form[FFI_KEY] = v)"
+          />
+        </template>
+      </PhpSettingsGrid>
+      <p
+        v-if="showLibvipsHint"
+        class="mt-2 flex items-center gap-1.5 px-1 text-xs text-muted-foreground"
+        data-testid="libvips-hint"
+      >
+        <TriangleAlert class="size-3.5 shrink-0 text-warning" />
+        {{ LIBVIPS_HINT }}
+      </p>
+    </template>
+
+    <p v-else class="text-[13px] text-muted-foreground">
+      PHP {{ version }} is no longer installed. Remove these registrations, or reinstall the
+      version to configure it again.
+    </p>
+
+    <div :class="cn('mt-5 grid gap-3', installedVersion ? 'grid-cols-2' : 'grid-cols-1')">
+      <section :class="CARD" data-testid="extensions-card">
+        <p class="flex items-center gap-2 text-[13px] font-semibold">
+          <Puzzle class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          Extra extensions
+        </p>
+        <p class="mt-1 text-xs text-faint">Load a .so into web and CLI for {{ version }} only.</p>
+
+        <div v-if="extensionsLoading && !sortedExtensions.length" class="mt-3 flex">
+          <Spinner class="size-4" />
+        </div>
+        <ul v-else-if="sortedExtensions.length" class="mt-3 flex flex-col gap-1.5">
+          <li
+            v-for="ext in sortedExtensions"
+            :key="ext.name"
+            class="flex items-center gap-2 rounded-md border bg-background px-2.5 py-1.5"
+          >
+            <div class="min-w-0 flex-1">
+              <p class="flex items-center gap-1.5">
+                <span class="truncate font-mono text-xs font-semibold">{{ ext.name }}</span>
+                <Badge v-if="ext.zend" variant="secondary">zend</Badge>
+                <Badge v-if="!ext.present" variant="destructive">
+                  <TriangleAlert class="size-3" /> missing
+                </Badge>
+              </p>
+              <p class="mt-0.5 truncate font-mono text-[11px] text-faint" :title="ext.path">
+                {{ ext.path }}
+              </p>
+              <p v-if="!ext.present" class="mt-0.5 text-[11px] text-muted-foreground">
+                The file has moved or been deleted - remove this registration and add it again
+                with the new path.
+              </p>
+            </div>
+            <DropdownMenu
+              :open="extMenuOpen[ext.name] ?? false"
+              @update:open="(o: boolean) => (extMenuOpen[ext.name] = o)"
+            >
+              <DropdownMenuTrigger as-child>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="size-7 shrink-0"
+                  :disabled="isBusy"
+                  :aria-label="`Actions for ${ext.name}`"
+                >
+                  <Spinner v-if="busy === `ext-remove:${ext.name}`" class="size-4" />
+                  <MoreHorizontal v-else />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" @close-auto-focus.prevent>
+                <DropdownMenuItem v-if="installedVersion" @select="directiveFor(ext)">
+                  <Plus class="size-4" /> Add ini directive
+                </DropdownMenuItem>
+                <DropdownMenuSeparator v-if="installedVersion" />
+                <DropdownMenuItem
+                  class="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                  @select="removeExtension(ext.name)"
+                >
+                  <Trash2 class="size-4" /> Remove
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </li>
+        </ul>
+
+        <button
+          v-if="installedVersion"
+          type="button"
+          :class="LINK"
+          :disabled="isBusy"
+          @click="emit('requestAddExtension')"
+        >
+          <Plus class="size-3.5" /> Add extension
+        </button>
+      </section>
+
+      <section v-if="installedVersion" :class="CARD" data-testid="directives-card">
+        <p class="flex items-center gap-2 text-[13px] font-semibold">
+          <FileText class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          Other ini directives
+        </p>
+        <p class="mt-1 text-xs text-faint">Anything not listed above, e.g. opcache.enable.</p>
+        <p
+          v-if="xdebugEnabled"
+          class="mt-1.5 text-[11px] text-muted-foreground"
+          data-testid="xdebug-directives-hint"
+        >
+          {{ XDEBUG_DIRECTIVES_HINT }}
+        </p>
+
+        <ul v-if="directiveEntries.length" class="mt-3 flex flex-col gap-1.5">
+          <li v-for="[name, value] in directiveEntries" :key="name">
+            <div class="flex items-center gap-1 rounded-md border bg-background px-2.5 py-1">
+              <template v-if="editName === name">
+                <code class="shrink-0 text-xs">{{ name }} =</code>
+                <input
+                  v-model="editValue"
+                  :class="FIELD"
+                  class="min-w-0 flex-1"
+                  :disabled="isBusy"
+                  :aria-label="`New value for ${name}`"
+                  @keydown.enter="saveEdit"
+                  @keydown.esc.stop="cancelEdit"
+                />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="size-7 shrink-0"
+                  :disabled="isBusy || !!editProblem || !editValue"
+                  :aria-label="`Save ${name}`"
+                  @click="saveEdit"
+                >
+                  <Spinner v-if="busy === `dir-edit:${name}`" class="size-4" />
+                  <Check v-else />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="size-7 shrink-0"
+                  :disabled="isBusy"
+                  :aria-label="`Cancel editing ${name}`"
+                  @click="cancelEdit"
+                >
+                  <X />
+                </Button>
+              </template>
+              <template v-else>
+                <code class="min-w-0 flex-1 truncate text-xs" :title="`${name} = ${value}`">
+                  {{ name }} = {{ value }}
+                </code>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="size-7 shrink-0"
+                  :disabled="isBusy"
+                  :aria-label="`Edit ${name}`"
+                  @click="startEdit(name, value)"
+                >
+                  <Pencil />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="size-7 shrink-0"
+                  :disabled="isBusy"
+                  :aria-label="`Remove ${name}`"
+                  @click="removeDirective(name)"
+                >
+                  <Spinner v-if="busy === `dir-remove:${name}`" class="size-4" />
+                  <Trash2 v-else />
+                </Button>
+              </template>
+            </div>
+            <p v-if="editName === name && editProblem" class="mt-1 text-[11px] text-destructive">
+              {{ editProblem }}
+            </p>
+          </li>
+        </ul>
+
+        <div v-if="showAddRow" class="mt-3" data-testid="directive-add-row">
+          <div class="grid grid-cols-2 gap-1.5">
+            <Input
+              ref="dirNameInput"
+              v-model="dirName"
+              placeholder="Directive name"
+              :disabled="isBusy"
+              :aria-label="`Directive name for PHP ${version}`"
+            />
+            <Input
+              v-model="dirValue"
+              placeholder="Value"
+              :disabled="isBusy"
+              :aria-label="`Directive value for PHP ${version}`"
             />
           </div>
-          <div>
-            <div class="flex items-center gap-1">
-              <span class="text-xs font-medium">Display errors</span>
-              <Tooltip>
-                <TooltipTrigger as-child>
-                  <span class="inline-flex cursor-help text-muted-foreground">
-                    <Info class="size-3.5" />
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent side="top">{{ DISPLAY_ERRORS_HINT }}</TooltipContent>
-              </Tooltip>
-            </div>
-            <div class="mt-1">
-              <Select
-                class="w-full"
-                :model-value="form.display_errors ?? ''"
-                :options="displayErrorsOptions"
-                :disabled="isBusy"
-                :aria-label="`display_errors for PHP ${version}`"
-                @update:model-value="(v: string) => (form.display_errors = v)"
-              />
-            </div>
-          </div>
-          <div v-if="ffiAvailable" data-testid="ffi-setting">
-            <div class="flex items-center gap-1">
-              <span class="text-xs font-medium">{{ FFI_LABEL }}</span>
-              <Tooltip>
-                <TooltipTrigger as-child>
-                  <span class="inline-flex cursor-help text-muted-foreground">
-                    <Info class="size-3.5" />
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent side="top">{{ FFI_HINT }}</TooltipContent>
-              </Tooltip>
-            </div>
-            <div class="mt-1">
-              <Select
-                class="w-full"
-                :model-value="form[FFI_KEY] ?? ''"
-                :options="ffiOptions"
-                :disabled="isBusy"
-                :aria-label="`ffi.enable for PHP ${version}`"
-                @update:model-value="(v: string) => (form[FFI_KEY] = v)"
-              />
-            </div>
-            <p
-              v-if="showLibvipsHint"
-              class="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground"
-              data-testid="libvips-hint"
+          <p v-if="dirProblem" class="mt-1 text-[11px] text-destructive">{{ dirProblem }}</p>
+          <div class="mt-2 flex justify-end gap-1.5">
+            <Button variant="ghost" size="sm" :disabled="isBusy" @click="closeAddRow">Cancel</Button>
+            <Button
+              size="sm"
+              :disabled="isBusy || !!dirProblem || !dirName || !dirValue"
+              data-testid="directive-add"
+              @click="addDirective"
             >
-              <TriangleAlert class="size-3.5 shrink-0 text-warning" />
-              {{ LIBVIPS_HINT }}
-            </p>
+              <Spinner v-if="busy === 'dir-add'" class="size-4" />
+              Add
+            </Button>
           </div>
         </div>
-      </TooltipProvider>
+        <button v-else type="button" :class="LINK" :disabled="isBusy" @click="openAddRow">
+          <Plus class="size-3.5" /> Add directive
+        </button>
+      </section>
+    </div>
 
-      <!-- Xdebug, loaded into this version's web (FPM) pool only. -->
-      <div class="mt-5 border-t border-border pt-4" data-testid="xdebug-section">
-        <div class="flex items-center justify-between gap-2">
-          <TooltipProvider :delay-duration="0">
-            <div class="flex items-center gap-1">
-              <span class="text-xs font-medium">Xdebug</span>
-              <Tooltip>
-                <TooltipTrigger as-child>
-                  <span class="inline-flex cursor-help text-muted-foreground">
-                    <Info class="size-3.5" />
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>
-                  Loads the bundled Xdebug into this version's web pool. Turning
-                  it on or off restarts the pool. Plain php on the command line
-                  never loads it; use phpdebug for a single command.
-                </TooltipContent>
-              </Tooltip>
+    <template v-if="installedVersion">
+      <section class="mt-7" data-testid="xdebug-section">
+        <div class="flex h-6 items-center justify-between gap-3 px-1">
+          <h3 :class="SECTION_LABEL">Xdebug</h3>
+          <p
+            v-if="xdebugAvailable"
+            class="truncate text-xs text-faint"
+            :title="XDEBUG_IDE_HINT"
+            data-testid="xdebug-ide-hint"
+          >
+            IDE listens on port 9003 ·
+            <button
+              type="button"
+              class="font-medium text-brand hover:underline"
+              @click="openInBrowser(XDEBUG_DOCS_URL)"
+            >
+              Debugging with Xdebug
+            </button>
+          </p>
+        </div>
+        <div class="mt-2 divide-y rounded-[10px] border bg-card">
+          <div class="flex items-center gap-4 px-4 py-3">
+            <div class="min-w-0 flex-1">
+              <p class="text-[13px] font-semibold">Load Xdebug into PHP {{ version }}'s web pool</p>
+              <p class="mt-0.5 text-xs text-faint">
+                Restarts the pool when toggled. CLI php never loads it — use phpdebug for one
+                command.
+              </p>
+              <p
+                v-if="!xdebugAvailable"
+                class="mt-1 text-xs text-muted-foreground"
+                data-testid="xdebug-unavailable"
+              >
+                {{ XDEBUG_UNAVAILABLE_HINT }}
+              </p>
             </div>
-          </TooltipProvider>
-          <span class="flex items-center gap-2">
-            <Spinner v-if="busy === 'xdebug-toggle'" class="size-4" />
+            <Spinner v-if="busy === 'xdebug-toggle'" class="size-4 shrink-0" />
             <Switch
               :model-value="xdebugEnabled"
               :disabled="isBusy || (!xdebugAvailable && !xdebugEnabled)"
               :aria-label="`Xdebug for PHP ${version}`"
               @update:model-value="toggleXdebug"
             />
-          </span>
-        </div>
-        <p
-          v-if="!xdebugAvailable"
-          class="mt-1 text-xs text-muted-foreground"
-          data-testid="xdebug-unavailable"
-        >
-          {{ XDEBUG_UNAVAILABLE_HINT }}
-        </p>
-        <fieldset class="mt-3" :disabled="!xdebugAvailable">
-          <legend class="text-xs text-muted-foreground">Modes</legend>
-          <div class="mt-1 grid grid-cols-1 gap-x-4 gap-y-1.5 sm:grid-cols-2">
-            <label
-              v-for="m in XDEBUG_MODES"
-              :key="m.value"
-              class="flex items-center gap-2 text-sm"
-            >
-              <input
-                type="checkbox"
-                class="size-4"
-                :checked="xdebugModes.includes(m.value)"
-                :disabled="isBusy || !xdebugAvailable || modeLocked(m.value)"
+          </div>
+          <div class="flex items-start gap-4 px-4 py-3">
+            <span class="w-12 shrink-0 pt-1 text-xs text-muted-foreground">Modes</span>
+            <div class="flex flex-wrap gap-1.5" role="group" :aria-label="`Xdebug modes for PHP ${version}`">
+              <button
+                v-for="m in XDEBUG_MODES"
+                :key="m.value"
+                type="button"
+                :aria-pressed="modeOn(m.value)"
                 :aria-label="`Xdebug ${m.value} mode for PHP ${version}`"
-                @change="setMode(m.value, ($event.target as HTMLInputElement).checked)"
-              />
-              {{ m.label }}
-              <span class="text-xs text-muted-foreground">
-                {{ m.note ? `${m.value}, ${m.note}` : m.value }}
-              </span>
-            </label>
-          </div>
-        </fieldset>
-        <div class="mt-3 flex items-start gap-2">
-          <Select
-            class="w-72"
-            :model-value="xdebugStart"
-            :options="XDEBUG_START_OPTIONS"
-            :disabled="isBusy || !xdebugAvailable"
-            :aria-label="`Xdebug start for PHP ${version}`"
-            @update:model-value="(v: XdebugStart) => startField.edit(v)"
-          />
-          <Button
-            size="sm"
-            data-testid="xdebug-apply"
-            :disabled="!xdebugDirty || isBusy || !xdebugAvailable"
-            @click="saveXdebug"
-          >
-            <Spinner v-if="busy === 'xdebug'" class="size-4" />
-            {{ busy === "xdebug" ? "Applying…" : "Apply" }}
-          </Button>
-        </div>
-        <p
-          v-if="xdebugAvailable"
-          class="mt-1 text-xs text-muted-foreground"
-          data-testid="xdebug-ide-hint"
-        >
-          {{ XDEBUG_IDE_HINT }} See
-          <button
-            type="button"
-            class="text-brand hover:underline"
-            @click="openInBrowser(XDEBUG_DOCS_URL)"
-          >
-            Debugging with Xdebug</button>.
-        </p>
-      </div>
-
-      <!-- FPM pool sizing. Web (FPM) only: these are pool-block settings, so
-           they never reach this version's CLI ini. -->
-      <div class="mt-5 border-t border-border pt-4" data-testid="pool-section">
-        <TooltipProvider :delay-duration="0">
-          <div class="flex items-center gap-1">
-            <label class="text-xs font-medium" :for="`pool-${version}-max-children`">
-              FPM pool size
-            </label>
-            <Tooltip>
-              <TooltipTrigger as-child>
-                <span class="inline-flex cursor-help text-muted-foreground">
-                  <Info class="size-3.5" />
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>
-                Most PHP workers this version may run at once (pm.max_children,
-                1-1024). The pool is on-demand, so a higher ceiling costs
-                nothing while idle. Raise it if requests queue behind queue
-                workers, parallel tests, or many open tabs.
-              </TooltipContent>
-            </Tooltip>
-          </div>
-        </TooltipProvider>
-        <div class="mt-1 flex items-start gap-2">
-          <Input
-            :id="`pool-${version}-max-children`"
-            v-model="poolMaxChildren"
-            type="number"
-            min="1"
-            max="1024"
-            placeholder="16 (default)"
-            class="max-w-40"
-            :disabled="isBusy"
-          />
-          <Button
-            size="sm"
-            :disabled="!poolDirty || isBusy || poolProblem !== null"
-            @click="savePool"
-          >
-            <Spinner v-if="busy === 'pool'" class="size-4" />
-            {{ busy === "pool" ? "Applying…" : "Apply" }}
-          </Button>
-        </div>
-        <p v-if="poolProblem" class="mt-1 text-xs text-destructive">
-          {{ poolProblem }}
-        </p>
-        <p v-else class="mt-1 text-xs text-muted-foreground">
-          Empty means the default of 16. Changing this restarts the pool.
-        </p>
-      </div>
-
-      <div class="mt-4 flex items-center justify-between gap-2">
-        <span class="text-xs text-muted-foreground">
-          {{ savedOverrides }} saved override{{ savedOverrides === 1 ? "" : "s" }} ·
-          empty fields inherit
-        </span>
-        <span class="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            :disabled="!panelDirty || isBusy"
-            @click="discard"
-          >
-            Discard
-          </Button>
-          <Button size="sm" :disabled="!settingsDirty || isBusy" @click="saveSettings">
-            <Spinner v-if="busy === 'settings'" class="size-4" />
-            {{ busy === "settings" ? "Applying…" : "Save changes" }}
-          </Button>
-        </span>
-      </div>
-    </template>
-
-    <p v-else class="text-xs text-muted-foreground">
-      PHP {{ version }} is no longer installed. Remove these registrations, or
-      reinstall the version to configure it again.
-    </p>
-
-    <!-- Extensions, loaded into both the web (FPM) and CLI runtimes. -->
-    <div :class="installedVersion ? 'mt-5 border-t border-border pt-4' : 'mt-3'">
-      <div class="flex items-center justify-between gap-2">
-        <span class="text-xs font-medium">Extensions</span>
-        <Button
-          v-if="installedVersion"
-          :disabled="isBusy"
-          @click="emit('requestAddExtension')"
-        >
-          <Plus class="size-4" />
-          Add…
-        </Button>
-      </div>
-
-      <div v-if="extensionsLoading && !sortedExtensions.length" class="mt-2 flex py-2">
-        <Spinner class="size-4" />
-      </div>
-      <div v-else-if="sortedExtensions.length" class="mt-2 flex flex-col gap-2">
-        <div
-          v-for="ext in sortedExtensions"
-          :key="ext.name"
-          class="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2"
-        >
-          <div class="min-w-0">
-            <div class="flex items-center gap-2">
-              <span class="text-sm font-medium">{{ ext.name }}</span>
-              <Badge v-if="ext.zend" variant="secondary">zend</Badge>
-              <Badge v-if="!ext.present" variant="destructive">
-                <TriangleAlert class="size-3" /> missing
-              </Badge>
+                :title="m.note ? `${m.label} (${m.value}), ${m.note}` : `${m.label} (${m.value})`"
+                :disabled="isBusy || !xdebugAvailable || modeLocked(m.value)"
+                :data-mode="m.value"
+                :class="
+                  cn(
+                    'inline-flex h-[26px] items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed',
+                    modeOn(m.value)
+                      ? 'border-brand/60 bg-brand/15 font-medium text-foreground'
+                      : 'bg-background text-muted-foreground hover:text-foreground',
+                    (!xdebugAvailable || (isBusy && !modeLocked(m.value))) && 'opacity-50',
+                  )
+                "
+                @click="setMode(m.value, !modeOn(m.value))"
+              >
+                <Check v-if="modeOn(m.value)" class="size-3 text-brand" aria-hidden="true" />
+                {{ m.short ?? m.label }}
+                <span v-if="m.note" class="text-[11px] font-medium text-warning">slow</span>
+              </button>
             </div>
-            <p class="mt-0.5 truncate text-xs text-muted-foreground">{{ ext.path }}</p>
-            <p v-if="!ext.present" class="mt-0.5 text-xs text-muted-foreground">
-              The file has moved or been deleted - remove this registration and
-              add it again with the new path.
-            </p>
           </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger as-child>
-              <Button
-                variant="ghost"
-                size="sm"
-                :disabled="isBusy"
-                :aria-label="`Actions for ${ext.name}`"
-              >
-                <Spinner v-if="busy === `ext-remove:${ext.name}`" class="size-4" />
-                <MoreHorizontal v-else class="size-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" @close-auto-focus.prevent>
-              <DropdownMenuItem v-if="installedVersion" @select="directiveFor(ext)">
-                <Plus class="size-4" /> Add ini directive
-              </DropdownMenuItem>
-              <DropdownMenuSeparator v-if="installedVersion" />
-              <DropdownMenuItem
-                class="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                @select="removeExtension(ext.name)"
-              >
-                <Trash2 class="size-4" /> Remove
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <div class="flex items-center gap-4 px-4 py-3">
+            <span class="w-12 shrink-0 text-xs text-muted-foreground">Start</span>
+            <Select
+              class="min-w-0 max-w-[360px] flex-1"
+              :model-value="xdebugStart"
+              :options="XDEBUG_START_OPTIONS"
+              :disabled="isBusy || !xdebugAvailable"
+              :aria-label="`Xdebug start for PHP ${version}`"
+              @update:model-value="(v: XdebugStart) => startField.edit(v)"
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="xdebug-apply"
+              :disabled="!xdebugDirty || isBusy || !xdebugAvailable"
+              @click="saveXdebug"
+            >
+              <Spinner v-if="busy === 'xdebug'" class="size-4" />
+              {{ busy === "xdebug" ? "Applying…" : "Apply" }}
+            </Button>
+          </div>
         </div>
-      </div>
-      <p v-else class="mt-2 text-xs text-muted-foreground">
-        No extensions registered for PHP {{ version }}.
-      </p>
-    </div>
+      </section>
 
-    <div v-if="installedVersion" class="mt-5 border-t border-border pt-4">
-      <div class="flex items-center gap-1">
-        <span class="text-xs font-medium">Custom ini directives</span>
-        <TooltipProvider :delay-duration="0">
-          <Tooltip>
-            <TooltipTrigger as-child>
-              <span class="inline-flex cursor-help text-muted-foreground">
-                <Info class="size-3.5" />
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="top">
-              Free-form directives for this version, e.g. opcache.validate_timestamps = 0.
-              Names and values are checked for safety; whether a directive means
-              anything is up to PHP and its extensions.
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      </div>
-
-      <p
-        v-if="xdebugEnabled"
-        class="mt-1 text-xs text-muted-foreground"
-        data-testid="xdebug-directives-hint"
-      >
-        {{ XDEBUG_DIRECTIVES_HINT }}
-      </p>
-
-      <div v-if="directiveEntries.length" class="mt-2 flex flex-col gap-2">
-        <template v-for="[name, value] in directiveEntries" :key="name">
-          <div
-            class="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-1.5"
-          >
-            <template v-if="editName === name">
-              <code class="shrink-0 text-xs">{{ name }} =</code>
-              <Input
-                v-model="editValue"
-                class="flex-1"
-                :disabled="isBusy"
-                :aria-label="`New value for ${name}`"
-                @keydown.enter="saveEdit"
-                @keydown.esc="cancelEdit"
-              />
-              <Button
-                variant="ghost"
-                size="sm"
-                :disabled="isBusy || !!editProblem || !editValue"
-                :aria-label="`Save ${name}`"
-                @click="saveEdit"
-              >
-                <Spinner v-if="busy === `dir-edit:${name}`" class="size-4" />
-                <Check v-else class="size-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                :disabled="isBusy"
-                :aria-label="`Cancel editing ${name}`"
-                @click="cancelEdit"
-              >
-                <X class="size-4" />
-              </Button>
-            </template>
-            <template v-else>
-              <code class="truncate text-xs">{{ name }} = {{ value }}</code>
-              <span class="flex items-center">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  :disabled="isBusy"
-                  :aria-label="`Edit ${name}`"
-                  @click="startEdit(name, value)"
-                >
-                  <Pencil class="size-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  :disabled="isBusy"
-                  :aria-label="`Remove ${name}`"
-                  @click="removeDirective(name)"
-                >
-                  <Spinner v-if="busy === `dir-remove:${name}`" class="size-4" />
-                  <Trash2 v-else class="size-4" />
-                </Button>
-              </span>
-            </template>
-          </div>
-          <p v-if="editName === name && editProblem" class="text-xs text-destructive">
-            {{ editProblem }}
-          </p>
-        </template>
-      </div>
-      <p v-else class="mt-2 text-xs text-muted-foreground">
-        No custom directives for this version yet.
-      </p>
-
-      <div class="mt-3 flex items-start gap-2">
-        <Input
-          ref="dirNameInput"
-          v-model="dirName"
-          placeholder="Directive name"
-          class="flex-1"
-          :disabled="isBusy"
-          :aria-label="`Directive name for PHP ${version}`"
-        />
-        <Input
-          v-model="dirValue"
-          placeholder="Value"
-          class="flex-1"
-          :disabled="isBusy"
-          :aria-label="`Directive value for PHP ${version}`"
-        />
+      <InspectorFooter :active="active">
+        <template #start>Saving restarts PHP {{ version }}'s pool only</template>
+        <Button v-if="panelDirty" variant="ghost" :disabled="isBusy" @click="discard">Discard</Button>
         <Button
-          :disabled="isBusy || !!dirProblem || !dirName || !dirValue"
-          @click="addDirective"
+          class="h-[34px] px-4 text-[13px] font-semibold"
+          :disabled="!canSave"
+          data-testid="version-save"
+          @click="save"
         >
-          <Spinner v-if="busy === 'dir-add'" class="size-4" />
-          <Plus v-else class="size-4" />
-          Add
+          <Spinner v-if="busy === 'save'" class="size-4" />
+          {{ busy === "save" ? "Applying…" : "Save changes" }}
         </Button>
-      </div>
-      <p v-if="dirProblem" class="mt-1 text-xs text-destructive">{{ dirProblem }}</p>
-    </div>
+      </InspectorFooter>
+    </template>
   </div>
 </template>

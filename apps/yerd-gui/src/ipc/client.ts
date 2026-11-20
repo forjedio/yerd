@@ -889,10 +889,6 @@ export async function wordpressAdminUsers(site: string): Promise<WordPressAdminU
   return r.type === "wordpress_admin_users" ? r.users : [];
 }
 
-export async function installService(service: string, version: string): Promise<void> {
-  ensureOk(await call<Response>("install_service", { service, version }));
-}
-
 export async function changeServiceVersion(service: string, version: string): Promise<void> {
   ensureOk(await call<Response>("change_service_version", { service, version }));
 }
@@ -1166,6 +1162,17 @@ export async function hostPlatform(): Promise<string> {
 }
 
 // ── host helpers (Tauri plugins, NOT daemon IPC) ───────────────────────────
+
+/** The user's home directory, for showing paths as `~/…`. Resolves `null` when
+ *  the path API is unavailable, so callers fall back to absolute paths. */
+export async function homeDirectory(): Promise<string | null> {
+  try {
+    const { homeDir } = await import("@tauri-apps/api/path");
+    return await homeDir();
+  } catch {
+    return null;
+  }
+}
 
 export async function openInBrowser(url: string): Promise<void> {
   const { openUrl } = await import("@tauri-apps/plugin-opener");
@@ -1520,13 +1527,13 @@ export async function guiLog(level: string, message: string): Promise<void> {
   await call<void>("gui_log", { level, message });
 }
 
-/** The GUI session log + a tail of the daemon's own rolling log (About → Logs). */
+/** The GUI session log + a tail of the daemon's own rolling log (Settings → Logs). */
 export async function getGuiLogs(): Promise<GuiLogs> {
   return call<GuiLogs>("get_gui_logs");
 }
 
 /** A pretty-printed JSON diagnostics snapshot (paths, service config, ERROR
- * lines from the logs) for the About → Diagnostics button. */
+ * lines from the logs) for the Settings → Diagnostics button. */
 export async function getDiagnostics(): Promise<string> {
   return call<string>("get_diagnostics");
 }

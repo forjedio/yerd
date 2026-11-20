@@ -43,20 +43,68 @@ apps/yerd-gui/
 └── src/                    Vue FRONTEND
     ├── main.ts             createApp + router; initTheme(); initDesktopChrome()
     ├── App.vue             AppShell + Toaster; shared daemon poller; first-run daemon start
-    ├── router.ts           hash router: /overview (default) /general /php /sites /tooling /services /proxies /dumps /integrations /mail /doctor /about (+ /dumps-window, /mails-viewer standalone routes)
+    ├── router.ts           hash router: /overview (default) /general /php /sites /tooling /services /proxies /dumps /integrations /mail /doctor (+ /dumps-window, /mails-viewer standalone routes; a legacy route redirects to /general for the tray)
     ├── ipc/
     │   ├── types.ts        TypeScript mirror of the yerd-ipc wire JSON
     │   ├── client.ts       typed wrappers around invoke() + IpcError
     │   └── client.test.ts  command-mapping + error-categorisation tests
-    ├── composables/        useDaemon (singleton poller), usePoll, useToast, useIdes
-    ├── components/         AppShell, SideNav, NavLink, TitleBar, StatusPill, ComingSoon, EnvironmentCard,
-    │                       SiteCard, SiteDetailsSidebar (+ SiteDomainsPanel / SiteRoutesPanel / SiteHeadersPanel / SiteNodePanel),
-    │                       PhpVersionPanel, ServiceOverridesModal, ui/ (incl. AsyncState, EmptyState, InfoBanner)
-    ├── views/              OverviewView, GeneralView, PhpView, NodeView, SitesView, ProxiesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView, AboutView
-    └── lib/                utils (cn, humanisers), theme, desktop chrome, domainValidation,
-                            siteFilter (match a query against every domain a site answers),
+    ├── composables/        useDaemon (singleton poller), usePoll, useToast, useWideLayout, useIdes, useSiteEditor,
+    │                       useUpdateCheck (Settings ▸ About self-update state, owned by the Settings view),
+    │                       useAutoScroll (pins a streamed log box to its bottom),
+    │                       useElevation (OS-privilege Fix / Fix all / Revert, shared by Welcome and Doctor),
+    │                       useCreateSiteJob / useToolPrereqs / useSiteBasics and the starters
+    │                       (useSiteStarters, useLaravelStarter, useWordPressStarter) behind New site
+    ├── components/         AppShell, SideNav, NavLink, TitleBar, PageHeader, AboutSection, StatusPill, ComingSoon, EnvironmentCard,
+    │                       SiteRoutesPanel / SiteNodePanel,
+    │                       sites/ (SitesList, SiteFilterChips, SitesWarningStrip, SitesEmptyState, SiteInspector,
+    │                       SiteActionsMenu, SiteEnvironmentCard, SiteDomainsCard + DomainDialog, SiteHeadersCard +
+    │                       HeaderDialog, WebRootDialog, LinkFolderDialog),
+    │                       proxies/ (ProxiesList, ProxyInspector, NewProxyDialog, ProxiesEmptyState),
+    │                       php/ (PhpVersionsList, PhpInspector, PhpSharedDefaults, PhpSettingsGrid,
+    │                       InstallPhpDialog, InstallProgressDialog),
+    │                       node/ (NodeInstallDialog, NodeInstallLogDialog, NodePickOrderCard, NodeOffDefaultCard),
+    │                       tooling/ (AvailableToolCard, ToolInstallLogDialog),
+    │                       site-create/ (NewSiteDialog + ProjectStep, StarterPicker, LaravelOptionsStep,
+    │                       WordPressOptionsStep, MissingToolsPanel, CreateProgress),
+    │                       services/ (ServicesList, ServiceInspector, ServiceDatabasesCard, ServiceConnectCard,
+    │                       ServiceOverridesCard, AddServiceDialog, ServiceLogsDialog, ServiceIcon),
+    │                       mail/ (MailInbox, MailReader, MailSetupDialog),
+    │                       dumps/ (DumpsRequestList, DumpsRequestDetail, DumpsEventCard, DumpsCapturePill,
+    │                       DumpsSetupDialog),
+    │                       share/ (ShareList, ShareInspector, ShareSiteDialog, ShareSetupDialog,
+    │                       CloudflareLoginDialog),
+    │                       doctor/ (DoctorList, DoctorInspector),
+    │                       settings/ (SettingsGroup, SettingRow, UpdateActions, ConnectAgentDialog, GuiLogsDialog,
+    │                       DiagnosticsDialog, MadeByForjed),
+    │                       PhpVersionPanel, AddExtensionModal, DaemonDownHero, DaemonDiagnosticsPanel,
+    │                       overview/ (status, favourites, setup checklist, release notes and contributors cards),
+    │                       ui/ (incl. AsyncState, EmptyState, InfoBanner, ConfirmDialog, DialogFrame,
+    │                       SegmentedControl, SuffixInput, FilterChips, InspectorFrame, InspectorFooter (teleported
+    │                       into the frame's pinned bar below its scroll area),
+    │                       styles.ts with the shared CARD / INSPECTOR_TOOL / DANGER_TOOL / SECTION_LABEL / LIST_LABEL classes)
+    ├── views/              OverviewView, GeneralView, PhpView, NodeView, SitesView, ProxiesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView
+    └── lib/                utils (cn, plural / joinWithAnd, humanisers, CHIP_TONE and the run-state dot), theme,
+                            desktop chrome, domainValidation,
+                            toastActions (copy-to-clipboard and fire-and-forget actions that toast the outcome),
+                            overview (status, health-row and favourites derivations for the Overview),
+                            sites (Sites list sections, chips, warnings and inspector labels),
+                            proxies (Proxies chips, sections, upstream labels and name/prefix checks),
+                            services (Services sections, status lines, test-copy grouping, .env snippets),
+                            mail (app labels, time labels, capture state, Laravel .env),
+                            dumps (merging dump pages, grouping by request, event tags and bodies,
+                            capture pill, follow-newest selection), dumpLog,
+                            share (Share sections, state labels, facts copy, tunnel chip),
+                            elevation (OS-privilege rows, the single source for the Doctor dot),
+                            doctor (Doctor finding groups, default selection, permission copy),
+                            settings (Settings banners, the update headline, socket-address ports),
+                            php (PHP list order, status and update labels, banner, install choices
+                            and the install-progress line),
+                            tooling (Tooling split, descriptions, Composer gate, PATH copy),
+                            createSite (the New site command preview and durations),
+                            siteFilter (match a query against a site's domains and path),
                             ideChoice (resolve "auto"/"system"/an id to a label), wpAdmin,
-                            phpSettings (client-side pool/setting shape checks), windowState
+                            phpSettings (client-side pool/setting shape checks), windowState,
+                            windowZoom (double-click-to-zoom shared by TitleBar and PageHeader)
 ```
 
 ## The Rust bridge (`src-tauri`)
@@ -142,7 +190,7 @@ Three commands are **host-only helpers** with no daemon IPC:
 
 | Command | Returns | Purpose |
 | --- | --- | --- |
-| `protocol_version` | `u32` (`yerd_ipc::PROTOCOL_VERSION`) | the negotiated IPC protocol version, for the About view |
+| `protocol_version` | `u32` (`yerd_ipc::PROTOCOL_VERSION`) | the negotiated IPC protocol version, for the Settings page |
 | `host_platform` | `&'static str` (`std::env::consts::OS`) | `"linux"` / `"macos"` / `"windows"` to gate platform UI |
 | `elevate` / `unelevate` | `()` | run `yerd elevate <target>` / `yerd unelevate <target>` under OS elevation (see below) |
 
@@ -289,15 +337,20 @@ The window itself (`tauri.conf.json`) is **decorationless and transparent**
 (`"decorations": false`, `"transparent": true`, `macOSPrivateApi: true`), which
 is why the frontend ships a custom `TitleBar.vue`. Its control layout isn't
 hardcoded to the host OS - it's a user preference. `lib/titleBarStyle.ts` holds
-a `TitleBarStyle` (`"auto" | "macos" | "linux" | "linux-reversed" | "windows"`),
+a `TitleBarStyle` (`"auto" | "macos" | "linux" | "windows"`),
 persisted host-side in `gui-settings.json` via the `get_title_bar_style` /
 `set_title_bar_style` commands (mirroring the tray icon variant setting) and
 broadcast to every open window so the main, mails, and dumps windows switch in
 lockstep. `"auto"` (the default) resolves from `host_platform`; any other value
 forces that layout regardless of the actual host, driving which controls
-`TitleBar.vue` renders on which side (macOS traffic lights; Linux close-left,
-minimize/maximize-right; Linux Reversed the mirror of that; Windows
-minimize/maximize/close all on the right). The CSP is locked down to
+`TitleBar.vue` renders (macOS traffic lights; Linux close/minimize/maximize;
+Windows minimize/maximize/close). Every style renders on the left: the main
+window draws them at the top of the sidebar (`TitleBar variant="sidebar"`,
+whose slot holds the brand block), and the secondary windows in their own
+32px bar. A settings file written by an older build with the removed mirrored
+Linux style still loads as `"linux"` (a serde alias). In the main window each page's
+`PageHeader` toolbar is the other drag region, sharing the double-click zoom
+in `lib/windowZoom.ts`. The CSP is locked down to
 `default-src 'self'` (plus inline styles and `data:` images). Bundle targets are
 `deb` and `app` - the macOS `.dmg` is **not** a Tauri bundle target; it's built
 as a separate headless step (`apps/yerd-gui/scripts/build-macos-dmg.sh`, via
@@ -331,7 +384,7 @@ shown:
   statically.
 - **`dumps`** - the live Laravel Dumps viewer (`#/dumps-window`). It is also
   declared statically, but `main.rs`'s `show_dumps` helper *lazily (re)creates* it
-  if it has been destroyed, so the "Show Dumps" path is robust either way.
+  if it has been destroyed, so opening it from the Dumps page is robust either way.
 
 The auxiliary windows are **shown, not spawned**: `mail_window::show_mails_window`
 and `show_dumps_window` just `get_webview_window(label)` then `show()` + focus.
@@ -439,15 +492,15 @@ export type Response =
 `ipc/client.ts` wraps each Tauri command in a typed function and narrows the
 `Response` for callers - including the domain mutators
 `addDomain` / `removeDomain` / `setPrimaryDomain` / `resetDomains` that back
-`SiteDomainsPanel.vue`, the routing mutators `addRouteRule` / `removeRouteRule` /
+`sites/SiteDomainsCard.vue`, the routing mutators `addRouteRule` / `removeRouteRule` /
 `listRoutes` behind `SiteRoutesPanel.vue`, the header mutators
 `setResponseHeader` / `removeResponseHeader` / `listResponseHeaders` behind
-`SiteHeadersPanel.vue`, `nodeSite` / `setNodeVersion` / `clearNodeVersion`
+`sites/SiteHeadersCard.vue`, `nodeSite` / `setNodeVersion` / `clearNodeVersion`
 behind `SiteNodePanel.vue`, `listNode` / `availableNode` /
 `installNodeWithProgress` / `uninstallNode` behind `NodeView.vue`,
 `setPhpPoolSettings` behind
 `PhpVersionPanel.vue`, and `serviceOverrides` / `setServiceOverride` behind
-`ServiceOverridesModal.vue`. A low-level `call` normalises every rejection into an
+`services/ServiceOverridesCard.vue`. A low-level `call` normalises every rejection into an
 `IpcError`, and `ensureOk` defensively throws if a `type:"error"` ever slips
 through:
 
@@ -474,7 +527,7 @@ and `elevate` (the `elevate` command above), typed to the
 `ElevateTarget = "trust" | "resolver" | "ports"` union.
 
 A second group of host-only commands backs the **editor and terminal** launchers
-in the site details sidebar, implemented over
+in the Sites inspector, implemented over
 [`yerd-platform`](./crates/yerd-platform)'s `IdeLauncher` / `SystemOpener` /
 `TerminalLauncher` seams rather than any daemon request:
 
@@ -505,6 +558,7 @@ does that resolution.
 | `usePoll` | Generic mount-scoped poller. Never overlaps in-flight calls, **pauses while the document is hidden** (background tab / tray), refreshes on becoming visible, and clears its timer on unmount. Default cadence 4s; callers should not go below ~3s for `status`. |
 | `useToast` | Module-level toast store rendered by the single `<Toaster>` in `App.vue`. Errors linger (8s), success/info auto-dismiss (4s). |
 | `useIdes` | **Singleton** cache of the host's detected editors, in rank order. Detection is a filesystem scan, so it runs once per session (`loadIdes`) and every editor picker reads the same list rather than re-probing on open; `rescanIdes` backs the Settings **Rescan** button. Each run carries a monotonic generation token and publishes only while it is still the newest, so a slow initial load can never overwrite a rescan the user triggered after it. |
+| `useUpdateCheck` | The About section's self-update flow (channel, cached and live checks, apply). `GeneralView` owns one instance and passes it to whichever `AboutSection` layout is showing, so crossing the wide breakpoint mid-check keeps the spinner and the result; a stale or superseded check never overwrites a newer one. |
 
 Both pollers gate on `document.visibilityState === "hidden"` to avoid hammering
 the daemon when the window is hidden to the tray - a real cost, since each
@@ -514,49 +568,64 @@ the daemon when the window is hidden to the tray - a real cost, since each
 
 The hash router (`createWebHashHistory`, because the webview loads from a
 file/asset origin) maps the in-shell routes - **OverviewView** (`/overview`, the
-default landing dashboard), **GeneralView** (`/general`, the **Settings** page),
+default landing dashboard: status, favourites, release notes and contributors), **GeneralView** (`/general`, the **Settings** page),
 **PhpView**, **NodeView** (`/node`, installed releases, an Install dialog picking from the upstream releases list,
 streamed installs, Update, uninstall, and the global default; in the command
 palette without a digit), **SitesView**, **ToolingView** (`/tooling`; Node is
 not listed there, it has its own page), **ServicesView**,
-**LaravelDumpsView** (`/dumps`), **MailView** (`/mail`), **DoctorView** (which
-also hosts the OS-privileges **EnvironmentCard** - CA trust / resolver / ports),
-**AboutView** - plus two **standalone** routes that the auxiliary windows load:
+**LaravelDumpsView** (`/dumps`), **MailView** (`/mail`), **DoctorView** (findings
+plus the OS-privilege rows - CA trust / resolver / ports - via `useElevation`),
+and **IntegrationsView** (`/integrations`, Share). `/about` redirects to
+`/general` (the tray's About and Update items still navigate there; the build
+info, updates, links and troubleshooting live in `AboutSection.vue`, the right
+column of Settings in a wide window and its first card in a narrow one). Plus two **standalone** routes that the auxiliary windows load:
 
-- **DumpsWindowView** (`/dumps-window`) - the live Laravel Dumps viewer that
-  fills the separate `dumps` window: tabbed by `DumpCategory`, incrementally
-  paging the daemon's ring via `listDumps({ since_id })`, with search, persist
-  and always-on-top toggles, and an "open in editor" jump. `LaravelDumpsView`
-  (the in-shell `/dumps` page) is the *settings* surface - it drives
-  `dumpsStatus` / `setDumpsEnabled` / `setDumpsPort` / `setDumpFeature` and shows
-  per-PHP-version extension presence, with a "Show Dumps" button that opens the
-  standalone window via `showDumpsWindow`.
-- **MailsViewerView** (`/mails-viewer`, `meta.standalone`) - the captured-mail
-  inbox that fills the separate `mails` window: lists `listMails`, loads a
-  selected message with `getMail`, renders the HTML body in a **sandboxed iframe**
-  (strict child CSP, no scripts, no same-origin), groups by sending application,
-  and supports clear/delete. `MailView` (the in-shell `/mail` page) is the
-  settings surface - it reads mail status off the shared `status` poll, drives
-  `setMailEnabled` / `setMailPort`, and opens the viewer window via
-  `showMailsWindow`.
+- **DumpsWindowView** (`/dumps-window`) and **LaravelDumpsView** (the in-shell
+  `/dumps` page) both compose `components/dumps/` (`DumpsRequestList`,
+  `DumpsRequestDetail`, `DumpsEventCard`, `DumpsCapturePill`) over the
+  `useDumps` composable, which pages the daemon's ring incrementally with
+  `listDumps(since)` (reconciled by `mergePage` in `lib/dumps.ts`), polls
+  `dumpsStatus`, groups events by request, follows the newest request, and
+  drives `setDumpsEnabled` / `setDumpsPersist` / `setDumpFeature` /
+  `clearDumps`. The page adds `DumpsSetupDialog` (interception, signals,
+  per-PHP-version extension presence, a link to the port in Settings) and an
+  open-in-window button (`showDumpsWindow`); the window adds always-on-top and
+  keeps streaming while hidden.
+- **MailsViewerView** (`/mails-viewer`, `meta.standalone`) and **MailView**
+  (the in-shell `/mail` page) both compose `components/mail/` (`MailInbox`,
+  `MailReader`) over the `useMailbox` composable, which polls `listMails`, keeps
+  the app filter (grouped by sender name, then the attributed site), loads the
+  selected message with `getMail` (a user's pick is marked read with
+  `markMailsRead`; the automatic first pick is not) and deletes or clears.
+  `MailReader` renders the HTML body, sanitized with DOMPurify, into a **Shadow
+  DOM** (remote content blocked until **Load**, except local resources on the site
+  TLD, `localhost` or loopback, which always load; see `lib/mailLinks.ts`), with Text and Headers tabs and
+  attachments. `MailView` adds the toolbar: the capture pill from the shared
+  `status` poll, **Setup** (`MailSetupDialog`, driving `setMailEnabled`; the port
+  is edited in Settings ▸ Application Ports) and a pop-out button that opens the
+  viewer window via `showMailsWindow`.
 
 Components are split into app components (`AppShell`, `SideNav`, `TitleBar`,
 `StatusPill`, `PageHeader`, `ComingSoon`) and hand-rolled
 **shadcn-vue-style `ui/` primitives** (`Button`, `Card`, `Input`, `Select`,
 `Switch`, `Modal`, `Spinner`, `Toaster`, `Badge`, plus `dropdown-menu/`,
 `tabs/` and `tooltip/` built on `reka-ui`). `lib/utils.ts` holds the shadcn `cn` helper and
-the display humanisers - note `poolStateLabel`/`poolStateTone`, which render an
+the display humanisers - note `poolStateLabel` and `runStateDotClass`, which render an
 installed-but-not-serving FPM pool as **"idle"** (neutral) rather than the
 alarming wire value `stopped`, reserving red **"failed"** for an actual crash.
+`Button`, `Input` and `Select` take `class` as a prop merged through `cn`, so a
+caller's height, size, padding or font-size utilities replace the variant
+defaults instead of racing them in CSS order.
 
 ### "Coming soon" affordances
 
 `ComingSoon.vue` renders a deliberately non-interactive `<span>`
 (`aria-disabled="true"`, a native `title` tooltip, no clickable element) so a
-gated control reads as intentional rather than broken. It has a **single** use
-today: on a platform without in-app elevation - i.e. a future Windows build,
-since the GUI ships only on macOS/Linux - the Doctor page's **Environment**
-*Fix* action falls back to a "soon" pill pointing at `yerd elevate`. On the
+gated control reads as intentional rather than broken. Its only use today: on a
+platform without in-app elevation - i.e. a future Windows build, since the GUI
+ships only on macOS/Linux - the *Fix* action on the Doctor page's **System
+permissions** (and Welcome's environment card) falls back to a "soon" pill
+pointing at `yerd elevate`. On the
 supported platforms every control is fully wired (the earlier Logs / restart
 stubs are gone now that their IPC exists).
 
@@ -564,7 +633,7 @@ stubs are gone now that their IPC exists).
 When the socket is unreachable, `AppShell.vue` replaces the route view with a
 "Daemon not running" panel offering **Start** (which launches `yerdd` through
 the per-user service via the `start_daemon` host command) and **Retry**; the
-Overview, Settings, and About routes stay reachable while down (`DAEMON_FREE`).
+Overview and Settings routes stay reachable while down (`DAEMON_FREE`).
 The app can drive the daemon's *lifecycle* but never reimplements its runtime
 logic - the daemon stays the single source of truth - and it expects the `yerd`
 CLI installed **beside** it for the elevation path.

@@ -43,9 +43,12 @@ Once installed, `cloudflared` is also available as a command in `{data}/bin`, so
 it is on your `PATH` after `yerd path install`.
 
 In the desktop app, the **Share** page offers an **Install cloudflared** button
-the first time you visit. If Yerd is using a `cloudflared` it found on your
-`PATH`, the badge is annotated `(system)` and a **Use Yerd's bundled version
-instead** button lets you switch to the managed, auto-updating copy.
+the first time you visit. Its **Setup** dialog shows which `cloudflared` is in
+use: if Yerd found one on your `PATH`, it reads **Found on PATH** and a **Use
+Yerd's copy** button switches to the managed, auto-updating copy; when a newer
+release of Yerd's copy is out, an **Update** button installs it.
+
+<ThemedImage light="/images/share-setup-light.png" dark="/images/share-setup-dark.png" alt="The Share setup dialog: cloudflared installed, the Cloudflare account connected and the domain tunnel live with two sites" />
 
 ## Quick share
 
@@ -165,33 +168,47 @@ under the tunnel (as an `error:` line in the CLI).
 
 ## In the desktop app
 
-The [desktop app](./desktop-app) has a **Share** page under the **Integrations**
-group in the sidebar (also reachable from the command palette). When any site is
-shared, the sidebar item shows a count.
+The [desktop app](./desktop-app) has a **Share** page in the sidebar (also
+reachable from the command palette). When any site is shared, the sidebar item
+shows a count.
 
-- The **Shared sites** card has a searchable site picker and a **Share** button
-  for quick tunnels, plus a live table of active tunnels with copy-URL and stop
-  controls.
+- The page lists your shares in two groups: **Quick links** and **Your domain**
+  (named after your Cloudflare zone). Each row shows the site, a status dot and
+  its public address. On a narrower window the list becomes a table (site,
+  type, public URL and status) and a share's details open in a drawer.
+
+  <ThemedImage light="/images/share-light.png" dark="/images/share-dark.png" alt="The Share page listing quick links and sites on your domain, with a password-protected quick link selected" />
+
+- Selecting a share shows its details: the **Public URL** with **Copy** and
+  **Open**, a **Type** / **Local site** / **Status** strip with the tunnel's state
+  (Connecting, Running, Reconnecting, Failed, retrying) and its last error, any
+  [preflight warnings](#preflight-warnings) in amber, and, for a quick link, a
+  note on its limits. A quick link has **Stop sharing**; a domain share has
+  **Remove from domain**, plus **Start tunnel** when sites are exposed but no
+  tunnel is running at all (for example after `yerd tunnel unpublish`) or
+  **Restart tunnel** when it failed. A failed tunnel already retries on its own;
+  restarting it picks up a newly installed `cloudflared`. Other exposed sites are
+  never interrupted.
+- The key button sets or removes the share's [share
+  password](#password-protection). Protected shares show a key icon in the list.
+- **Share a site** opens one dialog for both kinds: pick a site, then **Quick
+  link** or **Your domain**. For your domain the **Public hostname** is
+  pre-filled with `{site}.{your-domain}` and must stay on that domain; until
+  Yerd knows your authorized domain the field stays empty and **Share** stays
+  off. Sharing creates the DNS record and the daemon brings the tunnel up.
+  Removing the last site takes it back down.
+
+  <ThemedImage light="/images/share-new-light.png" dark="/images/share-new-dark.png" alt="The Share a site dialog sharing portal on your domain, with the public hostname pre-filled" />
+
+- **Setup** holds the rest: the `cloudflared` in use (install, update, or switch
+  to Yerd's copy), connecting your Cloudflare account, and creating, starting or
+  removing the tunnel for your domain. Closing the connect dialog before you
+  authorize in the browser cancels the login.
 - Each site's `⋯` menu on the [Sites page](./sites) also has a **Share
   publicly…** shortcut that jumps straight to sharing that site, without going
   to the Share page first:
 
-  <ThemedImage light="/images/share-site-light.png" dark="/images/share-site-dark.png" alt="The Sites page row menu, with a Share publicly… action" />
-
-- The **Named tunnels** card walks you through connecting your Cloudflare account,
-  creating the tunnel, and choosing which sites to expose. Each site's hostname
-  box is pre-filled with `{site}.{your-domain}`. Exposing a site creates the DNS
-  record and the daemon brings the tunnel up; removing the last one takes it
-  back down. Other exposed sites are never interrupted. A **Start** button
-  appears when sites are exposed but no tunnel is running at all (for example
-  after `yerd tunnel unpublish`). A failed tunnel already retries on its own,
-  and also shows a **Retry** button, which picks up a newly installed
-  `cloudflared`.
-- Both cards show each tunnel's state (Connecting, Online, Reconnecting, Failed)
-  with the last error beneath it, and any [preflight
-  warnings](#preflight-warnings) in amber under the site.
-- The key button on each shared or exposed site sets or removes its [share
-  password](#password-protection). Protected sites show a key icon.
+  <ThemedImage light="/images/share-site-light.png" dark="/images/share-site-dark.png" alt="The site inspector's ··· menu on the Sites page, with Share publicly… highlighted" />
 
 ## How requests reach your site
 

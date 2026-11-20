@@ -3,8 +3,7 @@ import { ref, watch } from "vue";
 import { FolderOpen } from "lucide-vue-next";
 
 import Button from "@/components/ui/Button.vue";
-import Input from "@/components/ui/Input.vue";
-import Modal from "@/components/ui/Modal.vue";
+import DialogFrame from "@/components/ui/DialogFrame.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
 import { useToast } from "@/composables/useToast";
@@ -37,16 +36,18 @@ const busy = ref(false);
 // just chose. Keep it beside the field rather than in a toast that outlives it.
 const problem = ref<string | null>(null);
 
-watch(
-  () => props.open,
-  (isOpen) => {
-    if (!isOpen) return;
-    path.value = "";
-    name.value = "";
-    zend.value = false;
-    problem.value = null;
-  },
-);
+/** Bumped whenever the dialog closes, reopens or changes version, so a reply to
+ *  an add from an earlier session can't close or write into the current one. */
+let session = 0;
+
+watch([() => props.open, () => props.version], () => {
+  session += 1;
+  busy.value = false;
+  path.value = "";
+  name.value = "";
+  zend.value = false;
+  problem.value = null;
+});
 
 async function browse(): Promise<void> {
   const picked = await pickExtensionFile();
@@ -55,78 +56,80 @@ async function browse(): Promise<void> {
   problem.value = null;
 }
 
+const FIELD =
+  "h-10 rounded-md border bg-background px-3 text-[13px] placeholder:text-faint focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
 async function add(): Promise<void> {
   const chosen = path.value.trim();
   if (!chosen) {
     problem.value = "choose an extension file";
     return;
   }
+  const mine = session;
+  const version = props.version;
   busy.value = true;
   problem.value = null;
   try {
-    const map = await addPhpExtension(
-      props.version,
-      chosen,
-      zend.value,
-      name.value.trim() || undefined,
-    );
+    const map = await addPhpExtension(version, chosen, zend.value, name.value.trim() || undefined);
     toast.success("Extension registered", "Loaded into the FPM pool and CLI.");
     emit("added", map);
-    emit("update:open", false);
+    if (mine === session) emit("update:open", false);
   } catch (e) {
-    problem.value = (e as IpcError).message;
+    if (mine === session) problem.value = (e as IpcError).message;
+    else toast.error(`Couldn't add the extension to PHP ${version}`, (e as IpcError).message);
   } finally {
-    busy.value = false;
+    if (mine === session) busy.value = false;
   }
 }
 </script>
 
 <template>
-  <Modal
+  <DialogFrame
     :open="open"
-    :title="`Add extension to PHP ${version}`"
+    :title="`Add an extension to PHP ${version}`"
+    width="lg"
     @update:open="(v: boolean) => emit('update:open', v)"
   >
-    <div class="flex flex-col gap-4">
+    <div class="flex flex-col gap-3">
       <div>
-        <label class="text-xs font-medium" for="ext-path">Extension path</label>
-        <div class="mt-1 flex items-start gap-2">
-          <Input
+        <div class="flex items-center gap-2">
+          <input
             id="ext-path"
             v-model="path"
+            :class="FIELD"
+            class="min-w-0 flex-1 font-mono"
             placeholder="/opt/homebrew/lib/php/pecl/20250925/scrypt.so"
-            class="flex-1"
+            aria-label="Extension path"
+            :aria-invalid="problem ? 'true' : undefined"
           />
-          <Button variant="outline" @click="browse">
-            <FolderOpen class="size-4" />
-            Browse…
+          <Button variant="outline" class="h-10 shrink-0" @click="browse">
+            <FolderOpen />
+            Choose
           </Button>
         </div>
-        <p v-if="problem" class="mt-1 text-xs text-destructive">{{ problem }}</p>
+        <p v-if="problem" class="mt-1.5 text-xs text-destructive">{{ problem }}</p>
       </div>
 
-      <div>
-        <label class="text-xs font-medium" for="ext-name">Name (optional)</label>
-        <Input
-          id="ext-name"
-          v-model="name"
-          placeholder="defaults to the .so filename"
-          class="mt-1"
-        />
-      </div>
+      <input
+        id="ext-name"
+        v-model="name"
+        :class="FIELD"
+        placeholder="Name — defaults to the file name"
+        aria-label="Extension name"
+      />
 
-      <label class="flex items-center gap-2 text-sm">
+      <label class="mt-1 flex items-center gap-2.5 text-[13px] text-muted-foreground">
         <Switch v-model="zend" aria-label="Load as a Zend extension" />
-        Zend extension
+        Load as a Zend extension (Xdebug, OPcache)
       </label>
     </div>
 
-    <template #footer="{ close }">
-      <Button variant="ghost" size="sm" @click="close">Cancel</Button>
-      <Button size="sm" :disabled="busy" @click="add">
+    <template #footer>
+      <Button variant="outline" @click="emit('update:open', false)">Cancel</Button>
+      <Button :disabled="busy" @click="add">
         <Spinner v-if="busy" class="size-4" />
         {{ busy ? "Checking…" : "Add extension" }}
       </Button>
     </template>
-  </Modal>
+  </DialogFrame>
 </template>

@@ -9,8 +9,8 @@ import type { SiteEntry, StatusReport } from "@/ipc/types";
  * for any reason (site disappeared, daemon error). Never blocks or surfaces an
  * error, just silently degrades.
  *
- * Shared by the site card's "WPA" chip and the site details sidebar so both
- * entry points gate identically.
+ * Used by the Sites inspector's `···` menu (WP Admin); the New site dialog's
+ * Done screen has its own variant for a site that isn't in the list yet.
  */
 export async function openWpAdmin(
   site: SiteEntry,

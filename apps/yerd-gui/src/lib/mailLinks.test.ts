@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildMailFrameDocument,
   eventTargetElement,
+  findFragmentTarget,
+  isLocalUrl,
   linkifyText,
   listRemoteContentUrls,
   prepareHtmlBody,
@@ -94,8 +96,9 @@ describe("resolveFrameLink", () => {
   });
 
   it("lets same-document `#` anchors scroll", () => {
-    expect(resolveFrameLink(anchorWith("#section"))).toEqual({ kind: "scroll" });
-    expect(resolveFrameLink(anchorWith("#"))).toEqual({ kind: "scroll" });
+    expect(resolveFrameLink(anchorWith("#section"))).toEqual({ kind: "scroll", fragment: "section" });
+    expect(resolveFrameLink(anchorWith("#"))).toEqual({ kind: "scroll", fragment: "" });
+    expect(resolveFrameLink(anchorWith("#caf%C3%A9"))).toEqual({ kind: "scroll", fragment: "café" });
   });
 
   it("blocks in-frame navigation for relative and same-origin links", () => {
@@ -138,7 +141,91 @@ describe("resolveFrameLink", () => {
   });
 });
 
+describe("findFragmentTarget", () => {
+  function root(html: string): HTMLElement {
+    const div = document.createElement("div");
+    div.innerHTML = html;
+    return div;
+  }
+
+  it.each([
+    ["an id", '<p id="top">x</p>', "top", "P"],
+    ["an a[name] anchor", '<a name="legacy">x</a>', "legacy", "A"],
+    ["an id with selector characters", '<p id="a.b[c]">x</p>', "a.b[c]", "P"],
+  ])("finds %s", (_, html, fragment, tag) => {
+    expect(findFragmentTarget(root(html), fragment)?.tagName).toBe(tag);
+  });
+
+  it.each([
+    ["an empty fragment", '<p id="">x</p>', ""],
+    ["a missing target", '<p id="top">x</p>', "bottom"],
+    ["a name on a non-anchor", '<div name="n">x</div>', "n"],
+  ])("returns null for %s", (_, html, fragment) => {
+    expect(findFragmentTarget(root(html), fragment)).toBeNull();
+  });
+});
+
 describe("buildMailFrameDocument", () => {
+  it.each([
+    [
+      "the review payload",
+      `<style><@import 'https://e/a';/style><@import 'https://e/b';form action='https://evil.example/phish'><@import 'https://e/c';input name=pw type=password><@import 'https://e/d';button>Verify</button></style>`,
+    ],
+    [
+      "a payload that survives DOMPurify",
+      `<style><@import 'https://e/a';/style><@import 'https://e/b';form action='https://evil.example/phish'><@import 'https://e/c';input name=pw type=password><@import 'https://e/d';button>Verify<@import 'https://e/e';/button><@import 'https://e/f';img src='https://track.example/p.gif'></style>`,
+    ],
+  ])("cannot be tricked into creating markup by removing a blocked @import (%s)", (_, payload) => {
+    const { head, body } = buildMailFrameDocument(payload);
+    const host = document.createElement("div");
+    host.innerHTML = `${head}<div>${body}</div>`;
+    expect(host.querySelectorAll("form, input, button, img, textarea, select")).toHaveLength(0);
+    expect(head + body).not.toMatch(/<\/style[^>]*>[\s\S]*<\/style/i);
+  });
+
+  it("escapes < in style text so it can never close the element", () => {
+    const { head } = buildMailFrameDocument(
+      `<html><head><style>.a::after { content: "<@"; }</style></head><body></body></html>`,
+      { loadRemoteContent: true },
+    );
+    expect(head).toContain('content: "\\3c @"');
+  });
+
+  it.each([
+    [":host { position: fixed !important; }", ":not(*) { position: fixed !important; }"],
+    [":host(.x) p { color: red; }", ":not(*)(.x) p { color: red; }"],
+    [":host-context(body) { inset: 0; }", ":not(*)(body) { inset: 0; }"],
+  ])("disables %s", (css, expected) => {
+    const { head } = buildMailFrameDocument(`<html><head><style>${css}</style></head><body></body></html>`);
+    expect(head).toContain(expected);
+  });
+
+  it("strips a remote background attribute but keeps a local one", () => {
+    const { body } = buildMailFrameDocument(
+      `<table background="https://track.example/p.gif"><tr><td background="https://shop.test/bg.png">x</td></tr></table>`,
+      { localTld: "test" },
+    );
+    expect(body).not.toContain("track.example");
+    expect(body).toContain('background="https://shop.test/bg.png"');
+  });
+
+  it("keeps a remote background attribute when loadRemoteContent is true", () => {
+    const { body } = buildMailFrameDocument(`<table background="https://track.example/p.gif"><tr><td>x</td></tr></table>`, {
+      loadRemoteContent: true,
+    });
+    expect(body).toContain("https://track.example/p.gif");
+  });
+
+  it("neutralizes remote image-set() string candidates", () => {
+    const { head, body } = buildMailFrameDocument(`<html><head>
+<style>.a { background-image: -webkit-image-set("https://track.example/a.png" 1x, "https://track.example/a2.png" 2x); }</style>
+</head><body><div style='background-image: image-set("https://track.example/b.png" 1x)'></div>
+<div style='background-image: image-set("https://shop.test/c.png" 1x)'></div></body></html>`, { localTld: "test" });
+    expect(head).not.toContain("track.example");
+    expect(body).not.toContain("track.example");
+    expect(body).toContain("https://shop.test/c.png");
+  });
+
   it("preserves inline head styles and strips remote stylesheet links by default", () => {
     const { head, body } = buildMailFrameDocument(`<!doctype html><html><head>
 <style>.title { color: red; }</style>
@@ -207,6 +294,28 @@ describe("buildMailFrameDocument", () => {
       { loadRemoteContent: true },
     );
     expect(body).toContain('src="https://cdn.example.com/logo.png"');
+  });
+
+  it("keeps local images and styles but strips remote ones without opt-in", () => {
+    const { head, body } = buildMailFrameDocument(
+      `<!doctype html><html><head>
+<link rel="stylesheet" href="https://shop.test/mail.css">
+<link rel="stylesheet" href="https://cdn.example.com/mail.css">
+<style>.a { background: url(https://shop.test/a.png); } .b { background: url(https://cdn.example.com/b.png); }</style>
+</head><body>
+<img src="https://shop.test/storage/logo.png" alt="local">
+<img src="http://localhost:8000/x.png" alt="loopback">
+<img src="https://cdn.example.com/logo.png" alt="remote">
+</body></html>`,
+      { localTld: "test" },
+    );
+    expect(head).toContain('href="https://shop.test/mail.css"');
+    expect(head).not.toContain("cdn.example.com/mail.css");
+    expect(head).toContain("url(https://shop.test/a.png)");
+    expect(head).not.toContain("cdn.example.com/b.png");
+    expect(body).toContain('src="https://shop.test/storage/logo.png"');
+    expect(body).toContain('src="http://localhost:8000/x.png"');
+    expect(body).not.toContain("cdn.example.com/logo.png");
   });
 
   it("keeps cid and data images without opt-in", () => {
@@ -324,8 +433,50 @@ describe("listRemoteContentUrls", () => {
     ]);
   });
 
+  it("leaves out local resources, which load without opting in", () => {
+    const refs = listRemoteContentUrls(
+      `<img src="https://shop.test/logo.png"><img src="//127.0.0.1/x.png"><img src="https://cdn.example.com/logo.png">`,
+      "test",
+    );
+    expect(refs).toEqual([{ url: "https://cdn.example.com/logo.png", kind: "image" }]);
+  });
+
+  it("lists background attributes and image-set() candidates", () => {
+    const refs = listRemoteContentUrls(
+      `<style>.a { background-image: image-set("https://cdn.example.com/a.png" 1x, url(https://cdn.example.com/a2.png) 2x); }</style>
+<table background="https://cdn.example.com/bg.gif"><tr><td background="https://shop.test/l.png">x</td></tr></table>`,
+      "test",
+    );
+    expect(refs).toEqual([
+      { url: "https://cdn.example.com/bg.gif", kind: "image" },
+      { url: "https://cdn.example.com/a.png", kind: "css-url" },
+      { url: "https://cdn.example.com/a2.png", kind: "css-url" },
+    ]);
+  });
+
   it("returns an empty list when there is no remote content", () => {
     expect(listRemoteContentUrls(`<p>Hi <img src="cid:x"></p>`)).toEqual([]);
+  });
+});
+
+describe("isLocalUrl", () => {
+  it.each([
+    ["https://shop.test/logo.png", "test", true],
+    ["https://api.shop.test/logo.png", "test", true],
+    ["https://SHOP.TEST./logo.png", "test", true],
+    ["//shop.test/logo.png", "test", true],
+    ["https://shop.dev.local/x.png", "dev.local", true],
+    ["http://localhost:8000/x.png", undefined, true],
+    ["http://app.localhost/x.png", undefined, true],
+    ["http://127.0.0.1/x.png", undefined, true],
+    ["http://[::1]/x.png", undefined, true],
+    ["https://shop.test/logo.png", undefined, false],
+    ["https://test.example.com/x.png", "test", false],
+    ["https://shoptest/x.png", "test", false],
+    ["https://cdn.example.com/x.png", "test", false],
+    ["not a url", "test", false],
+  ])("%s on tld %s is local: %s", (url, tld, local) => {
+    expect(isLocalUrl(url, tld)).toBe(local);
   });
 });
 

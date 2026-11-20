@@ -159,7 +159,7 @@ export default withMermaid({
         activeMatch: '/developer/',
       },
       {
-        text: 'v2.x',
+        text: 'v2.1.x',
         items: [
           {
             text: 'Changelog',

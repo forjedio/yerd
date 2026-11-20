@@ -13,7 +13,7 @@ and it can send all of them through a proxy.
 | **Manual** | Uses the proxy URLs you enter. |
 | **Off** | Connects directly and ignores any proxy environment variables. |
 
-Switch modes from **Settings ▸ General ▸ Network** in the desktop app, or with the
+Switch modes from **Settings ▸ Network** in the desktop app, or with the
 CLI:
 
 ```sh

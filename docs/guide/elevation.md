@@ -47,11 +47,11 @@ names the port to free (or change); restart Yerd after correcting it, then retry
 ::: tip Or use the GUI
 The desktop app's **Doctor** page mirrors this exactly - a **Fix** button per row
 (CA trust, `.test` resolver, privileged ports) runs the same `yerd elevate`
-helper under an OS prompt, and once a row is configured an **Unelevate** button
+helper under an OS prompt, and once a row is configured a **Revert** button
 reverts it.
 :::
 
-<ThemedImage light="/images/doctor-light.png" dark="/images/doctor-dark.png" alt="The Doctor page in the desktop app, with Fix and Unelevate buttons per row" />
+<ThemedImage light="/images/doctor-permissions-light.png" dark="/images/doctor-permissions-dark.png" alt="The Doctor page's System permissions: the local CA and .test resolver not yet granted, with Fix and Fix all" />
 
 Reverse any of it with `unelevate`, using the same targets:
 
@@ -201,7 +201,7 @@ flowchart LR
 - **`yerd-helper`** is a strict one-shot binary. Each invocation does exactly one validated operation and exits with a `sysexits.h`-style code.
 - **`yerd-forward`** (macOS only) is the small TCP relay launchd starts for the [port forwarder](#ports). It runs as your user, refuses to run as root, and only copies bytes between 80/443 and the daemon's rootless ports.
 
-The desktop app is also just a daemon client and never runs as root; its "Fix" actions shell out to `sudo yerd elevate ...` like you would, and the matching **Unelevate** buttons shell out to `sudo yerd unelevate ...` (behind an in-app confirm and the OS prompt). See [Features](./desktop-app).
+The desktop app is also just a daemon client and never runs as root; its "Fix" actions shell out to `sudo yerd elevate ...` like you would, and the matching **Revert** buttons shell out to `sudo yerd unelevate ...` (behind an in-app confirm and the OS prompt). See [Features](./desktop-app).
 
 ### What makes `yerd-helper` safe
 

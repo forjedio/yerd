@@ -2,32 +2,36 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { Copy, Minus, Plus, Square, X } from "lucide-vue-next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import logoUrl from "@/assets/logo.svg";
-import { hostPlatform, setGuiMaximized, toggleWindowZoom } from "@/ipc/client";
+import { hostPlatform, setGuiMaximized } from "@/ipc/client";
 import { useTitleBarStyle } from "@/lib/titleBarStyle";
+import {
+  guessPlatform,
+  isInteractiveTarget,
+  stopNativeZoomGesture,
+  zoomWindow,
+} from "@/lib/windowZoom";
 import { supportsReliableMaximizedState } from "@/lib/windowState";
 
-// The window is decorationless (see tauri.conf.json) so we draw our own
-// titlebar. It's a `data-tauri-drag-region`, giving native click-drag-to-move
-// for free; the controls below opt out by being their own (non-drag) elements.
-// Double-click-to-zoom is handled here rather than by the drag region - see
-// `toggleMaximize`.
+// The window is decorationless (see tauri.conf.json) so we draw our own window
+// controls, always on the left whatever the style. The root is a
+// `data-tauri-drag-region`, giving native click-drag-to-move for free; the
+// controls opt out by being their own (non-drag) elements. Double-click-to-zoom
+// is handled here rather than by the drag region - see `lib/windowZoom.ts`.
 //
-// `title` lets a secondary window (the Mails viewer) reuse this bar with its own
-// caption; the optional `actions` slot draws window-scoped buttons on the right
-// (outside the drag region, so they stay clickable).
-withDefaults(defineProps<{ title?: string }>(), { title: "Yerd" });
+// `variant="bar"` (default) is the 32px bar secondary windows (Mails, Dumps,
+// Welcome) draw across their top: controls left, a centred `title`, and an
+// optional `actions` slot on the right (outside the drag region's own element,
+// so they stay clickable). `variant="sidebar"` is the main window's: controls
+// only, no title, border or background, placed at the sidebar's top; its
+// default slot (the sidebar's brand block) sits below the controls inside the
+// same deep drag region and zoom handlers.
+withDefaults(defineProps<{ title?: string; variant?: "bar" | "sidebar" }>(), {
+  title: "Yerd",
+  variant: "bar",
+});
 
 // Which control style to draw. Seeded synchronously from the webview user-agent
-// so a working control set (crucially, a close button) renders on first paint
-// with no flash, then confirmed authoritatively by the daemon's host_platform.
-// The UA seed also means the titlebar still works if that IPC call ever fails.
-function guessPlatform(): string {
-  const ua = navigator.userAgent;
-  if (ua.includes("Linux") || ua.includes("X11")) return "linux";
-  if (ua.includes("Windows")) return "windows";
-  return "macos"; // default also covers macOS ("Macintosh")
-}
+// (see `guessPlatform`), then confirmed authoritatively by host_platform.
 const platform = ref(guessPlatform());
 onMounted(() => {
   hostPlatform()
@@ -36,8 +40,8 @@ onMounted(() => {
 });
 
 // "Automatic" resolves from the host platform; any other preference forces
-// that style regardless of host. Unclassified hosts keep today's fallback
-// (the left-close / right-min-max layout) so a control set always works.
+// that style regardless of host. Unclassified hosts fall back to the Linux
+// layout so a control set always works.
 const { style: stylePref } = useTitleBarStyle();
 function platformToStyle(p: string): "macos" | "linux" | "windows" {
   if (p === "macos") return "macos";
@@ -151,52 +155,23 @@ function scheduleMaximizedRefresh(): void {
 }
 
 /**
- * Zoom/restore the window. macOS goes through `toggle_window_zoom`: our windows
- * are decorationless, and for those Tauri's `toggleMaximize` animates the frame
- * with redraw suppressed - the window appears to slide to the screen corner at
- * its old size, then snap to full size when the animation ends. The command
- * runs the same animation with the window actually drawn.
- *
- * That command schedules the animation and returns, so there is no settled
- * frame to read afterwards - the macOS branch leaves the state refresh to
- * `onResized`'s debounce rather than sampling a frame mid-flight.
+ * Zoom/restore the window (see `zoomWindow`) and refresh the maximized state.
+ * The macOS zoom command schedules its animation and returns, so there is no
+ * settled frame to read afterwards: that branch leaves the refresh to
+ * `onResized`'s debounce rather than sampling a frame mid-flight. A failed
+ * toggle refreshes nothing.
  */
 async function toggleMaximize(): Promise<void> {
-  try {
-    if (platform.value === "macos") {
-      await toggleWindowZoom();
-      return;
-    }
-    await win.toggleMaximize();
-  } catch {
-    return;
-  }
+  const ok = await zoomWindow(platform.value);
+  if (!ok || platform.value === "macos") return;
   refreshMaximized();
 }
-
-/**
- * Keep the titlebar the single owner of double-click-to-zoom. Tauri's
- * drag-region script listens on `document` and runs its own
- * `internal_toggle_maximize` for a titlebar double click: on macOS that is the
- * animated path `toggleMaximize` exists to avoid, and on every host it is a
- * second toggle racing this one. Stopping the second press and release before
- * they reach that listener leaves `onTitleBarDoubleClick` in sole control.
- */
-function stopNativeZoomGesture(event: MouseEvent): void {
-  if (event.detail === 2) event.stopPropagation();
-}
-
-/** The clickable elements a double click must not zoom through. Mirrors the set
- *  Tauri's drag-region script treats as blocking a drag. */
-const INTERACTIVE_SELECTOR =
-  "a, button, input, select, textarea, label, summary, [contenteditable=true]";
 
 /** Double-clicking the bar zooms, including the gaps around the controls, but a
  *  double click *on* a control (a traffic light, a slotted action) belongs to
  *  that control alone. */
 function onTitleBarDoubleClick(event: MouseEvent): void {
-  const target = event.target;
-  if (target instanceof Element && target.closest(INTERACTIVE_SELECTOR)) return;
+  if (isInteractiveTarget(event.target)) return;
   void toggleMaximize();
 }
 
@@ -252,18 +227,13 @@ onUnmounted(() => {
   document.documentElement.classList.remove("window-maximized");
 });
 
-// Linux/Linux-Reversed/Windows controls, data-driven so the three styles share
-// one button template instead of triplicating the markup.
+// Linux/Windows controls, data-driven so both styles share one button template.
+// Both sit on the left: Linux in close/minimize/maximize order, Windows in its
+// native minimize/maximize/close order.
 type ControlKind = "close" | "minimize" | "maximize";
 
-const leftControls = computed<ControlKind[]>(() => {
-  if (resolved.value === "linux") return ["close"];
-  if (resolved.value === "linux-reversed") return ["minimize", "maximize"];
-  return [];
-});
-const rightControls = computed<ControlKind[]>(() => {
-  if (resolved.value === "linux") return ["minimize", "maximize"];
-  if (resolved.value === "linux-reversed") return ["close"];
+const controls = computed<ControlKind[]>(() => {
+  if (resolved.value === "linux") return ["close", "minimize", "maximize"];
   if (resolved.value === "windows") return ["minimize", "maximize", "close"];
   return [];
 });
@@ -299,91 +269,90 @@ function controlButtonClass(kind: ControlKind): string {
 </script>
 
 <template>
-  <header
-    data-tauri-drag-region
-    class="relative flex h-8 w-full shrink-0 items-center border-b bg-muted px-3 text-foreground dark:bg-card"
+  <component
+    :is="variant === 'bar' ? 'header' : 'div'"
+    :data-tauri-drag-region="variant === 'sidebar' ? 'deep' : ''"
+    :class="
+      variant === 'bar'
+        ? 'relative flex h-8 w-full shrink-0 items-center border-b bg-muted px-3 text-foreground dark:bg-card'
+        : 'flex shrink-0 flex-col text-foreground'
+    "
     @mousedown="stopNativeZoomGesture"
     @mouseup="stopNativeZoomGesture"
     @dblclick="onTitleBarDoubleClick"
   >
-    <!-- macOS: traffic lights (close / minimize / zoom). Colored while the
-         window is focused, flat gray otherwise; glyphs revealed on hover. -->
-    <div v-if="resolved === 'macos'" class="group flex items-center gap-2">
-      <button
-        type="button"
-        aria-label="Close"
-        class="flex size-3 items-center justify-center rounded-full text-black/60 transition-colors"
-        :class="focused ? 'bg-[#ff5f57]' : 'bg-[#d3d3d3] dark:bg-[#4a4a4c]'"
-        @click="close"
-      >
-        <X class="size-2 opacity-0 group-hover:opacity-100" stroke-width="3" />
-      </button>
-      <button
-        type="button"
-        aria-label="Minimize"
-        class="flex size-3 items-center justify-center rounded-full text-black/60 transition-colors"
-        :class="focused ? 'bg-[#febc2e]' : 'bg-[#d3d3d3] dark:bg-[#4a4a4c]'"
-        @click="minimize"
-      >
-        <Minus class="size-2 opacity-0 group-hover:opacity-100" stroke-width="3" />
-      </button>
-      <button
-        type="button"
-        aria-label="Zoom"
-        class="flex size-3 items-center justify-center rounded-full text-black/60 transition-colors"
-        :class="focused ? 'bg-[#28c840]' : 'bg-[#d3d3d3] dark:bg-[#4a4a4c]'"
-        @click="toggleMaximize"
-      >
-        <Plus class="size-2 opacity-0 group-hover:opacity-100" stroke-width="3" />
-      </button>
-    </div>
-
-    <!-- Linux: close on the left. Linux (Reversed): minimize/maximize on the
-         left instead. Windows: nothing on the left - its controls all sit at
-         the far right. -->
-    <div v-else-if="leftControls.length" class="flex items-center gap-1">
-      <button
-        v-for="kind in leftControls"
-        :key="kind"
-        type="button"
-        :aria-label="controlLabel(kind)"
-        :class="controlButtonClass(kind)"
-        @click="controlAction(kind)()"
-      >
-        <component :is="controlIcon(kind)" :class="controlIconClass(kind)" />
-      </button>
-    </div>
-
-    <img
-      v-if="resolved === 'windows'"
-      :src="logoUrl"
-      alt=""
-      aria-hidden="true"
-      class="-ml-1 size-5 shrink-0 rounded-md"
-    />
-
-    <!-- Centered window title (native feel); pointer-events stay with the drag region. -->
-    <span
-      class="pointer-events-none absolute left-1/2 -translate-x-1/2 text-xs font-medium text-muted-foreground"
+    <!-- `bar`: the bare drag attribute (self-only), with the centred title
+         pointer-events-none so drags fall through to the header. `sidebar`:
+         "deep", so the gaps around the controls and the slotted brand block
+         drag the window too; buttons still block the drag. -->
+    <div
+      :class="
+        variant === 'sidebar' ? 'flex h-[50px] items-center px-[18px]' : 'contents'
+      "
     >
-      {{ title }}
-    </span>
+      <!-- macOS: traffic lights (close / minimize / zoom). Colored while the
+           window is focused, flat gray otherwise; glyphs revealed on hover.
+           Both control sets sit at z-[46], above an inspector drawer's
+           backdrop and panel, so the window can be closed or zoomed while a
+           drawer is open. -->
+      <div v-if="resolved === 'macos'" class="group relative z-[46] flex items-center gap-2">
+        <button
+          type="button"
+          aria-label="Close"
+          class="flex size-3 items-center justify-center rounded-full text-black/60 transition-colors"
+          :class="focused ? 'bg-[#ff5f57]' : 'bg-[#d3d3d3] dark:bg-[#4a4a4c]'"
+          @click="close"
+        >
+          <X class="size-2 opacity-0 group-hover:opacity-100" stroke-width="3" />
+        </button>
+        <button
+          type="button"
+          aria-label="Minimize"
+          class="flex size-3 items-center justify-center rounded-full text-black/60 transition-colors"
+          :class="focused ? 'bg-[#febc2e]' : 'bg-[#d3d3d3] dark:bg-[#4a4a4c]'"
+          @click="minimize"
+        >
+          <Minus class="size-2 opacity-0 group-hover:opacity-100" stroke-width="3" />
+        </button>
+        <button
+          type="button"
+          aria-label="Zoom"
+          class="flex size-3 items-center justify-center rounded-full text-black/60 transition-colors"
+          :class="focused ? 'bg-[#28c840]' : 'bg-[#d3d3d3] dark:bg-[#4a4a4c]'"
+          @click="toggleMaximize"
+        >
+          <Plus class="size-2 opacity-0 group-hover:opacity-100" stroke-width="3" />
+        </button>
+      </div>
 
-    <!-- Window-scoped actions (e.g. the Mails "clear all" button), right-aligned;
-         Linux's minimize/maximize, Linux (Reversed)'s close, and all of
-         Windows' controls sit at the far right edge. -->
-    <div class="ml-auto flex items-center gap-1">
-      <slot name="actions" />
-      <button
-        v-for="kind in rightControls"
-        :key="kind"
-        type="button"
-        :aria-label="controlLabel(kind)"
-        :class="controlButtonClass(kind)"
-        @click="controlAction(kind)()"
-      >
-        <component :is="controlIcon(kind)" :class="controlIconClass(kind)" />
-      </button>
+      <!-- Linux: close / minimize / maximize. Windows: minimize / maximize / close. -->
+      <div v-else-if="controls.length" class="relative z-[46] flex items-center gap-1">
+        <button
+          v-for="kind in controls"
+          :key="kind"
+          type="button"
+          :aria-label="controlLabel(kind)"
+          :class="controlButtonClass(kind)"
+          @click="controlAction(kind)()"
+        >
+          <component :is="controlIcon(kind)" :class="controlIconClass(kind)" />
+        </button>
+      </div>
     </div>
-  </header>
+
+    <template v-if="variant === 'bar'">
+      <!-- Centered window title (native feel); pointer-events stay with the drag region. -->
+      <span
+        class="pointer-events-none absolute left-1/2 -translate-x-1/2 text-xs font-medium text-muted-foreground"
+      >
+        {{ title }}
+      </span>
+
+      <!-- Window-scoped actions (e.g. the Mails "clear all" button), right-aligned. -->
+      <div class="ml-auto flex items-center gap-1">
+        <slot name="actions" />
+      </div>
+    </template>
+    <slot v-else />
+  </component>
 </template>

@@ -1,70 +1,101 @@
 <script setup lang="ts">
-import { CheckCircle2, Copy, RefreshCw, Wrench } from "lucide-vue-next";
+import { RefreshCw, Undo2, Wrench } from "lucide-vue-next";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 
-import EnvironmentCard from "@/components/EnvironmentCard.vue";
+import DoctorInspector, { type DoctorInspectorState } from "@/components/doctor/DoctorInspector.vue";
+import DoctorList from "@/components/doctor/DoctorList.vue";
 import PageHeader from "@/components/PageHeader.vue";
-import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
-import Card from "@/components/ui/Card.vue";
-import CardContent from "@/components/ui/CardContent.vue";
-import CardDescription from "@/components/ui/CardDescription.vue";
-import CardHeader from "@/components/ui/CardHeader.vue";
-import CardTitle from "@/components/ui/CardTitle.vue";
+import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import Spinner from "@/components/ui/Spinner.vue";
-import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
+import { useElevation } from "@/composables/useElevation";
 import { useToast } from "@/composables/useToast";
 import { diagnose, doctorFix, IpcError } from "@/ipc/client";
-import type { Diagnosis, Severity } from "@/ipc/types";
+import type { Diagnosis } from "@/ipc/types";
+import { defaultSelection, findingGroups, hasActionable, permissionKey } from "@/lib/doctor";
+import { registerViewActions } from "@/lib/shortcuts/useViewActions";
+import { copyWithToast } from "@/lib/toastActions";
 
 const toast = useToast();
 const { refresh: refreshStatus } = useDaemon();
 
 const diagnoses = ref<Diagnosis[]>([]);
+const loaded = ref(false);
 const diagLoading = ref(true);
 const diagError = ref(false);
 const fixing = ref(false);
+const selected = ref<string | null>(null);
 
-// "Run safe fixes" is only enabled when at least one finding is a warning/failure.
-const hasActionable = computed(() =>
-  diagnoses.value.some((d) => d.severity === "warn" || d.severity === "fail"),
+const {
+  canElevate,
+  busy,
+  items,
+  fixableCount,
+  fixAll,
+  elevateOne,
+  unelevateOpen,
+  unelevateCopy,
+  openUnelevate,
+  confirmUnelevate,
+} = useElevation({ onSettled: () => void loadDiagnoses() });
+
+const groups = computed(() => (diagError.value ? [] : findingGroups(diagnoses.value)));
+const actionable = computed(() => !diagError.value && hasActionable(diagnoses.value));
+const canFixAll = computed(() => canElevate.value && fixableCount.value >= 2);
+
+const selectedFinding = computed(
+  () => groups.value.flatMap((g) => g.items).find((i) => i.key === selected.value)?.finding ?? null,
+);
+const selectedItem = computed(
+  () => items.value.find((i) => permissionKey(i.target) === selected.value) ?? null,
 );
 
-const sevVariant: Record<Severity, "success" | "warning" | "destructive"> = {
-  ok: "success",
-  warn: "warning",
-  fail: "destructive",
-};
+const inspectorState = computed<DoctorInspectorState>(() => {
+  if (selectedItem.value) return "permission";
+  if (!loaded.value) return "loading";
+  if (diagError.value) return "error";
+  if (selectedFinding.value) return "finding";
+  return "clear";
+});
 
-// Human labels - the wire uses bare enum tokens (ok/warn/fail) that read as
-// unfinished in the UI.
-const sevLabel: Record<Severity, string> = {
-  ok: "Healthy",
-  warn: "Warning",
-  fail: "Problem",
-};
+function syncSelection(): void {
+  const keys = new Set([
+    ...groups.value.flatMap((g) => g.items.map((i) => i.key)),
+    ...items.value.map((i) => permissionKey(i.target)),
+  ]);
+  if (selected.value === null || !keys.has(selected.value)) {
+    selected.value = defaultSelection(groups.value);
+  }
+}
 
-// Nothing to fix: either no findings, or every finding is informational/ok.
-// Show positive confirmation instead of a bare list (or a blank card).
-const allClear = computed(
-  () =>
-    diagnoses.value.length === 0 ||
-    diagnoses.value.every((d) => d.severity === "ok"),
-);
+/** Bumped per diagnose run so a slower, superseded run can't overwrite a newer one. */
+let diagRun = 0;
 
 async function loadDiagnoses(notify = false): Promise<void> {
+  const run = ++diagRun;
   diagLoading.value = true;
   diagError.value = false;
   try {
-    diagnoses.value = await diagnose();
+    const ds = await diagnose();
+    if (run !== diagRun) return;
+    diagnoses.value = ds;
     if (notify) toast.success("Health re-checked");
   } catch (e) {
+    if (run !== diagRun) return;
     diagError.value = true;
     toast.error("Couldn't run diagnostics", (e as IpcError).message);
   } finally {
-    diagLoading.value = false;
+    if (run === diagRun) {
+      diagLoading.value = false;
+      loaded.value = true;
+      syncSelection();
+    }
   }
+}
+
+async function recheck(): Promise<void> {
+  await Promise.all([loadDiagnoses(true), refreshStatus()]);
 }
 
 async function runFixes(): Promise<void> {
@@ -85,102 +116,75 @@ async function runFixes(): Promise<void> {
 }
 
 async function copyRemedy(text: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(text);
-    toast.info("Copied to clipboard");
-  } catch {
-    toast.error("Couldn't copy");
-  }
+  await copyWithToast(text, { title: "Copied to clipboard" });
 }
 
 onMounted(() => void loadDiagnoses());
-onUnmounted(registerViewActions({ refresh: () => void loadDiagnoses() }));
+onUnmounted(registerViewActions({ refresh: () => void recheck() }));
 </script>
 
 <template>
   <div class="flex h-full min-h-0 flex-col">
-    <PageHeader
-      title="Doctor"
-      subtitle="Health checks and safe one-click fixes"
-      docs="/guide/diagnostics"
-    />
+    <PageHeader title="Doctor" docs="/guide/diagnostics">
+      <template #actions>
+        <Button
+          variant="outline"
+          size="icon"
+          class="size-8 shrink-0"
+          :disabled="diagLoading"
+          aria-label="Re-check health"
+          @click="recheck"
+        >
+          <Spinner v-if="diagLoading" class="size-4" />
+          <RefreshCw v-else />
+        </Button>
+        <Button size="sm" :disabled="!actionable || fixing" @click="runFixes">
+          <Spinner v-if="fixing" class="size-4" />
+          <Wrench v-else />
+          Run safe fixes
+        </Button>
+      </template>
+    </PageHeader>
 
-    <div class="min-h-0 flex-1 space-y-6 overflow-y-auto p-6">
-      <Card>
-        <CardHeader class="flex-row items-center justify-between space-y-0">
-          <div class="space-y-1.5">
-            <CardTitle>Health</CardTitle>
-            <CardDescription>Common problems and safe one-click fixes.</CardDescription>
-          </div>
-          <div class="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="icon"
-              :disabled="diagLoading"
-              aria-label="Re-check health"
-              @click="loadDiagnoses(true)"
-            >
-              <Spinner v-if="diagLoading" class="size-4" />
-              <RefreshCw v-else class="size-4" />
-            </Button>
-            <Button size="sm" :disabled="!hasActionable || fixing" @click="runFixes">
-              <Spinner v-if="fixing" class="size-4" />
-              <Wrench v-else class="size-4" /> Run safe fixes
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div v-if="diagLoading" class="flex justify-center py-8"><Spinner class="size-5" /></div>
-          <div
-            v-else-if="diagError"
-            class="flex flex-col items-center gap-2 py-10 text-center"
-          >
-            <p class="text-sm font-medium">Health check unavailable</p>
-            <p class="text-sm text-muted-foreground">
-              Couldn't fetch diagnostics from the daemon.
-            </p>
-          </div>
-          <div
-            v-else-if="allClear"
-            class="flex flex-col items-center gap-2 py-10 text-center"
-          >
-            <CheckCircle2 class="size-8 text-success" />
-            <div>
-              <p class="text-sm font-medium">No problems found</p>
-              <p class="text-sm text-muted-foreground">
-                Your Yerd environment looks healthy.
-              </p>
-            </div>
-          </div>
-          <ul v-else class="space-y-3">
-            <li
-              v-for="(d, i) in diagnoses"
-              :key="i"
-              class="flex items-start gap-3 rounded-md border p-3"
-            >
-              <Badge :variant="sevVariant[d.severity]" class="mt-0.5 shrink-0">{{ sevLabel[d.severity] }}</Badge>
-              <div class="min-w-0 flex-1">
-                <p class="text-sm font-medium">{{ d.title }}</p>
-                <p class="text-xs text-muted-foreground">{{ d.detail }}</p>
-                <div
-                  v-if="d.remedy"
-                  class="mt-2 flex items-center gap-2 rounded bg-muted px-2 py-1 font-mono text-xs"
-                >
-                  <span class="min-w-0 flex-1 truncate">{{ d.remedy }}</span>
-                  <button class="text-muted-foreground hover:text-foreground" @click="copyRemedy(d.remedy!)">
-                    <Copy class="size-3.5" />
-                  </button>
-                </div>
-              </div>
-            </li>
-          </ul>
-        </CardContent>
-      </Card>
-
-      <!-- OS-level privileges (CA trust, .test resolver, privileged ports).
-           Re-run the health checks after any elevation so the table above
-           reflects the new state without a manual re-check. -->
-      <EnvironmentCard @elevated="loadDiagnoses()" />
+    <div class="flex min-h-0 flex-1">
+      <div class="flex w-[300px] shrink-0 flex-col xl:w-[360px]">
+        <DoctorList
+          :groups="groups"
+          :loading="!loaded"
+          :items="items"
+          :selected="selected"
+          :can-fix-all="canFixAll"
+          :busy="busy"
+          @select="selected = $event"
+          @fix-all="fixAll"
+        />
+      </div>
+      <div class="min-w-0 flex-1 border-l">
+        <DoctorInspector
+          :state="inspectorState"
+          :finding="selectedFinding"
+          :item="selectedItem"
+          :can-elevate="canElevate"
+          :busy="busy"
+          :checking="diagLoading"
+          @copy="copyRemedy"
+          @fix="elevateOne"
+          @revert="openUnelevate"
+          @recheck="recheck"
+        />
+      </div>
     </div>
+
+    <ConfirmDialog
+      v-model:open="unelevateOpen"
+      :title="unelevateCopy?.title ?? 'Revert privilege'"
+      confirm-label="Revert"
+      tone="primary"
+      :icon="Undo2"
+      @confirm="confirmUnelevate"
+    >
+      <span class="block">{{ unelevateCopy?.body }}</span>
+      <span v-if="unelevateCopy?.note" class="mt-3 block text-xs text-faint">{{ unelevateCopy.note }}</span>
+    </ConfirmDialog>
   </div>
 </template>

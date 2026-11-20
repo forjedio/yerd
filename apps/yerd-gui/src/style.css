@@ -6,91 +6,134 @@
    headings, matching the docs site (docs/.vitepress/theme/custom.css) and the
    Yerd social cards. A single heavy all-caps weight, so anything set in it uses
    font-weight: normal to avoid faux-bold synthesis. Exposed to Tailwind as the
-   `font-display` utility (see tailwind.config.js). */
+   `font-display` utility (see tailwind.config.js). Its own metrics (ascent 750,
+   descent 250, cap height 700) sit the caps 0.1em high in the line box; the
+   overrides balance the space above and below so it centres beside other text. */
 @font-face {
   font-family: "Outage Cut";
   src: url("./assets/fonts/OutageCut.ttf") format("truetype");
+  ascent-override: 85%;
+  descent-override: 15%;
   font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Inter (rsms/inter v4.1, https://github.com/rsms/inter/releases/tag/v4.1), the UI face. */
+@font-face {
+  font-family: "Inter";
+  src: url("./assets/fonts/inter/InterVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* JetBrains Mono (v2.304, https://github.com/JetBrains/JetBrainsMono/releases/tag/v2.304), for anything a developer types. */
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./assets/fonts/jetbrains-mono/JetBrainsMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* JetBrains Mono (v2.304, https://github.com/JetBrains/JetBrainsMono/releases/tag/v2.304), medium weight. */
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./assets/fonts/jetbrains-mono/JetBrainsMono-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* JetBrains Mono (v2.304, https://github.com/JetBrains/JetBrainsMono/releases/tag/v2.304), semibold weight. */
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./assets/fonts/jetbrains-mono/JetBrainsMono-SemiBold.woff2") format("woff2");
+  font-weight: 600;
   font-style: normal;
   font-display: swap;
 }
 
 @layer base {
   :root {
-    /* Neutral grays (no blue tint), mirroring the charcoal dark theme for a
-       native macOS / Herd feel. The main content area is white (`--background`);
-       the chrome - titlebar + sidebar - is the soft gray (`--muted`), applied in
-       those components, so the content reads as the bright focus framed by gray
-       chrome. */
+    /* Light palette from the "Yerd App" draft: white window, soft cool-grey
+       sidebar (`--sidebar`), ink text on slate secondary text, and the draft
+       blue as both the primary fill and the single accent. `--selected` is the
+       active nav row and `--faint` the quietest text (status lines, hints). */
     /* Tell the UA to render native controls (number-input spin buttons, etc.)
        for this theme, so their glyphs aren't dark-on-dark in dark mode. */
     color-scheme: light;
     --background: 0 0% 100%;
-    --foreground: 0 0% 9%;
+    --foreground: 220 49% 8%;
     --card: 0 0% 100%;
-    --card-foreground: 0 0% 9%;
+    --card-foreground: 220 49% 8%;
     --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 9%;
-    --primary: 0 0% 9%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 0 0% 93%;
-    --secondary-foreground: 0 0% 9%;
-    --muted: 0 0% 93%;
-    --muted-foreground: 0 0% 40%;
-    --accent: 0 0% 93%;
-    --accent-foreground: 0 0% 9%;
-    --destructive: 0 84.2% 60.2%;
+    --popover-foreground: 220 49% 8%;
+    --primary: 226 84% 58%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 216 29% 97%;
+    --secondary-foreground: 220 49% 8%;
+    --muted: 210 40% 98%;
+    --muted-foreground: 219 15% 41%;
+    --accent: 216 29% 97%;
+    --accent-foreground: 220 49% 8%;
+    --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 98%;
-    --success: 142 71% 40%;
+    --success: 160 82% 40%;
     --success-foreground: 0 0% 98%;
-    --warning: 38 92% 48%;
+    --warning: 42 80% 50%;
     --warning-foreground: 0 0% 9%;
-    /* Brand indigo, lifted straight from the logo's gradient (#6366F1). The one
-       signal colour: active nav, focus rings, links, and the live "serving"
-       state. Used with restraint - status (success/warning/destructive) still
+    /* Draft accent blue. The one signal colour: active nav, focus rings, links,
+       and the live "serving" state. Status (success/warning/destructive) still
        owns green/amber/red. */
-    --brand: 239 84% 67%;
+    --brand: 226 84% 58%;
     --brand-foreground: 0 0% 100%;
-    --border: 0 0% 89%;
-    --input: 0 0% 89%;
-    --ring: 239 84% 67%;
+    --border: 215 27% 91%;
+    --input: 215 27% 91%;
+    --ring: 226 84% 58%;
+    --sidebar: 216 29% 97%;
+    --selected: 224 87% 94%;
+    --faint: 218 15% 65%;
     --radius: 0.5rem;
   }
 
   .dark {
-    /* Neutral charcoal grays (no blue tint), lifted off pure-black so panels and
-       borders read clearly - closer to a native macOS / Herd dark surface. */
+    /* Dark palette from the "Yerd App" draft: a blue-black window with a darker
+       sidebar, raised surfaces for cards, and a brighter accent blue so it keeps
+       its pop as text. `--muted` sits one step above the card surface (not a
+       draft token) so `bg-muted` wells and code blocks still read inside cards. */
     color-scheme: dark;
-    --background: 0 0% 11%;
-    --foreground: 0 0% 98%;
-    --card: 0 0% 14.5%;
-    --card-foreground: 0 0% 98%;
-    --popover: 0 0% 14.5%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 0 0% 9%;
-    --secondary: 0 0% 20%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 0 0% 20%;
-    --muted-foreground: 0 0% 66%;
-    --accent: 0 0% 20%;
-    --accent-foreground: 0 0% 98%;
-    /* Bright red (matches the light theme's lightness) so it reads on charcoal
-       surfaces in every role: as `text-destructive` (Uninstall/Delete menu
-       items, toast errors), as `bg-destructive` status pips, and as a button
-       fill. A darker red was invisible as text/pips on the dark background. */
-    --destructive: 0 84.2% 60.2%;
+    --background: 220 23% 8%;
+    --foreground: 216 29% 93%;
+    --card: 220 21% 11%;
+    --card-foreground: 216 29% 93%;
+    --popover: 220 21% 11%;
+    --popover-foreground: 216 29% 93%;
+    --primary: 226 84% 58%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 222 22% 18%;
+    --secondary-foreground: 216 29% 93%;
+    --muted: 221 21% 14%;
+    --muted-foreground: 218 13% 61%;
+    --accent: 222 22% 18%;
+    --accent-foreground: 216 29% 93%;
+    /* Same bright red as the light theme so it reads on the dark surfaces in
+       every role: text, status pips and button fills. */
+    --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 98%;
-    --success: 142 71% 45%;
+    --success: 160 82% 40%;
     --success-foreground: 144 61% 10%;
-    --warning: 38 92% 50%;
+    --warning: 42 80% 50%;
     --warning-foreground: 0 0% 9%;
-    /* A touch brighter on charcoal so the indigo keeps its pop as text/pip. */
-    --brand: 239 84% 72%;
+    --brand: 226 100% 68%;
     --brand-foreground: 0 0% 100%;
-    --border: 0 0% 20%;
-    --input: 0 0% 20%;
-    --ring: 239 84% 72%;
+    --border: 222 22% 18%;
+    --input: 222 22% 18%;
+    --ring: 226 100% 68%;
+    --sidebar: 223 26% 5%;
+    --selected: 224 49% 22%;
+    --faint: 219 14% 39%;
   }
 }
 

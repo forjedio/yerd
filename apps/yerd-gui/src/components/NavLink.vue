@@ -3,19 +3,22 @@ import type { Component } from "vue";
 import { RouterLink } from "vue-router";
 
 /**
- * One sidebar row. The icon is monochrome - muted by default, brand-indigo when
- * active or hovered. Colour is reserved for real status elsewhere; the nav never
- * uses it as decoration. Only the active row tints; the chip backgrounds the old
- * nav painted per-item are gone.
+ * One 34px sidebar row from the "Yerd App" draft: a 16px monochrome icon and
+ * the label. The active row takes the `selected` fill with a brand-tinted icon
+ * (plus a faint accent ring in dark mode); inactive rows stay muted until
+ * hovered. Colour is reserved for real status in the right-hand slot.
  *
- * `badge` shows a count pill on the right. When `onBadgeClick` is set, clicking
- * the pill runs it instead of navigating the row (a mouse shortcut - keyboard
- * users still reach the same place via the row itself), and `badgeTitle` gives
- * the pill its tooltip.
+ * The right-hand slot shows at most one of, in priority order:
  *
- * `warn` shows an amber `!` marker in the same right-hand slot - used to flag a
- * row that needs attention (e.g. Doctor when an OS privilege is unelevated).
- * Rows use either a count or the warn marker, never both.
+ * `badge`, a count pill. When `onBadgeClick` is set, clicking the pill runs it
+ * instead of navigating the row (a mouse shortcut - keyboard users still reach
+ * the same place via the row itself), and `badgeTitle` gives the pill its
+ * tooltip.
+ *
+ * `state`, an "on"/"off" pill in green/red (e.g. Dumps interception).
+ *
+ * `warn`, an amber dot flagging a row that needs attention (e.g. Doctor when an
+ * OS privilege is unelevated), titled by `warnTitle`.
  */
 const props = defineProps<{
   to: string;
@@ -24,6 +27,7 @@ const props = defineProps<{
   badge?: number;
   onBadgeClick?: () => void;
   badgeTitle?: string;
+  state?: "on" | "off";
   warn?: boolean;
   warnTitle?: string;
 }>();
@@ -41,39 +45,44 @@ function handleBadge(e: MouseEvent): void {
     <a
       :href="href"
       :aria-current="isActive ? 'page' : undefined"
-      class="group flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium transition-colors"
+      class="group flex h-[34px] items-center gap-2.5 rounded-[7px] px-2.5 text-[13.5px] transition-colors"
       :class="
         isActive
-          ? 'bg-brand/10 text-brand dark:bg-brand/15'
-          : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+          ? 'bg-selected font-semibold text-foreground dark:font-medium dark:ring-1 dark:ring-inset dark:ring-brand/40'
+          : 'text-muted-foreground hover:bg-selected/60 hover:text-foreground'
       "
       @click="navigate"
     >
       <component
         :is="icon"
         class="size-4 shrink-0 transition-colors"
-        :class="
-          isActive
-            ? 'text-brand'
-            : 'text-muted-foreground/80 group-hover:text-foreground'
-        "
+        :class="isActive ? 'text-brand' : 'text-muted-foreground group-hover:text-foreground'"
       />
       <span class="min-w-0 truncate">{{ label }}</span>
       <span
         v-if="badge && badge > 0"
-        class="ml-auto shrink-0 rounded-full bg-brand px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white tabular-nums"
-        :class="onBadgeClick ? 'cursor-pointer hover:bg-brand/80' : ''"
+        data-testid="nav-badge"
+        class="ml-auto flex h-[18px] shrink-0 items-center rounded-[9px] bg-border px-1.5 text-[11px] font-semibold text-foreground tabular-nums"
+        :class="onBadgeClick ? 'cursor-pointer hover:bg-border/70' : ''"
         :title="onBadgeClick ? badgeTitle : undefined"
         @click="handleBadge"
       >
         {{ badge > 99 ? "99+" : badge }}
       </span>
       <span
+        v-else-if="state"
+        data-testid="nav-state"
+        class="ml-auto flex h-[18px] shrink-0 items-center rounded-[9px] px-1.5 text-[11px] font-semibold"
+        :class="state === 'on' ? 'bg-success/15 text-success' : 'bg-destructive/15 text-destructive'"
+      >
+        {{ state }}
+      </span>
+      <span
         v-else-if="warn"
-        class="ml-auto flex size-4 shrink-0 items-center justify-center rounded-full bg-warning/15 text-[10px] font-bold leading-none text-warning ring-1 ring-warning/40"
+        data-testid="nav-warn"
+        class="ml-auto size-2 shrink-0 rounded-full bg-warning"
         :title="warnTitle"
       >
-        <span aria-hidden="true">!</span>
         <span class="sr-only">{{ warnTitle ?? "Needs attention" }}</span>
       </span>
     </a>

@@ -1,16 +1,31 @@
 <script setup lang="ts">
+import {
+  ArrowRight,
+  CircleAlert,
+  Download,
+  Lock,
+  Plug,
+  RefreshCw,
+  RotateCw,
+  Trash2,
+  TriangleAlert,
+} from "lucide-vue-next";
 import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { RouterLink } from "vue-router";
 
+import AboutSection from "@/components/AboutSection.vue";
 import NetworkProxyCard from "@/components/NetworkProxyCard.vue";
 import PageHeader from "@/components/PageHeader.vue";
+import ConnectAgentDialog from "@/components/settings/ConnectAgentDialog.vue";
+import DiagnosticsDialog from "@/components/settings/DiagnosticsDialog.vue";
+import GuiLogsDialog from "@/components/settings/GuiLogsDialog.vue";
+import MadeByForjed from "@/components/settings/MadeByForjed.vue";
+import SettingRow from "@/components/settings/SettingRow.vue";
+import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import Button from "@/components/ui/Button.vue";
-import Card from "@/components/ui/Card.vue";
-import CardContent from "@/components/ui/CardContent.vue";
-import CardDescription from "@/components/ui/CardDescription.vue";
-import CardHeader from "@/components/ui/CardHeader.vue";
-import CardTitle from "@/components/ui/CardTitle.vue";
+import DialogFrame from "@/components/ui/DialogFrame.vue";
 import Input from "@/components/ui/Input.vue";
-import Modal from "@/components/ui/Modal.vue";
+import SegmentedControl from "@/components/ui/SegmentedControl.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
@@ -19,6 +34,8 @@ import { MIN_PORT, MAX_PORT, useFallbackPorts } from "@/composables/useFallbackP
 import { loadIdes, rescanIdes, useIdes } from "@/composables/useIdes";
 import { loadPlatform, usePlatform } from "@/composables/usePlatform";
 import { useToast } from "@/composables/useToast";
+import { useAboutRequests, useUpdateCheck } from "@/composables/useUpdateCheck";
+import { useWideLayout } from "@/composables/useWideLayout";
 import {
   cliPathStatus,
   daemonInfo,
@@ -40,11 +57,16 @@ import {
 } from "@/ipc/client";
 import type { AutostartState, CliPathStatus, TitleBarStyle, TrayIconVariant } from "@/ipc/types";
 import { SYSTEM_LABEL } from "@/lib/ideChoice";
-import { useTheme, type ThemePref } from "@/lib/theme";
+import { portFromAddr, settingsBanners } from "@/lib/settings";
+import { useTheme } from "@/lib/theme";
 import { useTitleBarStyle } from "@/lib/titleBarStyle";
+import { toastOnError } from "@/lib/toastActions";
+import { plural } from "@/lib/utils";
 
 const { connected, report, refresh: refreshStatus } = useDaemon();
 const toast = useToast();
+const updates = useUpdateCheck();
+useAboutRequests(() => void updates.refreshCached());
 const { pref, setTheme } = useTheme();
 const { style: titleBarStyle, setTitleBarStyle } = useTitleBarStyle();
 
@@ -52,7 +74,7 @@ const busy = ref<string | null>(null);
 const autostart = ref<AutostartState | null>(null);
 // Host platform - drives macOS-specific daemon copy (on macOS the daemon runs
 // as a background login item registered via SMAppService; see below) and
-// whether the bundled `yerd` CLI on-PATH card is shown.
+// whether the Terminal CLI and Preferred editor rows are shown.
 const { isMac, supportsPathInstall } = usePlatform();
 const { installedIdes } = useIdes();
 const cli = ref<CliPathStatus | null>(null);
@@ -75,7 +97,6 @@ const titleBarStyleOptions = [
   { value: "auto", label: "Automatic" },
   { value: "macos", label: "macOS" },
   { value: "linux", label: "Linux" },
-  { value: "linux-reversed", label: "Linux (Reversed)" },
   { value: "windows", label: "Windows" },
 ] as const;
 
@@ -88,6 +109,19 @@ async function setTitleBarStylePref(next: TitleBarStyle): Promise<void> {
 }
 
 const running = computed(() => connected.value === true);
+const wide = useWideLayout();
+
+const banners = computed(() =>
+  settingsBanners(autostart.value, running.value ? report.value : null),
+);
+
+const connectAgentOpen = ref(false);
+const logsOpen = ref(false);
+const diagnosticsOpen = ref(false);
+
+function onThemeChange(value: string): void {
+  if (value === "system" || value === "light" || value === "dark") setTheme(value);
+}
 
 // ── data loads ──
 async function loadAutostart(): Promise<void> {
@@ -166,7 +200,7 @@ async function rescanEditors(): Promise<void> {
   try {
     const found = await rescanIdes();
     toast.success(
-      found === 0 ? "No editors found" : `Found ${found} editor${found === 1 ? "" : "s"}`,
+      found === 0 ? "No editors found" : `Found ${plural(found, "editor", "editors")}`,
       undefined,
       RESCAN_TOAST_MS,
     );
@@ -203,11 +237,7 @@ async function toggleCliPath(): Promise<void> {
 }
 
 async function openApproval(): Promise<void> {
-  try {
-    await openLoginItems();
-  } catch (e) {
-    toast.error("Couldn't open Login Items", (e as IpcError).message);
-  }
+  await toastOnError("Couldn't open Login Items", () => openLoginItems());
 }
 
 onMounted(() => {
@@ -243,28 +273,65 @@ const mailPortSaved = ref("");
 const dumpsPortSaved = ref("");
 const applicationPortsOpen = ref(false);
 
-/** Extract the port from a `host:port` socket address (e.g. `127.0.0.1:1053`). */
-function portFromAddr(addr: string | undefined): number {
-  if (!addr) return 0;
-  const port = Number(addr.slice(addr.lastIndexOf(":") + 1));
-  return Number.isInteger(port) ? port : 0;
-}
+/** The five port inputs in drawn order; `web` marks the HTTP/HTTPS pair. */
+const portFields = [
+  {
+    id: "ap-http",
+    label: "HTTP",
+    model: fbHttp,
+    aria: "Rootless HTTP port",
+    placeholder: "8080",
+    web: true,
+  },
+  {
+    id: "ap-https",
+    label: "HTTPS",
+    model: fbHttps,
+    aria: "Rootless HTTPS port",
+    placeholder: "8443",
+    web: true,
+  },
+  {
+    id: "ap-dns",
+    label: "DNS",
+    model: dnsPort,
+    aria: "DNS responder port",
+    placeholder: "1053",
+    web: false,
+  },
+  {
+    id: "ap-mail",
+    label: "Mail (SMTP)",
+    model: mailPort,
+    aria: "Mail server port",
+    placeholder: "2525",
+    web: false,
+  },
+  {
+    id: "ap-dumps",
+    label: "Dumps",
+    model: dumpsPort,
+    aria: "Dump server port",
+    placeholder: "2304",
+    web: false,
+  },
+];
 
+/**
+ * Loads the five ports and snapshots them as saved. HTTP/HTTPS and DNS come from
+ * `daemonInfo`, dumps from its own status call, mail from the live report. DNS
+ * prefers the configured `dns_port` and falls back to the bound address (always
+ * present, even on an older daemon that omits `dns_port`). A failed fetch clears
+ * its fields so stale ports can't be shown or re-saved.
+ */
 async function loadApplicationPorts(): Promise<void> {
-  // HTTP/HTTPS fallback + DNS come from `daemonInfo`; dumps from its own status
-  // call; mail from the live status report.
   try {
     const info = await daemonInfo();
     fbHttp.value = info.fallback_http ? String(info.fallback_http) : "";
     fbHttps.value = info.fallback_https ? String(info.fallback_https) : "";
-    // Prefer the configured `dns_port`; fall back to the *bound* DNS address
-    // (always present, incl. on an older daemon that omits `dns_port`) so the
-    // field shows a real value rather than relying on the placeholder.
     const dp = info.dns_port || portFromAddr(report.value?.dns_addr);
     dnsPort.value = dp ? String(dp) : "";
   } catch {
-    // Daemon down / older daemon - clear so a later transient fetch failure
-    // can't leave stale ports shown (or re-savable) under the "running" card.
     fbHttp.value = "";
     fbHttps.value = "";
     dnsPort.value = "";
@@ -309,26 +376,26 @@ watch(
   },
 );
 
-// macOS port forwarder is pinned to the current HTTP/HTTPS ports, so block edits to
-// those until the user un-elevates. Only fires on macOS (Linux reports null).
+// macOS port forwarder is pinned to the current HTTP/HTTPS ports, so lock those
+// inputs until the user un-elevates (Doctor). Only fires on macOS (Linux reports null).
 // DNS/mail/dumps are unaffected and stay editable.
 const portsElevated = computed(() => report.value?.port_redirect === true);
 const webPortsChanged = computed(
   () => fbHttp.value !== fbHttpSaved.value || fbHttps.value !== fbHttpsSaved.value,
 );
+/** While elevated the web ports are pinned and never submitted, so a stale web
+ *  delta must not turn Save on (or get snapshotted as if applied). */
 const applicationPortsChanged = computed(
   () =>
-    // While elevated the web ports are pinned and never submitted, so a stale
-    // web delta must not flip Save on (or get snapshotted as if applied).
     (!portsElevated.value && webPortsChanged.value) ||
     dnsPort.value !== dnsPortSaved.value ||
     mailPort.value !== mailPortSaved.value ||
     dumpsPort.value !== dumpsPortSaved.value,
 );
 
+/** Pre-validates only the fields that changed (and are editable), so the
+ *  confirm dialog never opens on input the daemon would reject anyway. */
 function openApplicationPorts(): void {
-  // Pre-validate only the fields that changed (and are editable), so the confirm
-  // modal never opens on input the daemon would reject anyway.
   if (!portsElevated.value && webPortsChanged.value) {
     const err = validateFallbackPorts(Number(fbHttp.value), Number(fbHttps.value));
     if (err) {
@@ -354,12 +421,17 @@ function openApplicationPorts(): void {
   });
 }
 
-async function confirmApplicationPorts(close: () => void): Promise<void> {
-  close();
+/**
+ * Applies the changed ports and restarts the daemon. HTTP/HTTPS are omitted
+ * while elevated (the redirect pins them) or unchanged, and are re-snapshotted
+ * only when submitted so a pinned edit isn't recorded as applied. On failure
+ * the user's edits stay in place to adjust and retry.
+ */
+async function confirmApplicationPorts(): Promise<void> {
+  applicationPortsOpen.value = false;
   busy.value = "application-ports";
   try {
     const changes: Parameters<typeof applyAndRestart>[0] = {};
-    // Omit HTTP/HTTPS while elevated (the redirect pins them) or unchanged.
     if (!portsElevated.value && webPortsChanged.value) {
       changes.web = { http: Number(fbHttp.value), https: Number(fbHttps.value) };
     }
@@ -369,9 +441,6 @@ async function confirmApplicationPorts(close: () => void): Promise<void> {
 
     const res = await applyAndRestart(changes);
     if (res.ok) {
-      // Re-snapshot the saved values so the form is no longer "changed". Only
-      // re-snapshot web ports when they were actually submitted, so a pinned
-      // (elevated) edit isn't silently recorded as applied.
       if (changes.web) {
         fbHttpSaved.value = fbHttp.value;
         fbHttpsSaved.value = fbHttps.value;
@@ -381,7 +450,6 @@ async function confirmApplicationPorts(close: () => void): Promise<void> {
       dumpsPortSaved.value = dumpsPort.value;
       toast.success("Ports updated", "Yerd restarted with the new ports.");
     } else {
-      // Leave the user's edits in place so they can adjust and retry.
       toast.error("Couldn't apply the new ports", res.message ?? "The daemon is still degraded.");
     }
   } finally {
@@ -416,13 +484,6 @@ watch(
 // Linux install already puts it there, so only macOS gates on `cli.installed`.
 const mcpNeedsCliPath = computed(() => isMac.value && !cli.value?.installed);
 
-const MCP_CLAUDE_SNIPPET = "claude mcp add --scope user yerd -- yerd mcp";
-const MCP_JSON_SNIPPET = JSON.stringify(
-  { mcpServers: { yerd: { command: "yerd", args: ["mcp"] } } },
-  null,
-  2,
-);
-
 async function toggleMcp(on: boolean): Promise<void> {
   busy.value = "mcp";
   try {
@@ -431,7 +492,7 @@ async function toggleMcp(on: boolean): Promise<void> {
     if (on) {
       toast.success(
         "AI agents enabled",
-        "Register Yerd with your agent using the command below.",
+        "Register Yerd with your agent using the command.",
       );
     } else {
       toast.info(
@@ -444,15 +505,6 @@ async function toggleMcp(on: boolean): Promise<void> {
     toast.error("Couldn't change AI agent access", (e as IpcError).message);
   } finally {
     busy.value = null;
-  }
-}
-
-async function copyMcpSnippet(snippet: string, label: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(snippet);
-    toast.success(`${label} copied`);
-  } catch {
-    toast.error("Couldn't copy to the clipboard");
   }
 }
 
@@ -494,8 +546,8 @@ async function toggleSymlinkProtection(on: boolean): Promise<void> {
   }
 }
 
-async function confirmDisableSymlinkProtection(close: () => void): Promise<void> {
-  close();
+async function confirmDisableSymlinkProtection(): Promise<void> {
+  symlinkProtectionOffOpen.value = false;
   await toggleSymlinkProtection(false);
 }
 
@@ -538,470 +590,354 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
 </script>
 
 <template>
-  <div class="flex h-full flex-col">
-    <PageHeader title="Settings" subtitle="Ports, startup, and appearance" />
+  <div class="flex h-full min-h-0 flex-col">
+    <PageHeader title="Settings" />
 
-    <div class="flex-1 space-y-4 overflow-y-auto p-6">
-      <!-- macOS: registered via SMAppService but awaiting Login-Items approval. -->
+    <div class="flex min-h-0 flex-1" :data-layout="wide ? 'wide' : 'compact'">
       <div
-        v-if="autostart?.daemonPendingApproval"
-        class="flex items-start justify-between gap-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4"
+        :class="[
+          'min-w-0 flex-1 space-y-5 overflow-y-auto pb-8',
+          wide ? 'px-7 pt-6' : 'px-6 pt-5',
+        ]"
       >
-        <div class="space-y-1">
-          <p class="text-sm font-medium">Approve the Yerd background daemon</p>
-          <p class="text-xs text-muted-foreground">
-            Yerd is registered but waiting for you to enable it in System Settings
-            → Login Items before it can serve your .test sites.
-          </p>
-        </div>
-        <Button variant="outline" size="sm" @click="openApproval">
-          Open Login Items
-        </Button>
-      </div>
+        <AboutSection
+          v-if="!wide"
+          layout="card"
+          :updates="updates"
+          @logs="logsOpen = true"
+          @diagnostics="diagnosticsOpen = true"
+        />
 
-      <!-- macOS: the GUI login item is registered but awaiting Login-Items approval. -->
-      <div
-        v-if="autostart?.guiPendingApproval"
-        class="flex items-start justify-between gap-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4"
-      >
-        <div class="space-y-1">
-          <p class="text-sm font-medium">Approve launching Yerd at login</p>
-          <p class="text-xs text-muted-foreground">
-            “Start the Yerd app at login” is set, but macOS needs you to enable it
-            under System Settings → Login Items (Open at Login).
-          </p>
-        </div>
-        <Button variant="outline" size="sm" @click="openApproval">
-          Open Login Items
-        </Button>
-      </div>
-
-      <!-- Application ports (HTTP/HTTPS fallback, DNS, mail, dumps) -->
-      <Card v-if="running">
-        <CardHeader>
-          <CardTitle>Application Ports</CardTitle>
-          <CardDescription>
-            The loopback ports Yerd's services listen on. HTTP/HTTPS are the
-            rootless ports used when 80/443 need elevation (must be
-            {{ MIN_PORT }}+). Saving any change restarts the daemon.
-          </CardDescription>
-        </CardHeader>
-        <CardContent class="space-y-4">
-          <!-- Degraded: no web ports bound. -->
-          <div
-            v-if="report?.web_unbound"
-            class="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm"
-          >
-            <p class="font-medium">Yerd isn't serving any sites</p>
-            <p class="mt-1 text-muted-foreground">
-              It couldn't bind ports {{ report.web_unbound.http }}/{{
-                report.web_unbound.https
-              }}
-              - they're in use by another process. Pick free HTTP/HTTPS ports
-              below and save.
-            </p>
-          </div>
-          <!-- Degraded: DNS port not bound. -->
-          <div
-            v-if="report?.dns_unbound != null"
-            class="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm"
-          >
-            <p class="font-medium">Yerd can't resolve .test domains</p>
-            <p class="mt-1 text-muted-foreground">
-              It couldn't bind DNS port {{ report.dns_unbound }} - it's in use by
-              another process. Pick a free DNS port below and save. You may need
-              to re-run Trust afterwards so the system points at the new port.
-            </p>
-          </div>
-          <!-- Elevated: editing HTTP/HTTPS would break the pinned redirect. -->
-          <p v-if="portsElevated" class="text-xs text-muted-foreground">
-            HTTP/HTTPS ports are elevated, so they're pinned to the active
-            redirect. Un-elevate ports (Doctor) before changing them. DNS, mail
-            and dumps ports can still be changed.
-          </p>
-          <div class="grid grid-cols-2 gap-4 sm:grid-cols-3">
-            <div class="space-y-1">
-              <label for="ap-http" class="text-xs font-medium text-muted-foreground">HTTP</label>
-              <Input
-                id="ap-http"
-                v-model="fbHttp"
-                type="number"
-                inputmode="numeric"
-                :min="MIN_PORT"
-                :max="MAX_PORT"
-                :disabled="portsElevated || busy === 'application-ports'"
-                aria-label="Rootless HTTP port"
-                class="w-full font-mono"
-                placeholder="8080"
-              />
-            </div>
-            <div class="space-y-1">
-              <label for="ap-https" class="text-xs font-medium text-muted-foreground">HTTPS</label>
-              <Input
-                id="ap-https"
-                v-model="fbHttps"
-                type="number"
-                inputmode="numeric"
-                :min="MIN_PORT"
-                :max="MAX_PORT"
-                :disabled="portsElevated || busy === 'application-ports'"
-                aria-label="Rootless HTTPS port"
-                class="w-full font-mono"
-                placeholder="8443"
-              />
-            </div>
-            <div class="space-y-1">
-              <label for="ap-dns" class="text-xs font-medium text-muted-foreground">DNS</label>
-              <Input
-                id="ap-dns"
-                v-model="dnsPort"
-                type="number"
-                inputmode="numeric"
-                min="1"
-                :max="MAX_PORT"
-                :disabled="busy === 'application-ports'"
-                aria-label="DNS responder port"
-                class="w-full font-mono"
-                placeholder="1053"
-              />
-            </div>
-            <div class="space-y-1">
-              <label for="ap-mail" class="text-xs font-medium text-muted-foreground">Mail (SMTP)</label>
-              <Input
-                id="ap-mail"
-                v-model="mailPort"
-                type="number"
-                inputmode="numeric"
-                min="1"
-                :max="MAX_PORT"
-                :disabled="busy === 'application-ports'"
-                aria-label="Mail server port"
-                class="w-full font-mono"
-                placeholder="2525"
-              />
-            </div>
-            <div class="space-y-1">
-              <label for="ap-dumps" class="text-xs font-medium text-muted-foreground">Dumps</label>
-              <Input
-                id="ap-dumps"
-                v-model="dumpsPort"
-                type="number"
-                inputmode="numeric"
-                min="1"
-                :max="MAX_PORT"
-                :disabled="busy === 'application-ports'"
-                aria-label="Dump server port"
-                class="w-full font-mono"
-                placeholder="2304"
-              />
-            </div>
-          </div>
-          <div class="flex justify-end">
+        <div
+          v-for="b in banners"
+          :key="b.id"
+          :class="[
+            'flex gap-3 rounded-[10px] border p-4',
+            b.tone === 'warning'
+              ? 'border-warning/40 bg-warning/10'
+              : 'border-destructive/40 bg-destructive/10',
+          ]"
+          :data-testid="`banner-${b.id}`"
+        >
+          <TriangleAlert v-if="b.tone === 'warning'" class="mt-0.5 size-4 shrink-0 text-warning" />
+          <CircleAlert v-else class="mt-0.5 size-4 shrink-0 text-destructive" />
+          <div class="min-w-0">
+            <p class="text-[13.5px] font-semibold">{{ b.title }}</p>
+            <p class="mt-0.5 text-[12.5px] text-muted-foreground">{{ b.body }}</p>
             <Button
-              size="sm"
-              :disabled="!applicationPortsChanged || busy === 'application-ports'"
-              @click="openApplicationPorts"
-            >
-              <Spinner v-if="busy === 'application-ports'" class="size-4" />
-              Save &amp; restart
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      <!-- Start at login -->
-      <Card>
-        <CardHeader>
-          <CardTitle>Start at login</CardTitle>
-          <CardDescription>Run Yerd automatically when you log in.</CardDescription>
-        </CardHeader>
-        <CardContent class="space-y-4">
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium">Run the Yerd daemon in the background</p>
-              <p class="text-xs text-muted-foreground">
-                {{ autostart?.daemonSupported === false
-                  ? "Unavailable - no per-user service manager on this system."
-                  : isMac
-                    ? "Runs at login and serves your .test sites. Shows as “Yerd” in System Settings › Login Items. Use the tray Stop to stop it for this session; turn this off to keep it stopped."
-                    : "Keeps your .test sites served after you log in." }}
-              </p>
-            </div>
-            <Switch
-              :model-value="autostart?.daemon ?? false"
-              :disabled="busy === 'login:daemon' || autostart?.daemonSupported === false"
-              aria-label="Run the Yerd daemon in the background"
-              @update:model-value="toggleDaemonLogin"
-            />
-          </div>
-
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium">Start the Yerd app at login</p>
-              <p class="text-xs text-muted-foreground">Open this window when you log in.</p>
-            </div>
-            <Switch
-              :model-value="autostart?.gui ?? false"
-              :disabled="busy === 'login:gui'"
-              aria-label="Start the Yerd app at login"
-              @update:model-value="toggleGuiLogin"
-            />
-          </div>
-
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium">Start the Yerd app minimized</p>
-              <p class="text-xs text-muted-foreground">Launch hidden to the tray instead of showing the window.</p>
-            </div>
-            <Switch
-              :model-value="autostart?.guiMinimized ?? false"
-              :disabled="busy === 'login:gui-min' || !autostart?.gui"
-              aria-label="Start the Yerd app minimized"
-              @update:model-value="toggleGuiMinimized"
-            />
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Security</CardTitle>
-          <CardDescription>Control how the proxy treats symlinks inside your sites.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium">Symlink protection</p>
-              <p id="symlink-protection-desc" class="text-xs text-muted-foreground">
-                {{ symlinkProtection
-                  ? "On - the proxy refuses to serve files reached through a symlink that resolves outside a site's own folder."
-                  : "Off - the proxy will serve files reached through a symlink even when the target is outside a site's folder (e.g. a shared theme). Only turn this off for directories you trust; combined with a public tunnel it can expose files beyond the site root." }}
-              </p>
-            </div>
-            <Switch
-              :model-value="symlinkProtection"
-              :disabled="busy === 'symlink-protection' || !connected"
-              aria-label="Symlink protection"
-              aria-describedby="symlink-protection-desc"
-              @update:model-value="onSymlinkProtectionToggle"
-            />
-          </div>
-        </CardContent>
-      </Card>
-
-      <NetworkProxyCard v-if="running" />
-
-      <Card>
-        <CardHeader>
-          <CardTitle>AI Agents (MCP)</CardTitle>
-          <CardDescription>
-            Let local AI agents manage Yerd through the Model Context Protocol.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium">Enable Yerd's MCP server</p>
-              <p id="mcp-enabled-desc" class="text-xs text-muted-foreground">
-                {{ mcpEnabled
-                  ? "On - agents can list and create sites, manage PHP versions and proxies, and read captured mail and dumps. No tool deletes data. Turning this off applies to agent sessions started afterwards."
-                  : "Off - agents can't use Yerd's tools. Turning it on takes effect on a running agent's next tool call." }}
-              </p>
-            </div>
-            <Switch
-              :model-value="mcpEnabled"
-              :disabled="busy === 'mcp' || !connected"
-              aria-label="Enable Yerd's MCP server"
-              aria-describedby="mcp-enabled-desc"
-              @update:model-value="toggleMcp"
-            />
-          </div>
-
-          <div v-if="mcpEnabled" class="mt-4 border-t pt-4">
-            <!-- Registering points the agent at the `yerd` binary by name, so
-                 don't offer a command that can't resolve: on macOS that needs
-                 the Terminal CLI shim below. -->
-            <p v-if="mcpNeedsCliPath" class="text-xs text-muted-foreground">
-              Install <code>yerd</code> on your PATH first (see Terminal CLI below), then come back
-              here for the registration command.
-            </p>
-            <template v-else>
-              <p class="text-sm font-medium">Register Yerd with your agent</p>
-              <p class="mt-1 text-xs text-muted-foreground">
-                Run this once for Claude Code:
-              </p>
-              <div class="mt-2 flex items-center gap-2">
-                <code class="flex-1 truncate rounded bg-muted px-2 py-1 text-xs">{{ MCP_CLAUDE_SNIPPET }}</code>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  @click="copyMcpSnippet(MCP_CLAUDE_SNIPPET, 'Command')"
-                >
-                  Copy
-                </Button>
-              </div>
-              <p class="mt-3 text-xs text-muted-foreground">
-                For other agents, add this to their MCP config:
-              </p>
-              <div class="mt-2 flex items-start gap-2">
-                <pre class="flex-1 overflow-x-auto rounded bg-muted px-2 py-1 text-xs"><code>{{ MCP_JSON_SNIPPET }}</code></pre>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  @click="copyMcpSnippet(MCP_JSON_SNIPPET, 'Config')"
-                >
-                  Copy
-                </Button>
-              </div>
-            </template>
-          </div>
-        </CardContent>
-      </Card>
-
-      <!-- Terminal CLI (macOS + Linux). `yerd` itself is already on PATH on a
-           packaged Linux install, but this also puts the PHP/tool shims dir on
-           PATH, so it's still useful there. -->
-      <Card v-if="supportsPathInstall">
-        <CardHeader>
-          <CardTitle>Terminal CLI</CardTitle>
-          <CardDescription>Use the <code>yerd</code> command in your terminal.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium">Install <code>yerd</code> on your PATH</p>
-              <p class="text-xs text-muted-foreground">
-                {{ cli?.installed
-                  ? "Installed - run `yerd` in a new terminal window."
-                  : "Adds yerd and your installed tools (php, composer, ...) to your shell PATH." }}
-              </p>
-            </div>
-            <Button
+              v-if="b.loginItems"
               variant="outline"
               size="sm"
-              :disabled="busy === 'cli:path'"
-              @click="toggleCliPath"
+              class="mt-3"
+              @click="openApproval"
             >
-              <Spinner v-if="busy === 'cli:path'" class="size-4" />
-              {{ cli?.installed ? "Remove" : "Install" }}
+              Open Login Items
             </Button>
           </div>
-        </CardContent>
-      </Card>
+        </div>
 
-      <!-- Appearance -->
-      <Card>
-        <CardHeader>
-          <CardTitle>Appearance</CardTitle>
-          <CardDescription>Theme and tray icon used by the Yerd app.</CardDescription>
-        </CardHeader>
-        <CardContent class="space-y-4">
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium">Theme</p>
-              <p class="text-xs text-muted-foreground">
-                Match your system, or force light or dark.
-              </p>
-            </div>
-            <Select
-              :model-value="pref"
-              :options="themeOptions"
-              aria-label="Theme"
-              @update:model-value="(v: ThemePref) => setTheme(v)"
-            />
-          </div>
+        <SettingsGroup label="Startup">
+          <SettingRow label="Run the Yerd daemon at login">
+            <template #description>
+              {{ autostart?.daemonSupported === false
+                ? "Unavailable - no per-user service manager on this system."
+                : isMac
+                  ? "Serves your .test sites from login. Listed as “Yerd” in Login Items."
+                  : "Keeps your .test sites served after you log in." }}
+            </template>
+            <template #control>
+              <Switch
+                :model-value="autostart?.daemon ?? false"
+                :disabled="busy === 'login:daemon' || autostart?.daemonSupported === false"
+                aria-label="Run the Yerd daemon in the background"
+                @update:model-value="toggleDaemonLogin"
+              />
+            </template>
+          </SettingRow>
+          <SettingRow label="Open the Yerd app at login">
+            <template #description>Show this window when you log in.</template>
+            <template #control>
+              <Switch
+                :model-value="autostart?.gui ?? false"
+                :disabled="busy === 'login:gui'"
+                aria-label="Start the Yerd app at login"
+                @update:model-value="toggleGuiLogin"
+              />
+            </template>
+          </SettingRow>
+          <SettingRow label="Start minimized">
+            <template #description>Launch hidden to the tray instead.</template>
+            <template #control>
+              <Switch
+                :model-value="autostart?.guiMinimized ?? false"
+                :disabled="busy === 'login:gui-min' || !autostart?.gui"
+                aria-label="Start the Yerd app minimized"
+                @update:model-value="toggleGuiMinimized"
+              />
+            </template>
+          </SettingRow>
+        </SettingsGroup>
 
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium">Tray icon</p>
-              <p class="text-xs text-muted-foreground">
-                Icon shown in the menu bar / system tray.
-              </p>
-            </div>
-            <Select
-              :model-value="trayIconVariant"
-              :options="trayIconOptions"
-              aria-label="Tray icon"
-              @update:model-value="setTrayIconVariantPref"
-            />
-          </div>
-
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium">Title bar</p>
-              <p class="text-xs text-muted-foreground">
-                Window control style used by the Yerd app.
-              </p>
-            </div>
-            <Select
-              :model-value="titleBarStyle"
-              :options="titleBarStyleOptions"
-              aria-label="Title bar"
-              @update:model-value="setTitleBarStylePref"
-            />
-          </div>
-
+        <SettingsGroup label="Appearance">
+          <SettingRow label="Theme">
+            <template #description>Match your system, or force light or dark.</template>
+            <template #control>
+              <SegmentedControl
+                :model-value="pref"
+                :options="themeOptions"
+                size="md"
+                variant="plain"
+                aria-label="Theme"
+                @update:model-value="onThemeChange"
+              />
+            </template>
+          </SettingRow>
+          <SettingRow label="Tray icon">
+            <template #description>
+              {{ isMac ? "Icon shown in the menu bar." : "Icon shown in the system tray." }}
+            </template>
+            <template #control>
+              <Select
+                :model-value="trayIconVariant"
+                :options="trayIconOptions"
+                aria-label="Tray icon"
+                class="h-[34px] w-[200px]"
+                @update:model-value="setTrayIconVariantPref"
+              />
+            </template>
+          </SettingRow>
+          <SettingRow label="Title bar">
+            <template #description>Window control style.</template>
+            <template #control>
+              <Select
+                :model-value="titleBarStyle"
+                :options="titleBarStyleOptions"
+                aria-label="Title bar"
+                class="h-[34px] w-[200px]"
+                @update:model-value="setTitleBarStylePref"
+              />
+            </template>
+          </SettingRow>
           <!-- Same macOS-or-Linux predicate as the PATH install: host editor
                launching has no Windows adapter either. -->
-          <div v-if="supportsPathInstall" class="flex items-center justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium">Preferred editor</p>
-              <p class="text-xs text-muted-foreground">
-                Opened by the site's editor button. Individual sites can override it.
-              </p>
-            </div>
-            <div class="flex items-center gap-2">
+          <SettingRow v-if="supportsPathInstall" label="Preferred editor">
+            <template #description>Opened by a site's editor button. Sites can override it.</template>
+            <template #control>
               <Select
                 :model-value="preferredIdeSelection"
                 :options="preferredIdeOptions"
                 aria-label="Preferred editor"
+                class="h-[34px] w-[200px]"
                 @update:model-value="setPreferredIdePref"
               />
               <Button
                 variant="outline"
                 size="sm"
+                class="h-[34px]"
                 :disabled="busy === 'ide:rescan'"
                 title="Look for installed editors again"
                 @click="rescanEditors"
               >
                 <Spinner v-if="busy === 'ide:rescan'" class="size-4" />
+                <RefreshCw v-else />
                 Rescan
               </Button>
+            </template>
+          </SettingRow>
+        </SettingsGroup>
+
+        <SettingsGroup v-if="running" label="Application ports">
+          <div class="grid grid-cols-5 gap-3 px-[18px] pb-4 pt-4">
+            <div
+              v-for="field in portFields"
+              :key="field.id"
+              class="min-w-0 space-y-1.5"
+            >
+              <label :for="field.id" class="block truncate text-[12.5px] text-muted-foreground">
+                {{ field.label }}
+              </label>
+              <div :class="['relative rounded-md', field.web && portsElevated && 'bg-sidebar']">
+                <Lock
+                  v-if="field.web && portsElevated"
+                  class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-faint"
+                  aria-hidden="true"
+                />
+                <Input
+                  :id="field.id"
+                  v-model="field.model.value"
+                  type="number"
+                  inputmode="numeric"
+                  :min="field.web ? MIN_PORT : 1"
+                  :max="MAX_PORT"
+                  :disabled="
+                    field.web
+                      ? portsElevated || busy === 'application-ports'
+                      : busy === 'application-ports'
+                  "
+                  :aria-label="field.aria"
+                  :placeholder="field.placeholder"
+                  :class="[
+                    'h-[34px] font-mono',
+                    field.web && portsElevated && 'pl-8 text-faint disabled:opacity-100',
+                  ]"
+                />
+              </div>
             </div>
           </div>
-        </CardContent>
-      </Card>
+          <div class="flex flex-wrap items-center gap-3 px-[18px] py-2.5">
+            <p
+              v-if="portsElevated"
+              class="flex min-w-0 items-center gap-2 text-[12.5px] text-muted-foreground"
+              data-testid="ports-elevated"
+            >
+              <Lock class="size-3.5 shrink-0 text-brand" aria-hidden="true" />
+              HTTP and HTTPS are pinned to the 80/443 redirect.
+              <RouterLink
+                to="/doctor"
+                class="inline-flex items-center gap-1 font-medium text-brand hover:underline"
+              >
+                Open Doctor <ArrowRight class="size-3.5" />
+              </RouterLink>
+            </p>
+            <p v-else class="min-w-0 text-[12.5px] text-faint">
+              Saving any change restarts the daemon. HTTP and HTTPS must be {{ MIN_PORT }} or above.
+            </p>
+            <Button
+              size="sm"
+              class="ml-auto"
+              :disabled="!applicationPortsChanged || busy === 'application-ports'"
+              @click="openApplicationPorts"
+            >
+              <Spinner v-if="busy === 'application-ports'" class="size-4" />
+              <RotateCw v-else />
+              Save &amp; restart
+            </Button>
+          </div>
+        </SettingsGroup>
 
+        <SettingsGroup label="Integrations and security">
+          <SettingRow label="AI agents (MCP)" description-id="mcp-enabled-desc">
+            <template #description>
+              {{ mcpEnabled
+                ? "Local agents can manage sites, PHP, proxies, mail and dumps. No tool deletes data."
+                : "Agents can't use Yerd's tools. Turning it on takes effect on a running agent's next tool call." }}
+            </template>
+            <template #control>
+              <Button
+                v-if="mcpEnabled"
+                variant="outline"
+                size="sm"
+                @click="connectAgentOpen = true"
+              >
+                <Plug /> Connect an agent
+              </Button>
+              <Switch
+                :model-value="mcpEnabled"
+                :disabled="busy === 'mcp' || !connected"
+                aria-label="Enable Yerd's MCP server"
+                aria-describedby="mcp-enabled-desc"
+                @update:model-value="toggleMcp"
+              />
+            </template>
+          </SettingRow>
+          <!-- `yerd` itself is already on PATH on a packaged Linux install, but
+               this also puts the PHP/tool shims dir on PATH, so it's still
+               useful there. -->
+          <SettingRow v-if="supportsPathInstall" label="Terminal CLI">
+            <template #description>
+              {{ cli?.installed
+                ? "The yerd command is installed on your PATH."
+                : "Adds yerd and your installed tools (php, composer, ...) to your shell PATH." }}
+            </template>
+            <template #control>
+              <Button
+                variant="outline"
+                size="sm"
+                :disabled="busy === 'cli:path'"
+                @click="toggleCliPath"
+              >
+                <Spinner v-if="busy === 'cli:path'" class="size-4" />
+                <Trash2 v-else-if="cli?.installed" />
+                <Download v-else />
+                {{ cli?.installed ? "Remove" : "Install" }}
+              </Button>
+            </template>
+          </SettingRow>
+          <SettingRow label="Symlink protection" description-id="symlink-protection-desc">
+            <template #description>
+              {{ symlinkProtection
+                ? "Block files reached through symlinks that point outside a site's folder."
+                : "The proxy will serve files reached through a symlink even when the target is outside a site's folder (e.g. a shared theme). Only turn this off for directories you trust; combined with a public tunnel it can expose files beyond the site root." }}
+            </template>
+            <template #control>
+              <Switch
+                :model-value="symlinkProtection"
+                :disabled="busy === 'symlink-protection' || !connected"
+                aria-label="Symlink protection"
+                aria-describedby="symlink-protection-desc"
+                @update:model-value="onSymlinkProtectionToggle"
+              />
+            </template>
+          </SettingRow>
+        </SettingsGroup>
+
+        <NetworkProxyCard v-if="running" />
+
+        <MadeByForjed v-if="!wide" class="pt-2 text-center" />
+      </div>
+
+      <aside
+        v-if="wide"
+        class="flex w-[302px] shrink-0 flex-col overflow-y-auto border-l bg-sidebar px-6 pb-5 pt-7"
+      >
+        <AboutSection
+          layout="column"
+          :updates="updates"
+          @logs="logsOpen = true"
+          @diagnostics="diagnosticsOpen = true"
+        />
+        <MadeByForjed class="mt-auto pt-6" />
+      </aside>
     </div>
 
-    <Modal v-model:open="applicationPortsOpen" title="Change application ports?">
-      <p class="text-sm text-muted-foreground">
-        Saving applies your port changes and restarts the daemon - this briefly
-        stops all <strong class="text-foreground">.test</strong> sites, DNS, PHP
-        pools, and this connection. It returns in a few seconds.
-      </p>
-      <template #footer="{ close }">
-        <Button variant="ghost" @click="close">Cancel</Button>
-        <Button @click="confirmApplicationPorts(close)">Save &amp; restart</Button>
-      </template>
-    </Modal>
+    <ConnectAgentDialog v-model:open="connectAgentOpen" :needs-cli-path="mcpNeedsCliPath" />
+    <GuiLogsDialog v-model:open="logsOpen" />
+    <DiagnosticsDialog v-model:open="diagnosticsOpen" />
 
-    <Modal v-model:open="symlinkProtectionOffOpen" title="Turn off symlink protection?">
-      <p class="text-sm text-muted-foreground">
-        This is a global setting - it lowers protection for
-        <strong class="text-foreground">every</strong> site, not just one. With it
-        off, the proxy will serve any file reached through a symlink whose target
-        sits outside a site's own folder, including symlinks left behind by
-        dependencies or checked-out repos.
+    <DialogFrame
+      v-model:open="applicationPortsOpen"
+      title="Change application ports?"
+      width="md"
+    >
+      <p class="text-[13px] text-muted-foreground">
+        Saving applies your port changes and restarts the daemon. This briefly stops all
+        <strong class="text-foreground">.test</strong> sites, DNS, PHP pools and this
+        connection. It returns in a few seconds.
       </p>
-      <p class="mt-2 text-sm text-muted-foreground">
-        If a site is exposed over a public tunnel, those out-of-root files become
-        reachable beyond your machine. Only turn this off for directories you trust.
-      </p>
-      <template #footer="{ close }">
-        <Button variant="ghost" @click="close">Cancel</Button>
-        <Button @click="confirmDisableSymlinkProtection(close)">Turn off protection</Button>
+      <template #footer>
+        <Button variant="outline" @click="applicationPortsOpen = false">Cancel</Button>
+        <Button @click="confirmApplicationPorts"><RotateCw /> Save &amp; restart</Button>
       </template>
-    </Modal>
+    </DialogFrame>
+
+    <DialogFrame
+      v-model:open="symlinkProtectionOffOpen"
+      title="Turn off symlink protection?"
+      width="md"
+    >
+      <p class="text-[13px] text-muted-foreground">
+        This lowers protection for <strong class="text-foreground">every</strong> site, not
+        just one. The proxy will serve any file reached through a symlink whose target sits
+        outside a site's folder.
+      </p>
+      <p class="mt-3 text-[13px] text-muted-foreground">
+        If a site is shared over a public tunnel, those files become reachable beyond your
+        machine. Only turn this off for directories you trust.
+      </p>
+      <template #footer>
+        <Button variant="outline" @click="symlinkProtectionOffOpen = false">Cancel</Button>
+        <Button variant="destructive" @click="confirmDisableSymlinkProtection">Turn off</Button>
+      </template>
+    </DialogFrame>
   </div>
 </template>

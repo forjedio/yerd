@@ -498,7 +498,7 @@ User-defined site groups for the desktop app's Sites view. Purely an organisatio
 | `order`   | array of strings  | Group display names, in display order.                        |
 | `members` | table (`site → group`) | Per-site group membership, keyed by site name.           |
 
-Membership is keyed by **site name**, not document-root, so a group applies to parked and linked sites alike without touching either site's own record. A site absent from `members` is "Unallocated" - the GUI's synthetic bucket for ungrouped sites, which is never itself persisted here.
+Membership is keyed by **site name**, not document-root, so a group applies to parked and linked sites alike without touching either site's own record. A site absent from `members` is ungrouped: the GUI lists it in its parked folder's section, or under Linked. `Unallocated` is still reserved as a group name.
 
 Validation rules (enforced by `Config::validate`): every name in `order` must be non-empty (`GroupNameEmpty`) and unique, ASCII-case-insensitively (`GroupDuplicate`); the name `Unallocated` is reserved in any casing and rejected (`GroupNameReserved`); and every `members` value must reference a group present in `order`, also folding case (`GroupMemberDangling`). Whether a keyed site still exists is not checked - parked sites are discovered from disk on each scan and have no config record to check against.
 
@@ -652,8 +652,8 @@ to a file inside the site's own tree. When a site has both on the same prefix,
 the proxy rule wins - it intercepts before PHP resolution runs at all.
 :::
 
-Manage these with [`yerd route`](cli/routes), or the **Routing** tab of the
-desktop app's site details sidebar. A site whose web root holds an `index.html`
+Manage these with [`yerd route`](cli/routes), or **Routing rules…** in the
+desktop app's site inspector. A site whose web root holds an `index.html`
 and no `index.php` gets SPA routing automatically, with no rule stored here.
 
 ### `[response_headers]`
@@ -687,8 +687,8 @@ value must be non-empty with no control characters. A hand-edited entry that
 fails is a hard parse error, and two entries for one site sharing a name
 (ignoring case) fail validation.
 
-Manage these with [`yerd header`](cli/headers), or the **Headers** tab of the
-desktop app's site details sidebar.
+Manage these with [`yerd header`](cli/headers), or the **Response headers** card
+in the desktop app's site inspector.
 
 ### `[network]`
 

@@ -10,8 +10,8 @@ It is **off by default**. Nothing is exposed until you turn it on.
 
 ## Enable it
 
-Open Yerd → **Settings** → **General** → **AI Agents (MCP)** and turn on
-**Enable Yerd's MCP server**.
+Open Yerd → **Settings** → **Integrations and security** → **AI agents (MCP)** and turn on
+the switch.
 
 The switch writes `mcp_enabled` to your config; Yerd's daemon does not run a
 server for it. Each agent session runs a short-lived `yerd mcp` process that
@@ -34,7 +34,9 @@ it does not isolate Yerd from local software.
 ## Register Yerd with your agent
 
 You only do this once. The `yerd` binary must be on your `PATH` — on macOS use
-Settings → General → **Terminal CLI** → Install to put it there.
+Settings → Integrations and security → **Terminal CLI** → Install to put it there.
+While the MCP server is on, **Connect an agent** on the same row shows the
+commands below with copy buttons.
 
 For Claude Code:
 
@@ -110,12 +112,12 @@ agent is told as much and asked to verify the outcome directly (with
 ## Troubleshooting
 
 **The server shows as connected but every tool says it is disabled.** The toggle
-is off. Turn it on in Settings → General; the running session picks it up on its
+is off. Turn it on in Settings → Integrations and security; the running session picks it up on its
 next call.
 
 **The server fails to start / shows red.** The agent could not run `yerd mcp` —
 almost always `yerd` not being on the `PATH` the agent inherits. Install the
-Terminal CLI (Settings → General), then restart the agent so it picks up the new
+Terminal CLI (Settings → Integrations and security), then restart the agent so it picks up the new
 `PATH`.
 
 **Tools report the daemon is not running.** Yerd itself is stopped. Open the Yerd

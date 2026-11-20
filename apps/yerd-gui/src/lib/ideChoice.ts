@@ -10,8 +10,8 @@ export type IdeChoice =
 const SYSTEM = "system";
 
 /** Button/tooltip wording for the system arm; also the name shown by the
- *  sidebar's `Use default (…)` option when nothing is detected, and by the
- *  system entry in both editor pickers - one wording, one place. */
+ *  Sites inspector's `Use default (…)` editor entry when nothing is detected,
+ *  and by the system entry in both editor pickers - one wording, one place. */
 export const SYSTEM_LABEL = "Open folder";
 
 /**

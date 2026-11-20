@@ -17,8 +17,8 @@ const { frontmatter } = useData()
 <template>
   <div class="y-home">
     <HeroSection v-bind="frontmatter.hero" />
-    <StatsBar :stats="frontmatter.stats" />
     <FootprintSection v-bind="frontmatter.footprint" />
+    <StatsBar :stats="frontmatter.stats" />
     <CapabilitySection v-bind="frontmatter.capabilities" />
     <StepsSection v-bind="frontmatter.steps" />
     <AppSection v-bind="frontmatter.app" />

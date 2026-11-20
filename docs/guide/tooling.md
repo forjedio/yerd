@@ -30,19 +30,31 @@ removes them cleanly on uninstall.
 ## In the desktop app
 
 Open the **Tooling** page from the sidebar (under the **Developer** group). It
-lists the developer tools Yerd manages and their install status:
+lists the developer tools Yerd manages in two groups:
 
-<ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="The Tooling page in the Yerd desktop app" />
+<ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="The Tooling page: Composer (with an update to 2.9.1), the Laravel installer and WP-CLI installed, and Bun (found externally in /opt/homebrew/bin) and pnpm available" />
 
-- **Composer**, **Bun**, **pnpm**, the **Laravel installer**, and **WP-CLI**,
-  each showing the commands it provides.
-- Click **Install** to fetch the latest release; once installed you get
-  **Update** (re-fetch the current latest) and **Uninstall**.
-- A tool you've installed yourself shows an **External** badge and a *Managed by
-  you* note. **Install** is still offered, so you can take Yerd's own copy as
-  well - see [External tools](#external-tools) below.
-- The Laravel installer and WP-CLI are built with Composer, so their **Install**
-  button stays disabled until Yerd's own Composer is installed.
+- **Installed** lists each installed tool (**Composer**, **Bun**, **pnpm**, the
+  **Laravel installer**, **WP-CLI**) with its version and the commands it
+  provides. When Yerd knows a newer version exists, an amber **↑** chip shows it
+  beside the version and **Update** installs it; otherwise **Update** is
+  disabled. Yerd checks for tool updates every 12 hours, and
+  `yerd install tool <id>` always fetches the latest release. The trash button
+  uninstalls the tool after a confirmation.
+- **Available** shows a card for each tool you haven't installed, with an
+  **Install** button that fetches the latest release.
+- A tool you've installed yourself shows an **External** chip, where it was
+  found on your `PATH` (with a button to reveal it), and **Install Yerd's
+  copy** - see [External tools](#external-tools) below.
+- The Laravel installer and WP-CLI are built with Composer, so until Yerd's own
+  Composer is installed their card reads *Needs Composer - install it first*
+  (which installs Composer) and **Install** stays disabled.
+- While a tool installs its card shows progress and **Show log**; if the install
+  fails the card shows the error with **Show log** and **Try again**. Closing
+  the log doesn't stop the install.
+
+  <ThemedImage light="/images/tooling-install-log-light.png" dark="/images/tooling-install-log-dark.png" alt="The Updating Composer log dialog streaming the download, checksum and install steps, with Keeps going if you close this" />
+
 - Each tool is placed on your `PATH` alongside PHP and managed entirely by Yerd,
   so it won't collide with a system install.
 
@@ -76,10 +88,10 @@ You don't have to let Yerd manage most of these tools. If you already have
 via Homebrew, `nvm`/`fnm`, a global `composer require`, etc. - Yerd **detects**
 it and treats it as already available:
 
-- On the **Tooling** page the tool shows an **External** badge (instead of a
-  version) and a *Managed by you* note - it's yours to manage, not Yerd's. You
-  can still press **Install** to take Yerd's own copy alongside it, which you'll
-  need if you want Yerd to build the Laravel installer or WP-CLI.
+- On the **Tooling** page the tool shows an **External** chip and the location
+  your terminal runs it from - it's yours to manage, not Yerd's. You can still
+  press **Install Yerd's copy**, which goes ahead of yours on your `PATH` and
+  which you'll need if you want Yerd to build the Laravel installer or WP-CLI.
 - The [Laravel site wizard](./sites#create-a-new-laravel-site) and site scaffolding
   accept external Composer / Node / Bun / pnpm / Laravel as satisfying their
   prerequisites, so you won't be asked to install a second copy. Externally

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { StatusReport } from "@/ipc/types";
-import { needsElevation, portsElevated, privilegedFallback } from "./elevation";
+import { needsElevation, portsElevated, privilegedFallback, privilegeItems, privilegeStatus } from "./elevation";
 
 // Only the fields the predicates read matter; the rest of StatusReport is filled
 // with inert defaults so the tests stay focused on privilege state. `in` checks
@@ -60,5 +60,76 @@ describe("needsElevation", () => {
     ["web unbound on macOS is not fixable yet", mk({ webUnbound: { http: 8080, https: 8443 } }), true, false],
   ])("%s → %s", (_label, r, isMac, expected) => {
     expect(needsElevation(r, isMac)).toBe(expected);
+  });
+});
+
+describe("privilegeItems", () => {
+  const unbound = { webUnbound: { http: 8080, https: 8443 } };
+  const fellBack = { httpReq: 80, httpFell: true };
+
+  function item(r: StatusReport, isMac: boolean, residual: boolean, key: string) {
+    const found = privilegeItems(r, isMac, residual).find((i) => i.key === key);
+    if (!found) throw new Error(`no item ${key}`);
+    return found;
+  }
+
+  it("lists trust, resolver and ports in order", () => {
+    expect(privilegeItems(mk({}), false, false).map((i) => i.label)).toEqual([
+      "Local CA trusted",
+      ".test resolver installed",
+      "Privileged ports 80/443",
+    ]);
+  });
+
+  it.each([
+    ["web unbound on Linux", mk(unbound), false, { value: false, fixable: true, no: "not serving - elevate to bind 80/443", note: undefined }],
+    [
+      "web unbound on macOS",
+      mk(unbound),
+      true,
+      {
+        value: false,
+        fixable: false,
+        no: "not serving - set working ports first",
+        note: "Yerd couldn't bind its web ports. Set working ports in Settings, then elevate.",
+      },
+    ],
+    ["fell back without redirect", mk(fellBack), false, { value: false, fixable: true, no: "fell back to high ports", note: undefined }],
+  ])("ports: %s", (_label, r, isMac, expected) => {
+    expect(item(r, isMac, false, "ports")).toMatchObject(expected);
+  });
+
+  it.each([
+    ["bound directly", mk({}), false, "bound", false],
+    ["redirected on macOS", mk({ ...fellBack, portRedirect: true }), true, "redirected", true],
+    ["redirect reported on Linux", mk({ ...fellBack, portRedirect: true }), false, "redirected", false],
+  ])("ports yes text and revert: %s", (_label, r, isMac, yes, unelevatable) => {
+    expect(item(r, isMac, false, "ports")).toMatchObject({ value: true, yes, unelevatable });
+  });
+
+  it.each([
+    ["trusted, no residual", true, false, true, undefined],
+    ["macOS residual system trust", true, true, false, "Trusted system-wide (via Terminal) - run `sudo yerd unelevate trust` to remove it."],
+    ["residual flag ignored on Linux", false, true, true, undefined],
+  ])("trust revert: %s", (_label, isMac, residual, unelevatable, note) => {
+    expect(item(mk({}), isMac, residual, "trust")).toMatchObject({ unelevatable, note });
+  });
+
+  it.each([
+    ["trust", mk({ trusted: null })],
+    ["resolver", mk({ resolver: null })],
+  ])("unknown %s state stays null and fixable", (key, r) => {
+    expect(item(r, false, false, key)).toMatchObject({ value: null, fixable: true, unelevatable: false });
+  });
+});
+
+describe("privilegeStatus", () => {
+  it.each([
+    ["granted", mk({}), "trusted"],
+    ["not granted", mk({ trusted: false }), "not trusted"],
+    ["unknown", mk({ trusted: null }), "unknown"],
+  ])("%s", (_label, r, expected) => {
+    const trust = privilegeItems(r, false, false).find((i) => i.key === "trust");
+    expect(trust && privilegeStatus(trust)).toBe(expected);
   });
 });

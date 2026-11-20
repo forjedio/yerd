@@ -123,7 +123,7 @@ describe("SiteRoutesPanel", () => {
     );
   });
 
-  it("refetches when the sidebar swaps to a different site", async () => {
+  it("refetches when the inspector swaps to a different site", async () => {
     const wrapper = await mountPanel();
     expect(listRoutes).toHaveBeenCalledTimes(1);
 

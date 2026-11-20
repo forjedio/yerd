@@ -14,7 +14,7 @@ initTitleBarStyle();
 initDesktopChrome();
 
 // Funnel uncaught frontend errors into the GUI session log so they show up in
-// About → GUI Logs. A reentrancy guard keeps a logging failure from looping back
+// Settings → GUI Logs. A reentrancy guard keeps a logging failure from looping back
 // through `unhandledrejection`.
 let inErrorHandler = false;
 function logUncaught(prefix: string, detail: unknown): void {

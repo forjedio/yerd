@@ -27,23 +27,40 @@ Laravel app served through Yerd as a `.test` site.
 The fastest way to use Dumps is from the [desktop app](./desktop-app). Open the
 **Dumps** page under the **Developer** group in the side navigation.
 
-<ThemedImage light="/images/dumps-light.png" dark="/images/dumps-dark.png" alt="The Dumps page in the Yerd desktop app" />
+<ThemedImage light="/images/dumps-light.png" dark="/images/dumps-dark.png" alt="The Dumps page: captured requests beside a POST /checkout request with its dump, queries, cache, HTTP, job, log and view events" />
 
-- **Dump-server status** shows whether the loopback capture server is running.
-- The **Enable interception** toggle turns capture on. The first enable
-  downloads the extension and restarts your pools; after that it is instant.
-- The **per-signal switches** - dumps/dd, queries, jobs, views, requests, logs,
-  cache, and outgoing HTTP - are **disabled until interception is on**. Once it
-  is, flip each signal independently to keep the viewer focused.
-- The **port** (default `2304`) is shown and editable, and the page lists the
-  **per-PHP-version extension presence** so you can see which installed PHP
+The page lists captured **requests**, newest first: method, status, path, site,
+event count and duration. Pick one to see its events beside the list; in a
+narrow window the list becomes a table and a request opens in a drawer. While
+the newest request the list shows is selected, a newer one takes the selection
+as it arrives (a request hidden by the filter never does). If the daemon
+restarts, the list starts over with the new daemon's events.
+
+- The **capture pill** in the toolbar reads **Intercepting on 2304** while
+  capture is on, **Paused** while it is off, and **Dump server stopped** when
+  the port can't be bound.
+- **Pause / Resume** turns interception off and on. Turning it on downloads or
+  refreshes the extension and restarts your running PHP-FPM pools, so it can
+  take a few seconds; pausing is instant.
+- **Setup** holds the **Intercept dumps** switch, the dump server address with
+  **Change port** (the port lives in **Settings ▸ Application Ports**, default
+  `2304`), the eight **captured signals** (disabled until interception is on)
+  and the **per-PHP-version extension status**, so you can see which installed
   versions have a matching `yerd-dump` build.
-- **Show Dumps** opens the standalone viewer window where captured events
-  stream in, grouped by request.
+- The **open in window** button pops the same list and detail out into the
+  standalone Dumps window.
+- A request's detail has **category chips** with per-request counts, an
+  **event filter** that narrows the events and the request list (it also
+  matches a request's method, path and status), and a
+  **caller badge** on each event: hover it for the project-relative path, click
+  it to open the file in your default editor.
+
+<ThemedImage light="/images/dumps-category-light.png" dark="/images/dumps-category-dark.png" alt="The Cache chip selected: the request's cache hit, forget, miss and write events, with the request list narrowed to requests that touched the cache" />
 
 ## What you get
 
-Captured events are grouped into categories, one per tab in the viewer:
+Captured events are grouped into categories, one per chip in a request's
+detail (the request summary heads the detail rather than getting a chip):
 
 | Category | What it captures |
 |---|---|
@@ -77,6 +94,8 @@ navigation). Enabling it does two things:
    `{data}/php-ext/php-<version>/yerd-dump.so`.
 2. **Restarts your PHP-FPM pools** so they load the extension.
 
+<ThemedImage light="/images/dumps-setup-light.png" dark="/images/dumps-setup-dark.png" alt="The Dump setup dialog: the Intercept dumps switch, the dump server on 127.0.0.1:2304, the eight captured-signal switches and the PHP extension status per installed version" />
+
 After that, dumps flow into the viewer as you exercise your app.
 
 ::: info Needs a matching released build
@@ -95,20 +114,20 @@ replaces any `.so` that no longer matches the published build.
 ::: warning No dumps on legacy PHP
 [Legacy PHP versions](./php-versions#legacy-php-versions) (7.4 / 8.0 / 8.1) never
 capture dumps - the `yerd-dump` extension isn't built for out-of-support PHP. The
-Dumps view flags legacy rows as **"Unsupported (no dumps)"** and shows a warning
-banner when a legacy version is installed.
+Dumps **Setup** dialog marks legacy versions **"Too old: no dumps"**.
 :::
 
-::: tip Toggling is cheap after the first enable
+::: tip Category toggles are cheap
 The extension reads a small state file at the start of every request and
-self-disables when capture is off, so turning capture (or an individual category)
-on and off again does **not** restart PHP. Only the first enable - which has to
-download the extension and load it - restarts your pools.
+self-disables when capture is off, so pausing capture or flipping an individual
+category does **not** restart PHP. Turning capture back on does: each enable
+re-checks the extension and restarts your running pools.
 :::
 
 ## Per-category toggles
 
-Each category can be turned on or off independently from the Dumps view. This is
+Each category can be turned on or off independently from the Dumps **Setup**
+dialog. This is
 useful when one category is noisy (lots of queries on a busy page) or when you
 only care about one signal.
 
@@ -119,29 +138,31 @@ request, with no restart.
 
 ## Persisting across requests
 
-By default the viewer shows a **rolling window of the most recent requests** and
-clears older ones as new requests arrive, so you're looking at what just
-happened. Turn on **persist** to keep events accumulating across requests
-instead, which is handy when you're watching a sequence of requests (a queue
-worker chewing through jobs, say) and don't want earlier ones to disappear.
+By default the viewer keeps the **25 most recent requests** and drops older ones
+as new requests arrive, so you're looking at what just happened. Turn on **Keep
+history** (above the request list) to keep every request instead, which is
+handy when you're watching a sequence of requests and don't want earlier ones to
+disappear.
 
-The viewer holds a bounded buffer of the most recent events, so very old events
-are eventually evicted either way.
+The viewer holds a bounded buffer of up to 2,000 events, so very old events are
+eventually evicted either way.
 
 ## The Dumps window
 
 The desktop app gives Dumps its own space:
 
 - **The Dumps view** lives in the main window (in the side navigation), where you
-  enable capture, manage the per-category toggles and persist option, and browse
-  captured events by tab.
+  pause and resume capture, open **Setup** for the per-category toggles, and
+  browse captured requests.
 - **A standalone Dumps window** can be popped out so you can keep dumps visible
   next to your editor and browser while the rest of the app stays out of the way.
+  It shows the same request list and detail, with Pause / Resume and **pin on
+  top** in its title bar.
 
-<ThemedImage light="/images/dumps-dialog-light.png" dark="/images/dumps-dialog-dark.png" alt="The Yerd Dumps window showing captured dump events" />
+<ThemedImage light="/images/dumps-dialog-light.png" dark="/images/dumps-dialog-dark.png" alt="The standalone Dumps window with the live capture pill, Pause and pin-on-top in its title bar, showing a GET /dashboard request" />
 
-You can filter by category (the tabs), clear the buffer, and remove individual
-events.
+In either place you can filter a request's events by category and text, keep
+history, and clear the buffer.
 
 ## How it works
 

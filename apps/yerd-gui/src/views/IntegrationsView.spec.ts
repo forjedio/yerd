@@ -1,4 +1,4 @@
-import { flushPromises, mount } from "@vue/test-utils";
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const invokeMock = vi.fn();
@@ -12,42 +12,48 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 
 import IntegrationsView from "./IntegrationsView.vue";
 import { useDaemon } from "@/composables/useDaemon";
+import { useOperations } from "@/composables/useOperations";
 import { resetResourceCache } from "@/composables/useResource";
-import type { SiteEntry, SiteHostname, StatusReport, TunnelInfo } from "@/ipc/types";
+import { useToast } from "@/composables/useToast";
+import type { CloudflaredStatus, SiteEntry, SiteHostname, StatusReport, TunnelInfo } from "@/ipc/types";
 
 function site(name: string): SiteEntry {
   return {
     name,
     document_root: `/srv/${name}`,
     php: "8.3",
-    secure: false,
+    secure: true,
     kind: "linked",
     is_wordpress: false,
   };
 }
 
-/** A default mock: the given tunnels/named sites, `ok` for every mutation, and a
- *  reject for anything unexpected so a wrong wire call is loud. */
-function stubIpc(opts: {
+const MANAGED: CloudflaredStatus = { installed: true, version: "2026.6.1", source: "managed", logged_in: true };
+
+interface StubOpts {
   tunnels?: TunnelInfo[];
   named?: SiteHostname[];
-  sites?: SiteEntry[];
-}) {
+  cloudflared?: CloudflaredStatus;
+  tunnelStatus?: () => Promise<unknown>;
+  routeDns?: () => Promise<unknown>;
+  jobStates?: ("running" | "succeeded")[];
+}
+
+/** A default mock: the given tunnels and named sites, `ok` for every mutation, and
+ *  a reject for anything unexpected so a wrong wire call is loud. */
+function stubIpc(opts: StubOpts = {}) {
   const tunnels = opts.tunnels ?? [];
   const named = opts.named ?? [];
-  const sites = opts.sites ?? [site("app"), site("blog")];
-  invokeMock.mockImplementation((cmd: string) => {
+  const cloudflared = opts.cloudflared ?? MANAGED;
+  const jobStates = [...(opts.jobStates ?? ["succeeded"])];
+  invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
     switch (cmd) {
       case "status":
         return Promise.resolve({ type: "status", report: { tld: "test" } as StatusReport });
       case "tunnel_status":
-        return Promise.resolve({
-          type: "tunnels",
-          tunnels,
-          cloudflared: { installed: true, version: "2026.6.1", source: "managed", logged_in: true },
-        });
+        return opts.tunnelStatus?.() ?? Promise.resolve({ type: "tunnels", tunnels, cloudflared });
       case "list_sites":
-        return Promise.resolve({ type: "sites", sites });
+        return Promise.resolve({ type: "sites", sites: [site("app"), site("blog")] });
       case "list_named_tunnels":
         return Promise.resolve({
           type: "named_tunnels",
@@ -56,14 +62,34 @@ function stubIpc(opts: {
           zone: "example.com",
         });
       case "start_named_tunnel":
+        return Promise.resolve({ type: "tunnels", tunnels, cloudflared });
+      case "start_quick_tunnel":
         return Promise.resolve({
           type: "tunnels",
-          tunnels,
-          cloudflared: { installed: true, logged_in: true },
+          tunnels: [{ site: args?.site, kind: "quick", state: "running", url: "https://x.trycloudflare.com" }],
+          cloudflared,
         });
-      case "set_site_tunnel":
+      case "stop_tunnel":
+        return Promise.resolve({ type: "tunnels", tunnels: [], cloudflared });
+      case "install_cloudflared_streamed":
+      case "cloudflared_login":
+        return Promise.resolve({ type: "job_started", job_id: "j1" });
+      case "job_status":
+        return Promise.resolve({
+          type: "job_progress",
+          state: jobStates.shift() ?? "succeeded",
+          phase: "",
+          log: ["working"],
+          next_cursor: 1,
+          error: null,
+        });
       case "route_tunnel_dns":
+        return opts.routeDns?.() ?? Promise.resolve({ type: "ok" });
+      case "set_site_tunnel":
       case "set_tunnel_password":
+      case "job_cancel":
+      case "create_named_tunnel":
+      case "delete_named_tunnel":
         return Promise.resolve({ type: "ok" });
       default:
         return Promise.reject(new Error(`unexpected invoke ${cmd}`));
@@ -71,32 +97,88 @@ function stubIpc(opts: {
   });
 }
 
-const mounted: { unmount: () => void }[] = [];
+function setWide(wide: boolean): void {
+  globalThis.matchMedia = vi.fn(() => ({
+    matches: wide,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  })) as unknown as typeof globalThis.matchMedia;
+}
+
+const Pass = { template: "<div><slot /></div>" };
+const ComboboxStub = {
+  name: "Combobox",
+  props: ["modelValue", "options", "disabled"],
+  emits: ["update:modelValue"],
+  template:
+    '<div><button v-for="o in options" :key="o.value" type="button" :data-option="o.value" @click="$emit(\'update:modelValue\', o.value)">{{ o.label }}</button></div>',
+};
+
+const mounted: VueWrapper[] = [];
 
 async function mountView() {
   await useDaemon().refresh();
   const wrapper = mount(IntegrationsView, {
-    global: { stubs: { teleport: true, RouterLink: true } },
+    attachTo: document.body,
+    global: {
+      stubs: {
+        teleport: true,
+        RouterLink: true,
+        DialogPortal: Pass,
+        AlertDialogPortal: Pass,
+        Combobox: ComboboxStub,
+      },
+    },
   });
   mounted.push(wrapper);
   await flushPromises();
   return wrapper;
 }
 
-type Wrapper = Awaited<ReturnType<typeof mountView>>;
+function buttons(): HTMLButtonElement[] {
+  return Array.from(document.querySelectorAll("button"));
+}
 
-function clickByText(wrapper: Wrapper, text: string) {
-  const btn = wrapper
-    .findAll("button")
-    .find((b) => b.text().trim() === text && b.attributes("disabled") === undefined);
-  if (!btn) throw new Error(`no enabled button with text "${text}"`);
-  return btn.trigger("click");
+function buttonByText(text: string): HTMLButtonElement {
+  const btn = buttons().find((b) => b.textContent?.trim() === text && !b.disabled);
+  if (!btn) throw new Error(`no enabled button "${text}"`);
+  return btn;
+}
+
+async function click(el: Element | null): Promise<void> {
+  if (!el) throw new Error("nothing to click");
+  (el as HTMLElement).click();
+  await flushPromises();
 }
 
 function calls(cmd: string): Record<string, unknown>[] {
-  return invokeMock.mock.calls
-    .filter((c) => c[0] === cmd)
-    .map((c) => c[1] as Record<string, unknown>);
+  return invokeMock.mock.calls.filter((c) => c[0] === cmd).map((c) => c[1] as Record<string, unknown>);
+}
+
+function commands(): string[] {
+  return invokeMock.mock.calls.map((c) => c[0] as string);
+}
+
+function toastTitles(): string[] {
+  return useToast().toasts.value.map((t) => t.title);
+}
+
+function dialogTitles(): string[] {
+  return Array.from(document.querySelectorAll('[role="dialog"] h2, [role="alertdialog"] h2')).map(
+    (h) => h.textContent?.trim() ?? "",
+  );
+}
+
+function inspector(): Element | null {
+  return document.querySelector('[data-testid="share-inspector"]');
+}
+
+async function openShareDialog(): Promise<void> {
+  await click(document.querySelector('[data-testid="open-share"]'));
+}
+
+async function openSetup(): Promise<void> {
+  await click(document.querySelector('[data-testid="open-setup"]'));
 }
 
 function named(state: TunnelInfo["state"], extra: Partial<TunnelInfo> = {}): TunnelInfo {
@@ -104,196 +186,305 @@ function named(state: TunnelInfo["state"], extra: Partial<TunnelInfo> = {}): Tun
 }
 
 function quick(state: TunnelInfo["state"], extra: Partial<TunnelInfo> = {}): TunnelInfo {
-  return { site: "app", kind: "quick", state, ...extra };
+  return { site: "app", kind: "quick", state, url: "https://x.trycloudflare.com", ...extra };
 }
 
-describe("IntegrationsView", () => {
-  beforeEach(() => {
-    invokeMock.mockReset();
-    resetResourceCache();
-    useDaemon().report.value = null;
+beforeEach(() => {
+  invokeMock.mockReset();
+  resetResourceCache();
+  useDaemon().report.value = null;
+  for (const t of [...useToast().toasts.value]) useToast().dismiss(t.id);
+  setWide(true);
+});
+
+afterEach(() => {
+  mounted.forEach((w) => w.unmount());
+  mounted.length = 0;
+  document.body.innerHTML = "";
+  vi.useRealTimers();
+});
+
+describe("IntegrationsView list", () => {
+  it("groups quick and domain shares and selects the first on a wide window", async () => {
+    stubIpc({ tunnels: [quick("running"), named("running")], named: [{ site: "blog", hostname: "blog.example.com" }] });
+    await mountView();
+    const sections = Array.from(document.querySelectorAll("[data-section]"));
+    expect(sections.map((s) => s.getAttribute("aria-label"))).toEqual(["Quick links", "Your domain · example.com"]);
+    expect(document.querySelector('[aria-current="true"]')?.getAttribute("data-key")).toBe("quick:app");
+    expect(inspector()?.textContent).toContain("Stop sharing");
   });
 
-  afterEach(() => {
-    mounted.forEach((w) => w.unmount());
-    mounted.length = 0;
+  it("opens the compact drawer on a row click and closes it", async () => {
+    setWide(false);
+    stubIpc({ tunnels: [quick("running")] });
+    await mountView();
+    expect(inspector()).toBeNull();
+    await click(document.querySelector('[data-key="quick:app"]'));
+    expect(inspector()).not.toBeNull();
+    await click(document.querySelector('[aria-label="Close share details"]'));
+    expect(inspector()).toBeNull();
+  });
+
+  it("shows the load error when nothing is cached", async () => {
+    stubIpc({ tunnelStatus: () => Promise.reject(new Error("daemon unreachable")) });
+    await mountView();
+    expect(document.body.textContent).toContain("Couldn't load this");
+    expect(document.body.textContent).toContain("daemon unreachable");
+  });
+});
+
+describe("IntegrationsView empty states", () => {
+  it("installs cloudflared from the not-installed state", async () => {
+    stubIpc({ cloudflared: { installed: false, logged_in: false } });
+    await mountView();
+    expect(document.body.textContent).toContain("Sharing needs cloudflared");
+    await click(buttonByText("Install cloudflared"));
+    expect(calls("install_cloudflared_streamed")).toHaveLength(1);
+  });
+
+  it("opens Share a site from the nothing-shared state", async () => {
+    stubIpc();
+    await mountView();
+    expect(document.body.textContent).toContain("Nothing shared yet");
+    const empty = document.querySelector('[data-testid="share-empty"]');
+    await click(empty?.querySelector("button") ?? null);
+    expect(dialogTitles()).toContain("Share a site");
+  });
+});
+
+describe("IntegrationsView sharing", () => {
+  it("shares a quick link, toasts its URL and opens it in the compact drawer", async () => {
+    setWide(false);
+    stubIpc({ tunnels: [named("running")], named: [{ site: "blog", hostname: "blog.example.com" }] });
+    await mountView();
+    await openShareDialog();
+    await click(document.querySelector('[data-option="app"]'));
+    await click(document.querySelector('[data-testid="share-submit"]'));
+
+    expect(calls("start_quick_tunnel")).toEqual([{ site: "app" }]);
+    expect(useToast().toasts.value.find((t) => t.title === "Sharing app")?.detail).toBe(
+      "https://x.trycloudflare.com",
+    );
+    expect(dialogTitles()).not.toContain("Share a site");
+    expect(inspector()?.querySelector('[data-testid="share-chip"]')?.textContent?.trim()).toBe("Quick link");
   });
 
   it("exposes a site by saving the hostname then routing DNS, never starting the tunnel", async () => {
-    stubIpc({});
-    const wrapper = await mountView();
-
-    const row = wrapper.findAll("tbody tr").find((r) => r.text().includes("blog"));
-    if (!row) throw new Error("no blog row");
-    await row.findAll("button").find((b) => b.text().includes("Expose"))?.trigger("click");
-    await flushPromises();
+    stubIpc();
+    await mountView();
+    await openShareDialog();
+    await click(document.querySelector('[data-kind="domain"]'));
+    await click(document.querySelector('[data-option="blog"]'));
+    await click(document.querySelector('[data-testid="share-submit"]'));
 
     expect(calls("set_site_tunnel")).toEqual([{ site: "blog", hostname: "blog.example.com" }]);
     expect(calls("route_tunnel_dns")).toEqual([{ tunnel: "dev", hostname: "blog.example.com" }]);
-    const names = invokeMock.mock.calls.map((c) => c[0]);
+    const names = commands();
     expect(names.indexOf("set_site_tunnel")).toBeLessThan(names.indexOf("route_tunnel_dns"));
     expect(names).not.toContain("start_named_tunnel");
     expect(names).not.toContain("stop_named_tunnel");
   });
 
-  it("removing an exposed site only clears its hostname", async () => {
-    stubIpc({
-      tunnels: [named("running")],
-      named: [{ site: "app", hostname: "app.example.com" }],
-    });
-    const wrapper = await mountView();
+  it("rolls the hostname back when routing DNS fails and keeps the dialog open", async () => {
+    stubIpc({ routeDns: () => Promise.reject(new Error("DNS record already exists")) });
+    await mountView();
+    await openShareDialog();
+    await click(document.querySelector('[data-kind="domain"]'));
+    await click(document.querySelector('[data-option="blog"]'));
+    await click(document.querySelector('[data-testid="share-submit"]'));
 
-    const row = wrapper.findAll("tbody tr").find((r) => r.text().includes("app"));
-    if (!row) throw new Error("no app row");
-    await row.findAll("button").find((b) => b.text().trim() === "Remove")?.trigger("click");
-    await flushPromises();
+    expect(calls("set_site_tunnel")).toEqual([
+      { site: "blog", hostname: "blog.example.com" },
+      { site: "blog", hostname: null },
+    ]);
+    expect(toastTitles()).toContain("Couldn't expose blog");
+    expect(dialogTitles()).toContain("Share a site");
+  });
+
+  it("stops a quick link", async () => {
+    stubIpc({ tunnels: [quick("running")] });
+    await mountView();
+    await click(inspector()?.querySelector('[data-action="stop"]') ?? null);
+    expect(calls("stop_tunnel")).toEqual([{ site: "app" }]);
+  });
+
+  it("removing a site from the domain only clears its hostname", async () => {
+    stubIpc({ tunnels: [named("running")], named: [{ site: "app", hostname: "app.example.com" }] });
+    await mountView();
+    await click(inspector()?.querySelector('[data-action="remove"]') ?? null);
 
     expect(calls("set_site_tunnel")).toEqual([{ site: "app", hostname: null }]);
-    const names = invokeMock.mock.calls.map((c) => c[0]);
+    const names = commands();
     expect(names).not.toContain("route_tunnel_dns");
     expect(names).not.toContain("start_named_tunnel");
     expect(names).not.toContain("stop_named_tunnel");
   });
 
-  it.each([
-    ["connecting", "Connecting"],
-    ["running", "Online"],
-    ["reconnecting", "Reconnecting"],
-    ["failed", "Failed, retrying"],
-  ] as const)("renders the named %s state as %s", async (state, label) => {
-    stubIpc({
-      tunnels: [named(state, { last_error: state === "failed" ? "dial tcp: refused" : undefined })],
-      named: [{ site: "app", hostname: "app.example.com" }],
-    });
-    const wrapper = await mountView();
-
-    expect(wrapper.find('[data-testid="named-state"]').text()).toBe(label);
-    if (state === "failed") {
-      expect(wrapper.find('[data-testid="named-error"]').text()).toBe("dial tcp: refused");
-    }
-    const startBtn = wrapper.findAll("button").find((b) => b.text().trim() === "Start");
-    expect(startBtn).toBeUndefined();
-  });
-
-  it.each([
-    ["connecting", "Connecting"],
-    ["running", "Online"],
-    ["reconnecting", "Reconnecting"],
-    ["failed", "Failed, retrying"],
-  ] as const)("renders the quick %s state as %s with its last error", async (state, label) => {
-    stubIpc({ tunnels: [quick(state, { last_error: "edge unreachable" })] });
-    const wrapper = await mountView();
-
-    expect(wrapper.find('[data-testid="tunnel-state"]').text()).toBe(label);
-    expect(wrapper.text()).toContain("edge unreachable");
-  });
-
-  it("offers Start only when sites are exposed and no named instance exists", async () => {
-    stubIpc({ named: [{ site: "app", hostname: "app.example.com" }] });
-    const wrapper = await mountView();
-
-    expect(wrapper.text()).toContain("offline");
-    await clickByText(wrapper, "Start");
-    await flushPromises();
-
+  it("restarts a failed domain tunnel from the inspector", async () => {
+    stubIpc({ tunnels: [named("failed")], named: [{ site: "app", hostname: "app.example.com" }] });
+    await mountView();
+    await click(inspector()?.querySelector('[data-action="restart"]') ?? null);
     expect(calls("start_named_tunnel")).toHaveLength(1);
   });
 
-  it("offers Retry for a failed named tunnel and not for a live one", async () => {
-    stubIpc({
-      tunnels: [named("failed")],
-      named: [{ site: "app", hostname: "app.example.com" }],
-    });
-    const wrapper = await mountView();
-
-    await clickByText(wrapper, "Retry");
+  it("disables Share a site while an action runs", async () => {
+    stubIpc({ tunnels: [quick("running")] });
+    await mountView();
+    const share = document.querySelector('[data-testid="open-share"]') as HTMLButtonElement;
+    expect(share.disabled).toBe(false);
+    useOperations().begin({ id: "cloudflared-install", kind: "tool-install", label: "Installing cloudflared" });
     await flushPromises();
-
-    expect(calls("start_named_tunnel")).toHaveLength(1);
+    expect(share.disabled).toBe(true);
+    useOperations().end("cloudflared-install");
   });
+});
 
-  it("hides Retry while the named tunnel is live", async () => {
-    stubIpc({
-      tunnels: [named("reconnecting")],
-      named: [{ site: "app", hostname: "app.example.com" }],
-    });
-    const wrapper = await mountView();
-    const retryBtn = wrapper.findAll("button").find((b) => b.text().trim() === "Retry");
-    expect(retryBtn).toBeUndefined();
-  });
+describe("IntegrationsView share password", () => {
+  async function openPassword(): Promise<void> {
+    await click(inspector()?.querySelector('[data-action="password"]') ?? null);
+  }
 
-  it("hides Start when nothing is exposed", async () => {
-    stubIpc({});
-    const wrapper = await mountView();
-    const startBtn = wrapper.findAll("button").find((b) => b.text().trim() === "Start");
-    expect(startBtn).toBeUndefined();
-  });
-
-  it("sets a share password from the modal", async () => {
-    stubIpc({ tunnels: [quick("running", { url: "https://x.trycloudflare.com" })] });
-    const wrapper = await mountView();
-
-    await wrapper.find('button[aria-label="Share password"]').trigger("click");
+  it("sets a share password", async () => {
+    stubIpc({ tunnels: [quick("running")] });
+    await mountView();
+    await openPassword();
+    expect(document.body.textContent).not.toContain("Remove password");
+    const input = document.querySelector("#share-password") as HTMLInputElement;
+    input.value = "s3cret";
+    input.dispatchEvent(new Event("input"));
     await flushPromises();
-    expect(wrapper.text()).not.toContain("Remove password");
-    await wrapper.find("#share-password").setValue("s3cret");
-    await clickByText(wrapper, "Save");
-    await flushPromises();
-
+    await click(buttonByText("Save"));
     expect(calls("set_tunnel_password")).toEqual([{ site: "app", password: "s3cret" }]);
   });
 
   it("forgets a typed password when the modal is cancelled", async () => {
-    stubIpc({ tunnels: [quick("running", { url: "https://x.trycloudflare.com" })] });
-    const wrapper = await mountView();
-
-    await wrapper.find('button[aria-label="Share password"]').trigger("click");
+    stubIpc({ tunnels: [quick("running")] });
+    const w = await mountView();
+    await openPassword();
+    const input = document.querySelector("#share-password") as HTMLInputElement;
+    input.value = "s3cret";
+    input.dispatchEvent(new Event("input"));
     await flushPromises();
-    await wrapper.find("#share-password").setValue("s3cret");
-    await clickByText(wrapper, "Cancel");
-    await flushPromises();
+    await click(buttonByText("Cancel"));
 
-    const vm = wrapper.vm as unknown as { passwordInput: string; passwordSite: string | null };
+    const vm = w.vm as unknown as { passwordInput: string; passwordSite: string | null };
     expect(vm.passwordInput).toBe("");
     expect(vm.passwordSite).toBeNull();
     expect(calls("set_tunnel_password")).toEqual([]);
   });
 
-  it("removes the share password of a protected named site", async () => {
-    stubIpc({
-      tunnels: [named("running")],
-      named: [{ site: "app", hostname: "app.example.com", protected: true }],
-    });
-    const wrapper = await mountView();
-
-    expect(wrapper.find('[aria-label="Password protected"]').exists()).toBe(true);
-    await wrapper.find('button[aria-label="Share password"]').trigger("click");
-    await flushPromises();
-    await clickByText(wrapper, "Remove password");
-    await flushPromises();
-
+  it("removes the share password of a protected domain share", async () => {
+    stubIpc({ tunnels: [named("running")], named: [{ site: "app", hostname: "app.example.com", protected: true }] });
+    await mountView();
+    expect(document.querySelector('[aria-label="Password protected"]')).not.toBeNull();
+    await openPassword();
+    await click(buttonByText("Remove password"));
     expect(calls("set_tunnel_password")).toEqual([{ site: "app", password: null }]);
   });
+});
 
-  it("marks a protected quick share", async () => {
-    stubIpc({ tunnels: [quick("running", { protected: true })] });
-    const wrapper = await mountView();
-    expect(wrapper.find('[aria-label="Password protected"]').exists()).toBe(true);
+describe("IntegrationsView setup", () => {
+  it("updates cloudflared in a log that keeps polling after it closes", async () => {
+    vi.useFakeTimers();
+    stubIpc({ cloudflared: { ...MANAGED, update_available: "2026.7.0" }, jobStates: ["running", "succeeded"] });
+    await mountView();
+    await openSetup();
+    await click(buttonByText("Update to 2026.7.0"));
+
+    expect(dialogTitles()).not.toContain("Share setup");
+    expect(document.querySelector('[data-testid="tool-install-title"]')?.textContent).toBe("Updating cloudflared");
+    expect(useOperations().isRunning("cloudflared-install")).toBe(true);
+    await click(buttonByText("Close"));
+    expect(document.querySelector('[data-testid="tool-install-title"]')).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(600);
+    await flushPromises();
+    expect(calls("job_status")).toHaveLength(2);
+    expect(useOperations().isRunning("cloudflared-install")).toBe(false);
+    expect(toastTitles()).toContain("Updated cloudflared 2026.6.1");
   });
 
-  it("renders quick and per-site named warnings", async () => {
-    stubIpc({
-      tunnels: [
-        quick("running", { warnings: ["Vite dev server is running"] }),
-        named("running", { warnings: ["blog: SESSION_DOMAIN is pinned to .test"] }),
-      ],
-      named: [{ site: "blog", hostname: "blog.example.com" }],
-    });
-    const wrapper = await mountView();
+  it("closes Setup before the login dialog opens", async () => {
+    stubIpc({ cloudflared: { ...MANAGED, logged_in: false } });
+    await mountView();
+    await openSetup();
+    await click(buttonByText("Connect"));
+    expect(calls("cloudflared_login")).toHaveLength(1);
+    expect(dialogTitles()).toEqual(["Connect Cloudflare account"]);
+  });
 
-    expect(wrapper.text()).toContain("Vite dev server is running");
-    const blogRow = wrapper.findAll("tbody tr").find((r) => r.text().includes("blog"));
-    expect(blogRow?.text()).toContain("SESSION_DOMAIN is pinned to .test");
-    expect(blogRow?.text()).not.toContain("blog: SESSION_DOMAIN");
+  it("cancels the login job when its dialog is closed mid-login, and unlocks the page", async () => {
+    vi.useFakeTimers();
+    stubIpc({ cloudflared: { ...MANAGED, logged_in: false }, jobStates: ["running", "running", "running"] });
+    await mountView();
+    await openSetup();
+    await click(buttonByText("Connect"));
+    expect(dialogTitles()).toEqual(["Connect Cloudflare account"]);
+
+    await click(document.querySelector('[role="dialog"] [aria-label="Close"]'));
+    await vi.advanceTimersByTimeAsync(600);
+    await flushPromises();
+    expect(calls("job_cancel")).toEqual([{ jobId: "j1" }]);
+    expect(calls("tunnel_status").length).toBeGreaterThan(1);
+
+    await openSetup();
+    expect(buttonByText("Connect")).toBeTruthy();
+  });
+
+  it("does not cancel a login that finished", async () => {
+    stubIpc({ cloudflared: { ...MANAGED, logged_in: false }, jobStates: ["succeeded"] });
+    await mountView();
+    await openSetup();
+    await click(buttonByText("Connect"));
+    await flushPromises();
+    expect(calls("job_cancel")).toHaveLength(0);
+  });
+
+  it("starts a stopped tunnel from Setup", async () => {
+    stubIpc({ named: [{ site: "app", hostname: "app.example.com" }] });
+    await mountView();
+    await openSetup();
+    await click(document.querySelector('[data-testid="setup-tunnel"] [data-action="start"]'));
+    expect(calls("start_named_tunnel")).toHaveLength(1);
+  });
+
+  it("removes the tunnel after the confirm", async () => {
+    stubIpc({ tunnels: [named("running")], named: [{ site: "app", hostname: "app.example.com" }] });
+    await mountView();
+    await openSetup();
+    await click(document.querySelector('[data-testid="setup-tunnel"] [data-action="remove"]'));
+    expect(dialogTitles()).toEqual(["Remove tunnel dev?"]);
+    await click(buttonByText("Remove tunnel"));
+    expect(calls("delete_named_tunnel")).toEqual([{ name: "dev" }]);
+  });
+});
+
+describe("IntegrationsView poll", () => {
+  it("revalidates only while a tunnel exists", async () => {
+    vi.useFakeTimers();
+    stubIpc();
+    await mountView();
+    const before = calls("tunnel_status").length;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(calls("tunnel_status")).toHaveLength(before);
+  });
+
+  it("fetches once when revisited with a cached tunnel", async () => {
+    vi.useFakeTimers();
+    stubIpc({ tunnels: [quick("running")] });
+    const first = await mountView();
+    first.unmount();
+    const before = calls("tunnel_status").length;
+    await mountView();
+    expect(calls("tunnel_status")).toHaveLength(before + 1);
+  });
+
+  it("refetches the tunnel status on the 5s tick", async () => {
+    vi.useFakeTimers();
+    stubIpc({ tunnels: [quick("running")] });
+    await mountView();
+    const before = calls("tunnel_status").length;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(calls("tunnel_status").length).toBeGreaterThan(before);
   });
 });

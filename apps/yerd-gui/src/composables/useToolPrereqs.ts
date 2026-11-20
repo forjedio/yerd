@@ -12,7 +12,7 @@ import {
 } from "@/ipc/client";
 import type { ToolStatus } from "@/ipc/types";
 
-/** One row of a create wizard's prerequisites gate. */
+/** One row of the New site dialog's missing-tools step. */
 export interface PrereqRow {
   id: string;
   label: string;
@@ -24,9 +24,9 @@ export interface PrereqRow {
 }
 
 /**
- * The toolchain a create wizard needs before it unlocks: which tools are
+ * The toolchain a New site starter needs before it unlocks: which tools are
  * present, plus streamed installs of the missing ones. `isOpen` stops an
- * install's progress poll once the wizard closes (the install itself carries on
+ * install's progress poll once the dialog closes (the install itself carries on
  * in the daemon).
  */
 export function useToolPrereqs(isOpen: () => boolean) {
@@ -67,7 +67,7 @@ export function useToolPrereqs(isOpen: () => boolean) {
 
   /**
    * Install a managed tool, streaming its output into the install log. A job
-   * still `running` when the poll returns means the wizard closed, not a failure.
+   * still `running` when the poll returns means the dialog closed, not a failure.
    */
   async function installTool(id: string): Promise<boolean> {
     installingTool.value = id;
@@ -119,9 +119,9 @@ export function useToolPrereqs(isOpen: () => boolean) {
   }
 
   /**
-   * Run a wizard's install-everything sequence. "Toolchain ready" is announced
-   * whenever `run` reports success rather than gated on the wizard unlocking,
-   * since a freshly installed PHP reaches the wizard's props asynchronously.
+   * Run a starter's install-everything sequence. "Toolchain ready" is announced
+   * whenever `run` reports success rather than gated on the starter unlocking,
+   * since a freshly installed PHP reaches the dialog's props asynchronously.
    */
   async function installAll(run: () => Promise<boolean>): Promise<void> {
     installingAll.value = true;
@@ -157,5 +157,5 @@ export function useToolPrereqs(isOpen: () => boolean) {
   };
 }
 
-/** `useToolPrereqs` as a wizard holds it (wrapped in `reactive`) and hands it to the shell. */
+/** `useToolPrereqs` as the New site dialog holds it (wrapped in `reactive`) and hands it to the starters. */
 export type ToolPrereqs = UnwrapNestedRefs<ReturnType<typeof useToolPrereqs>>;

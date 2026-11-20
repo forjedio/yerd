@@ -14,9 +14,6 @@ hero:
     - WITHOUT THE
   accent: WEIGHT.
   tagline: Every project in a parked folder is live on its own .test domain - HTTPS, per-site PHP, databases and mail. One tiny Rust daemon, and no Docker anywhere.
-  command:
-    label: YOUR FIRST COMMAND
-    text: yerd park ~/Code
   actions:
     - theme: brand
       text: Get started →
@@ -26,9 +23,9 @@ hero:
       link: https://github.com/forjedio/yerd
   platforms: macOS (Apple Silicon) · Debian · Ubuntu · Arch · Fedora
   shot:
-    light: /images/overview-light.png
-    dark: /images/overview-dark.png
-    alt: The Yerd desktop app Overview dashboard
+    light: /images/sites-light.png
+    dark: /images/sites-dark.png
+    alt: The Sites page in the Yerd desktop app, with a site's details open beside the list
 
 stats:
   - value: 8 MB
@@ -111,15 +108,15 @@ app:
     dark: /images/overview-dark.png
     alt: The Yerd desktop app Overview dashboard
   secondary:
-    - light: /images/sites-light.png
-      dark: /images/sites-dark.png
-      alt: The Sites page in the Yerd desktop app
+    - light: /images/mail-light.png
+      dark: /images/mail-dark.png
+      alt: The Mail page in the Yerd desktop app, with a captured email open
     - light: /images/services-light.png
       dark: /images/services-dark.png
       alt: The Services page in the Yerd desktop app
   captions:
     - OVERVIEW · every project and service at a glance
-    - SITES · SERVICES · managed in place
+    - MAIL · SERVICES · managed in place
   chipsLabel: ALSO INSTALLED ON DEMAND
   chips:
     - MySQL

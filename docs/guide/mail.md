@@ -12,30 +12,45 @@ already runs your sites, PHP, HTTPS, and DNS.
 
 ## In the desktop app
 
-<ThemedImage light="/images/mail-light.png" dark="/images/mail-dark.png" alt="The Mail page in the Yerd desktop app" />
+<ThemedImage light="/images/mail-light.png" dark="/images/mail-dark.png" alt="The Mail page: the inbox beside an HTML order confirmation on the Preview tab, with its PDF attachment and one blocked remote image" />
 
 The [desktop app](./desktop-app) surfaces mail capture on its own **Mail** page,
 under the **Developer** group in the sidebar. It's the richest way to drive
 capture and read what's been caught.
 
-- The page shows the current **capture status** and the **port** the SMTP
-  listener is bound to.
-- An **enable toggle** turns capture on or off, and a **port** field changes the
-  listening port (both take effect on the next daemon restart).
-- **Show Mails** pops out the separate **Mails** viewer window, which renders
-  HTML bodies (including inline images) in a sandboxed frame so you can keep
-  captured mail next to your editor and browser.
-- A **Laravel configuration** card emits the `.env` mail keys (`MAIL_HOST`,
-  `MAIL_PORT`, …) ready to paste into your app, with an editable From name and
+- The page is the **inbox**: the captured messages on the left (unread ones
+  marked with a dot and counted beside **Inbox**) and the open message on the
+  right. In a narrow window the list becomes a table and a message opens in a
+  drawer.
+- The toolbar shows the **capture status**: **Capturing on 2525** when the
+  listener is up, **Port 2525 in use** when capture is on but the port was busy
+  at startup, or **Capture off**. Right after you toggle capture it reads
+  **Restart Yerd to apply** until the daemon restarts.
+- **Setup** holds the **Capture outgoing mail** switch, the SMTP address with a
+  **Change port** link to Settings ▸ Application Ports (both changes take
+  effect on the next daemon restart), and the Laravel `.env` mail keys
+  (`MAIL_HOST`, `MAIL_PORT`, …) ready to copy, with an editable From name and
   address.
+- **All apps** filters the inbox to one sending app (the sender's display name,
+  else the site that sent it, else the address), and the trash button clears
+  every captured message.
+- The pop-out button opens the separate **Mails** window with the same inbox and
+  reader, so you can keep captured mail next to your editor and browser.
+
+<ThemedImage light="/images/mail-setup-light.png" dark="/images/mail-setup-dark.png" alt="The Mail setup dialog: the capture switch, the SMTP address with Change port, and the Laravel .env keys filled in from the From name and address" />
+
+In a narrow window the inbox becomes a table with the sending app, recipient
+and time, and a message opens in a drawer over it:
+
+<ThemedImage light="/images/mail-compact-light.png" dark="/images/mail-compact-dark.png" alt="The Mail page in a narrow window, listing captured mail as a table" />
 
 Captured mail is tracked as **read or unread**. New messages count toward an
 unread badge that shows in three places: a pill on the sidebar **Mail** item
-(click it to open the viewer), an orange dot on the tray icon, and a **Mail (N)**
-label in the tray menu. Clicking a message in the Mails viewer marks it read, and
-unread messages are highlighted in the list - the message the viewer auto-selects
-on open stays unread until you click it - so the badge always reflects what you
-haven't looked at yet.
+(click it to open the Mails window), an orange dot on the tray icon, and a
+**Mail (N)** label in the tray menu. Clicking a message marks it read, and unread
+messages are highlighted in the list - the message auto-selected on open stays
+unread until you click it - so the badge always reflects what you haven't looked
+at yet.
 
 ## From the command line
 
@@ -131,24 +146,39 @@ bodies).
 
 ## The viewer
 
-The standalone **Mails** viewer window - opened from the [desktop app](./desktop-app)
-with **Show Mails** - decodes each message for you: headers, the plain-text body,
-and a rendered **HTML** body. From the GUI you can read, delete individual
+The reader on the [desktop app](./desktop-app)'s **Mail** page and in the
+standalone **Mails** window (opened with the Mail page's pop-out button, the
+sidebar unread badge, the tray's **Mail** item or ⇧⌘M) decodes each message for
+you: a rendered **HTML** body on the **Preview** tab, the plain-text body on
+**Text** and every header on **Headers**. From the GUI you can read, delete individual
 messages, clear everything, open **file attachments**, and follow **http(s) /
 mailto / tel** links in both HTML and plain-text bodies (they open in your OS
 browser / handler).
 
-<ThemedImage light="/images/mails-light.png" dark="/images/mails-dark.png" alt="A captured email open in the Yerd Mails viewer" />
+<ThemedImage light="/images/mails-light.png" dark="/images/mails-dark.png" alt="The standalone Mails window with a password-reset email open" />
 
 The HTML body is sanitized with **DOMPurify** and rendered in a **Shadow DOM**
-in the Mails window (so link clicks work reliably on macOS WKWebView). Openable
+in the reader (so link clicks work reliably on macOS WKWebView). Openable
 `http(s)` / `mailto` / `tel` links are stamped and opened via the OS browser /
-handler. Inline images referenced by `cid:` are embedded as `data:` URLs.
-Remote images and stylesheets (e.g. a logo served over `https://`) are **blocked
-by default** so merely opening a message cannot phone home. The right sidebar
-lists those URLs under **Remote content**; use **Load remote content** when you
-want them. Non-inline attachments appear in a bar under the body and open with
-the OS default app.
+handler; in-page `#section` links scroll the message, and any other link does
+nothing, so a message can never navigate the app. The message is contained in
+its pane: its styles can't position anything over the rest of the window.
+Inline images referenced by `cid:` are embedded as `data:` URLs.
+Remote images, stylesheets, CSS backgrounds (including `image-set()`) and
+table `background` attributes (e.g. a logo served over `https://`) are **blocked
+by default** so merely opening a message cannot phone home. Local ones always
+load: anything on your Yerd TLD (a logo at `https://shop.test/logo.png`),
+`localhost` or a loopback address is served by your own machine. A bar beside the
+tabs says what was blocked (for example "1 remote image blocked"); use **Load**
+when you want it, and **Hide** to block it again. The **Headers** tab lists those
+URLs under **Remote content**.
+
+<ThemedImage light="/images/mail-headers-light.png" dark="/images/mail-headers-dark.png" alt="The Headers tab of a captured email, listing every header and the blocked tracking image under Remote content" />
+
+Non-inline attachments appear in a band under the
+message header and open with the OS default app; **Delete** removes the open
+message after a confirmation. A message whose body can't be read (for example a
+missing `.eml` file) still offers **Delete** in the reader.
 
 ## Configuration
 
