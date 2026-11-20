@@ -100,10 +100,16 @@ package, with the same SHA-256 and minisign checks. The CLI then:
 
 No `sudo` is needed: the install directory is yours. On Linux, replacing
 `yerdd` drops its port capability. If you use ports 80/443, run
-`sudo ~/.yerd/bin/yerd elevate ports` and then `yerd restart daemon`
-afterwards: the capability only applies when `yerdd` next starts. The updater
-prints both commands when `yerdd` had the capability, or when `getcap` can't
-tell.
+`sudo ~/.yerd/bin/yerd elevate ports` and then `~/.yerd/bin/yerd restart daemon`
+afterwards: the capability only applies when `yerdd` next starts. If you
+installed somewhere else with `YERD_INSTALL_DIR`, use that directory's `yerd`
+in both commands. The updater prints both commands with your install's path
+when `yerdd` had the capability, or when `getcap` can't tell.
+
+The CLI also refuses, before changing anything, when the registered daemon
+service (the systemd unit's `ExecStart=`, or the macOS LaunchDaemon's program)
+runs a `yerdd` from a different directory than the `yerd` you ran: updating
+this install's files would leave that daemon on its old version.
 
 The CLI refuses to apply an update that belongs to the other kind of install:
 a desktop app `yerd` talking to a headless daemon is told to run the headless

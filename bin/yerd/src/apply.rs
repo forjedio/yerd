@@ -949,10 +949,11 @@ enum EntryKind {
 
 /// A name a newer release may add beside the required files: a `yerd-`
 /// prefixed basename of `[A-Za-z0-9._-]` that can't be mistaken for a swap
-/// backup. The prefix is what lets `yerd uninstall` remove extras from a
-/// shared install dir without touching the user's own files.
+/// backup or the update lock. The prefix is what lets `yerd uninstall` remove
+/// extras from a shared install dir without touching the user's own files.
 fn is_safe_extra_name(name: &str) -> bool {
-    name.len() > EXTRA_PREFIX.len()
+    name != UPDATE_LOCK
+        && name.len() > EXTRA_PREFIX.len()
         && name.starts_with(EXTRA_PREFIX)
         && !name.contains(".yerd-old-")
         && name
@@ -1186,8 +1187,8 @@ enum HeadlessRestart {
 }
 
 /// Lock file in the install dir that serializes headless updates. Named with
-/// the `yerd-` prefix so `yerd uninstall` sweeps it up with the other files.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+/// the `yerd-` prefix so `yerd uninstall` sweeps it up with the other files,
+/// and reserved: no update payload may carry a file of this name.
 const UPDATE_LOCK: &str = "yerd-update.lock";
 
 /// Report a headless apply. A failed restart after a committed swap says the
@@ -1228,9 +1229,48 @@ fn apply_headless(staged: &Path) -> Result<HeadlessRestart, String> {
     let dir = yerd_platform::install_mode::current_exe_dir()
         .ok_or_else(|| ReceiptError::ExeUnresolved.to_string())?;
     let _lock = lock_install_dir(&dir)?;
+    check_registered_dir(registered_service_yerdd().as_deref(), &dir)?;
     let had_port_cap = yerdd_had_port_capability(&dir.join("yerdd"));
     install_headless(staged, &dir, &unique_suffix(), Some(UPDATE_PUBLIC_KEY))?;
     Ok(restart_after_headless_swap(&dir, had_port_cap))
+}
+
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+/// Refuse when the registered daemon service runs a `yerdd` from another
+/// directory: swapping this install's files would leave that daemon on its
+/// old version. No registration (a hand-started daemon) passes.
+fn check_registered_dir(registered: Option<&Path>, dir: &Path) -> Result<(), String> {
+    let Some(yerdd) = registered else {
+        return Ok(());
+    };
+    let registered_dir = yerdd.parent().unwrap_or(yerdd);
+    let same = registered_dir == dir
+        || std::fs::canonicalize(registered_dir).is_ok_and(|canon| canon == dir);
+    if same {
+        Ok(())
+    } else {
+        Err(format!(
+            "the daemon service runs {}, from a different install than this yerd ({}); run \
+             that install's `yerd update --yes` instead. Nothing was changed",
+            yerdd.display(),
+            dir.display()
+        ))
+    }
+}
+
+/// The `yerdd` the registered daemon service runs: the systemd user unit's
+/// `ExecStart=` on Linux, the program of the system launchd daemon on macOS.
+#[cfg(target_os = "linux")]
+fn registered_service_yerdd() -> Option<PathBuf> {
+    let unit = std::fs::read_to_string(yerd_service_ctl::systemd_unit_path()?).ok()?;
+    yerd_service_ctl::unit_exec_start(&unit).map(PathBuf::from)
+}
+
+#[cfg(target_os = "macos")]
+fn registered_service_yerdd() -> Option<PathBuf> {
+    let plist = std::fs::read_to_string(yerd_platform::pure::launchd_daemon::DAEMON_PLIST).ok()?;
+    yerd_platform::pure::launchd_daemon::parse_daemon_plist(&plist)
+        .map(|job| PathBuf::from(job.yerdd))
 }
 
 /// Take the install dir's exclusive update lock, or refuse without touching
@@ -1357,7 +1397,7 @@ fn restart_after_headless_swap(dir: &Path, had_port_cap: bool) -> HeadlessRestar
     if had_port_cap {
         println!(
             "yerd: the update reset the port capability on yerdd; to bind 80/443 again, run \
-             `sudo {}/yerd elevate ports`, then `yerd restart daemon`",
+             `sudo {0}/yerd elevate ports`, then `{0}/yerd restart daemon`",
             dir.display()
         );
     }
@@ -1383,11 +1423,16 @@ fn restart_after_headless_swap(_dir: &Path, _had_port_cap: bool) -> HeadlessRest
         Err(e) if e.is_daemon_down() => return HeadlessRestart::NotRunning,
         Err(e) => return HeadlessRestart::Failed(e.to_string()),
     }
-    let restarted = rt.block_on(async {
-        let before = crate::fetch_boot_id().await.ok().flatten();
-        crate::restart_and_await_boot_change(before).await
-    });
-    match restarted {
+    let before = match rt.block_on(crate::fetch_boot_id()) {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            return HeadlessRestart::Failed(
+                "the daemon did not report a boot id, so the restart can't be confirmed".to_owned(),
+            )
+        }
+        Err(e) => return HeadlessRestart::Failed(format!("reading the daemon's boot id: {e}")),
+    };
+    match rt.block_on(crate::restart_and_await_boot_change(Some(before))) {
         Ok(()) => HeadlessRestart::Restarted,
         Err(e) => HeadlessRestart::Failed(e.to_string()),
     }
@@ -1712,6 +1757,17 @@ mod tests {
     }
 
     #[test]
+    fn check_registered_dir_refuses_another_installs_daemon() {
+        let dir = Path::new("/nonexistent-yerd/home/u/.yerd/bin");
+        assert_eq!(check_registered_dir(None, dir), Ok(()));
+        assert_eq!(check_registered_dir(Some(&dir.join("yerdd")), dir), Ok(()));
+        let err = check_registered_dir(Some(Path::new("/nonexistent-yerd/opt/yerd/yerdd")), dir)
+            .unwrap_err();
+        assert!(err.contains("/nonexistent-yerd/opt/yerd/yerdd"), "{err}");
+        assert!(err.contains("Nothing was changed"), "{err}");
+    }
+
+    #[test]
     fn safe_extra_name_table() {
         let cases = [
             ("yerd-mcp", true),
@@ -1727,6 +1783,7 @@ mod tests {
             ("a/b", false),
             ("a b", false),
             ("yerd.yerd-old-123", false),
+            ("yerd-update.lock", false),
             ("caf\u{e9}", false),
             ("x\0y", false),
         ];

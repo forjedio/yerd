@@ -127,7 +127,7 @@ mod unix_impl {
             );
         }
 
-        let unit_fragment = stop_daemon_service(&actor, root);
+        let unit_fragment = stop_daemon_service(&actor, root, &mut residue);
         reap_daemon(actor.uid);
 
         let touched = path_cmd::remove_block_for_user(&actor.home, &shell_basename(&actor.shell));
@@ -135,7 +135,7 @@ mod unix_impl {
             println!("  removed PATH entry from {}", f.display());
         }
 
-        remove_service_unit(&actor, unit_fragment.as_deref(), &mut residue);
+        remove_service_unit(&actor, root, unit_fragment.as_deref(), &mut residue);
 
         for dir in dirs_to_delete(&dirs, actor.uid) {
             match std::fs::remove_dir_all(&dir) {
@@ -254,7 +254,7 @@ mod unix_impl {
     fn remove_daemon_job() -> Result<(), String> {
         #[cfg(target_os = "macos")]
         {
-            if !Path::new(yerd_platform::pure::launchd_daemon::DAEMON_PLIST).exists() {
+            if !system_daemon_job_registered() {
                 return Ok(());
             }
             let (helper, _yerdd) = elevate::sibling_binaries().map_err(|e| e.to_string())?;
@@ -285,11 +285,15 @@ mod unix_impl {
         }
     }
 
-    /// Whether a headless install's system launchd daemon is registered (macOS).
+    /// Whether a headless install's system launchd daemon is registered
+    /// (macOS): its plist exists, or the job is loaded even though its plist
+    /// is gone.
     fn system_daemon_job_registered() -> bool {
         #[cfg(target_os = "macos")]
         {
-            Path::new(yerd_platform::pure::launchd_daemon::DAEMON_PLIST).exists()
+            use yerd_platform::pure::launchd_daemon::{DAEMON_LABEL, DAEMON_PLIST};
+            Path::new(DAEMON_PLIST).exists()
+                || run_quiet("launchctl", &["print", &format!("system/{DAEMON_LABEL}")])
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -351,42 +355,63 @@ mod unix_impl {
     }
 
     /// Stop and disable the per-user daemon service, in the invoking user's
-    /// session. Best-effort - the service may not be installed. On Linux,
-    /// returns the unit file systemd loaded `yerd` from (asked before disabling
-    /// it), so cleanup finds a unit under an `$XDG_CONFIG_HOME` that sudo's
-    /// environment no longer carries.
-    fn stop_daemon_service(actor: &Actor, root: bool) -> Option<PathBuf> {
+    /// session. On Linux, returns the unit file systemd loaded `yerd` from
+    /// (asked before disabling it), so cleanup finds a unit under an
+    /// `$XDG_CONFIG_HOME` that sudo's environment no longer carries. A failed
+    /// stop is residue, unless systemd confirmed there is no `yerd` unit.
+    fn stop_daemon_service(
+        actor: &Actor,
+        root: bool,
+        residue: &mut Vec<String>,
+    ) -> Option<PathBuf> {
         #[cfg(target_os = "linux")]
         {
-            let fragment = user_systemctl(
+            let show = user_systemctl(
                 actor,
                 root,
                 &["show", "yerd", "-p", "FragmentPath", "--value"],
-            )
-            .map(|out| PathBuf::from(out.trim()))
-            .filter(|p| !p.as_os_str().is_empty());
-            let _ = user_systemctl(actor, root, &["disable", "--now", "yerd"]);
+            );
+            let fragment = show
+                .as_ref()
+                .ok()
+                .map(|out| PathBuf::from(out.trim()))
+                .filter(|p| !p.as_os_str().is_empty());
+            let confirmed_absent = show.as_ref().is_ok_and(|out| out.trim().is_empty());
+            if let Err(e) = user_systemctl(actor, root, &["disable", "--now", "yerd"]) {
+                if !confirmed_absent {
+                    residue.push(format!(
+                        "stopping and disabling the yerd user service ({e})"
+                    ));
+                }
+            }
             fragment
         }
         #[cfg(target_os = "macos")]
         {
-            let _ = root;
+            let _ = (root, residue);
             let target = format!("gui/{}/dev.yerd.daemon", actor.uid);
             let _ = run_quiet("launchctl", &["bootout", &target]);
             None
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
-            let _ = (actor, root);
+            let _ = (actor, root, residue);
             None
         }
     }
 
+    /// Whether this is a sudo run, where user-owned files are changed with the
+    /// invoking user's authority rather than root's.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn as_sudo(root: bool) -> bool {
+        root && elevate::sudo_uid().is_some()
+    }
+
     /// Run `systemctl --user <args>` in the invoking user's manager (through
-    /// `runuser` under sudo). Returns stdout on success.
+    /// `runuser` under sudo). Returns stdout on success, or why it failed.
     #[cfg(target_os = "linux")]
-    fn user_systemctl(actor: &Actor, root: bool, args: &[&str]) -> Option<String> {
-        let mut cmd = if root && elevate::sudo_uid().is_some() {
+    fn user_systemctl(actor: &Actor, root: bool, args: &[&str]) -> Result<String, String> {
+        let mut cmd = if as_sudo(root) {
             let mut cmd = Command::new("runuser");
             cmd.args(["-u", &actor.name, "--", "env"])
                 .arg(format!("XDG_RUNTIME_DIR=/run/user/{}", actor.uid))
@@ -399,12 +424,16 @@ mod unix_impl {
         } else {
             Command::new("systemctl")
         };
-        cmd.arg("--user")
+        let out = cmd
+            .arg("--user")
             .args(args)
             .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .map_err(|e| format!("running systemctl: {e}"))?;
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
+        }
     }
 
     /// Reap any still-running `yerdd` for this user: SIGTERM (graceful - it
@@ -439,13 +468,20 @@ mod unix_impl {
     }
 
     /// Remove the daemon's service unit file. `fragment` is where systemd
-    /// said it loaded the unit from (Linux). A unit that exists but can't be
-    /// removed is reported as residue.
-    fn remove_service_unit(actor: &Actor, fragment: Option<&Path>, residue: &mut Vec<String>) {
+    /// said it loaded the unit from (Linux). Under sudo, Linux unit files are
+    /// deleted as the invoking user (through `runuser`), never as root, so a
+    /// path in a user-writable dir can't redirect a root delete. A unit that
+    /// exists but can't be removed is reported as residue.
+    fn remove_service_unit(
+        actor: &Actor,
+        root: bool,
+        fragment: Option<&Path>,
+        residue: &mut Vec<String>,
+    ) {
         #[cfg(target_os = "linux")]
         let units = {
             let mut units: Vec<PathBuf> = fragment
-                .filter(|p| is_user_unit(p, &actor.home))
+                .filter(|p| is_user_unit(p))
                 .map(Path::to_path_buf)
                 .into_iter()
                 .collect();
@@ -470,22 +506,54 @@ mod unix_impl {
         };
 
         for unit in units {
-            match std::fs::remove_file(&unit) {
+            if std::fs::symlink_metadata(&unit).is_err() {
+                continue;
+            }
+            match remove_user_file(actor, root, &unit) {
                 Ok(()) => println!("  removed {}", unit.display()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => residue.push(format!("{} ({e})", unit.display())),
             }
         }
     }
 
-    /// Whether `path` is a `yerd.service` user unit inside the user's home, so
-    /// a path reported by systemd is only ever deleted when it is the user's
-    /// own unit file.
+    /// Delete a user-owned file: as the invoking user through `runuser` under
+    /// sudo on Linux, otherwise directly.
+    fn remove_user_file(actor: &Actor, root: bool, path: &Path) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        if as_sudo(root) {
+            let out = Command::new("runuser")
+                .args(["-u", &actor.name, "--", "rm", "--"])
+                .arg(path)
+                .output()
+                .map_err(|e| format!("running runuser: {e}"))?;
+            return if out.status.success() {
+                Ok(())
+            } else {
+                Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
+            };
+        }
+        let _ = (actor, root);
+        std::fs::remove_file(path).map_err(|e| e.to_string())
+    }
+
+    /// Whether `path` is a `yerd.service` in a user unit dir (`…/systemd/user`)
+    /// outside the system's own unit trees, so a path reported by systemd is
+    /// only deleted when it is a user's unit file.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    fn is_user_unit(path: &Path, home: &Path) -> bool {
+    fn is_user_unit(path: &Path) -> bool {
+        const SYSTEM_TREES: [&str; 4] = ["/etc", "/usr", "/lib", "/run"];
         path.is_absolute()
-            && path.starts_with(home)
             && path.file_name() == Some(OsStr::new("yerd.service"))
+            && path
+                .parent()
+                .is_some_and(|dir| dir.ends_with(Path::new("systemd").join("user")))
+            && !SYSTEM_TREES.iter().any(|tree| path.starts_with(tree))
+            && path.components().all(|c| {
+                matches!(
+                    c,
+                    std::path::Component::RootDir | std::path::Component::Normal(_)
+                )
+            })
             && path.components().all(|c| {
                 matches!(
                     c,
@@ -876,17 +944,20 @@ mod unix_impl {
 
         #[test]
         fn is_user_unit_table() {
-            let home = Path::new("/home/u");
             let cases = [
                 ("/home/u/xdg/systemd/user/yerd.service", true),
                 ("/home/u/.config/systemd/user/yerd.service", true),
+                ("/srv/cfg/systemd/user/yerd.service", true),
                 ("/etc/systemd/user/yerd.service", false),
+                ("/usr/lib/systemd/user/yerd.service", false),
+                ("/run/user/1000/systemd/user/yerd.service", false),
                 ("/home/u/xdg/systemd/user/other.service", false),
+                ("/home/u/xdg/yerd.service", false),
                 ("/home/u/../v/systemd/user/yerd.service", false),
-                ("relative/yerd.service", false),
+                ("relative/systemd/user/yerd.service", false),
             ];
             for (path, want) in cases {
-                assert_eq!(is_user_unit(Path::new(path), home), want, "{path}");
+                assert_eq!(is_user_unit(Path::new(path)), want, "{path}");
             }
         }
 

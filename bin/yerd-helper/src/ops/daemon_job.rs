@@ -38,6 +38,10 @@ use crate::ops::{
 #[cfg(target_os = "macos")]
 const DAEMON_BIN: &str = "yerdd";
 
+/// Root-owned lock that serializes daemon-job changes across helper processes.
+#[cfg(target_os = "macos")]
+const JOB_LOCK: &str = "/var/run/dev.yerd.daemon.lock";
+
 /// Write and load the daemon job for `uid`, replacing any existing one.
 ///
 /// Validates the user, the sibling `yerdd`, and the install receipt before
@@ -52,6 +56,7 @@ pub fn install(uid: u32) -> Result<(), HelperError> {
     require_headless(&dir)?;
     let yerdd = locate_daemon(&dir)?;
     let plist = launchd_daemon::compose_daemon_plist(&yerdd, &user.name, &user.dir);
+    let _lock = lock_job()?;
     let previous = read_previous_plist()?;
     atomic_write(Path::new(DAEMON_PLIST), plist.as_bytes(), true)?;
     let result = load_plist();
@@ -74,8 +79,30 @@ pub fn install(uid: u32) -> Result<(), HelperError> {
 /// only deleted once the job is confirmed unloaded.
 #[cfg(target_os = "macos")]
 pub fn uninstall() -> Result<(), HelperError> {
+    let _lock = lock_job()?;
     bootout_system_checked(DAEMON_LABEL)?;
     remove_if_present(DAEMON_PLIST)
+}
+
+/// Take [`JOB_LOCK`], waiting for another helper's job change to finish. The
+/// lock file is never followed through a symlink. Released when dropped.
+#[cfg(target_os = "macos")]
+fn lock_job() -> Result<nix::fcntl::Flock<std::fs::File>, HelperError> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let io_err = |source| HelperError::Io {
+        path: PathBuf::from(JOB_LOCK),
+        source,
+    };
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
+        .open(JOB_LOCK)
+        .map_err(io_err)?;
+    nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive)
+        .map_err(|(_, errno)| io_err(std::io::Error::from(errno)))
 }
 
 /// Make the written plist root-owned and (re)load the job from it.
