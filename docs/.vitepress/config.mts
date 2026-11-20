@@ -6,7 +6,8 @@ import llmstxt from 'vitepress-plugin-llms'
 const SITE_TITLE = 'Yerd - Local PHP development environment for macOS & Linux'
 const SITE_DESCRIPTION =
   'A fast, rootless, open-source local PHP development environment for macOS and Linux. Serve .test sites over HTTP and HTTPS, run a different PHP version per site, and manage databases, mail, and tooling from one tiny daemon - a Laravel Herd alternative.'
-const OG_IMAGE = 'https://yerd.app/images/social-card.png'
+// The query string busts social-platform caches; bump it whenever the card changes.
+const OG_IMAGE = 'https://yerd.app/images/social-card.png?v=2'
 
 // Site config for the Yerd documentation (https://yerd.app).
 // Run with `npm run dev` from the `docs/` directory.
