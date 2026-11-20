@@ -28,16 +28,17 @@ pub enum ReceiptError {
     /// The receipt exists but could not be read, or its content is not known.
     #[error("the install receipt ({RECEIPT_FILE}) is unreadable or unrecognised; reinstall with the install script")]
     Unrecognised,
-    /// The running binary's own path could not be resolved.
-    #[error("the running binary was replaced on disk; restart it")]
+    /// The running binary's own path could not be resolved: its file was
+    /// removed and nothing was installed in its place.
+    #[error("the running binary is no longer on disk; reinstall Yerd, then restart it")]
     ExeUnresolved,
 }
 
 /// What the edge observed when it looked for the receipt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReceiptRead {
-    /// Canonicalizing the running executable failed (e.g. Linux reports
-    /// `"<path> (deleted)"` after a rename-over).
+    /// Canonicalizing the running executable failed: it was deleted and no
+    /// file took its place (a rename-over is followed to the new file).
     ExeUnresolved,
     /// The receipt file does not exist (`NotFound`).
     Absent,
@@ -75,6 +76,23 @@ pub fn classify(read: ReceiptRead) -> Result<InstallMode, ReceiptError> {
     }
 }
 
+/// Suffix Linux appends to `/proc/self/exe` once the running binary's file has
+/// been unlinked or renamed over.
+const DELETED_SUFFIX: &str = " (deleted)";
+
+/// The path a renamed-over executable was launched from: `reported` minus the
+/// trailing `" (deleted)"` Linux adds, or `None` when there is no such suffix
+/// (or the path is not UTF-8). The caller decides whether the result is the
+/// file to use, since a real path can end in that text too.
+#[must_use]
+pub fn strip_deleted_suffix(reported: &std::path::Path) -> Option<std::path::PathBuf> {
+    reported
+        .to_str()?
+        .strip_suffix(DELETED_SUFFIX)
+        .filter(|path| !path.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -106,13 +124,44 @@ mod tests {
     }
 
     #[test]
+    fn strip_deleted_suffix_recovers_the_launch_path() {
+        use std::path::{Path, PathBuf};
+        let cases: Vec<(&str, Option<PathBuf>)> = vec![
+            (
+                "/home/u/.yerd/bin/yerdd (deleted)",
+                Some(PathBuf::from("/home/u/.yerd/bin/yerdd")),
+            ),
+            (
+                "/usr/bin/yerdd (deleted)",
+                Some(PathBuf::from("/usr/bin/yerdd")),
+            ),
+            (
+                "/opt/a (deleted) dir/yerdd (deleted)",
+                Some(PathBuf::from("/opt/a (deleted) dir/yerdd")),
+            ),
+            ("/home/u/.yerd/bin/yerdd", None),
+            ("/home/u/.yerd/bin/yerdd (deleted) ", None),
+            ("/home/u/.yerd/bin/yerdd(deleted)", None),
+            (" (deleted)", None),
+            ("", None),
+        ];
+        for (reported, expected) in cases {
+            assert_eq!(
+                strip_deleted_suffix(Path::new(reported)),
+                expected,
+                "{reported:?}"
+            );
+        }
+    }
+
+    #[test]
     fn error_messages_carry_the_user_hint() {
         assert!(ReceiptError::Unrecognised
             .to_string()
             .contains("reinstall with the install script"));
         assert_eq!(
             ReceiptError::ExeUnresolved.to_string(),
-            "the running binary was replaced on disk; restart it"
+            "the running binary is no longer on disk; reinstall Yerd, then restart it"
         );
     }
 }

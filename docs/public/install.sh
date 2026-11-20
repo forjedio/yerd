@@ -190,6 +190,22 @@ install_files() {
     done
 }
 
+# Re-running the installer over a live install replaces the binaries under a
+# running daemon, which keeps running the old version until it restarts.
+restart_running_daemon() {
+    "$DIR/yerd" ping >/dev/null 2>&1 || return 0
+    if "$DIR/yerd" restart daemon >/dev/null 2>&1; then
+        say "Restarted the running daemon on Yerd $TAG"
+        if [ "$OS" = "Linux" ]; then
+            say "If you had granted ports 80/443, run \`sudo $DIR/yerd elevate ports\`,"
+            say "then \`$DIR/yerd restart daemon\`: replacing yerdd resets that grant."
+        fi
+    else
+        say "The daemon is still running the previous version; run"
+        say "\`$DIR/yerd restart daemon\` to load $TAG."
+    fi
+}
+
 main() {
     need uname
     detect_platform
@@ -229,6 +245,7 @@ main() {
     extract_and_check
     install_files
     say "Installed Yerd $TAG into $DIR"
+    restart_running_daemon
 
     yerd_cmd="$DIR/yerd"
     if [ "${YERD_NO_MODIFY_PATH:-}" = "1" ]; then

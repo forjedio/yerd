@@ -41,7 +41,9 @@ It:
 2. Downloads the matching headless tarball for the latest **stable** release.
 3. Checks the download against the release's `SHA256SUMS`.
 4. Installs the binaries into `~/.yerd/bin`.
-5. Runs `yerd path install` so `yerd` (and the `php`/`composer` shims) are on
+5. If a Yerd daemon is already running (you re-ran the script to upgrade),
+   restarts it onto the new version.
+6. Runs `yerd path install` so `yerd` (and the `php`/`composer` shims) are on
    your `PATH`. Open a new shell, or `source` your shell profile, to pick it up.
 
 It refuses to run as root, refuses on Linux without glibc 2.34+, and refuses
