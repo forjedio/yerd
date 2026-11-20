@@ -1,0 +1,17 @@
+@font-face{font-family:'Outage Cut';src:url('../public/fonts/OutageCut.ttf') format('truetype');}
+@font-face{font-family:'Space Grotesk';font-weight:300 700;src:url('../public/fonts/space-grotesk-latin.woff2') format('woff2');}
+@font-face{font-family:'JetBrains Mono';font-weight:100 800;src:url('../public/fonts/jetbrains-mono-latin.woff2') format('woff2');}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:var(--w);height:var(--h);overflow:hidden}
+body{position:relative;background:#070b14;color:#f2f5fb;font-family:'Space Grotesk',sans-serif;
+ background-image:radial-gradient(55% 70% at 18% 30%,rgba(58,99,238,.22),rgba(58,99,238,0) 70%),radial-gradient(50% 80% at 85% 55%,rgba(92,134,255,.20),rgba(58,99,238,0) 70%);}
+.grid{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);background-size:40px 40px;mask-image:radial-gradient(70% 90% at 30% 40%,#000,transparent 80%)}
+.brand{display:flex;align-items:center;gap:22px}
+.brand img{filter:drop-shadow(0 0 28px rgba(92,134,255,.55))}
+.word{font-family:'Outage Cut';letter-spacing:.02em;line-height:1;transform:translateY(.115em)}
+.head{font-family:'Outage Cut';line-height:1.08;letter-spacing:.01em}
+.head em{font-style:normal;color:#5c86ff}
+.lede{color:#a7b3c9;line-height:1.55}
+.lede b{color:#fff;font-weight:600}
+.lede code{font-family:'JetBrains Mono';font-size:.92em;color:#fff}
+.shot{position:absolute;border-radius:14px;border:1px solid #2a3a5c;box-shadow:0 30px 80px -10px rgba(0,0,0,.75),0 0 0 1px rgba(92,134,255,.08),0 0 90px rgba(58,99,238,.25)}

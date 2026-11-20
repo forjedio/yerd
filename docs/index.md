@@ -5,7 +5,7 @@ pageClass: home-page
 # A descriptive <title> for the homepage (the default would just be "Yerd").
 title: Yerd - Local PHP development environment for macOS & Linux
 titleTemplate: false
-description: Serve every project in a folder on its own .test domain over HTTPS, run a different PHP version per site, and manage databases, mail and tooling from one ~8 MB Rust daemon. Free, MIT-licensed, rootless, and Docker-free.
+description: Serve every project in a folder on its own .test domain over HTTPS, run a different PHP version per site, and manage databases, mail and tooling from one ~16 MB Rust daemon. Free, MIT-licensed, rootless, and Docker-free.
 
 hero:
   pill: OPEN SOURCE · ROOTLESS · MIT
@@ -28,7 +28,7 @@ hero:
     alt: The Sites page in the Yerd desktop app, with a site's details open beside the list
 
 stats:
-  - value: 8 MB
+  - value: 16 MB
     label: ONE RUST DAEMON
   - value: '0'
     label: CONTAINERS OR VMS
@@ -44,8 +44,8 @@ footprint:
   scaleMax: 1600
   ticks: ['0', 400 MB, 800 MB, 1.2 GB, 1.6 GB]
   yerd:
-    label: YERD · ~8 MB
-    mb: 8
+    label: YERD · ~16 MB
+    mb: 16
   middle:
     label: ELECTRON APP · ~180 MB
     mb: 180
