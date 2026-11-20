@@ -74,7 +74,7 @@ function onDoubleClick(event: MouseEvent): void {
         >{{ paletteHint }}</kbd
       >
     </button>
-    <div class="flex flex-1 basis-0 items-center justify-end gap-2">
+    <div class="flex min-w-max flex-1 basis-0 items-center justify-end gap-2">
       <Button v-if="docs" variant="outline" size="sm" @click="openDocs">
         Docs
         <ArrowUpRight class="opacity-70" />

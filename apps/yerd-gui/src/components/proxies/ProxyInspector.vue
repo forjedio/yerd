@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { Copy, CornerDownRight, ExternalLink, Globe, X } from "lucide-vue-next";
+import { Copy, CornerDownRight, ExternalLink, Globe, Trash2, X } from "lucide-vue-next";
 import { computed } from "vue";
 
 import SiteDomainsCard from "@/components/sites/SiteDomainsCard.vue";
 import Button from "@/components/ui/Button.vue";
+import InspectorFooter from "@/components/ui/InspectorFooter.vue";
 import InspectorFrame from "@/components/ui/InspectorFrame.vue";
 import Switch from "@/components/ui/Switch.vue";
-import { INSPECTOR_TOOL, SECTION_LABEL } from "@/components/ui/styles";
+import { DANGER_TOOL, INSPECTOR_TOOL, SECTION_LABEL } from "@/components/ui/styles";
 import { openInBrowser } from "@/ipc/client";
 import type { ProxyEntry, StatusReport } from "@/ipc/types";
 import { proxyAsSite, proxyHost, type ProxyItem } from "@/lib/proxies";
@@ -165,17 +166,17 @@ const LABEL = `mb-2 px-1 ${SECTION_LABEL}`;
         />
       </div>
 
-      <div class="mt-auto flex justify-end pt-8">
-        <button
-          type="button"
-          class="text-xs font-medium text-destructive hover:underline disabled:opacity-50"
+      <InspectorFooter>
+        <Button
+          variant="outline"
+          :class="DANGER_TOOL"
           :disabled="busy"
           data-testid="inspector-footer-action"
           @click="emit('remove', item)"
         >
-          {{ proxy ? "Remove proxy…" : "Remove path…" }}
-        </button>
-      </div>
+          <Trash2 /> {{ proxy ? "Remove proxy…" : "Remove path…" }}
+        </Button>
+      </InspectorFooter>
     </div>
   </InspectorFrame>
 </template>

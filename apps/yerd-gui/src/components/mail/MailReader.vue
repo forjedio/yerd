@@ -44,6 +44,8 @@ const props = defineProps<{
   deleting: boolean;
   /** Show a close button beside Delete (drawer mode). */
   closable?: boolean;
+  /** Yerd's site TLD: images and styles on it (and on localhost) load without opting in. */
+  tld?: string;
 }>();
 
 const emit = defineEmits<{ delete: [id: string]; close: [] }>();
@@ -53,7 +55,8 @@ type ReaderTab = "preview" | "text" | "headers";
 const toast = useToast();
 
 const tab = ref<ReaderTab>("preview");
-/** Opt-in: remote images / stylesheets phone home; off until the user asks. */
+/** Opt-in: remote images / stylesheets phone home; off until the user asks.
+ *  Local ones (on `tld`, localhost or loopback) always load. */
 const loadRemote = ref(false);
 const confirmOpen = ref(false);
 const pendingDelete = ref<{ id: string; subject: string } | null>(null);
@@ -73,7 +76,7 @@ const attachments = computed<MailAttachment[]>(() => props.detail?.attachments ?
 
 const remoteContent = computed(() => {
   const html = props.detail?.html_body;
-  return html ? listRemoteContentUrls(html) : [];
+  return html ? listRemoteContentUrls(html, props.tld) : [];
 });
 
 const remoteLabel = computed(() => remoteSummary(remoteContent.value, loadRemote.value));
@@ -134,6 +137,7 @@ function renderHtmlBody(html: string): void {
   if (!host) return;
   const { head, body, bodyStyle } = buildMailFrameDocument(html, {
     loadRemoteContent: loadRemote.value,
+    localTld: props.tld,
   });
   let root = host.shadowRoot;
   if (!root) {
@@ -184,7 +188,7 @@ function clearHtmlBody(): void {
 }
 
 watch(
-  [() => props.detail?.html_body, () => props.loading, htmlHost, loadRemote],
+  [() => props.detail?.html_body, () => props.loading, htmlHost, loadRemote, () => props.tld],
   ([html, loading]) => {
     if (loading) return;
     if (!html) {

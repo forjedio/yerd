@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildMailFrameDocument,
   eventTargetElement,
+  isLocalUrl,
   linkifyText,
   listRemoteContentUrls,
   prepareHtmlBody,
@@ -209,6 +210,28 @@ describe("buildMailFrameDocument", () => {
     expect(body).toContain('src="https://cdn.example.com/logo.png"');
   });
 
+  it("keeps local images and styles but strips remote ones without opt-in", () => {
+    const { head, body } = buildMailFrameDocument(
+      `<!doctype html><html><head>
+<link rel="stylesheet" href="https://shop.test/mail.css">
+<link rel="stylesheet" href="https://cdn.example.com/mail.css">
+<style>.a { background: url(https://shop.test/a.png); } .b { background: url(https://cdn.example.com/b.png); }</style>
+</head><body>
+<img src="https://shop.test/storage/logo.png" alt="local">
+<img src="http://localhost:8000/x.png" alt="loopback">
+<img src="https://cdn.example.com/logo.png" alt="remote">
+</body></html>`,
+      { localTld: "test" },
+    );
+    expect(head).toContain('href="https://shop.test/mail.css"');
+    expect(head).not.toContain("cdn.example.com/mail.css");
+    expect(head).toContain("url(https://shop.test/a.png)");
+    expect(head).not.toContain("cdn.example.com/b.png");
+    expect(body).toContain('src="https://shop.test/storage/logo.png"');
+    expect(body).toContain('src="http://localhost:8000/x.png"');
+    expect(body).not.toContain("cdn.example.com/logo.png");
+  });
+
   it("keeps cid and data images without opt-in", () => {
     const { body } = buildMailFrameDocument(
       `<img src="cid:logo@local" alt="cid"><img src="data:image/png;base64,abc" alt="data">`,
@@ -324,8 +347,37 @@ describe("listRemoteContentUrls", () => {
     ]);
   });
 
+  it("leaves out local resources, which load without opting in", () => {
+    const refs = listRemoteContentUrls(
+      `<img src="https://shop.test/logo.png"><img src="//127.0.0.1/x.png"><img src="https://cdn.example.com/logo.png">`,
+      "test",
+    );
+    expect(refs).toEqual([{ url: "https://cdn.example.com/logo.png", kind: "image" }]);
+  });
+
   it("returns an empty list when there is no remote content", () => {
     expect(listRemoteContentUrls(`<p>Hi <img src="cid:x"></p>`)).toEqual([]);
+  });
+});
+
+describe("isLocalUrl", () => {
+  it.each([
+    ["https://shop.test/logo.png", "test", true],
+    ["https://api.shop.test/logo.png", "test", true],
+    ["https://SHOP.TEST./logo.png", "test", true],
+    ["//shop.test/logo.png", "test", true],
+    ["https://shop.dev.local/x.png", "dev.local", true],
+    ["http://localhost:8000/x.png", undefined, true],
+    ["http://app.localhost/x.png", undefined, true],
+    ["http://127.0.0.1/x.png", undefined, true],
+    ["http://[::1]/x.png", undefined, true],
+    ["https://shop.test/logo.png", undefined, false],
+    ["https://test.example.com/x.png", "test", false],
+    ["https://shoptest/x.png", "test", false],
+    ["https://cdn.example.com/x.png", "test", false],
+    ["not a url", "test", false],
+  ])("%s on tld %s is local: %s", (url, tld, local) => {
+    expect(isLocalUrl(url, tld)).toBe(local);
   });
 });
 

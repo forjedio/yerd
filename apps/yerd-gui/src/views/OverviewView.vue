@@ -212,6 +212,7 @@ const stopBody = computed(() =>
               :sites="sites"
               :report="report"
               :total-sites="siteCount"
+              @changed="reloadSites"
             />
           </template>
 

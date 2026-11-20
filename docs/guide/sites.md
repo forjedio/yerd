@@ -16,23 +16,24 @@ The **Sites** page (under **Environment** in the sidebar) is the home base for m
 <ThemedImage light="/images/sites-light.png" dark="/images/sites-dark.png" alt="The Sites page in the Yerd desktop app" />
 
 - **Park folder** opens a directory picker and parks it; **New site** opens the [New site](#create-a-new-site) dialog.
-- An **amber strip** under the toolbar flags anything that makes sites harder to reach: web ports 80/443 busy or not forwarded (so URLs carry a port), or Yerd's local CA not trusted (browsers warn on HTTPS). Its **Run Doctor** / **Trust now** action opens [Doctor](./doctor).
+- An **amber strip** under the toolbar flags anything that makes sites harder to reach: web ports 80/443 busy or not forwarded (so URLs carry a port), or Yerd's local CA not trusted (browsers warn on HTTPS). Its **Run Doctor** / **Trust now** action opens Doctor (see [Diagnostics](./diagnostics)).
 - **Filter chips** across the top narrow the list: **All**, **HTTPS**, **Linked**, one chip per detected framework (Laravel, WordPress, ...), and **Not on** the default PHP, each with its count. The filter field beside them (⌘F / Ctrl+F) searches names, paths and every domain a site answers on. When nothing matches, you can **Create** a site with that name or **Clear filter**.
 - The list is **sectioned**: your [groups](#site-groups) first, then one section per parked folder (with its ungrouped sites), then **Linked** sites. Sections collapse, and a long section shows its first ten sites with a **+ N more** line. A folder section's header has **Reveal** and **Unpark…** (shown on hover).
 - Each row shows the site's domain and path, a `+N alias` count when it answers on extra domains, a lock when it's served over HTTPS, and its PHP version (amber when it differs from the default).
 - With the list focused, **↑/↓** move the selection, **Return** opens the site in your browser, **⌘E** / **Ctrl+E** opens it in your editor and **⌘T** / **Ctrl+T** in a terminal; **⌘C** / **Ctrl+C** copies its URL.
 
-In a wide window the inspector sits beside the list. At the default window size the list becomes a table with **PHP**, **Node**, **Framework** and **TLS** columns, and clicking a row slides the inspector in from the right (Escape or the backdrop closes it).
+In a wide window (the default size) the inspector sits beside the list. In a narrower window the list becomes a table with **PHP**, **Node**, **Framework** and **TLS** columns, and clicking a row slides the inspector in from the right (Escape or the backdrop closes it).
 
 ### The site inspector
 
 - **Open site**, a **star** (adds the site to the Overview's favourites), **Editor**, **Terminal** and **Finder** (**Files** on Linux), plus a **⋯** menu.
 - The site's **URL** with a copy button; a non-standard port is highlighted.
 - **Environment**: the **PHP version**, the site's **Node version** (see [Node](./node#per-site-versions)), **HTTPS**, **WordPress auto-login** for WordPress sites, the detected **framework** and whether the site is **parked** or **linked**.
-- **Domains**: every domain the site answers on, tagged primary or wildcard. Clicking one, or **Add domain**, opens the domains dialog to add, remove, make primary or reset them.
+- **Domains**: every domain the site answers on, tagged primary or wildcard. Each row has **Make primary** (star), **Edit** and **Remove**; **Add domain** and Edit open a small dialog, and **Reset to default** beside the heading returns the site to its apex only.
+- **Response headers**: the site's custom response headers, each with **Edit** and **Remove**; **Add header** opens a dialog.
 - **Unpark site…** (a parked site) or **Remove site…** (a linked site) at the bottom. Both ask for confirmation; your files are never deleted.
 
-The **⋯** menu has **Copy URL**, **Share publicly…**, **Change web root…** (not for WordPress), **Move to group**, **Routing rules…** (including the front-controller switch), **Response headers…**, **Editor** (a per-site editor override), **WP Admin** for WordPress sites or the **Dumps viewer** for others, and **Unpark** or **Remove site…**.
+The **⋯** menu has **Copy URL**, **Share publicly…**, **Change web root…** (not for WordPress), **Move to group**, **Routing rules…** (including the front-controller switch), **Editor** (a per-site editor override), **WP Admin** for WordPress sites or the **Dumps viewer** for others, and **Unpark** or **Remove site…**.
 
 For the full tour of the app, see [Features](./desktop-app#sites).
 
@@ -407,7 +408,7 @@ yerd header set api Access-Control-Allow-Origin https://app.test
 # every api.test response now carries Access-Control-Allow-Origin: https://app.test
 ```
 
-A configured header replaces any same-named header the app sends, and applies to PHP responses, static files, Yerd's own error pages and redirects alike. Set headers from **Response headers…** in the site inspector's **⋯** menu in the desktop app, or see [Response headers](../reference/cli/headers) for the full semantics.
+A configured header replaces any same-named header the app sends, and applies to PHP responses, static files, Yerd's own error pages and redirects alike. Set headers from the **Response headers** card in the desktop app's site inspector (each row has **Edit** and **Remove**; **Add header** opens a dialog), or see [Response headers](../reference/cli/headers) for the full semantics.
 
 ## Streaming responses (SSE / Livewire `wire:stream`)
 

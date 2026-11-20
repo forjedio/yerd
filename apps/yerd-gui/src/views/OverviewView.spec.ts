@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   openInBrowser: vi.fn(),
   pickDirectory: vi.fn(),
   park: vi.fn(),
+  setSiteFavourite: vi.fn(),
   refresh: vi.fn(),
 }));
 
@@ -54,6 +55,7 @@ vi.mock("@/ipc/client", () => ({
   openInBrowser: mocks.openInBrowser,
   pickDirectory: mocks.pickDirectory,
   park: mocks.park,
+  setSiteFavourite: mocks.setSiteFavourite,
   openLoginItems: vi.fn(async () => {}),
   hostPlatform: vi.fn(async () => "macos"),
   status: vi.fn(),
@@ -322,6 +324,24 @@ describe("OverviewView left column", () => {
 
     await rows[0]?.trigger("click");
     expect(mocks.openInBrowser).toHaveBeenCalledWith("https://alpha.test");
+  });
+
+  it("unfavourites from the star without opening the site, then reloads", async () => {
+    mocks.sitesAndParked.mockResolvedValue({
+      sites: sitesList(3, [site("alpha", { favourite: true })]),
+      parked: [],
+      groups: {},
+    });
+    mocks.setSiteFavourite.mockResolvedValue(undefined);
+    const w = await mountView();
+    const loads = mocks.sitesAndParked.mock.calls.length;
+
+    await w.get('[data-testid="favourite-star"]').trigger("click");
+    await flushPromises();
+
+    expect(mocks.setSiteFavourite).toHaveBeenCalledWith("alpha", false);
+    expect(mocks.openInBrowser).not.toHaveBeenCalled();
+    expect(mocks.sitesAndParked.mock.calls.length).toBeGreaterThan(loads);
   });
 
   it("shows the empty state when nothing is starred", async () => {

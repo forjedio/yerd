@@ -473,7 +473,7 @@ describe("ProxiesView inspector", () => {
     expect(lastCall("remove_proxy_rule")).toEqual({ site: "app", prefix: "/app" });
   });
 
-  it("manages a proxy's domains through the shared panel and reloads on change", async () => {
+  it("manages a proxy's domains through the card and reloads on change", async () => {
     stubIpc({ proxies: [dotted()] });
     const w = await mountView();
     const drawer = await openRow(w, "proxy:api.account");
@@ -482,8 +482,8 @@ describe("ProxiesView inspector", () => {
     expect(drawer.text()).toContain("custom-domain.test");
 
     const before = invokeMock.mock.calls.filter((c) => c[0] === "list_proxies").length;
-    await w.get("#add-domain").setValue("extra.test");
-    await click(w, "Add");
+    w.findComponent({ name: "DomainDialog" }).vm.$emit("submit", "extra.test");
+    await flushPromises();
     expect(lastCall("add_domain")).toEqual({ name: "api.account", domain: "extra.test" });
     const after = invokeMock.mock.calls.filter((c) => c[0] === "list_proxies").length;
     expect(after).toBeGreaterThan(before);

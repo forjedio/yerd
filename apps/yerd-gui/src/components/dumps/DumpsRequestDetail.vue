@@ -83,7 +83,7 @@ const CHIP =
 </script>
 
 <template>
-  <div class="flex min-h-0 flex-col px-7 pb-6 pt-[22px]" data-testid="dumps-detail-body">
+  <div class="flex shrink-0 flex-col px-7 pb-6 pt-[22px]" data-testid="dumps-detail-body">
     <template v-if="request">
       <div class="flex shrink-0 items-start gap-3">
         <div class="min-w-0 flex-1">

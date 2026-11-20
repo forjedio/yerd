@@ -55,9 +55,10 @@ apps/yerd-gui/
     │                       useCreateSiteJob / useToolPrereqs / useSiteBasics and the starters
     │                       (useSiteStarters, useLaravelStarter, useWordPressStarter) behind New site
     ├── components/         AppShell, SideNav, NavLink, TitleBar, PageHeader, AboutSection, StatusPill, ComingSoon, EnvironmentCard,
-    │                       SiteDomainsPanel / SiteRoutesPanel / SiteHeadersPanel / SiteNodePanel,
+    │                       SiteRoutesPanel / SiteNodePanel,
     │                       sites/ (SitesList, SiteFilterChips, SitesWarningStrip, SitesEmptyState, SiteInspector,
-    │                       SiteActionsMenu, SiteEnvironmentCard, SiteDomainsCard, WebRootDialog, LinkFolderDialog),
+    │                       SiteActionsMenu, SiteEnvironmentCard, SiteDomainsCard + DomainDialog, SiteHeadersCard +
+    │                       HeaderDialog, WebRootDialog, LinkFolderDialog),
     │                       proxies/ (ProxiesList, ProxyInspector, NewProxyDialog, ProxiesEmptyState),
     │                       php/ (PhpVersionsList, PhpInspector, PhpSharedDefaults, PhpSettingsGrid,
     │                       InstallPhpDialog, InstallProgressDialog),
@@ -78,8 +79,9 @@ apps/yerd-gui/
     │                       PhpVersionPanel, AddExtensionModal, DaemonDownHero, DaemonDiagnosticsPanel,
     │                       overview/ (status, favourites, setup checklist, release notes and contributors cards),
     │                       ui/ (incl. AsyncState, EmptyState, InfoBanner, ConfirmDialog, DialogFrame,
-    │                       SegmentedControl, SuffixInput, FilterChips, InspectorFrame,
-    │                       styles.ts with the shared CARD / INSPECTOR_TOOL / SECTION_LABEL / LIST_LABEL classes)
+    │                       SegmentedControl, SuffixInput, FilterChips, InspectorFrame, InspectorFooter (teleported
+    │                       into the frame's pinned bar below its scroll area),
+    │                       styles.ts with the shared CARD / INSPECTOR_TOOL / DANGER_TOOL / SECTION_LABEL / LIST_LABEL classes)
     ├── views/              OverviewView, GeneralView, PhpView, NodeView, SitesView, ProxiesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView
     └── lib/                utils (cn, plural / joinWithAnd, humanisers, CHIP_TONE and the run-state dot), theme,
                             desktop chrome, domainValidation,
@@ -490,10 +492,10 @@ export type Response =
 `ipc/client.ts` wraps each Tauri command in a typed function and narrows the
 `Response` for callers - including the domain mutators
 `addDomain` / `removeDomain` / `setPrimaryDomain` / `resetDomains` that back
-`SiteDomainsPanel.vue`, the routing mutators `addRouteRule` / `removeRouteRule` /
+`sites/SiteDomainsCard.vue`, the routing mutators `addRouteRule` / `removeRouteRule` /
 `listRoutes` behind `SiteRoutesPanel.vue`, the header mutators
 `setResponseHeader` / `removeResponseHeader` / `listResponseHeaders` behind
-`SiteHeadersPanel.vue`, `nodeSite` / `setNodeVersion` / `clearNodeVersion`
+`sites/SiteHeadersCard.vue`, `nodeSite` / `setNodeVersion` / `clearNodeVersion`
 behind `SiteNodePanel.vue`, `listNode` / `availableNode` /
 `installNodeWithProgress` / `uninstallNode` behind `NodeView.vue`,
 `setPhpPoolSettings` behind
@@ -596,7 +598,8 @@ column of Settings in a wide window and its first card in a narrow one). Plus tw
   selected message with `getMail` (a user's pick is marked read with
   `markMailsRead`; the automatic first pick is not) and deletes or clears.
   `MailReader` renders the HTML body, sanitized with DOMPurify, into a **Shadow
-  DOM** (remote content blocked until **Load**), with Text and Headers tabs and
+  DOM** (remote content blocked until **Load**, except local resources on the site
+  TLD, `localhost` or loopback, which always load; see `lib/mailLinks.ts`), with Text and Headers tabs and
   attachments. `MailView` adds the toolbar: the capture pill from the shared
   `status` poll, **Setup** (`MailSetupDialog`, driving `setMailEnabled`; the port
   is edited in Settings ▸ Application Ports) and a pop-out button that opens the

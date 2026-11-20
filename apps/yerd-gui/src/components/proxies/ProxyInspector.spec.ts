@@ -137,7 +137,7 @@ describe("ProxyInspector for a whole-domain proxy", () => {
     expect(w.get('[data-testid="inspector-footer-action"]').attributes("disabled")).toBeDefined();
   });
 
-  it("tags the domains and forwards a panel change", async () => {
+  it("tags the domains and forwards a card change", async () => {
     const w = mountInspector(proxyItem());
     const card = w.get('[data-testid="domains-card"]');
     expect(card.text()).toContain("primary");
@@ -145,9 +145,9 @@ describe("ProxyInspector for a whole-domain proxy", () => {
     expect(card.text()).toContain("alias");
     await button(w, "Add domain").trigger("click");
     await flushPromises();
-    const panel = w.findComponent({ name: "SiteDomainsPanel" });
-    expect(panel.exists()).toBe(true);
-    panel.vm.$emit("changed");
+    const domains = w.findComponent({ name: "SiteDomainsCard" });
+    expect(domains.findComponent({ name: "DomainDialog" }).props("open")).toBe(true);
+    domains.vm.$emit("domainsChanged");
     expect(w.emitted("domainsChanged")).toHaveLength(1);
   });
 

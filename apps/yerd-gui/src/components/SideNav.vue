@@ -136,12 +136,21 @@ const pinned = computed<Item[]>(() => [
 <template>
   <nav class="flex h-full w-[232px] shrink-0 flex-col border-r bg-sidebar">
     <TitleBar variant="sidebar">
-      <div class="flex items-center gap-2.5 px-[18px] pt-1">
-        <img :src="logoUrl" alt="" class="size-7 shrink-0 rounded-[7px]" />
-        <div class="min-w-0">
-          <p class="font-display text-base font-normal leading-none tracking-[0.4px]">YERD</p>
+      <div class="flex items-center gap-3 px-[18px] pt-1">
+        <img :src="logoUrl" alt="" class="size-8 shrink-0 rounded-lg shadow-sm" />
+        <div class="flex min-w-0 flex-col gap-1">
+          <div class="flex min-w-0 items-center gap-2">
+            <p class="font-display text-[15px] font-normal leading-none tracking-[0.6px]">YERD</p>
+            <span
+              v-if="connected === true && daemonVersion"
+              class="truncate rounded-[4px] border px-1 py-[2px] font-mono text-[10px] leading-none text-faint"
+              data-testid="daemon-version"
+              >v{{ daemonVersion }}</span
+            >
+          </div>
           <p
-            class="mt-1 flex items-center gap-1.5 truncate text-[11.5px] leading-none text-faint"
+            class="flex min-w-0 items-center gap-1.5 text-xs leading-none"
+            :class="connected === false ? 'text-destructive' : 'text-muted-foreground'"
             data-testid="daemon-status"
           >
             <span
@@ -155,9 +164,7 @@ const pinned = computed<Item[]>(() => [
               "
               aria-hidden="true"
             />
-            <span v-if="connected === true" class="truncate"
-              >Running<template v-if="daemonVersion"> · v{{ daemonVersion }}</template></span
-            >
+            <span v-if="connected === true" class="truncate">Running</span>
             <span v-else-if="connected === false" class="truncate">Unreachable</span>
             <span v-else class="truncate">Connecting…</span>
           </p>

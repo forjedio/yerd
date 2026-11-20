@@ -4,6 +4,7 @@ import { RotateCw, TriangleAlert } from "lucide-vue-next";
 
 import PhpSettingsGrid, { type SettingsGridRow } from "@/components/php/PhpSettingsGrid.vue";
 import Button from "@/components/ui/Button.vue";
+import InspectorFooter from "@/components/ui/InspectorFooter.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
 import { useResource } from "@/composables/useResource";
@@ -30,13 +31,15 @@ import {
  * and Restart all pools. A blank field means PHP's own default (the daemon
  * removes the key). Saving restarts every running pool.
  */
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   data: PhpVersionsResponse | null;
   /** Whether Restart all pools is in flight. */
   restarting: boolean;
   /** Whether any pool is running (or failed), so there is something to restart. */
   anyRunning: boolean;
-}>();
+  /** Whether this panel is the one on show, so its footer bar is too. */
+  active?: boolean;
+}>(), { active: true });
 
 const emit = defineEmits<{
   /** Fired with the daemon's refreshed state after a successful save. */
@@ -210,19 +213,17 @@ async function saveSettings(): Promise<void> {
       </p>
     </div>
 
-    <div class="mt-auto pt-8">
-      <div class="flex items-center gap-3 border-t pt-4">
-        <span class="mr-auto text-xs text-faint">Saving restarts every running pool</span>
-        <Button
-          class="h-[34px] px-4 text-[13px] font-semibold"
-          :disabled="saving"
-          data-testid="shared-save"
-          @click="saveSettings"
-        >
-          <Spinner v-if="saving" class="size-4" />
-          {{ saving ? "Applying…" : "Save changes" }}
-        </Button>
-      </div>
-    </div>
+    <InspectorFooter :active="active">
+      <template #start>Saving restarts every running pool</template>
+      <Button
+        class="h-[34px] px-4 text-[13px] font-semibold"
+        :disabled="saving"
+        data-testid="shared-save"
+        @click="saveSettings"
+      >
+        <Spinner v-if="saving" class="size-4" />
+        {{ saving ? "Applying…" : "Save changes" }}
+      </Button>
+    </InspectorFooter>
   </div>
 </template>

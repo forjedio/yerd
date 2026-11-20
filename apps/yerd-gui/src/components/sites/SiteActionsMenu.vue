@@ -4,7 +4,6 @@ import {
   Code2,
   Copy,
   Ellipsis,
-  FileCode2,
   FileText,
   FolderMinus,
   FolderTree,
@@ -18,7 +17,6 @@ import {
 import { PopoverAnchor, PopoverContent, PopoverPortal, PopoverRoot } from "reka-ui";
 import { computed, nextTick, ref, watch } from "vue";
 
-import SiteHeadersPanel from "@/components/SiteHeadersPanel.vue";
 import SiteRoutesPanel from "@/components/SiteRoutesPanel.vue";
 import WebRootDialog from "@/components/sites/WebRootDialog.vue";
 import Button from "@/components/ui/Button.vue";
@@ -49,9 +47,9 @@ import { openWpAdmin } from "@/lib/wpAdmin";
  * The inspector's `···` menu. It holds the actions the draft draws (Copy URL,
  * Share publicly, Change web root, Move to group with its New group popover,
  * Routing rules, Unpark or Remove) plus those the old details sidebar had and
- * the draft does not (Response headers, the Editor override, WP Admin or the
- * Dumps viewer). Dialogs opened from here open on the next tick so the menu's
- * focus restore doesn't fight them.
+ * the draft does not (the Editor override, WP Admin or the Dumps viewer).
+ * Dialogs opened from here open on the next tick so the menu's focus restore
+ * doesn't fight them.
  *
  * `layerOpen` is true while the dropdown or the New group popover is open, so
  * the drawer can leave Escape to that layer: reka never prevents Escape and
@@ -96,7 +94,6 @@ const newGroupOpen = ref(false);
 const newGroupName = ref("");
 const webRootOpen = ref(false);
 const routingOpen = ref(false);
-const headersOpen = ref(false);
 
 watch([menuOpen, newGroupOpen], ([menu, popover]) => {
   layerOpen.value = menu || popover;
@@ -188,9 +185,6 @@ async function openDumps(): Promise<void> {
           </DropdownMenuSub>
           <DropdownMenuItem @select="later(() => (routingOpen = true))">
             <Route class="size-4" /> Routing rules…
-          </DropdownMenuItem>
-          <DropdownMenuItem @select="later(() => (headersOpen = true))">
-            <FileCode2 class="size-4" /> Response headers…
           </DropdownMenuItem>
           <DropdownMenuSub v-if="editorAvailable">
             <DropdownMenuSubTrigger>
@@ -292,7 +286,4 @@ async function openDumps(): Promise<void> {
     <SiteRoutesPanel :site="site" />
   </Modal>
 
-  <Modal v-model:open="headersOpen" :title="`Response headers · ${host}`" size="lg">
-    <SiteHeadersPanel :site="site" />
-  </Modal>
 </template>

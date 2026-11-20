@@ -155,7 +155,9 @@ in the reader (so link clicks work reliably on macOS WKWebView). Openable
 `http(s)` / `mailto` / `tel` links are stamped and opened via the OS browser /
 handler. Inline images referenced by `cid:` are embedded as `data:` URLs.
 Remote images and stylesheets (e.g. a logo served over `https://`) are **blocked
-by default** so merely opening a message cannot phone home. A bar beside the
+by default** so merely opening a message cannot phone home. Local ones always
+load: anything on your Yerd TLD (a logo at `https://shop.test/logo.png`),
+`localhost` or a loopback address is served by your own machine. A bar beside the
 tabs says what was blocked (for example "1 remote image blocked"); use **Load**
 when you want it, and **Hide** to block it again. The **Headers** tab lists those
 URLs under **Remote content**. Non-inline attachments appear in a band under the

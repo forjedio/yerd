@@ -6,10 +6,14 @@
    headings, matching the docs site (docs/.vitepress/theme/custom.css) and the
    Yerd social cards. A single heavy all-caps weight, so anything set in it uses
    font-weight: normal to avoid faux-bold synthesis. Exposed to Tailwind as the
-   `font-display` utility (see tailwind.config.js). */
+   `font-display` utility (see tailwind.config.js). Its own metrics (ascent 750,
+   descent 250, cap height 700) sit the caps 0.1em high in the line box; the
+   overrides balance the space above and below so it centres beside other text. */
 @font-face {
   font-family: "Outage Cut";
   src: url("./assets/fonts/OutageCut.ttf") format("truetype");
+  ascent-override: 85%;
+  descent-override: 15%;
   font-weight: normal;
   font-style: normal;
   font-display: swap;

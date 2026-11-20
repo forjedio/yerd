@@ -182,6 +182,7 @@ function onSelect(id: string): void {
         >
           <MailReader
             :detail="detail"
+            :tld="report?.tld"
             :loading="loadingDetail"
             :now="now"
             :deleting="busy === 'delete'"

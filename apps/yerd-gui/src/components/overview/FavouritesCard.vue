@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { ArrowRight, ArrowUpRight, Lock, LockOpen, Star } from "lucide-vue-next";
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { RouterLink } from "vue-router";
 
-import { openInBrowser } from "@/ipc/client";
+import { openInBrowser, setSiteFavourite } from "@/ipc/client";
 import type { SiteEntry, StatusReport } from "@/ipc/types";
 import { favouriteSites, siteSubtitle } from "@/lib/overview";
 import { openTitle, siteHost, siteUrl } from "@/lib/siteUrl";
@@ -12,7 +12,8 @@ import { cn } from "@/lib/utils";
 
 /**
  * The Overview's starred sites: one row per favourite that opens the site in
- * the browser, or the draft's dashed empty state when nothing is starred.
+ * the browser, with its star to unfavourite it, or the draft's dashed empty
+ * state when nothing is starred. `changed` asks the view to reload the sites.
  */
 const props = defineProps<{
   sites: SiteEntry[];
@@ -20,7 +21,21 @@ const props = defineProps<{
   totalSites: number;
 }>();
 
+const emit = defineEmits<{ changed: [] }>();
+
 const favourites = computed(() => favouriteSites(props.sites));
+const unstarring = ref<string | null>(null);
+
+async function unfavourite(site: SiteEntry): Promise<void> {
+  if (unstarring.value) return;
+  unstarring.value = site.name;
+  try {
+    await toastOnError("Couldn't change favourite", () => setSiteFavourite(site.name, false));
+    emit("changed");
+  } finally {
+    unstarring.value = null;
+  }
+}
 
 async function open(site: SiteEntry): Promise<void> {
   await toastOnError("Couldn't open site", () => openInBrowser(siteUrl(site, props.report)));
@@ -45,14 +60,25 @@ async function open(site: SiteEntry): Promise<void> {
     </div>
     <ul>
       <li v-for="s in favourites" :key="s.name" class="border-t">
+        <div class="-mx-2 flex items-center rounded-md transition-colors hover:bg-accent/50">
+        <button
+          type="button"
+          class="ml-1 flex size-7 shrink-0 items-center justify-center rounded-md text-warning transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
+          :disabled="unstarring !== null"
+          :aria-label="`Unfavourite ${siteHost(s, report.tld)}`"
+          title="Remove from favourites"
+          data-testid="favourite-star"
+          @click="unfavourite(s)"
+        >
+          <Star class="size-3.5 fill-current" aria-hidden="true" />
+        </button>
         <button
           type="button"
           data-testid="favourite-row"
-          class="-mx-2 flex h-[54px] w-[calc(100%+1rem)] items-center gap-3 rounded-md px-2 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          class="flex h-[54px] min-w-0 flex-1 items-center gap-3 rounded-md pl-1.5 pr-2 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           :title="openTitle(s, report)"
           @click="open(s)"
         >
-          <Star class="size-3.5 shrink-0 fill-current text-warning" aria-hidden="true" />
           <span class="min-w-0 flex-1">
             <span class="block truncate font-mono text-[13px] font-medium">
               {{ siteHost(s, report.tld) }}
@@ -76,6 +102,7 @@ async function open(site: SiteEntry): Promise<void> {
           </span>
           <ArrowUpRight class="size-3.5 shrink-0 text-faint" aria-hidden="true" />
         </button>
+        </div>
       </li>
     </ul>
   </section>

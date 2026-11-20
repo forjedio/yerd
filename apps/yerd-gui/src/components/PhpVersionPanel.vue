@@ -15,6 +15,7 @@ import {
 import PhpSettingsGrid, { type SettingsGridRow } from "@/components/php/PhpSettingsGrid.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
+import InspectorFooter from "@/components/ui/InspectorFooter.vue";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -79,8 +80,10 @@ import {
 } from "@/lib/phpSettings";
 import { cn } from "@/lib/utils";
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   version: PhpVersion;
+  /** Whether this panel is the one on show, so its footer bar is too. */
+  active?: boolean;
   /** The global `[php.settings]` defaults this version inherits from. */
   globalSettings: Record<string, string>;
   /** This version's sparse setting overrides (may be empty). */
@@ -107,7 +110,7 @@ const props = defineProps<{
   xdebug: XdebugSettings | null;
   /** Whether a bundled Xdebug is published for this version on this host. */
   xdebugAvailable: boolean;
-}>();
+}>(), { active: true });
 
 const emit = defineEmits<{
   /** Fired with the daemon's refreshed version list after any successful save. */
@@ -1012,21 +1015,19 @@ function discard(): void {
         </div>
       </section>
 
-      <div class="mt-auto pt-8">
-        <div class="flex items-center gap-2 border-t pt-4">
-          <span class="mr-auto text-xs text-faint">Saving restarts PHP {{ version }}'s pool only</span>
-          <Button v-if="panelDirty" variant="ghost" :disabled="isBusy" @click="discard">Discard</Button>
-          <Button
-            class="h-[34px] px-4 text-[13px] font-semibold"
-            :disabled="!canSave"
-            data-testid="version-save"
-            @click="save"
-          >
-            <Spinner v-if="busy === 'save'" class="size-4" />
-            {{ busy === "save" ? "Applying…" : "Save changes" }}
-          </Button>
-        </div>
-      </div>
+      <InspectorFooter :active="active">
+        <template #start>Saving restarts PHP {{ version }}'s pool only</template>
+        <Button v-if="panelDirty" variant="ghost" :disabled="isBusy" @click="discard">Discard</Button>
+        <Button
+          class="h-[34px] px-4 text-[13px] font-semibold"
+          :disabled="!canSave"
+          data-testid="version-save"
+          @click="save"
+        >
+          <Spinner v-if="busy === 'save'" class="size-4" />
+          {{ busy === "save" ? "Applying…" : "Save changes" }}
+        </Button>
+      </InspectorFooter>
     </template>
   </div>
 </template>

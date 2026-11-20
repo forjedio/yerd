@@ -464,6 +464,7 @@ fn decide_initial_window(app: &tauri::AppHandle) {
     let Some(win) = app.get_webview_window("main") else {
         return;
     };
+    fit_main_window_to_display(&win);
     #[cfg(not(target_os = "macos"))]
     restore_main_window_state(&win);
     let autostarted = std::env::args().any(|a| a == AUTOSTART_ARG);
@@ -474,6 +475,19 @@ fn decide_initial_window(app: &tauri::AppHandle) {
     } else {
         let _ = win.show();
         let _ = win.set_focus();
+    }
+}
+
+/// Fill the display's work area when it is smaller than the configured launch
+/// size (`tauri.conf.json`), so the window never opens partly off screen.
+fn fit_main_window_to_display(win: &tauri::WebviewWindow) {
+    let (Ok(Some(monitor)), Ok(size)) = (win.current_monitor(), win.outer_size()) else {
+        return;
+    };
+    let area = monitor.work_area();
+    if size.width >= area.size.width || size.height >= area.size.height {
+        let _ = win.set_size(area.size);
+        let _ = win.set_position(area.position);
     }
 }
 

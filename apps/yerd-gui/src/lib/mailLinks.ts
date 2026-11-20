@@ -207,6 +207,12 @@ export type BuildMailFrameOptions = {
    * phone home (IP / read-receipt style tracking).
    */
   loadRemoteContent?: boolean;
+  /**
+   * Yerd's site TLD (e.g. `test`). Resources on that TLD, `localhost` or a
+   * loopback address are served by this machine, so they load even while remote
+   * content is blocked.
+   */
+  localTld?: string;
 };
 
 export type RemoteContentKind = "stylesheet" | "image" | "css-url";
@@ -230,6 +236,28 @@ function isRemoteHttpUrl(value: string | null | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/** Whether a remote URL points at this machine: a Yerd site on `localTld`, `localhost` or loopback. */
+export function isLocalUrl(value: string, localTld?: string): boolean {
+  try {
+    const { hostname } = new URL(value.trim().startsWith("//") ? `https:${value.trim()}` : value.trim());
+    const host = hostname.toLowerCase().replace(/\.$/, "");
+    if (LOOPBACK_HOSTS.has(host) || host.endsWith(".localhost")) return true;
+    const tld = localTld?.toLowerCase().replace(/^\.+|\.+$/g, "");
+    return !!tld && (host === tld || host.endsWith(`.${tld}`));
+  } catch {
+    return false;
+  }
+}
+
+/** A remote URL the viewer blocks until the user opts in: remote and not local. */
+type BlockedUrl = (value: string | null | undefined) => boolean;
+
+function blockedUrl(localTld?: string): BlockedUrl {
+  return (value) => isRemoteHttpUrl(value) && !isLocalUrl(value!, localTld);
 }
 
 function normalizeRemoteUrl(raw: string): string {
@@ -263,35 +291,41 @@ function stripCssComments(css: string): string {
   return css.replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
-/** Blank remote `url(...)` / `@import` references inside CSS text. */
-function neutralizeRemoteCss(css: string): string {
+/** Blank blocked `url(...)` / `@import` references inside CSS text. */
+function neutralizeRemoteCss(css: string, blocked: BlockedUrl): string {
   let out = stripCssComments(css).replace(CSS_IMPORT_PATTERN, (full, _q, raw: string) => {
-    return isRemoteHttpUrl(raw) ? "" : full;
+    return blocked(raw) ? "" : full;
   });
   out = out.replace(CSS_URL_PATTERN, (full, _q, raw: string) => {
-    return isRemoteHttpUrl(raw) ? "none" : full;
+    return blocked(raw) ? "none" : full;
   });
   return out;
 }
 
-function collectCssRemoteUrls(css: string, add: (url: string, kind: RemoteContentKind) => void): void {
+function collectCssRemoteUrls(
+  css: string,
+  blocked: BlockedUrl,
+  add: (url: string, kind: RemoteContentKind) => void,
+): void {
   const cleaned = stripCssComments(css);
   for (const match of cleaned.matchAll(CSS_IMPORT_PATTERN)) {
     const raw = match[2];
-    if (isRemoteHttpUrl(raw)) add(raw, "stylesheet");
+    if (blocked(raw)) add(raw, "stylesheet");
   }
   for (const match of cleaned.matchAll(CSS_URL_PATTERN)) {
     const raw = match[2];
-    if (isRemoteHttpUrl(raw)) add(raw, "css-url");
+    if (blocked(raw)) add(raw, "css-url");
   }
 }
 
 /**
- * List remote (`http`/`https`/`//`) resources in captured HTML without loading them.
- * Dedupes by normalized URL. Used by the Mails sidebar so the user can inspect
- * what would be fetched before opting in.
+ * List remote (`http`/`https`/`//`) resources in captured HTML without loading
+ * them, leaving out local ones (see {@link isLocalUrl}), which load anyway.
+ * Dedupes by normalized URL. Used by the reader so the user can inspect what
+ * would be fetched before opting in.
  */
-export function listRemoteContentUrls(html: string): RemoteContentRef[] {
+export function listRemoteContentUrls(html: string, localTld?: string): RemoteContentRef[] {
+  const blocked = blockedUrl(localTld);
   const cleaned = DOMPurify.sanitize(html, MAIL_PURIFY_CONFIG);
   const doc = new DOMParser().parseFromString(cleaned, "text/html");
   filterHeadHazards(doc);
@@ -307,24 +341,24 @@ export function listRemoteContentUrls(html: string): RemoteContentRef[] {
 
   for (const link of doc.querySelectorAll("link[href]")) {
     const href = link.getAttribute("href");
-    if (isRemoteHttpUrl(href)) add(href!, "stylesheet");
+    if (blocked(href)) add(href!, "stylesheet");
   }
   for (const img of doc.querySelectorAll("img")) {
     const src = img.getAttribute("src");
-    if (isRemoteHttpUrl(src)) add(src!, "image");
+    if (blocked(src)) add(src!, "image");
     const srcset = img.getAttribute("srcset");
     if (srcset) {
       for (const part of srcset.split(",")) {
         const candidate = part.trim().split(/\s+/)[0];
-        if (isRemoteHttpUrl(candidate)) add(candidate, "image");
+        if (blocked(candidate)) add(candidate, "image");
       }
     }
   }
   for (const el of doc.querySelectorAll("[style]")) {
-    collectCssRemoteUrls(el.getAttribute("style") ?? "", add);
+    collectCssRemoteUrls(el.getAttribute("style") ?? "", blocked, add);
   }
   for (const styleEl of doc.querySelectorAll("style")) {
-    collectCssRemoteUrls(styleEl.textContent ?? "", add);
+    collectCssRemoteUrls(styleEl.textContent ?? "", blocked, add);
   }
   return out;
 }
@@ -332,26 +366,30 @@ export function listRemoteContentUrls(html: string): RemoteContentRef[] {
 /**
  * Remove sender-controlled remote resources so viewing mail does not fetch
  * them until the user opts in via {@link BuildMailFrameOptions.loadRemoteContent}.
+ * Local resources (see {@link isLocalUrl}) are kept.
  */
-function stripRemoteResources(doc: Document): void {
+function stripRemoteResources(doc: Document, blocked: BlockedUrl): void {
   for (const link of [...doc.querySelectorAll("link[href]")]) {
-    if (isRemoteHttpUrl(link.getAttribute("href"))) link.remove();
+    if (blocked(link.getAttribute("href"))) link.remove();
   }
   for (const img of [...doc.querySelectorAll("img")]) {
-    if (isRemoteHttpUrl(img.getAttribute("src"))) {
+    if (blocked(img.getAttribute("src"))) {
       img.removeAttribute("src");
     }
-    if (img.hasAttribute("srcset")) img.removeAttribute("srcset");
+    const srcset = img.getAttribute("srcset");
+    if (srcset && srcset.split(",").some((part) => blocked(part.trim().split(/\s+/)[0]))) {
+      img.removeAttribute("srcset");
+    }
   }
   for (const el of [...doc.querySelectorAll("[style]")]) {
     const style = el.getAttribute("style");
     if (!style) continue;
-    el.setAttribute("style", neutralizeRemoteCss(style));
+    el.setAttribute("style", neutralizeRemoteCss(style, blocked));
   }
   for (const styleEl of [...doc.querySelectorAll("style")]) {
     const css = styleEl.textContent;
     if (!css) continue;
-    styleEl.textContent = neutralizeRemoteCss(css);
+    styleEl.textContent = neutralizeRemoteCss(css, blocked);
   }
 }
 
@@ -406,7 +444,7 @@ function bodyPresentationStyle(doc: Document): string {
 /**
  * Sanitize a captured HTML email with DOMPurify and stamp openable anchors.
  * Preserves inline `<style>` blocks. Remote stylesheets, images, and CSS URLs
- * are stripped unless `loadRemoteContent` is true.
+ * are stripped unless `loadRemoteContent` is true; local ones always stay.
  */
 export function buildMailFrameDocument(
   html: string,
@@ -415,7 +453,7 @@ export function buildMailFrameDocument(
   const cleaned = DOMPurify.sanitize(html, MAIL_PURIFY_CONFIG);
   const doc = new DOMParser().parseFromString(cleaned, "text/html");
   filterHeadHazards(doc);
-  if (!options.loadRemoteContent) stripRemoteResources(doc);
+  if (!options.loadRemoteContent) stripRemoteResources(doc, blockedUrl(options.localTld));
   stampOpenableAnchors(doc);
   return {
     head: doc.head?.innerHTML ?? "",

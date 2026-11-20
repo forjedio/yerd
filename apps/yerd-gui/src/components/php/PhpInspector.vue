@@ -104,6 +104,7 @@ const CHIP = "inline-flex h-5 shrink-0 items-center gap-1 rounded px-1.5 text-[1
     <div class="flex flex-1 flex-col px-7 pb-6 pt-6">
       <PhpSharedDefaults
         v-show="selected === 'shared'"
+        :active="selected === 'shared'"
         :data="data"
         :restarting="busy === 'restart:all'"
         :any-running="anyRunning"
@@ -208,6 +209,7 @@ const CHIP = "inline-flex h-5 shrink-0 items-center gap-1 rounded px-1.5 text-[1
         v-for="v in versions"
         v-show="selected === v"
         :key="v"
+        :active="selected === v"
         v-model:layer-open="menuOpenByVersion[v]"
         class="mt-6"
         :data-version-panel="v"

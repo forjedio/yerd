@@ -232,7 +232,7 @@ describe("SideNav", () => {
   });
 
   it.each([
-    [true, "Running · v2.1.0"],
+    [true, "Running"],
     [false, "Unreachable"],
     [null, "Connecting…"],
   ] as const)("reads the daemon status line when connected is %s", async (connected, text) => {
@@ -240,6 +240,7 @@ describe("SideNav", () => {
     const w = await mountNav();
 
     expect(w.get('[data-testid="daemon-status"]').text()).toBe(text);
+    expect(w.find('[data-testid="daemon-version"]').exists()).toBe(connected === true);
   });
 
   it("renders the window controls inside the sidebar", async () => {

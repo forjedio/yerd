@@ -94,7 +94,7 @@ onMounted(() => {
     <div class="flex items-center gap-3.5">
       <img :src="logoUrl" alt="" class="size-11 shrink-0" />
       <div class="min-w-0">
-        <p class="pt-1 font-display text-[27px] font-normal leading-none tracking-wide">YERD</p>
+        <p class="font-display text-[27px] font-normal leading-none tracking-wide">YERD</p>
         <p class="mt-1 text-[12.5px] text-muted-foreground">Local PHP, without the friction.</p>
       </div>
     </div>

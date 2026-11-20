@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, provide, ref, useId } from "vue";
 
+import { INSPECTOR_FOOTER_KEY } from "@/components/ui/inspectorFooter";
 import { cn } from "@/lib/utils";
 
 /**
@@ -9,7 +10,8 @@ import { cn } from "@/lib/utils";
  * over the window from the right with a backdrop and closes on Escape or a
  * backdrop click. Escape is left alone while `layerOpen` returns true or while
  * another modal layer sits above the drawer. The content goes in the default
- * slot.
+ * slot and scrolls; an `InspectorFooter` anywhere inside it is teleported to a
+ * bar below the scroll area, so the scrollbar stops above the bar.
  */
 const props = defineProps<{
   mode: "panel" | "drawer";
@@ -31,6 +33,8 @@ const props = defineProps<{
 const emit = defineEmits<{ close: [] }>();
 
 const drawer = computed(() => props.mode === "drawer");
+const footerId = `inspector-footer-${useId()}`;
+provide(INSPECTOR_FOOTER_KEY, `#${footerId}`);
 const panel = ref<HTMLElement | null>(null);
 
 /** Whether another modal layer is open. The drawer sits at `z-[45]`, under every
@@ -86,7 +90,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
           ref="panel"
           :class="
             cn(
-              'flex flex-col overflow-y-auto bg-background',
+              'flex flex-col overflow-hidden bg-background',
               drawer
                 ? 'pointer-events-auto absolute inset-y-0 right-0 max-w-full border-l shadow-2xl'
                 : 'h-full',
@@ -99,7 +103,10 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
           :data-testid="testid"
           @click.stop
         >
-          <slot />
+          <div class="flex min-h-0 flex-1 flex-col overflow-y-auto">
+            <slot />
+          </div>
+          <div :id="footerId" class="shrink-0 empty:hidden" />
         </aside>
       </Transition>
     </div>

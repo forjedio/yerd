@@ -3,21 +3,25 @@ import {
   Code2,
   Copy,
   ExternalLink,
+  FolderMinus,
   FolderOpen,
   Lock,
   LockOpen,
   SquareTerminal,
   Star,
+  Trash2,
   X,
 } from "lucide-vue-next";
 import { computed, onMounted, ref } from "vue";
 
 import SiteActionsMenu from "@/components/sites/SiteActionsMenu.vue";
 import SiteDomainsCard from "@/components/sites/SiteDomainsCard.vue";
+import SiteHeadersCard from "@/components/sites/SiteHeadersCard.vue";
 import SiteEnvironmentCard from "@/components/sites/SiteEnvironmentCard.vue";
 import Button from "@/components/ui/Button.vue";
+import InspectorFooter from "@/components/ui/InspectorFooter.vue";
 import InspectorFrame from "@/components/ui/InspectorFrame.vue";
-import { INSPECTOR_TOOL } from "@/components/ui/styles";
+import { DANGER_TOOL, INSPECTOR_TOOL } from "@/components/ui/styles";
 import { loadPlatform, usePlatform } from "@/composables/usePlatform";
 import { useSiteEditor } from "@/composables/useSiteEditor";
 import { openInBrowser, openInTerminal, openPath } from "@/ipc/client";
@@ -279,29 +283,30 @@ onMounted(() => {
             @node-changed="emit('nodeChanged')"
           />
           <SiteDomainsCard :site="site" :tld="tld" @domains-changed="emit('domainsChanged')" />
+          <SiteHeadersCard :site="site" />
         </div>
 
-        <div class="mt-auto flex justify-end pt-8">
-          <button
+        <InspectorFooter v-if="(site.kind === 'parked' && parentDir) || site.kind === 'linked'">
+          <Button
             v-if="site.kind === 'parked' && parentDir"
-            type="button"
-            class="text-xs font-medium text-destructive hover:underline"
+            variant="outline"
+            :class="DANGER_TOOL"
             data-testid="inspector-footer-action"
             @click="emit('unpark', parentDir)"
           >
-            Unpark site…
-          </button>
-          <button
-            v-else-if="site.kind === 'linked'"
-            type="button"
-            class="text-xs font-medium text-destructive hover:underline disabled:opacity-50"
+            <FolderMinus /> Unpark site…
+          </Button>
+          <Button
+            v-else
+            variant="outline"
+            :class="DANGER_TOOL"
             :disabled="busy"
             data-testid="inspector-footer-action"
             @click="emit('unlink', site)"
           >
-            Remove site…
-          </button>
-        </div>
+            <Trash2 /> Remove site…
+          </Button>
+        </InspectorFooter>
       </div>
     </template>
   </InspectorFrame>

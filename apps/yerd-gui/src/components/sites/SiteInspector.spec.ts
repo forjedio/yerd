@@ -349,14 +349,11 @@ describe("SiteInspector domains", () => {
     expect(card.get('[data-testid="domains-shadowed"]').text()).toContain("served by “other”");
   });
 
-  it("manages domains in the shared panel", async () => {
+  it("adds a domain through the card's dialog", async () => {
     const w = mountInspector(site({ domains: ["blog.test", "api.blog.test"] }));
     await button(w, "Add domain").trigger("click");
     await nextTick();
-    expect(w.text()).toContain("Domains · blog.test");
-    await w.get("#add-domain").setValue("shop.blog.test");
-    const add = w.findAll("button").find((b) => b.text() === "Add");
-    await add?.trigger("click");
+    w.findComponent({ name: "DomainDialog" }).vm.$emit("submit", "shop.blog.test");
     await flushPromises();
     expect(addDomain).toHaveBeenCalledWith("blog", "shop.blog.test");
     expect(w.emitted("domainsChanged")).toHaveLength(1);
@@ -543,13 +540,14 @@ describe("SiteInspector routing and headers", () => {
     expect(w.find('[aria-label="Route through front controller"]').exists()).toBe(false);
   });
 
-  it("manages response headers", async () => {
+  it("lists response headers in their own card, not the menu", async () => {
     listResponseHeaders.mockResolvedValue([
       { site: "blog", name: "Access-Control-Allow-Origin", value: "https://app.test" },
     ]);
     const w = mountInspector();
-    await pick(w, "Response headers");
-    expect(w.text()).toContain("Access-Control-Allow-Origin:");
+    await flushPromises();
+    expect(menuItems(w).some((t) => t.includes("Response headers"))).toBe(false);
+    expect(w.get('[data-testid="headers-card"]').text()).toContain("Access-Control-Allow-Origin");
     await w.get('[aria-label="Remove header Access-Control-Allow-Origin"]').trigger("click");
     await flushPromises();
     expect(removeResponseHeader).toHaveBeenCalledWith("blog", "Access-Control-Allow-Origin");

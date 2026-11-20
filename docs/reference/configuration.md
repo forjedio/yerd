@@ -687,8 +687,8 @@ value must be non-empty with no control characters. A hand-edited entry that
 fails is a hard parse error, and two entries for one site sharing a name
 (ignoring case) fail validation.
 
-Manage these with [`yerd header`](cli/headers), or **Response headers…** in the
-desktop app's site inspector.
+Manage these with [`yerd header`](cli/headers), or the **Response headers** card
+in the desktop app's site inspector.
 
 ### `[network]`
 
