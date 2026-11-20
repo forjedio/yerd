@@ -3170,7 +3170,10 @@ async fn list_proxies(state: &DaemonState) -> Response {
     for (docroot, site_rules) in &cfg.proxy_rules.parked {
         let site_name = router
             .iter()
-            .find(|s| s.document_root().to_string_lossy().as_ref() == docroot.as_str())
+            .find(|s| {
+                s.kind() == yerd_core::SiteKind::Parked
+                    && s.document_root().to_string_lossy().as_ref() == docroot.as_str()
+            })
             .map_or_else(|| docroot.clone(), |s| s.name().to_owned());
         for r in site_rules {
             rules.push(yerd_ipc::ProxyRuleEntry {
@@ -4278,6 +4281,51 @@ mod tests {
                         ("blog", "/app", Some("Reverb")),
                     ]
                 );
+            }
+            other => panic!("expected Proxies, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_proxies_resolves_a_parked_rule_past_a_linked_alias_on_the_same_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        {
+            let mut cfg = state.config.lock().await;
+            let rule = yerd_core::ProxyRule::new(
+                "/app",
+                yerd_core::UpstreamTarget::from_url_str("http://127.0.0.1:8080").unwrap(),
+            )
+            .unwrap();
+            cfg.proxy_rules
+                .parked
+                .insert("/srv/blog".into(), vec![rule]);
+            cfg.services.instances.insert(
+                "reverb:blog".into(),
+                yerd_config::ServiceInstance {
+                    site: Some("blog".into()),
+                    ..yerd_config::ServiceInstance::default()
+                },
+            );
+        }
+        {
+            let v = yerd_core::PhpVersion::new(8, 3);
+            let mut router = state.router.write().await;
+            router
+                .insert(yerd_core::Site::linked("alias", "/srv/blog", v).unwrap())
+                .unwrap();
+            router
+                .insert(yerd_core::Site::parked("blog", "/srv/blog", v).unwrap())
+                .unwrap();
+        }
+
+        match dispatch(Request::ListProxies, &state).await {
+            Response::Proxies { rules, .. } => {
+                let listed: Vec<_> = rules
+                    .iter()
+                    .map(|r| (r.site.as_str(), r.prefix.as_str(), r.managed_by.as_deref()))
+                    .collect();
+                assert_eq!(listed, [("blog", "/app", Some("Reverb"))]);
             }
             other => panic!("expected Proxies, got {other:?}"),
         }
