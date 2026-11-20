@@ -683,12 +683,17 @@ async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool
             target.as_deref().unwrap_or("the update")
         );
     }
-    let (path, kind) = match transport::exchange(&Request::StageUpdate {
+    let (path, kind, daemon_dir) = match transport::exchange(&Request::StageUpdate {
         channel: channel_override,
     })
     .await
     {
-        Ok(Response::Staged { path, kind, .. }) => (path, kind),
+        Ok(Response::Staged {
+            path,
+            kind,
+            install_dir,
+            ..
+        }) => (path, kind, install_dir),
         Ok(Response::Error { message, .. }) => {
             eprintln!("yerd: {message}");
             return ExitCode::from(1);
@@ -707,6 +712,13 @@ async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool
         }
     };
 
+    if kind == yerd_ipc::StagedArtifact::HeadlessTarGz {
+        let own_dir = yerd_platform::install_mode::current_exe_dir();
+        if let Err(e) = apply::check_daemon_dir(daemon_dir.as_deref(), own_dir.as_deref()) {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(1);
+        }
+    }
     tokio::task::spawn_blocking(move || apply::run(std::path::Path::new(&path), kind, false, false))
         .await
         .unwrap_or_else(|e| {

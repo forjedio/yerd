@@ -6838,6 +6838,7 @@ Subject: Captured\r\n\r\nhi\r\n";
                 path,
                 version,
                 kind,
+                ..
             } => {
                 assert_eq!(version, "99.0.1");
                 let p = std::path::Path::new(&path);

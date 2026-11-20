@@ -452,10 +452,16 @@ pub async fn stage_update(
         ArtifactKind::HeadlessTarGz => StagedArtifact::HeadlessTarGz,
     };
     tracing::info!(version = %target_ver, path = %path.display(), "staged verified update artifact");
+    let install_dir = tokio::task::spawn_blocking(yerd_platform::install_mode::current_exe_dir)
+        .await
+        .ok()
+        .flatten()
+        .map(|dir| dir.to_string_lossy().into_owned());
     Response::Staged {
         path: path.to_string_lossy().into_owned(),
         version: target_ver.to_string(),
         kind,
+        install_dir,
     }
 }
 

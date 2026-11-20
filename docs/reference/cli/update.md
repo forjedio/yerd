@@ -106,10 +106,12 @@ installed somewhere else with `YERD_INSTALL_DIR`, use that directory's `yerd`
 in both commands. The updater prints both commands with your install's path
 when `yerdd` had the capability, or when `getcap` can't tell.
 
-The CLI also refuses, before changing anything, when the registered daemon
-service (the systemd unit's `ExecStart=`, or the macOS LaunchDaemon's program)
-runs a `yerdd` from a different directory than the `yerd` you ran: updating
-this install's files would leave that daemon on its old version.
+The CLI also refuses, before changing anything, when the daemon belongs to a
+different headless install than the `yerd` you ran: either the running daemon
+reports a different directory with the staged update, or the registered
+daemon service (the systemd unit's `ExecStart=`, or the macOS LaunchDaemon's
+program) runs a `yerdd` from a different directory. Updating this install's
+files would leave that daemon on its old version.
 
 The CLI refuses to apply an update that belongs to the other kind of install:
 a desktop app `yerd` talking to a headless daemon is told to run the headless

@@ -1235,6 +1235,27 @@ fn apply_headless(staged: &Path) -> Result<HeadlessRestart, String> {
     Ok(restart_after_headless_swap(&dir, had_port_cap))
 }
 
+/// Refuse a headless update when the daemon that staged it runs from a
+/// different directory than this `yerd`: swapping this install's files would
+/// leave that daemon on its old version. `daemon_dir` is absent from older
+/// daemons, which pass (the registered-service check still applies).
+pub(crate) fn check_daemon_dir(
+    daemon_dir: Option<&str>,
+    own_dir: Option<&Path>,
+) -> Result<(), String> {
+    let (Some(daemon_dir), Some(own_dir)) = (daemon_dir, own_dir) else {
+        return Ok(());
+    };
+    if Path::new(daemon_dir) == own_dir {
+        return Ok(());
+    }
+    Err(format!(
+        "the running daemon is from {daemon_dir}, a different install than this yerd ({}); \
+         run that install's `yerd update --yes` instead. Nothing was changed",
+        own_dir.display()
+    ))
+}
+
 #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 /// Refuse when the registered daemon service runs a `yerdd` from another
 /// directory: swapping this install's files would leave that daemon on its
@@ -1754,6 +1775,20 @@ mod tests {
                 "yerd",
             ]
         );
+    }
+
+    #[test]
+    fn check_daemon_dir_table() {
+        let own = Path::new("/home/u/.yerd/bin");
+        assert_eq!(check_daemon_dir(None, Some(own)), Ok(()));
+        assert_eq!(check_daemon_dir(Some("/home/u/.yerd/bin"), None), Ok(()));
+        assert_eq!(
+            check_daemon_dir(Some("/home/u/.yerd/bin"), Some(own)),
+            Ok(())
+        );
+        let err = check_daemon_dir(Some("/opt/yerd"), Some(own)).unwrap_err();
+        assert!(err.contains("/opt/yerd"), "{err}");
+        assert!(err.contains("Nothing was changed"), "{err}");
     }
 
     #[test]
