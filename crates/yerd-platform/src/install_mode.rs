@@ -10,6 +10,29 @@ use std::path::{Path, PathBuf};
 
 use crate::pure::install_receipt::{self, InstallMode, ReceiptError, ReceiptRead, RECEIPT_FILE};
 
+/// The running executable's path, as [`std::env::current_exe`] but surviving a
+/// rename-over: Linux then reports `"<path> (deleted)"`, so when that path is
+/// gone and the launch path holds a file, that file is returned. Use it to
+/// re-exec onto an updated binary. Install-mode detection deliberately keeps
+/// the raw path, so a daemon whose binary was replaced is told to restart
+/// before it stages an update for a version that may already be installed.
+///
+/// # Errors
+///
+/// Whatever [`std::env::current_exe`] returns.
+pub fn current_exe() -> std::io::Result<PathBuf> {
+    std::env::current_exe().map(resolve_reported_exe)
+}
+
+fn resolve_reported_exe(reported: PathBuf) -> PathBuf {
+    if reported.exists() {
+        return reported;
+    }
+    crate::pure::exe_path::strip_deleted_suffix(&reported)
+        .filter(|launch| launch.is_file())
+        .unwrap_or(reported)
+}
+
 /// The canonical directory holding the running executable, or `None` when the
 /// path cannot be resolved (e.g. Linux reports `"<path> (deleted)"` after the
 /// binary was renamed over).
@@ -66,6 +89,41 @@ mod tests {
             read_receipt_in(dir_as_receipt.path()),
             ReceiptRead::Unreadable
         );
+    }
+
+    #[test]
+    fn resolve_reported_exe_follows_a_renamed_over_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let launch = tmp.path().join("yerdd");
+        let reported = tmp.path().join("yerdd (deleted)");
+
+        assert_eq!(resolve_reported_exe(reported.clone()), reported);
+
+        std::fs::write(&launch, b"new").unwrap();
+        assert_eq!(resolve_reported_exe(reported.clone()), launch);
+        assert_eq!(resolve_reported_exe(launch.clone()), launch);
+
+        std::fs::write(&reported, b"literal").unwrap();
+        assert_eq!(resolve_reported_exe(reported.clone()), reported);
+
+        let dir_only = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir_only.path().join("yerdd")).unwrap();
+        let gone = dir_only.path().join("yerdd (deleted)");
+        assert_eq!(resolve_reported_exe(gone.clone()), gone);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolve_reported_exe_keeps_a_non_utf8_install_dir() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(OsStr::from_bytes(b"bin-\xff"));
+        std::fs::create_dir(&dir).unwrap();
+        let launch = dir.join("yerdd");
+        std::fs::write(&launch, b"new").unwrap();
+        assert_eq!(resolve_reported_exe(dir.join("yerdd (deleted)")), launch);
     }
 
     #[test]

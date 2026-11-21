@@ -89,12 +89,15 @@ fn resolve_log_dir() -> Option<std::path::PathBuf> {
 
 /// Re-exec this binary in place with the original argv (same PID). On success
 /// the process image is replaced and this never returns; an `Err` means the
-/// `exec` failed. Unix-only - the daemon refuses `RestartDaemon` elsewhere, so
+/// `exec` failed. The path comes from `install_mode::current_exe`, so after an
+/// update or package upgrade renamed a new binary over this one, the restart
+/// loads the new file rather than failing on Linux's `"<path> (deleted)"`.
+/// Unix-only - the daemon refuses `RestartDaemon` elsewhere, so
 /// `Outcome::Restart` is unreachable on non-Unix.
 #[cfg(unix)]
 fn restart_in_place() -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
-    let exe = std::env::current_exe()?;
+    let exe = yerd_platform::install_mode::current_exe()?;
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     Err(std::process::Command::new(exe).args(args).exec())
 }

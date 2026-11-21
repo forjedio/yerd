@@ -29,7 +29,7 @@ pub enum ReceiptError {
     #[error("the install receipt ({RECEIPT_FILE}) is unreadable or unrecognised; reinstall with the install script")]
     Unrecognised,
     /// The running binary's own path could not be resolved.
-    #[error("the running binary was replaced on disk; restart it")]
+    #[error("the running binary was replaced on disk; restart it (`yerd restart daemon`) to load the new version")]
     ExeUnresolved,
 }
 
@@ -112,7 +112,8 @@ mod tests {
             .contains("reinstall with the install script"));
         assert_eq!(
             ReceiptError::ExeUnresolved.to_string(),
-            "the running binary was replaced on disk; restart it"
+            "the running binary was replaced on disk; restart it (`yerd restart daemon`) to \
+             load the new version"
         );
     }
 }

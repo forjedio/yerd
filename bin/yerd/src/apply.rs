@@ -1405,10 +1405,10 @@ fn install_headless(
     result
 }
 
-/// Restart the daemon onto the swapped binary. Linux re-exec of a renamed-over
-/// binary resolves to `"<path> (deleted)"`, so it goes through the service
-/// manager instead. The swap also drops any `cap_net_bind_service` on `yerdd`,
-/// so when it had one, say how to grant it again.
+/// Restart the daemon onto the swapped binary through the service manager, so
+/// a daemon registered with `yerd daemon install` comes back under systemd.
+/// The swap also drops any `cap_net_bind_service` on `yerdd`, so when it had
+/// one, say how to grant it again.
 #[cfg(target_os = "linux")]
 fn restart_after_headless_swap(dir: &Path, had_port_cap: bool) -> HeadlessRestart {
     let outcome = match yerd_service_ctl::ServiceCtl::new(dir.join("yerdd")).restart() {

@@ -277,6 +277,21 @@ fn registered_job_matches(
     }
 }
 
+/// macOS `start` under sudo: whether the system job needs re-bootstrapping.
+/// The job must belong to this install and user first; when `uid`'s daemon is
+/// already up, re-bootstrapping would boot it out (stopping every site) only
+/// to load it again, so `Ok(false)` leaves it alone.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn helper_start_needed(
+    registered: Option<&DaemonJobIdentity>,
+    user: &str,
+    yerdd: &Path,
+    daemon_running: bool,
+) -> Result<bool, Refusal> {
+    registered_job_matches(registered, user, yerdd)?;
+    Ok(!daemon_running)
+}
+
 /// macOS `start`. A headless install without its system job has nothing for
 /// `launchctl` to start, so it is pointed at `daemon install` instead.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -540,11 +555,15 @@ mod unix_impl {
                     other => Refusal::new(format!("starting the daemon failed: {other}"), 1),
                 })?,
             super::MacStart::Helper(uid) => {
-                super::registered_job_matches(
+                if !super::helper_start_needed(
                     os::registered_job().as_ref(),
                     &user_name(uid),
                     &dir.join("yerdd"),
-                )?;
+                    os::daemon_running_for(uid),
+                )? {
+                    println!("yerd: the daemon is already running");
+                    return Ok(());
+                }
                 os::run_install_daemon_job(uid)?;
             }
         }
@@ -927,6 +946,29 @@ mod tests {
                 "no headless daemon job is registered; run \
                  `sudo /Users/me/.yerd/bin/yerd daemon install` first"
             );
+        }
+    }
+
+    #[test]
+    fn helper_start_checks_the_job_before_skipping_a_running_daemon() {
+        let yerdd = Path::new("/Users/me/.yerd/bin/yerdd");
+        let ours = DaemonJobIdentity {
+            yerdd: yerdd.display().to_string(),
+            user: "me".to_owned(),
+        };
+        let theirs = DaemonJobIdentity {
+            yerdd: "/opt/yerd/yerdd".to_owned(),
+            user: "me".to_owned(),
+        };
+        for (registered, running, want) in [
+            (Some(&ours), false, Ok(true)),
+            (Some(&ours), true, Ok(false)),
+            (Some(&theirs), false, Err(EX_CONFIG)),
+            (Some(&theirs), true, Err(EX_CONFIG)),
+            (None, true, Err(EX_CONFIG)),
+        ] {
+            let got = helper_start_needed(registered, "me", yerdd, running).map_err(|r| r.code);
+            assert_eq!(got, want, "{registered:?} running={running}");
         }
     }
 
