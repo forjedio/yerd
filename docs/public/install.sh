@@ -197,14 +197,20 @@ status_field() {
         | head -n 1
 }
 
-# The executable a pid runs. Linux appends " (deleted)" once that file has
-# been renamed over, which is exactly the upgrade case, so drop it.
+warn() {
+    printf 'warning: %s\n' "$*" >&2
+}
+
+# The absolute executable a pid runs, from the kernel rather than argv[0].
+# Linux appends " (deleted)" once that file has been renamed over, which is
+# exactly the upgrade case, so drop it.
 pid_exe() {
     if [ "$OS" = "Linux" ]; then
         exe=$(readlink "/proc/$1/exe" 2>/dev/null) || return 1
         say "${exe% (deleted)}"
     else
-        ps -o comm= -p "$1" 2>/dev/null
+        command -v lsof >/dev/null 2>&1 || return 1
+        lsof -a -p "$1" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
     fi
 }
 
@@ -218,6 +224,14 @@ own_daemon_pid() {
     say "$pid"
 }
 
+# Whether that pid is the main process of the `yerd` systemd user unit, which
+# `yerd daemon install` registers. Only then can a restart reproduce how it
+# was launched; a daemon started by hand may carry its own arguments.
+systemd_owns_pid() {
+    command -v systemctl >/dev/null 2>&1 \
+        && [ "$(systemctl --user show -p MainPID --value yerd 2>/dev/null)" = "$1" ]
+}
+
 port_cap_granted() {
     [ "$OS" = "Linux" ] && command -v getcap >/dev/null 2>&1 \
         && getcap "$DIR/yerdd" 2>/dev/null | grep -q cap_net_bind_service
@@ -225,16 +239,22 @@ port_cap_granted() {
 
 # Re-running the installer over a live install replaces the binaries under a
 # running daemon, which keeps the old version until it restarts. On Linux the
-# old daemon can't re-exec its renamed-over binary, so it is stopped and
-# started (through systemd when registered); on macOS it re-execs in place.
+# old daemon can't re-exec its renamed-over binary, so its systemd unit is
+# restarted; a daemon started by hand is left running with instructions. On
+# macOS it re-execs in place with its own arguments.
 restart_own_daemon() {
     [ -n "$OLD_PID" ] || return 0
-    want=${TAG#v}
     if [ "$OS" = "Linux" ]; then
-        "$DIR/yerd" daemon stop >/dev/null 2>&1 && "$DIR/yerd" daemon start >/dev/null 2>&1
+        if [ "$OLD_MANAGED" != "1" ]; then
+            say "The daemon you started yourself (pid $OLD_PID) is still running the previous"
+            say "version; stop it and start it again the same way to load $TAG."
+            return 0
+        fi
+        systemctl --user restart yerd || warn "restarting the yerd service failed"
     else
-        "$DIR/yerd" restart daemon >/dev/null 2>&1
+        "$DIR/yerd" restart daemon >/dev/null || warn "restarting the daemon failed"
     fi
+    want=${TAG#v}
     tries=0
     while [ "$tries" -lt 10 ]; do
         if [ "$(status_field daemon_version)" = "$want" ]; then
@@ -250,7 +270,7 @@ restart_own_daemon() {
     done
     say "The daemon isn't running Yerd $TAG yet; check \`$DIR/yerd status\` and"
     if [ "$OS" = "Linux" ]; then
-        say "run \`$DIR/yerd daemon start\` if it is down."
+        say "run \`systemctl --user restart yerd\`."
     else
         say "run \`sudo $DIR/yerd daemon start\` if it is down."
     fi
@@ -294,9 +314,13 @@ main() {
     say "Checksum OK"
     extract_and_check
     OLD_PID=""
+    OLD_MANAGED=0
     HAD_PORT_CAP=0
     if [ -x "$DIR/yerd" ]; then
         OLD_PID=$(own_daemon_pid) || OLD_PID=""
+        if [ -n "$OLD_PID" ] && systemd_owns_pid "$OLD_PID"; then
+            OLD_MANAGED=1
+        fi
         if port_cap_granted; then
             HAD_PORT_CAP=1
         fi

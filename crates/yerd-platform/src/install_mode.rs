@@ -112,6 +112,20 @@ mod tests {
         assert_eq!(resolve_reported_exe(gone.clone()), gone);
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolve_reported_exe_keeps_a_non_utf8_install_dir() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(OsStr::from_bytes(b"bin-\xff"));
+        std::fs::create_dir(&dir).unwrap();
+        let launch = dir.join("yerdd");
+        std::fs::write(&launch, b"new").unwrap();
+        assert_eq!(resolve_reported_exe(dir.join("yerdd (deleted)")), launch);
+    }
+
     #[test]
     fn test_binary_has_no_receipt() {
         assert_eq!(detect(), Ok(InstallMode::Package));

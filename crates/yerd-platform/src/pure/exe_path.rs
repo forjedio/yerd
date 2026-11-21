@@ -11,8 +11,26 @@ use std::path::{Path, PathBuf};
 const DELETED_SUFFIX: &str = " (deleted)";
 
 /// `reported` minus the trailing `" (deleted)"`, or `None` when there is no
-/// such suffix (or the path is not UTF-8). The caller decides whether the
-/// result is the file to use, since a real path can end in that text too.
+/// such suffix. Works on the raw bytes, so a non-UTF-8 directory survives. The
+/// caller decides whether the result is the file to use, since a real path
+/// can end in that text too.
+#[cfg(unix)]
+#[must_use]
+pub fn strip_deleted_suffix(reported: &Path) -> Option<PathBuf> {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+
+    let launch = reported
+        .as_os_str()
+        .as_bytes()
+        .strip_suffix(DELETED_SUFFIX.as_bytes())
+        .filter(|path| !path.is_empty())?;
+    Some(PathBuf::from(OsString::from_vec(launch.to_vec())))
+}
+
+/// `reported` minus the trailing `" (deleted)"`, or `None` when there is no
+/// such suffix (or the path is not Unicode). Only Linux reports the suffix.
+#[cfg(not(unix))]
 #[must_use]
 pub fn strip_deleted_suffix(reported: &Path) -> Option<PathBuf> {
     reported
@@ -54,5 +72,18 @@ mod tests {
                 "{reported:?}"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strip_deleted_suffix_keeps_non_utf8_components() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let reported = Path::new(OsStr::from_bytes(b"/home/u/\xff\xfe/yerdd (deleted)"));
+        assert_eq!(
+            strip_deleted_suffix(reported),
+            Some(PathBuf::from(OsStr::from_bytes(b"/home/u/\xff\xfe/yerdd")))
+        );
     }
 }

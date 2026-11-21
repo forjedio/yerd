@@ -41,8 +41,10 @@ It:
 2. Downloads the matching headless tarball for the latest **stable** release.
 3. Checks the download against the release's `SHA256SUMS`.
 4. Installs the binaries into `~/.yerd/bin`.
-5. If a Yerd daemon is already running (you re-ran the script to upgrade),
-   restarts it onto the new version.
+5. If you re-ran the script to upgrade and this install's daemon is running,
+   restarts it onto the new version: through its `yerd` systemd unit on Linux,
+   in place on macOS. A daemon you started by hand on Linux is left running;
+   restart it yourself.
 6. Runs `yerd path install` so `yerd` (and the `php`/`composer` shims) are on
    your `PATH`. Open a new shell, or `source` your shell profile, to pick it up.
 
