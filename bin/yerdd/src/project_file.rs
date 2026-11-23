@@ -226,6 +226,22 @@ pub async fn export(site: &str, state: &DaemonState) -> Response {
             message: format!("no site named '{site}'"),
         };
     };
+    let current_root = found.document_root().to_path_buf();
+    let still_here = blocking(move || std::fs::canonicalize(current_root).ok())
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|p| p == root);
+    if !still_here {
+        return Response::Error {
+            code: ErrorCode::InvalidPath,
+            message: format!(
+                "site {} no longer serves {}; export it again",
+                found.name(),
+                root.display()
+            ),
+        };
+    }
     let snap = snapshot(state, &found).await;
     let existing = match load(&file_path).await {
         Ok(existing) => existing,
@@ -270,6 +286,7 @@ struct Prepared {
     dir: PathBuf,
     file: ProjectFile,
     name: String,
+    owner: Option<String>,
 }
 
 async fn prepare(
@@ -311,9 +328,12 @@ async fn prepare(
             })?,
     };
     file.validate_for_tld(&tld).map_err(|e| project_error(&e))?;
-    let name = match (file.name.clone(), find_site_for_dir(state, &dir).await) {
+    let owner = find_site_for_dir(state, &dir)
+        .await
+        .map(|site| site.name().to_owned());
+    let name = match (file.name.clone(), owner.clone()) {
         (Some(name), _) => name,
-        (None, Some(site)) => site.name().to_owned(),
+        (None, Some(site)) => site,
         (None, None) => folder_slug(&dir).ok_or_else(|| Response::Error {
             code: ErrorCode::InvalidPath,
             message: format!(
@@ -322,7 +342,12 @@ async fn prepare(
             ),
         })?,
     };
-    Ok(Prepared { dir, file, name })
+    Ok(Prepared {
+        dir,
+        file,
+        name,
+        owner,
+    })
 }
 
 async fn spawn_apply(
@@ -351,8 +376,16 @@ async fn run_job(
     dl: Arc<dyn Downloader>,
     cancel_rx: watch::Receiver<bool>,
 ) {
-    let Prepared { dir, file, name } = prepared;
-    if !state.reserved_names.lock().await.insert(name.clone()) {
+    let Prepared {
+        dir,
+        file,
+        name,
+        owner,
+    } = prepared;
+    let reserved: Vec<String> = std::iter::once(name.clone())
+        .chain(owner.filter(|o| *o != name))
+        .collect();
+    if !reserve_all(&state, &reserved).await {
         state
             .jobs
             .finish(
@@ -366,7 +399,7 @@ async fn run_job(
         return;
     }
     let outcome = run_apply(&id, &dir, &file, &name, &state, dl.as_ref(), &cancel_rx).await;
-    state.reserved_names.lock().await.remove(&name);
+    release_all(&state, &reserved).await;
     match outcome {
         Outcome::Done { failed: 0 } => {
             state.jobs.set_phase(&id, "Done").await;
@@ -988,6 +1021,25 @@ async fn link(state: &DaemonState, name: &str, dir: &Path) -> Result<(), String>
 /// The site serving canonical directory `dir`. When a parked twin shares the
 /// directory with a linked site (left after a parked folder is linked under
 /// another name), the linked one wins.
+/// Reserves every name in `names` or none of them, so two applies that target
+/// the same site (by declared name or by the site already at the folder) never
+/// run at once.
+async fn reserve_all(state: &DaemonState, names: &[String]) -> bool {
+    let mut reserved = state.reserved_names.lock().await;
+    if names.iter().any(|n| reserved.contains(n)) {
+        return false;
+    }
+    reserved.extend(names.iter().cloned());
+    true
+}
+
+async fn release_all(state: &DaemonState, names: &[String]) {
+    let mut reserved = state.reserved_names.lock().await;
+    for n in names {
+        reserved.remove(n);
+    }
+}
+
 async fn find_site_for_dir(state: &DaemonState, dir: &Path) -> Option<Site> {
     let sites: Vec<Site> = state.router.read().await.iter().cloned().collect();
     let dir = dir.to_path_buf();
@@ -2433,5 +2485,42 @@ mod tests {
         let resp = start_apply(existing, None, state.clone()).await;
         assert_eq!(code_of(&resp), ErrorCode::ProjectFileInvalid);
         assert!(state.router.read().await.get("existing").is_none());
+    }
+
+    #[tokio::test]
+    async fn apply_reserves_the_site_already_at_the_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(state_in(tmp.path()));
+        let dir = project(tmp.path(), "shop", Some("name = \"acme\"\n"));
+        link_site(&state, "shop", &dir).await;
+        let prepared = prepare(&dir, None, &state).await.unwrap();
+        assert_eq!(prepared.name, "acme");
+        assert_eq!(prepared.owner.as_deref(), Some("shop"));
+        state.reserved_names.lock().await.insert("shop".to_owned());
+        let Response::JobStarted { job_id } = spawn_apply(prepared, state.clone(), offline()).await
+        else {
+            panic!("expected JobStarted");
+        };
+        let (job, _, error) = wait(&state, &job_id).await;
+        assert_eq!(job, JobState::Failed);
+        assert!(error.unwrap_or_default().contains("already being"));
+        let reserved = state.reserved_names.lock().await.clone();
+        assert_eq!(
+            reserved,
+            std::collections::HashSet::from(["shop".to_owned()])
+        );
+    }
+
+    #[tokio::test]
+    async fn reserve_all_is_all_or_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let names = |list: &[&str]| list.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        assert!(reserve_all(&state, &names(&["acme", "shop"])).await);
+        assert!(!reserve_all(&state, &names(&["other", "shop"])).await);
+        assert!(!state.reserved_names.lock().await.contains("other"));
+        release_all(&state, &names(&["acme", "shop"])).await;
+        assert!(state.reserved_names.lock().await.is_empty());
+        assert!(reserve_all(&state, &names(&["other", "shop"])).await);
     }
 }
