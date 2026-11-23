@@ -25,7 +25,7 @@ mod serialize;
 
 pub use error::{ConfigError, MigrationErrorReason, ProjectError, ValidateErrorReason};
 pub use project::{
-    ends_with_tld, extension_satisfied, normalise_module, plan, service_action,
+    ends_with_tld, extension_satisfied, newest_matching, normalise_module, plan, service_action,
     service_prefix_matches, PlannedAction, PlannedStep, ProjectFile, ServiceAction, SiteSnapshot,
     SyncDelta, ANY_SERVICE_VERSION, PROJECT_FILE_MAX_BYTES, PROJECT_FILE_NAME,
 };

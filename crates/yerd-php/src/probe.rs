@@ -185,6 +185,19 @@ mod tests {
         }
     }
 
+    /// Like [`FakeRunner`], but asserts the command is a bare `php -n -m`.
+    struct ModulesRunner(FakeRunner);
+
+    #[async_trait]
+    impl CommandRunner for ModulesRunner {
+        async fn run(&self, cmd: Command) -> Result<ProbeOutput, io::Error> {
+            let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+            assert!(args.contains(&std::ffi::OsStr::new("-n")), "{args:?}");
+            assert!(args.contains(&std::ffi::OsStr::new("-m")), "{args:?}");
+            self.0.run(cmd).await
+        }
+    }
+
     struct FailingRunner;
 
     #[async_trait]
@@ -315,16 +328,16 @@ mod tests {
 
     #[tokio::test]
     async fn probe_modules_lists_modules_or_none() {
-        let ok = FakeRunner {
+        let ok = ModulesRunner(FakeRunner {
             status_ok: true,
             stdout: "[PHP Modules]\nCore\nredis\n\n[Zend Modules]\nZend OPcache\n".to_owned(),
             stderr: String::new(),
-        };
-        let failed_exit = FakeRunner {
+        });
+        let failed_exit = ModulesRunner(FakeRunner {
             status_ok: false,
             stdout: "[PHP Modules]\nCore\n".to_owned(),
             stderr: String::new(),
-        };
+        });
         let php = Path::new("/php");
         let want: BTreeSet<String> = ["Core", "Zend OPcache", "redis"]
             .iter()

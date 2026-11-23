@@ -661,6 +661,16 @@ pub async fn set_service_site(service_id: &str, new_site: &str, state: &DaemonSt
 
 /// `start service <wire-id>` - ensure it's running. Does not change autostart.
 pub async fn start_service(service_id: &str, state: &DaemonState) -> Response {
+    start_service_at(service_id, None, state).await
+}
+
+/// Starts a service like [`start_service`], but at installed `version` when
+/// given rather than the configured or newest one. Per-site services ignore it.
+pub(crate) async fn start_service_at(
+    service_id: &str,
+    version: Option<&str>,
+    state: &DaemonState,
+) -> Response {
     let (type_id, site) = parse_wire_id(service_id);
     let reg = registry();
     let Some(def) = reg.get(&type_id) else {
@@ -680,7 +690,8 @@ pub async fn start_service(service_id: &str, state: &DaemonState) -> Response {
             inst.map(|i| i.overrides.clone()).unwrap_or_default(),
         )
     };
-    let version = match resolve_version(&def, configured_version.as_deref(), &state.dirs) {
+    let wanted = version.or(configured_version.as_deref());
+    let version = match resolve_version(&def, wanted, &state.dirs) {
         Ok(v) => v,
         Err(resp) => return resp,
     };

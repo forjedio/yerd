@@ -119,3 +119,80 @@ fn invalid_contents_surface_a_parse_error() {
         Err(ProjectError::Parse(_))
     ));
 }
+
+#[test]
+fn invalid_utf8_is_a_content_error() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(PROJECT_FILE_NAME);
+    fs::write(&path, b"name = \"\xff\"\n").unwrap();
+    assert!(matches!(
+        ProjectFile::load(&path),
+        Err(ProjectError::Invalid { field: "file", .. })
+    ));
+}
+
+fn with_header_value(value: &str) -> ProjectFile {
+    ProjectFile {
+        headers: vec![yerd_core::ResponseHeader::new("X-Pad", value).unwrap()],
+        ..ProjectFile::default()
+    }
+}
+
+fn sized(len: u64) -> ProjectFile {
+    let base = u64::try_from(with_header_value("a").to_toml().len()).unwrap();
+    let pad = usize::try_from(len - base + 1).unwrap();
+    with_header_value(&"a".repeat(pad))
+}
+
+#[test]
+fn save_refuses_output_over_the_size_limit() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(PROJECT_FILE_NAME);
+    let exact = sized(PROJECT_FILE_MAX_BYTES);
+    assert_eq!(
+        u64::try_from(exact.to_toml().len()).unwrap(),
+        PROJECT_FILE_MAX_BYTES
+    );
+    exact.save(&path).unwrap();
+    assert_eq!(ProjectFile::load(&path).unwrap(), Some(exact.clone()));
+
+    let over = sized(PROJECT_FILE_MAX_BYTES + 1);
+    assert!(matches!(
+        over.save(&path),
+        Err(ProjectError::TooLarge { .. })
+    ));
+    assert_eq!(fs::read_to_string(&path).unwrap(), exact.to_toml());
+}
+
+#[test]
+fn save_validates_first() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(PROJECT_FILE_NAME);
+    let bad = ProjectFile {
+        extensions: vec!["Not Valid".to_owned()],
+        ..ProjectFile::default()
+    };
+    assert!(matches!(
+        bad.save(&path),
+        Err(ProjectError::Invalid {
+            field: "extensions",
+            ..
+        })
+    ));
+    assert!(!path.exists());
+}
+
+#[test]
+fn save_new_never_replaces_an_existing_file() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(PROJECT_FILE_NAME);
+    sample().save_new(&path).unwrap();
+    assert_eq!(ProjectFile::load(&path).unwrap(), Some(sample()));
+
+    fs::write(&path, "php = \"8.1\"\n").unwrap();
+    assert!(matches!(
+        sample().save_new(&path),
+        Err(ProjectError::AlreadyExists { .. })
+    ));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "php = \"8.1\"\n");
+}

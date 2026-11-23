@@ -126,6 +126,13 @@ pub enum ProjectError {
         /// The project file's path.
         path: PathBuf,
     },
+
+    /// A no-replace save found a file already at the path.
+    #[error("{} already exists", path.display())]
+    AlreadyExists {
+        /// The project file's path.
+        path: PathBuf,
+    },
 }
 
 /// Specific failure modes for [`crate::Config::validate`].
@@ -526,6 +533,12 @@ mod tests {
                     path: PathBuf::from("/p/.yerd.toml"),
                 },
                 "symlinks",
+            ),
+            (
+                ProjectError::AlreadyExists {
+                    path: PathBuf::from("/p/.yerd.toml"),
+                },
+                "already exists",
             ),
         ];
         for (err, want) in cases {

@@ -27,7 +27,8 @@ use crate::parse::KNOWN_SINGLE_SERVICES;
 /// The project file's name, in a project's root directory.
 pub const PROJECT_FILE_NAME: &str = ".yerd.toml";
 
-/// The largest `.yerd.toml` [`ProjectFile::load`] reads, in bytes.
+/// The largest `.yerd.toml` [`ProjectFile::load`] reads or
+/// [`ProjectFile::save`] writes, in bytes.
 pub const PROJECT_FILE_MAX_BYTES: u64 = 64 * 1024;
 
 /// The service version value that matches any installed or available version.
@@ -188,22 +189,27 @@ impl ProjectFile {
         validate_services(&self.services)
     }
 
-    /// Checks that no declared domain already carries the live TLD: apply
-    /// appends `.<tld>`, so `admin.acme.test` would become `admin.acme.test.test`.
+    /// Checks that no declared domain already carries the live TLD (apply
+    /// appends `.<tld>`, so `admin.acme.test` would become `admin.acme.test.test`)
+    /// and that each `<domain>.<tld>` is itself a valid name, so an over-long
+    /// domain fails here rather than mid-apply.
     ///
     /// # Errors
     /// [`ProjectError::Invalid`] on `domains` naming the first such domain.
     pub fn validate_for_tld(&self, tld: &str) -> Result<(), ProjectError> {
-        match self.domains.iter().find(|d| ends_with_tld(d, tld)) {
-            Some(domain) => Err(invalid(
+        if let Some(domain) = self.domains.iter().find(|d| ends_with_tld(d, tld)) {
+            return Err(invalid(
                 "domains",
                 format!(
                     "{} already ends in .{tld}; list domains without the TLD",
                     domain.as_str()
                 ),
-            )),
-            None => Ok(()),
+            ));
         }
+        for domain in &self.domains {
+            Domain::parse(&domain.to_fqdn(tld), tld).map_err(|e| invalid("domains", e))?;
+        }
+        Ok(())
     }
 
     fn canonicalise(&mut self) {
@@ -327,14 +333,26 @@ impl ProjectFile {
         crate::io::load_project(path)
     }
 
-    /// Renders and writes the file atomically: a temp file in the same
-    /// directory, mode 0644 on Unix, then a rename. The directory must exist,
-    /// and an existing non-regular file at `path` is refused.
+    /// Validates, renders and writes the file atomically: a temp file in the
+    /// same directory, mode 0644 on Unix, then a rename. The directory must
+    /// exist, and an existing non-regular file at `path` is refused.
     ///
     /// # Errors
-    /// [`ProjectError::NotRegularFile`] or [`ProjectError::Io`].
+    /// A validation error, [`ProjectError::TooLarge`] when the rendered file
+    /// exceeds [`PROJECT_FILE_MAX_BYTES`], [`ProjectError::NotRegularFile`] or
+    /// [`ProjectError::Io`].
     pub fn save(&self, path: &std::path::Path) -> Result<(), ProjectError> {
-        crate::io::save_project(self, path)
+        crate::io::save_project(self, path, true)
+    }
+
+    /// Like [`ProjectFile::save`], but never replaces an existing file, even
+    /// one created after this call started.
+    ///
+    /// # Errors
+    /// [`ProjectError::AlreadyExists`] when a file is already at `path`, or any
+    /// error [`ProjectFile::save`] returns.
+    pub fn save_new(&self, path: &std::path::Path) -> Result<(), ProjectError> {
+        crate::io::save_project(self, path, false)
     }
 
     /// Applies one write-back change and reports whether the model changed.
@@ -698,13 +716,20 @@ pub fn service_action(
     if !installed.is_empty() {
         return ServiceAction::Mismatch;
     }
-    available
+    newest_matching(prefix, available).map_or(ServiceAction::Unavailable, |l| {
+        ServiceAction::Install(l.to_owned())
+    })
+}
+
+/// The newest of `labels` that `prefix` matches, comparing numeric components
+/// as numbers.
+#[must_use]
+pub fn newest_matching<'a>(prefix: &str, labels: &'a [String]) -> Option<&'a str> {
+    labels
         .iter()
         .filter(|l| service_prefix_matches(prefix, l))
         .max_by(|a, b| compare_labels(a, b))
-        .map_or(ServiceAction::Unavailable, |l| {
-            ServiceAction::Install(l.clone())
-        })
+        .map(String::as_str)
 }
 
 fn compare_labels(a: &str, b: &str) -> Ordering {
@@ -1114,6 +1139,21 @@ mod tests {
     }
 
     #[test]
+    fn newest_matching_cases() {
+        let installed = labels(&["7.2.4", "8.0.1", "8.0.10", "8.1.0"]);
+        let cases: &[(&str, Option<&str>)] = &[
+            ("7", Some("7.2.4")),
+            ("8.0", Some("8.0.10")),
+            ("8", Some("8.1.0")),
+            ("*", Some("8.1.0")),
+            ("9", None),
+        ];
+        for (prefix, want) in cases {
+            assert_eq!(newest_matching(prefix, &installed), *want, "{prefix}");
+        }
+    }
+
+    #[test]
     #[allow(clippy::too_many_lines)]
     fn service_action_matrix() {
         let available = labels(&["8.0.42", "8.4.2", "8.4.10", "9.1.0"]);
@@ -1260,6 +1300,35 @@ mod tests {
             "{err:?}"
         );
         assert!(bad.validate_for_tld("local").is_ok());
+    }
+
+    #[test]
+    fn validate_for_tld_rejects_a_domain_too_long_with_the_tld() {
+        let label = "a".repeat(63);
+        let base = format!("{label}.{label}.{label}");
+        let cases: &[(usize, bool)] = &[(248, true), (249, false)];
+        for (len, want_ok) in cases {
+            let tail = "b".repeat(len - base.len() - 1);
+            let sub = format!("{base}.{tail}");
+            let file = ProjectFile {
+                domains: vec![Domain::parse_subpart(&sub).unwrap()],
+                ..ProjectFile::default()
+            };
+            let result = file.validate_for_tld("test");
+            assert_eq!(result.is_ok(), *want_ok, "{len}: {result:?}");
+            if let Err(err) = result {
+                assert!(
+                    matches!(
+                        err,
+                        ProjectError::Invalid {
+                            field: "domains",
+                            ..
+                        }
+                    ),
+                    "{err:?}"
+                );
+            }
+        }
     }
 
     #[test]

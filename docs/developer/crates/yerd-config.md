@@ -547,11 +547,12 @@ of the crate it is pure; the daemon supplies site state as plain data.
   apply (link, PHP, HTTPS, domains, headers, rules, Node), each flagged
   `needed` so unchanged items can still be reported. A declared apex is
   `needed` when the snapshot's `apex_suppressed` is set.
-- **`service_prefix_matches` / `service_action`** - component-wise version
+- **`service_prefix_matches` / `service_action` / `newest_matching`** - component-wise version
   prefixes (`"8.4"` matches `8.4.9`, not `8.40.1`; `"*"` matches anything) and
   the install / start / mismatch / unavailable decision. When the instance has
   a selected version only that version is judged, so another matching version
-  on disk does not satisfy the prefix.
+  on disk does not satisfy the prefix. With no selected version, apply starts
+  the `newest_matching` installed version rather than the newest overall.
 - **`normalise_module` / `extension_satisfied`** - compare a required extension
   against `php -m` output, custom extensions and the Xdebug toggle.
 
@@ -560,15 +561,19 @@ of the crate it is pure; the daemon supplies site state as plain data.
 missing file and refuses a symlink or other non-regular file (checked with
 `symlink_metadata`, then re-checked on the opened handle, matched by device and
 inode on Unix) and anything over `PROJECT_FILE_MAX_BYTES` (64 KiB).
-`save_project` refuses a non-regular file at the destination, writes a sibling
+`save_project` validates the model, renders it once and refuses output over
+`PROJECT_FILE_MAX_BYTES` before touching the destination, refuses a
+non-regular file at the destination, writes a sibling
 temp file with mode `0644` (the file is committed and read by other tools,
-unlike `yerd.toml`'s `0600`), then renames it into place. It does not create the
-directory. Tests: unit tables in `project.rs`, `tests/project_file.rs` (render
+unlike `yerd.toml`'s `0600`), then renames it into place (`persist_noclobber` for
+`ProjectFile::save_new`, so a file created meanwhile is never replaced). It
+does not create the directory. Tests: unit tables in `project.rs`, `tests/project_file.rs` (render
 golden and round trip) and `tests/project_io.rs` (the atomic edge).
 
 ## Errors
 
-`ConfigError` is the single error type returned by every fallible public API.
+`ConfigError` is the error type returned by the daemon-config (`Config`) APIs.
+The project-file (`ProjectFile`) APIs return `ProjectError` instead.
 It is `#[non_exhaustive]` (as are the reason sub-enums), so new variants are
 semver-compatible. It is **not** `Clone`/`Eq` because it wraps `toml::de::Error`,
 `toml::ser::Error`, and `std::io::Error` - and it stores the full `io::Error`
@@ -590,8 +595,11 @@ plus a `PathBuf` because diagnostic detail matters for `load`/`save` debugging.
 
 `.yerd.toml` has its own `#[non_exhaustive]` `ProjectError`: `Parse` (TOML
 syntax, a wrong type or an unknown key), `Invalid { field, reason }`,
-`Io { path, source }`, `TooLarge { path }` and `NotRegularFile { path }`. The
-daemon maps every variant except `Io` to `ErrorCode::ProjectFileInvalid`.
+`Io { path, source }`, `TooLarge { path }`, `NotRegularFile { path }` and
+`AlreadyExists { path }` (from the no-replace `save_new`). A file that is not
+valid UTF-8 is `Invalid { field: "file", .. }`. The daemon maps `Io` to an
+internal error, `AlreadyExists` to `ErrorCode::AlreadyExists`, and every other
+variant to `ErrorCode::ProjectFileInvalid`.
 
 ## Key tests and invariants
 

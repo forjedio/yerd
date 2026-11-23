@@ -258,6 +258,54 @@ describe("LinkFolderDialog", () => {
     ]);
   });
 
+  it("drops a waiting submit when another folder is chosen meanwhile", async () => {
+    let resolveFirst = (_value: ProjectConfig) => undefined as void;
+    projectConfigDraft
+      .mockReturnValueOnce(
+        new Promise<ProjectConfig>((resolve) => {
+          resolveFirst = resolve;
+        }),
+      )
+      .mockResolvedValueOnce(draft({ file: "/srv/other/.yerd.toml" }));
+    pickDirectory.mockResolvedValue("/srv/other");
+    const w = mountDialog();
+    (pathInput(w).element as HTMLInputElement).value = "/srv/app";
+    await pathInput(w).trigger("input");
+    await nameInput(w).setValue("typed");
+    await button(w, "Link site").trigger("click");
+    await button(w, "Change").trigger("click");
+    await flushPromises();
+    resolveFirst(draft());
+    await flushPromises();
+    expect(w.emitted("link")).toBeUndefined();
+    expect(w.emitted("update:open")).toBeUndefined();
+  });
+
+  it("drops a waiting submit when the dialog closes and reopens", async () => {
+    let resolveFirst = (_value: ProjectConfig) => undefined as void;
+    projectConfigDraft
+      .mockReturnValueOnce(
+        new Promise<ProjectConfig>((resolve) => {
+          resolveFirst = resolve;
+        }),
+      )
+      .mockResolvedValueOnce(draft());
+    const w = mountDialog();
+    (pathInput(w).element as HTMLInputElement).value = "/srv/app";
+    await pathInput(w).trigger("input");
+    await nameInput(w).setValue("typed");
+    await button(w, "Link site").trigger("click");
+    await w.setProps({ open: false });
+    await w.setProps({ open: true });
+    await pathInput(w).setValue("/srv/app");
+    await pathInput(w).trigger("change");
+    await nameInput(w).setValue("typed");
+    await flushPromises();
+    resolveFirst(draft());
+    await flushPromises();
+    expect(w.emitted("link")).toBeUndefined();
+  });
+
   it("falls back to the site already at the folder for the read-only name", async () => {
     pickDirectory.mockResolvedValue("/srv/app");
     projectConfigDraft.mockResolvedValue(draft({ exists: true, name: null, site: "legacy" }));

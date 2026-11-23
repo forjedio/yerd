@@ -110,7 +110,8 @@ What apply does, in order:
    folder name when `name` is absent, the same rule as `yerd link`). A folder
    that is already linked keeps its name. A parked folder whose name differs
    from `name` is linked under `name`; its parked PHP version and HTTPS setting
-   carry over unless the file sets them.
+   carry over unless the file sets them, and so does a web root you set by
+   hand (otherwise the linked site auto-detects it).
 2. **PHP, HTTPS, domains, headers and path rules.** Each declared value is set
    on the site. Domains get your TLD appended, so `admin.acme` becomes
    `admin.acme.test`. A path rule whose prefix the site already has with a
@@ -198,10 +199,12 @@ rewritten, and `yerd init` refuses to apply it.
 The `node` key sets the site's **saved Node preference**, the same one
 `yerd node use <version> --site` sets. Node's usual order still applies:
 
-1. the project's `.nvmrc`,
-2. then its `.node-version`,
-3. then the saved preference (what `node` sets),
-4. then the global default.
+1. the nearest `.nvmrc` or `.node-version`, looking in the current directory
+   and then each parent up to the project directory (in a directory that has
+   both, `.nvmrc` wins; a file nearer the current directory wins over one
+   further up, whichever kind it is),
+2. then the saved preference (what `node` sets),
+3. then the global default.
 
 So a `.nvmrc` naming a different version wins over `node`; apply warns about it
 and the wizard mentions it before the Node question. Leave `node` out to keep
@@ -227,7 +230,9 @@ Yerd from managing Node for the project at all. See [Node.js](./node#per-site-ve
   HTTPS, domains, headers, path rules and Node preference to the file. Export
   keeps the file's `name`, `[services]` and `extensions`, and a `node`
   selector that matches the saved preference (so `node = "22"` stays after a
-  newer 22.x is installed).
+  newer 22.x is installed). When a parked folder has also been linked under
+  another name, the file belongs to the linked site: exporting the parked
+  one is refused with an error naming the linked site to export instead.
 
 ## Limitations
 

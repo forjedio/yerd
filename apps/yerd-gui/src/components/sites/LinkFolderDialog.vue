@@ -98,6 +98,18 @@ const valid = computed(() => {
   return usingFile.value ? fileName.value !== null : slugifySiteName(name.value) !== null;
 });
 
+/** Set while a submit waits for its folder's lookup, so a second click
+ *  during the wait does not emit twice. */
+let submitPending = false;
+/** Bumped when the folder changes or the dialog closes, so a submit still
+ *  waiting for an older folder's lookup never emits. */
+let submitGen = 0;
+
+function abandonSubmit(): void {
+  submitGen += 1;
+  submitPending = false;
+}
+
 watch(
   () => props.open,
   (open) => {
@@ -110,6 +122,7 @@ watch(
     nameDirty.value = false;
     secure.value = false;
     resetDraft();
+    abandonSubmit();
   },
   { immediate: true },
 );
@@ -172,15 +185,18 @@ function ensureLookedUp(): Promise<void> {
 async function chooseFolder(): Promise<void> {
   const dir = await pickDirectory(path.value || undefined);
   if (!dir) return;
+  abandonSubmit();
   pathText.value = tildify(dir, props.home);
   folderChosen(dir);
 }
 
 function typePath(value: string): void {
+  abandonSubmit();
   pathText.value = value;
 }
 
 function commitPath(): void {
+  abandonSubmit();
   folderChosen(path.value);
 }
 
@@ -189,10 +205,6 @@ function typeName(value: string): void {
   name.value = value;
 }
 
-/** Set while a submit waits for its folder's lookup, so a second click
- *  during the wait does not emit twice. */
-let submitPending = false;
-
 /** Links the folder. When the click had to wait for the folder's lookup and
  *  that lookup found a `.yerd.toml` (valid or not) the user has not seen yet,
  *  nothing is emitted: the banner shows and a second click is required. */
@@ -200,7 +212,10 @@ function submit(): void {
   if (path.value === "" || submitPending) return;
   if (looking.value || lookedUp.value !== path.value) {
     submitPending = true;
+    const dir = path.value;
+    const gen = submitGen;
     void ensureLookedUp().then(() => {
+      if (gen !== submitGen || dir !== path.value) return;
       submitPending = false;
       if (hasFile.value || draftError.value) return;
       finishSubmit();

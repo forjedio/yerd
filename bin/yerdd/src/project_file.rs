@@ -13,12 +13,14 @@ use std::sync::Arc;
 use tokio::sync::watch;
 
 use yerd_config::{
-    extension_satisfied, normalise_module, plan, service_action, PlannedAction, PlannedStep,
-    ProjectError, ProjectFile, ServiceAction, SiteSnapshot, SyncDelta, PROJECT_FILE_NAME,
+    extension_satisfied, newest_matching, normalise_module, plan, service_action, PlannedAction,
+    PlannedStep, ProjectError, ProjectFile, ServiceAction, SiteSnapshot, SyncDelta,
+    PROJECT_FILE_NAME,
 };
 use yerd_core::{Domain, PhpVersion, ProxyRule, ResponseHeader, Site, SiteKind, UpstreamTarget};
 use yerd_ipc::{ErrorCode, JobState, Request, Response, ServiceRunState};
 use yerd_php::Downloader;
+use yerd_platform::node::InstalledNode;
 use yerd_platform::PlatformDirs;
 
 use crate::ipc_server::{canonicalize_dir, handle_mutation, internal, proxy_mutation};
@@ -131,13 +133,19 @@ async fn owns_dir(state: &DaemonState, site: &Site, dir: &Path) -> bool {
         .is_some_and(|owner| owner.name() == site.name() && owner.kind() == site.kind())
 }
 
+/// Converts a domain change under `tld`. Adding the apex is skipped (it is
+/// implicit), but removing it still removes an explicitly declared apex.
 fn change_to_delta(change: SyncChange, site: &str, tld: &str) -> Option<SyncDelta> {
     let apex = Domain::apex(site);
-    let domain = |fqdn: &str| Domain::parse(fqdn, tld).ok().filter(|d| *d != apex);
     match change {
         SyncChange::Delta(delta) => Some(delta),
-        SyncChange::AddDomain(fqdn) => domain(&fqdn).map(SyncDelta::AddDomain),
-        SyncChange::RemoveDomain(fqdn) => domain(&fqdn).map(SyncDelta::RemoveDomain),
+        SyncChange::AddDomain(fqdn) => Domain::parse(&fqdn, tld)
+            .ok()
+            .filter(|d| *d != apex)
+            .map(SyncDelta::AddDomain),
+        SyncChange::RemoveDomain(fqdn) => {
+            Domain::parse(&fqdn, tld).ok().map(SyncDelta::RemoveDomain)
+        }
     }
 }
 
@@ -185,7 +193,9 @@ pub async fn draft(path: &Path, state: &DaemonState) -> Response {
 
 /// Reply to `ExportProjectConfig`: write the site's current settings into its
 /// `.yerd.toml`, keeping the file's `name`, services, extensions and a Node
-/// selector that still resolves to the stored preference.
+/// selector that still resolves to the stored preference. A parked twin that
+/// shares its folder with a linked site is refused: the file belongs to the
+/// linked one.
 pub async fn export(site: &str, state: &DaemonState) -> Response {
     let root = match crate::ipc_server::site_project_root(state, site).await {
         Ok(root) => root,
@@ -197,15 +207,32 @@ pub async fn export(site: &str, state: &DaemonState) -> Response {
             message: format!("no site at {}", root.display()),
         };
     };
-    let snap = snapshot(state, &found).await;
+    if !found.name().eq_ignore_ascii_case(site) {
+        return Response::Error {
+            code: ErrorCode::InvalidPath,
+            message: format!(
+                "{} belongs to site {}; export that site instead",
+                root.display(),
+                found.name()
+            ),
+        };
+    }
+    let installed = installed_node(state).await;
     let file_path = root.join(PROJECT_FILE_NAME);
     let _guard = state.project_file_mutate.lock().await;
+    let Some(found) = state.router.read().await.get(found.name()).cloned() else {
+        return Response::Error {
+            code: ErrorCode::NotFound,
+            message: format!("no site named '{site}'"),
+        };
+    };
+    let snap = snapshot(state, &found).await;
     let existing = match load(&file_path).await {
         Ok(existing) => existing,
         Err(e) => return project_error(&e),
     };
     let matches = node_matches(
-        &state.dirs,
+        &installed,
         existing.as_ref().and_then(|f| f.node.as_deref()),
         snap.node_pref.as_deref(),
     );
@@ -229,19 +256,27 @@ pub async fn start_apply(
     contents: Option<String>,
     state: Arc<DaemonState>,
 ) -> Response {
-    let (dir, name) = match prepare(&path, contents, &state).await {
+    let prepared = match prepare(&path, contents, &state).await {
         Ok(prepared) => prepared,
         Err(resp) => return resp,
     };
     let dl: Arc<dyn Downloader> = Arc::new(crate::network::downloader(&state).await);
-    spawn_apply(dir, name, state, dl).await
+    spawn_apply(prepared, state, dl).await
+}
+
+/// A validated project file and the site name its apply reserves; the job
+/// applies exactly this, never a re-read of the file.
+struct Prepared {
+    dir: PathBuf,
+    file: ProjectFile,
+    name: String,
 }
 
 async fn prepare(
     path: &Path,
     contents: Option<String>,
     state: &DaemonState,
-) -> Result<(PathBuf, String), Response> {
+) -> Result<Prepared, Response> {
     let dir = resolve_dir(path).await?;
     let file_path = dir.join(PROJECT_FILE_NAME);
     let tld = state.router.read().await.config().tld().to_owned();
@@ -250,20 +285,22 @@ async fn prepare(
             let file = ProjectFile::from_toml(&text).map_err(|e| project_error(&e))?;
             file.validate_for_tld(&tld).map_err(|e| project_error(&e))?;
             let _guard = state.project_file_mutate.lock().await;
+            let exists = || Response::Error {
+                code: ErrorCode::AlreadyExists,
+                message: format!(
+                    "{} already exists; run `yerd init` again to apply it",
+                    file_path.display()
+                ),
+            };
             let probe = file_path.clone();
             if blocking(move || std::fs::symlink_metadata(probe).is_ok()).await? {
-                return Err(Response::Error {
-                    code: ErrorCode::AlreadyExists,
-                    message: format!(
-                        "{} already exists; run `yerd init` again to apply it",
-                        file_path.display()
-                    ),
-                });
+                return Err(exists());
             }
-            save(&file_path, file.clone())
-                .await
-                .map_err(|e| project_error(&e))?;
-            file
+            match save_new(&file_path, file.clone()).await {
+                Ok(()) => file,
+                Err(ProjectError::AlreadyExists { .. }) => return Err(exists()),
+                Err(e) => return Err(project_error(&e)),
+            }
         }
         None => load(&file_path)
             .await
@@ -274,7 +311,7 @@ async fn prepare(
             })?,
     };
     file.validate_for_tld(&tld).map_err(|e| project_error(&e))?;
-    let name = match (file.name, find_site_for_dir(state, &dir).await) {
+    let name = match (file.name.clone(), find_site_for_dir(state, &dir).await) {
         (Some(name), _) => name,
         (None, Some(site)) => site.name().to_owned(),
         (None, None) => folder_slug(&dir).ok_or_else(|| Response::Error {
@@ -285,19 +322,18 @@ async fn prepare(
             ),
         })?,
     };
-    Ok((dir, name))
+    Ok(Prepared { dir, file, name })
 }
 
 async fn spawn_apply(
-    dir: PathBuf,
-    name: String,
+    prepared: Prepared,
     state: Arc<DaemonState>,
     dl: Arc<dyn Downloader>,
 ) -> Response {
     let (job_id, cancel_rx) = state.jobs.create().await;
     let id = job_id.clone();
     tokio::spawn(async move {
-        run_job(id, dir, name, state, dl, cancel_rx).await;
+        run_job(id, prepared, state, dl, cancel_rx).await;
     });
     Response::JobStarted { job_id }
 }
@@ -310,12 +346,12 @@ enum Outcome {
 
 async fn run_job(
     id: String,
-    dir: PathBuf,
-    name: String,
+    prepared: Prepared,
     state: Arc<DaemonState>,
     dl: Arc<dyn Downloader>,
     cancel_rx: watch::Receiver<bool>,
 ) {
+    let Prepared { dir, file, name } = prepared;
     if !state.reserved_names.lock().await.insert(name.clone()) {
         state
             .jobs
@@ -329,7 +365,7 @@ async fn run_job(
             .await;
         return;
     }
-    let outcome = run_apply(&id, &dir, &name, &state, dl.as_ref(), &cancel_rx).await;
+    let outcome = run_apply(&id, &dir, &file, &name, &state, dl.as_ref(), &cancel_rx).await;
     state.reserved_names.lock().await.remove(&name);
     match outcome {
         Outcome::Done { failed: 0 } => {
@@ -364,16 +400,15 @@ fn is_cancelled(cancel_rx: &watch::Receiver<bool>) -> bool {
 async fn run_apply(
     id: &str,
     dir: &Path,
+    file: &ProjectFile,
     name: &str,
     state: &Arc<DaemonState>,
     dl: &dyn Downloader,
     cancel_rx: &watch::Receiver<bool>,
 ) -> Outcome {
-    let file = match load(&dir.join(PROJECT_FILE_NAME)).await {
-        Ok(Some(file)) => file,
-        Ok(None) => return Outcome::Fatal(format!("no {PROJECT_FILE_NAME} in {}", dir.display())),
-        Err(e) => return Outcome::Fatal(e.to_string()),
-    };
+    if is_cancelled(cancel_rx) {
+        return Outcome::Cancelled;
+    }
     let mut ap = Applier {
         id,
         state,
@@ -381,16 +416,17 @@ async fn run_apply(
         counts: Counts::default(),
     };
     state.jobs.set_phase(id, "Linking").await;
-    let site = match ap.resolve_site(&file, dir, name).await {
+    let site = match ap.resolve_site(file, dir, name).await {
         Ok(site) => site,
         Err(message) => return Outcome::Fatal(message),
     };
     let site_name = site.name().to_owned();
     let snap = snapshot(state, &site).await;
-    let node_unchanged = node_matches(&state.dirs, file.node.as_deref(), snap.node_pref.as_deref());
+    let installed = installed_node(state).await;
+    let node_unchanged = node_matches(&installed, file.node.as_deref(), snap.node_pref.as_deref());
     let tld = state.router.read().await.config().tld().to_owned();
     state.jobs.set_phase(id, "Applying").await;
-    for step in plan(&file, Some(&snap), node_unchanged) {
+    for step in plan(file, Some(&snap), node_unchanged) {
         if is_cancelled(cancel_rx) {
             return Outcome::Cancelled;
         }
@@ -566,6 +602,31 @@ impl Applier<'_> {
             )
             .await;
         }
+        let key = parked.document_root().to_string_lossy().into_owned();
+        let web_root = self
+            .state
+            .config
+            .lock()
+            .await
+            .overrides
+            .get(&key)
+            .and_then(|o| o.web_root.clone());
+        if let Some(rel) = web_root.filter(|rel| linked.web_subpath() != Path::new(rel)) {
+            let resp = handle_mutation(
+                Request::SetWebRoot {
+                    name: name.to_owned(),
+                    path: Some(rel.clone()),
+                },
+                self.state,
+            )
+            .await;
+            let shown = if rel.is_empty() { "." } else { rel.as_str() };
+            self.report(
+                format!("web root {shown} (kept from the parked site)"),
+                resp,
+            )
+            .await;
+        }
     }
 
     async fn step(&mut self, site: &str, dir: &Path, tld: &str, step: PlannedStep) {
@@ -726,7 +787,11 @@ impl Applier<'_> {
             let selected = status.and_then(|s| s.selected_version.clone());
             let running = status.is_some_and(|s| s.state == ServiceRunState::Running);
             let available = if installed.is_empty() && selected.is_none() {
-                match crate::services::available_labels(engine, self.dl).await {
+                let labels = crate::services::available_labels(engine, self.dl).await;
+                if is_cancelled(cancel_rx) {
+                    return false;
+                }
+                match labels {
                     Ok(labels) => labels,
                     Err(message) => {
                         self.fail(format!("{engine}: {message}")).await;
@@ -741,7 +806,11 @@ impl Applier<'_> {
                     self.unchanged(format!("{engine} {prefix}")).await;
                 }
                 ServiceAction::Satisfied { start: true } => {
-                    match crate::services::start_service(engine, self.state).await {
+                    let version = match selected {
+                        Some(_) => None,
+                        None => newest_matching(prefix, &installed),
+                    };
+                    match crate::services::start_service_at(engine, version, self.state).await {
                         Response::Ok => self.applied("started", engine).await,
                         Response::Error { message, .. } => {
                             self.fail(format!("start {engine}: {message}")).await;
@@ -839,7 +908,11 @@ impl Applier<'_> {
             return true;
         }
         let runner = self.state.ffi_cache.runner();
-        let Some(compiled) = yerd_php::probe_modules(runner.as_ref(), &bin).await else {
+        let probed = yerd_php::probe_modules(runner.as_ref(), &bin).await;
+        if is_cancelled(cancel_rx) {
+            return false;
+        }
+        let Some(compiled) = probed else {
             self.warn(format!(
                 "cannot check extensions: PHP {php} did not list its modules"
             ))
@@ -1033,11 +1106,10 @@ fn same_node_selector(a: &str, b: &str) -> bool {
 /// Whether the stored exact preference `pref` is an installed release that
 /// `selector` matches. Any matching release counts, not only the newest, so
 /// installing a newer `22.x` leaves `node = "22"` pinned at `22.11.0` unchanged.
-fn node_matches(dirs: &PlatformDirs, selector: Option<&str>, pref: Option<&str>) -> bool {
+fn node_matches(installed: &[InstalledNode], selector: Option<&str>, pref: Option<&str>) -> bool {
     let (Some(selector), Some(pref)) = (selector, pref) else {
         return false;
     };
-    let installed = yerd_platform::node::installed(dirs);
     yerd_core::node::select_release(
         selector,
         installed
@@ -1046,6 +1118,14 @@ fn node_matches(dirs: &PlatformDirs, selector: Option<&str>, pref: Option<&str>)
             .map(yerd_platform::node::InstalledNode::candidate),
     )
     .is_ok_and(|exact| exact == pref)
+}
+
+/// The installed Node releases, read on the blocking pool.
+async fn installed_node(state: &DaemonState) -> Vec<InstalledNode> {
+    let dirs: PlatformDirs = state.dirs.clone();
+    blocking(move || yerd_platform::node::installed(&dirs))
+        .await
+        .unwrap_or_default()
 }
 
 async fn default_file(dir: &Path, state: &DaemonState) -> ProjectFile {
@@ -1086,9 +1166,25 @@ async fn save(path: &Path, file: ProjectFile) -> Result<(), ProjectError> {
         })
 }
 
+async fn save_new(path: &Path, file: ProjectFile) -> Result<(), ProjectError> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || file.save_new(&path))
+        .await
+        .unwrap_or_else(|e| {
+            Err(ProjectError::Io {
+                path: PathBuf::new(),
+                source: std::io::Error::other(e.to_string()),
+            })
+        })
+}
+
 fn project_error(e: &ProjectError) -> Response {
     match e {
         ProjectError::Io { .. } => internal(e.to_string()),
+        ProjectError::AlreadyExists { .. } => Response::Error {
+            code: ErrorCode::AlreadyExists,
+            message: e.to_string(),
+        },
         _ => Response::Error {
             code: ErrorCode::ProjectFileInvalid,
             message: e.to_string(),
@@ -1158,9 +1254,8 @@ mod tests {
         state: &Arc<DaemonState>,
         dir: &Path,
     ) -> (JobState, Vec<String>, Option<String>) {
-        let (dir, name) = prepare(dir, None, state).await.unwrap();
-        let Response::JobStarted { job_id } =
-            spawn_apply(dir, name, state.clone(), offline()).await
+        let prepared = prepare(dir, None, state).await.unwrap();
+        let Response::JobStarted { job_id } = spawn_apply(prepared, state.clone(), offline()).await
         else {
             panic!("expected JobStarted");
         };
@@ -1322,6 +1417,7 @@ mod tests {
         node_release(&state, "22.11.0");
         node_release(&state, "22.12.0");
         node_release(&state, "20.18.0");
+        let installed = yerd_platform::node::installed(&state.dirs);
         let cases: &[(Option<&str>, Option<&str>, bool)] = &[
             (Some("22"), Some("22.11.0"), true),
             (Some("22"), Some("22.12.0"), true),
@@ -1335,7 +1431,7 @@ mod tests {
         ];
         for (selector, pref, want) in cases {
             assert_eq!(
-                node_matches(&state.dirs, *selector, *pref),
+                node_matches(&installed, *selector, *pref),
                 *want,
                 "{selector:?} {pref:?}"
             );
@@ -1633,11 +1729,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let state = Arc::new(state_in(tmp.path()));
         let dir = project(tmp.path(), "fresh", None);
-        let (dir, name) = prepare(&dir, Some("name = \"shop\"\n".into()), &state)
+        let prepared = prepare(&dir, Some("name = \"shop\"\n".into()), &state)
             .await
             .unwrap();
-        assert_eq!(name, "shop");
-        let written = std::fs::read_to_string(dir.join(PROJECT_FILE_NAME)).unwrap();
+        assert_eq!(prepared.name, "shop");
+        let written = std::fs::read_to_string(prepared.dir.join(PROJECT_FILE_NAME)).unwrap();
         assert!(written.contains("name = \"shop\""), "{written}");
     }
 
@@ -1989,6 +2085,267 @@ mod tests {
             panic!("expected JobProgress");
         };
         assert!(log.is_empty(), "{log:?}");
+    }
+
+    #[tokio::test]
+    async fn export_snapshots_after_waiting_for_the_file_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(state_in(tmp.path()));
+        let dir = project(tmp.path(), "acme", None);
+        link_site(&state, "acme", &dir).await;
+        let guard = state.project_file_mutate.lock().await;
+        let task = tokio::spawn({
+            let state = state.clone();
+            async move { export("acme", &state).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        ok(handle_mutation(
+            Request::SetSecure {
+                name: "acme".into(),
+                secure: true,
+            },
+            &state,
+        )
+        .await);
+        drop(guard);
+        let (_, _, _, contents) = contents_of(task.await.unwrap());
+        assert!(contents.contains("secure = true"), "{contents}");
+    }
+
+    #[tokio::test]
+    async fn export_refuses_a_parked_twin_of_a_linked_site() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let parent = tmp.path().join("Sites");
+        let dir = project(&parent, "foo", None);
+        ok(handle_mutation(Request::Park { path: parent }, &state).await);
+        link_site(&state, "acme", &dir).await;
+        let resp = export("foo", &state).await;
+        assert_eq!(code_of(&resp), ErrorCode::InvalidPath);
+        let Response::Error { message, .. } = resp else {
+            panic!("expected an error");
+        };
+        assert!(message.contains("acme"), "{message}");
+        assert!(!dir.join(PROJECT_FILE_NAME).exists());
+        let (_, site, _, _) = contents_of(export("acme", &state).await);
+        assert_eq!(site.as_deref(), Some("acme"));
+    }
+
+    #[tokio::test]
+    async fn apply_uses_the_file_prepare_validated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(state_in(tmp.path()));
+        let dir = project(tmp.path(), "checkout", Some("secure = true\n"));
+        let prepared = prepare(&dir, None, &state).await.unwrap();
+        std::fs::write(dir.join(PROJECT_FILE_NAME), "name = \"other\"\n").unwrap();
+        let Response::JobStarted { job_id } = spawn_apply(prepared, state.clone(), offline()).await
+        else {
+            panic!("expected JobStarted");
+        };
+        let (job, log, _) = wait(&state, &job_id).await;
+        assert_eq!(job, JobState::Succeeded, "{log:?}");
+        assert!(site_of(&state, "checkout").await.secure());
+        assert!(state.router.read().await.get("other").is_none());
+    }
+
+    #[tokio::test]
+    async fn apply_cancelled_before_linking_changes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(state_in(tmp.path()));
+        let dir = project(tmp.path(), "acme", Some("secure = true\n"));
+        let prepared = prepare(&dir, None, &state).await.unwrap();
+        let (job_id, cancel_rx) = state.jobs.create().await;
+        ok(state.jobs.cancel(&job_id).await);
+        let dl = UrlDl::default();
+        let outcome = run_apply(
+            &job_id,
+            &prepared.dir,
+            &prepared.file,
+            &prepared.name,
+            &state,
+            &dl,
+            &cancel_rx,
+        )
+        .await;
+        assert!(matches!(outcome, Outcome::Cancelled));
+        assert!(state.router.read().await.get("acme").is_none());
+    }
+
+    #[tokio::test]
+    async fn apply_keeps_a_parked_manual_web_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(state_in(tmp.path()));
+        let parent = tmp.path().join("Sites");
+        let dir = project(&parent, "foo", Some("name = \"acme\"\n"));
+        std::fs::create_dir_all(dir.join("web")).unwrap();
+        ok(handle_mutation(Request::Park { path: parent }, &state).await);
+        ok(handle_mutation(
+            Request::SetWebRoot {
+                name: "foo".into(),
+                path: Some("web".into()),
+            },
+            &state,
+        )
+        .await);
+        let (job, log, _) = apply(&state, &dir).await;
+        assert_eq!(job, JobState::Succeeded, "{log:?}");
+        assert_eq!(
+            site_of(&state, "acme").await.web_subpath(),
+            Path::new("web")
+        );
+        assert!(
+            log.contains(&"applied: web root web (kept from the parked site)".to_owned()),
+            "{log:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_leaves_auto_detect_without_a_parked_web_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(state_in(tmp.path()));
+        let parent = tmp.path().join("Sites");
+        let dir = project(&parent, "foo", Some("name = \"acme\"\n"));
+        ok(handle_mutation(Request::Park { path: parent }, &state).await);
+        let (job, log, _) = apply(&state, &dir).await;
+        assert_eq!(job, JobState::Succeeded, "{log:?}");
+        assert!(!log.iter().any(|l| l.contains("web root")), "{log:?}");
+    }
+
+    struct CancellingDl(watch::Sender<bool>);
+
+    #[async_trait::async_trait]
+    impl Downloader for CancellingDl {
+        async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
+            self.0.send_replace(true);
+            Err(yerd_php::DownloadError::Transport {
+                url: url.to_owned(),
+                reason: "offline".into(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn services_stop_when_cancelled_during_the_listing_fetch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(state_in(tmp.path()));
+        let (job_id, _) = state.jobs.create().await;
+        let (tx, cancel_rx) = watch::channel(false);
+        let dl = CancellingDl(tx);
+        let mut ap = Applier {
+            id: &job_id,
+            state: &state,
+            dl: &dl,
+            counts: Counts::default(),
+        };
+        let services: BTreeMap<String, String> = [("mysql".to_owned(), "8.4".to_owned())].into();
+        assert!(!ap.services(&services, &cancel_rx).await);
+        assert_eq!(ap.counts.failed, 0);
+    }
+
+    struct CancellingRunner(watch::Sender<bool>);
+
+    #[async_trait::async_trait]
+    impl yerd_php::CommandRunner for CancellingRunner {
+        async fn run(&self, _cmd: std::process::Command) -> std::io::Result<yerd_php::ProbeOutput> {
+            self.0.send_replace(true);
+            Ok(yerd_php::ProbeOutput {
+                status_ok: false,
+                stdout: String::new(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn extensions_stop_when_cancelled_during_the_module_probe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (tx, cancel_rx) = watch::channel(false);
+        let mut state = state_in(tmp.path());
+        state.ffi_cache = Arc::new(crate::ffi_cache::FfiCache::new(Arc::new(CancellingRunner(
+            tx,
+        ))));
+        let state = Arc::new(state);
+        php_cli(&state, "8.3");
+        let dir = project(tmp.path(), "acme", None);
+        link_site(&state, "acme", &dir).await;
+        let (job_id, _) = state.jobs.create().await;
+        let dl = UrlDl::default();
+        let mut ap = Applier {
+            id: &job_id,
+            state: &state,
+            dl: &dl,
+            counts: Counts::default(),
+        };
+        assert!(
+            !ap.extensions("acme", &["core".to_owned()], &cancel_rx)
+                .await
+        );
+        assert_eq!(ap.counts.warnings, 0);
+    }
+
+    #[tokio::test]
+    async fn sync_removes_a_declared_apex() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, file) = synced_site(tmp.path(), Some("domains = [\"acme\"]\n")).await;
+        ok(handle_mutation(add_domain("corp.acme.test"), &state).await);
+        send(
+            &state,
+            Request::RemoveDomain {
+                name: "acme".into(),
+                domain: "acme.test".into(),
+            },
+        )
+        .await;
+        let parsed = ProjectFile::load(&file).unwrap().unwrap();
+        assert!(parsed.domains.is_empty(), "{:?}", parsed.domains);
+    }
+
+    #[test]
+    fn an_existing_file_maps_to_already_exists() {
+        let err = ProjectError::AlreadyExists {
+            path: PathBuf::from("/p/.yerd.toml"),
+        };
+        assert_eq!(code_of(&project_error(&err)), ErrorCode::AlreadyExists);
+    }
+
+    /// 7.2.4 is not executable and 8.0.1 is, so the start error names which
+    /// version was spawned without either one having to run.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn apply_starts_the_installed_version_the_prefix_matched() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(state_in(tmp.path()));
+        for (version, mode) in [("7.2.4", 0o644), ("8.0.1", 0o755)] {
+            let bin = yerd_services::version::server_path(
+                &state.dirs,
+                "redis",
+                "valkey-server",
+                &version.parse().unwrap(),
+            );
+            std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+            std::fs::write(&bin, b"#!/nonexistent/interpreter\n").unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        state.config.lock().await.services.instances.insert(
+            "redis".to_owned(),
+            yerd_config::ServiceInstance {
+                port: Some(port),
+                ..yerd_config::ServiceInstance::default()
+            },
+        );
+        let dir = project(tmp.path(), "acme", Some("[services]\nredis = \"7\"\n"));
+        let (_, log, _) = apply(&state, &dir).await;
+        assert!(
+            log.iter()
+                .any(|l| l.starts_with("failed: start redis") && l.contains("PermissionDenied")),
+            "{log:?}"
+        );
     }
 
     #[test]

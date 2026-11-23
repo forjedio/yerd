@@ -96,8 +96,10 @@ pub(crate) fn load_project(path: &Path) -> Result<Option<ProjectFile>, ProjectEr
             path: path.to_path_buf(),
         });
     }
-    let text = String::from_utf8(bytes)
-        .map_err(|e| io_err(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+    let text = String::from_utf8(bytes).map_err(|e| ProjectError::Invalid {
+        field: "file",
+        reason: format!("not valid UTF-8: {e}"),
+    })?;
     ProjectFile::from_toml(&text).map(Some)
 }
 
@@ -113,15 +115,35 @@ fn same_file(_a: &fs::Metadata, _b: &fs::Metadata) -> bool {
 }
 
 /// Atomically writes a project file with a fixed mode (0644 on Unix), since it
-/// is committed and read by other tools. Does not create the directory.
-pub(crate) fn save_project(file: &ProjectFile, path: &Path) -> Result<(), ProjectError> {
+/// is committed and read by other tools. Validates and renders first, refusing
+/// output over [`PROJECT_FILE_MAX_BYTES`] before the destination is touched.
+/// Does not create the directory. With `replace` false an existing file is
+/// kept and [`ProjectError::AlreadyExists`] returned, even one created after
+/// the initial check.
+pub(crate) fn save_project(
+    file: &ProjectFile,
+    path: &Path,
+    replace: bool,
+) -> Result<(), ProjectError> {
     let io_err = |source: io::Error| ProjectError::Io {
         path: path.to_path_buf(),
         source,
     };
+    file.validate()?;
+    let rendered = file.to_toml();
+    if u64::try_from(rendered.len()).map_or(true, |n| n > PROJECT_FILE_MAX_BYTES) {
+        return Err(ProjectError::TooLarge {
+            path: path.to_path_buf(),
+        });
+    }
     match fs::symlink_metadata(path) {
         Ok(meta) if !meta.file_type().is_file() => {
             return Err(ProjectError::NotRegularFile {
+                path: path.to_path_buf(),
+            });
+        }
+        Ok(_) if !replace => {
+            return Err(ProjectError::AlreadyExists {
                 path: path.to_path_buf(),
             });
         }
@@ -134,9 +156,19 @@ pub(crate) fn save_project(file: &ProjectFile, path: &Path) -> Result<(), Projec
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let tmp = NamedTempFile::new_in(parent).map_err(io_err)?;
-    fs::write(tmp.path(), file.to_toml().as_bytes()).map_err(io_err)?;
+    fs::write(tmp.path(), rendered.as_bytes()).map_err(io_err)?;
     set_public_mode(tmp.path()).map_err(io_err)?;
-    tmp.persist(path).map_err(|e| io_err(e.error))?;
+    let persisted = if replace {
+        tmp.persist(path)
+    } else {
+        tmp.persist_noclobber(path)
+    };
+    persisted.map_err(|e| match e.error.kind() {
+        io::ErrorKind::AlreadyExists => ProjectError::AlreadyExists {
+            path: path.to_path_buf(),
+        },
+        _ => io_err(e.error),
+    })?;
     Ok(())
 }
 
