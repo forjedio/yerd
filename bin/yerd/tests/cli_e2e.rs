@@ -764,6 +764,129 @@ mod tests {
         drop(keep_alive);
     }
 
+    async fn poll_job(sock: &std::path::Path, job_id: &str) -> (yerd_ipc::JobState, Vec<String>) {
+        let mut log = Vec::new();
+        for _ in 0..200 {
+            let resp = transport::exchange_at(
+                sock,
+                &yerd_ipc::Request::JobStatus {
+                    job_id: job_id.to_owned(),
+                    cursor: log.len() as u64,
+                },
+            )
+            .await
+            .expect("exchange");
+            match resp {
+                Response::JobProgress {
+                    state, log: lines, ..
+                } => {
+                    log.extend(lines);
+                    if state != yerd_ipc::JobState::Running {
+                        return (state, log);
+                    }
+                }
+                other => panic!("expected JobProgress, got {other:?}"),
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("apply job did not finish: {log:?}");
+    }
+
+    /// `yerd init` over the socket: applying a committed `.yerd.toml` links the
+    /// folder with its HTTPS flag, extra domain and header, and a later
+    /// per-site command writes its change back into the file. The file has no
+    /// `php`, so nothing is installed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn init_applies_a_project_file_and_syncs_changes_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = make_dirs(tmp.path());
+        let cfg_path = dirs.config.join("yerd.toml");
+        let project = tmp.path().join("checkout");
+        std::fs::create_dir_all(&project).unwrap();
+        let file = project.join(".yerd.toml");
+        std::fs::write(
+            &file,
+            "name = \"acme\"\nsecure = true\ndomains = [\"admin.acme\"]\n\n\
+             [headers]\nX-Frame-Options = \"DENY\"\n",
+        )
+        .unwrap();
+
+        let daemon =
+            yerdd::startup::bring_up_with_dirs(dirs.clone(), valid_config(), cfg_path.clone())
+                .await
+                .expect("bring_up_with_dirs");
+        let sock = dirs.runtime.join("yerd.sock");
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let ipc_task = tokio::spawn(yerdd::ipc_server::run(
+            daemon.ipc_listener,
+            daemon.state.clone(),
+            shutdown_rx,
+        ));
+        let keep_alive = (
+            daemon.lock,
+            daemon.dns_bound,
+            daemon.http_listener,
+            daemon.https_listener,
+            daemon.php_manager,
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let started = transport::exchange_at(
+            &sock,
+            &yerd_ipc::Request::ApplyProjectConfig {
+                path: project.clone(),
+                contents: None,
+            },
+        )
+        .await
+        .expect("exchange");
+        let Response::JobStarted { job_id } = started else {
+            panic!("expected JobStarted, got {started:?}");
+        };
+        let (state, log) = poll_job(&sock, &job_id).await;
+        assert_eq!(state, yerd_ipc::JobState::Succeeded, "{log:?}");
+
+        match send(&sock, &Command::Sites).await {
+            Response::Sites { sites } => {
+                let acme = sites.iter().find(|s| s.site.name() == "acme").unwrap();
+                assert!(acme.site.secure());
+                assert!(acme.domains.contains(&"admin.acme.test".to_owned()));
+            }
+            other => panic!("expected Sites, got {other:?}"),
+        }
+        match transport::exchange_at(&sock, &yerd_ipc::Request::ListResponseHeaders)
+            .await
+            .expect("exchange")
+        {
+            Response::ResponseHeaders { headers } => {
+                assert!(headers
+                    .iter()
+                    .any(|h| h.site == "acme" && h.name == "X-Frame-Options"));
+            }
+            other => panic!("expected ResponseHeaders, got {other:?}"),
+        }
+
+        let before = std::fs::read_to_string(&file).unwrap();
+        assert!(before.contains("secure = true"), "{before}");
+        assert!(matches!(
+            send(
+                &sock,
+                &Command::Unsecure {
+                    name: "acme".into()
+                }
+            )
+            .await,
+            Response::Ok
+        ));
+        let after = std::fs::read_to_string(&file).unwrap();
+        assert!(after.contains("secure = false"), "{after}");
+        assert!(after.contains("admin.acme"), "{after}");
+
+        shutdown_tx.send_replace(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), ipc_task).await;
+        drop(keep_alive);
+    }
+
     /// A build dir has no install receipt, so it is not a headless install and
     /// `yerd daemon install` must refuse before touching any service manager.
     #[test]

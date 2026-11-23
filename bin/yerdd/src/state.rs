@@ -235,6 +235,9 @@ pub struct DaemonState {
     /// Site names held by an in-flight `CreateSite` job, so two concurrent
     /// creates can't both scaffold (then fight over registering) the same name.
     pub reserved_names: Mutex<HashSet<String>>,
+    /// Serializes every read-modify-write of a project's `.yerd.toml` (the
+    /// write-back sync, export, and the `yerd init` wizard's first write).
+    pub project_file_mutate: Mutex<()>,
     /// WordPress core-version availability cache (the WordPress wizard's
     /// version dropdown): the last successful `meta/wordpress-versions.json`
     /// fetch, plus when it happened so a request can decide whether to

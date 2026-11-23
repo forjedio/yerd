@@ -61,6 +61,8 @@ Environment card: pick a saved preference, or **Default** to clear it (the
 project file, then the global default, decide). The line under it says which
 release builds use and why, and a warning shows when a project file takes
 precedence over the saved preference.
+A committed [`.yerd.toml`](./project-file#node-precedence) can set this
+preference too, through its `node` key.
 `node` and `npm` on your PATH still use the global default; run `yerd exec node …`
 or `yerd exec npm …` in the project folder to use the site's version. Nothing installs
 automatically: when the project file or saved preference names a version that

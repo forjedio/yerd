@@ -59,33 +59,7 @@ async fn handle_client(stream: IpcStream, state: Arc<DaemonState>) {
                 return;
             }
         };
-        let resp = match req {
-            Request::CreateSite { spec } => crate::create_site::start(spec, state.clone()).await,
-            Request::InstallToolStreamed { tool } => {
-                install_tool_streamed(tool, state.clone()).await
-            }
-            Request::InstallNodeStreamed { version, update } => {
-                install_node_streamed(version, update, state.clone()).await
-            }
-            Request::InstallCloudflaredStreamed => {
-                crate::tunnel::install_cloudflared_streamed(state.clone()).await
-            }
-            Request::CloudflaredLogin => crate::tunnel::named::login_streamed(state.clone()).await,
-            Request::StartQuickTunnel { site } => {
-                crate::tunnel::start_quick_tunnel(&site, &state).await
-            }
-            Request::StartNamedTunnel => crate::tunnel::named::start(&state).await,
-            Request::SetSiteTunnel { site, hostname } => {
-                crate::tunnel::named::set_site_hostname(&site, hostname.as_deref(), &state).await
-            }
-            Request::InstallPhpStreamed {
-                version,
-                confirm_legacy,
-            } => install_php_streamed(version, confirm_legacy, state.clone()).await,
-            Request::JobStatus { job_id, cursor } => state.jobs.poll(&job_id, cursor).await,
-            Request::JobCancel { job_id } => state.jobs.cancel(&job_id).await,
-            other => dispatch(other, &state).await,
-        };
+        let resp = respond(req, &state).await;
         if let Err(e) = write_message(&mut writer, &resp, DEFAULT_MAX_FRAME).await {
             tracing::debug!(error = %e, "ipc write error");
             return;
@@ -98,6 +72,47 @@ async fn handle_client(stream: IpcStream, state: Arc<DaemonState>) {
             let _ = writer.flush().await;
             let _ = state.shutdown_tx.send_replace(true);
             return;
+        }
+    }
+}
+
+/// Answer one request: the job-starting requests run here because they need
+/// the shared `Arc`, everything else goes through [`dispatch`]. A successful
+/// per-site change is then written back to the site's `.yerd.toml` when it
+/// has one (see [`crate::project_file::sync`]). Jobs and internal callers use
+/// the handlers directly, so they never trigger that write-back.
+pub(crate) async fn respond(req: Request, state: &Arc<DaemonState>) -> Response {
+    match req {
+        Request::CreateSite { spec } => crate::create_site::start(spec, state.clone()).await,
+        Request::InstallToolStreamed { tool } => install_tool_streamed(tool, state.clone()).await,
+        Request::InstallNodeStreamed { version, update } => {
+            install_node_streamed(version, update, state.clone()).await
+        }
+        Request::InstallCloudflaredStreamed => {
+            crate::tunnel::install_cloudflared_streamed(state.clone()).await
+        }
+        Request::CloudflaredLogin => crate::tunnel::named::login_streamed(state.clone()).await,
+        Request::StartQuickTunnel { site } => crate::tunnel::start_quick_tunnel(&site, state).await,
+        Request::StartNamedTunnel => crate::tunnel::named::start(state).await,
+        Request::SetSiteTunnel { site, hostname } => {
+            crate::tunnel::named::set_site_hostname(&site, hostname.as_deref(), state).await
+        }
+        Request::InstallPhpStreamed {
+            version,
+            confirm_legacy,
+        } => install_php_streamed(version, confirm_legacy, state.clone()).await,
+        Request::JobStatus { job_id, cursor } => state.jobs.poll(&job_id, cursor).await,
+        Request::JobCancel { job_id } => state.jobs.cancel(&job_id).await,
+        Request::ApplyProjectConfig { path, contents } => {
+            crate::project_file::start_apply(path, contents, state.clone()).await
+        }
+        other => {
+            let target = crate::project_file::sync_target(&other);
+            let resp = dispatch(other, state).await;
+            if let (Response::Ok, Some((site, change))) = (&resp, target) {
+                crate::project_file::sync(&site, change, state).await;
+            }
+            resp
         }
     }
 }
@@ -187,20 +202,10 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         | Request::RemoveRouteRule { .. }
         | Request::SetResponseHeader { .. }
         | Request::RemoveResponseHeader { .. } => handle_mutation(req, state).await,
-        Request::AddProxy { ref url, .. }
-        | Request::AddProxyRule { ref url, .. }
-        | Request::UpdateProxy { ref url, .. }
-        | Request::UpdateProxyRule { ref url, .. } => {
-            if is_self_forward(url, &[state.http.bound, state.https.bound]) {
-                Response::Error {
-                    code: ErrorCode::InvalidPath,
-                    message: "proxy target points at yerd's own listening port (routing loop)"
-                        .to_owned(),
-                }
-            } else {
-                handle_mutation(req, state).await
-            }
-        }
+        Request::AddProxy { .. }
+        | Request::AddProxyRule { .. }
+        | Request::UpdateProxy { .. }
+        | Request::UpdateProxyRule { .. } => proxy_mutation(req, state).await,
         Request::ListProxies => list_proxies(state).await,
         Request::ListRoutes => list_routes(state).await,
         Request::ListResponseHeaders => list_response_headers(state).await,
@@ -515,6 +520,8 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::SetTunnelPassword { site, password } => {
             crate::tunnel::named::set_password(&site, password.as_deref(), state).await
         }
+        Request::ProjectConfigDraft { path } => crate::project_file::draft(&path, state).await,
+        Request::ExportProjectConfig { site } => crate::project_file::export(&site, state).await,
         _ => Response::Error {
             code: ErrorCode::Internal,
             message: "unsupported request".into(),
@@ -1339,15 +1346,26 @@ async fn install_php(
     confirm_legacy: bool,
     state: &DaemonState,
 ) -> Response {
+    let dl = crate::network::downloader(state).await;
+    install_php_with(version, confirm_legacy, state, &dl).await
+}
+
+/// [`install_php`] over a caller-supplied downloader, so a job can reuse its
+/// own (and tests can inject a fake).
+pub(crate) async fn install_php_with(
+    version: yerd_core::PhpVersion,
+    confirm_legacy: bool,
+    state: &DaemonState,
+    dl: &dyn yerd_php::Downloader,
+) -> Response {
     if let Some(rejection) = legacy_install_gate(version, confirm_legacy) {
         return rejection;
     }
-    let dl = crate::network::downloader(state).await;
     let _guard = state.php_mutate.lock().await;
     match crate::php_install::install(
         version,
         &state.dirs,
-        &dl,
+        dl,
         yerd_update::PHP_LISTING_PUBLIC_KEY,
         None,
     )
@@ -3113,6 +3131,25 @@ fn site_needing_url_sync(
     candidate.get(&name.to_ascii_lowercase()).cloned()
 }
 
+/// Apply a whole-host proxy or path-rule add/update, refusing an upstream on
+/// Yerd's own bound port (a routing loop) before [`handle_mutation`].
+pub(crate) async fn proxy_mutation(req: Request, state: &DaemonState) -> Response {
+    let url = match &req {
+        Request::AddProxy { url, .. }
+        | Request::AddProxyRule { url, .. }
+        | Request::UpdateProxy { url, .. }
+        | Request::UpdateProxyRule { url, .. } => url.as_str(),
+        _ => return handle_mutation(req, state).await,
+    };
+    if is_self_forward(url, &[state.http.bound, state.https.bound]) {
+        return Response::Error {
+            code: ErrorCode::InvalidPath,
+            message: "proxy target points at yerd's own listening port (routing loop)".to_owned(),
+        };
+    }
+    handle_mutation(req, state).await
+}
+
 /// Whether `url` is a loopback target on one of Yerd's **actively bound** proxy
 /// ports - a request to such a proxy would forward straight back into Yerd,
 /// re-resolve, and loop. Checked here rather than in the pure config layer
@@ -3419,7 +3456,7 @@ fn resolve_web_root_within(doc_root: &Path, input: &str) -> Result<String, Respo
 
 /// Canonicalise `path` and require it to be an existing directory, or return a
 /// ready-made `InvalidPath` error response.
-fn canonicalize_dir(path: &Path) -> Result<PathBuf, Response> {
+pub(crate) fn canonicalize_dir(path: &Path) -> Result<PathBuf, Response> {
     match std::fs::canonicalize(path) {
         Ok(p) if p.is_dir() => Ok(p),
         Ok(p) => Err(invalid_path(format!("not a directory: {}", p.display()))),
@@ -3454,10 +3491,20 @@ fn lan_not_ready(message: String) -> Response {
 
 /// Install an explicit Node selector without replacing an existing default.
 async fn install_node(version: &str, state: &DaemonState) -> Response {
+    let dl = crate::network::downloader(state).await;
+    install_node_with(version, state, &dl).await
+}
+
+/// [`install_node`] over a caller-supplied downloader, so a job can reuse its
+/// own (and tests can inject a fake).
+pub(crate) async fn install_node_with(
+    version: &str,
+    state: &DaemonState,
+    dl: &dyn yerd_php::Downloader,
+) -> Response {
     let _mutate = state.tool_mutate.lock().await;
     let had_default = node_had_default(state).await;
-    let dl = crate::network::downloader(state).await;
-    match crate::tools::node::install_release(&state.dirs, &dl, Some(version), None).await {
+    match crate::tools::node::install_release(&state.dirs, dl, Some(version), None).await {
         Ok(installed) => {
             crate::node_updates::store(state, installed.latest).await;
             after_node_install(state, &installed.exact, had_default, false).await
@@ -3597,7 +3644,11 @@ fn node_pairs(
         .collect()
 }
 
-async fn set_node_version(version: &str, site: Option<&str>, state: &DaemonState) -> Response {
+pub(crate) async fn set_node_version(
+    version: &str,
+    site: Option<&str>,
+    state: &DaemonState,
+) -> Response {
     let _mutate = state.tool_mutate.lock().await;
     let result = save_node_version(version, site, state).await;
     if matches!(result, Response::Ok) {
@@ -3641,7 +3692,10 @@ pub(crate) async fn save_node_version(
 }
 
 /// The canonical project root that keys a site's `[node.sites]` preference.
-async fn site_project_root(state: &DaemonState, name: &str) -> Result<PathBuf, Response> {
+pub(crate) async fn site_project_root(
+    state: &DaemonState,
+    name: &str,
+) -> Result<PathBuf, Response> {
     let root = {
         let router = state.router.read().await;
         let root = router

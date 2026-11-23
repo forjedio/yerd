@@ -547,6 +547,7 @@ export type ErrorCode =
   | "legacy_restricted"
   | "xdebug_unavailable"
   | "invalid_setting"
+  | "project_file_invalid"
   | "internal";
 
 /** One whole-host reverse proxy (`{name}.{tld}` → `target`). Reply element of a
@@ -594,6 +595,22 @@ export interface ResponseHeaderEntry {
   value: string;
 }
 
+/** A project directory's `.yerd.toml`: the existing file, or a draft rendered
+ *  from the site there (or defaults). Reply to `project_config_draft` and
+ *  `export_project_config`. */
+export interface ProjectConfig {
+  /** Absolute path of the `.yerd.toml`. */
+  file: string;
+  /** Whether the file exists on disk (always true after an export). */
+  exists: boolean;
+  /** The site at the project directory, if it is one. */
+  site: string | null;
+  /** The file's declared `name`, if any. */
+  name: string | null;
+  /** The file's TOML text. */
+  contents: string;
+}
+
 /**
  * Response is internally tagged on `type`. The bridge returns the decoded
  * Response directly; helpers below narrow it. A `Response::Error` is converted
@@ -608,6 +625,7 @@ export type Response =
   | { type: "proxies"; proxies: ProxyEntry[]; rules: ProxyRuleEntry[] }
   | { type: "routes"; rules: RouteRuleEntry[] }
   | { type: "response_headers"; headers: ResponseHeaderEntry[] }
+  | ({ type: "project_config" } & ProjectConfig)
   | {
       type: "info";
       dns_addr: string;

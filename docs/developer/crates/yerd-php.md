@@ -29,9 +29,11 @@ src/
 ├── real.rs           # re-export shim → yerd_supervise (SystemClock, TokioProcessSpawner…)
 ├── release.rs        # artifact URL resolution from the distribution listing
 ├── version.rs        # discover_bundled - scan the on-disk install root
+├── probe.rs          # php -m probes through the CommandRunner seam
 ├── pure/
 │   ├── fpm_conf.rs   # render_fpm_conf - PoolConfig → php-fpm.conf text
 │   ├── supervisor.rs # re-export shim → yerd_supervise::supervisor::*
+│   ├── ext_probe.rs  # parse php -m output and load-probe results
 │   └── env_scrub.rs  # allowlist filter over an env snapshot
 └── io/
     ├── atomic_write.rs   # tempfile + rename
@@ -265,6 +267,16 @@ pub trait Downloader: Send + Sync + 'static {
 ### Production impls (`real.rs`)
 
 `SystemClock` wraps `Instant::now()`. `TokioProcessSpawner` converts the std `Command` to a tokio one, sets `kill_on_drop(true)` (so a daemon crash takes FPM with it), spawns, and reads the PID once. `TokioChild` wraps `tokio::process::Child`; its `try_wait` / `wait` translate `ExitStatus` into `ExitReason` via `ExitReason::from_status` (which maps a Unix termination signal to `ExitReason::Signal`, otherwise the exit code, otherwise `Unknown`).
+
+### Module probes (`probe.rs`)
+
+`probe.rs` runs a PHP CLI binary through the injectable `CommandRunner` trait
+(`TokioCommandRunner` in production, a fake in tests) and leaves the parsing to
+`pure/ext_probe.rs`. `probe_ffi` answers whether a build includes FFI;
+`probe_modules(runner, php_bin)` returns every module `php -n -m` lists (parsed
+by the pure `listed_modules`), or `None` when the process fails or times out.
+The daemon uses `probe_modules` to check a `.yerd.toml`'s required
+`extensions` against a site's PHP version.
 
 ## The `Listen` enum: Unix socket vs TCP loopback
 

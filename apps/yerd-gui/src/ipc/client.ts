@@ -41,6 +41,7 @@ import type {
   PhpExtInfo,
   PhpVersion,
   PhpVersionsResponse,
+  ProjectConfig,
   ProxyEntry,
   ProxyRuleEntry,
   Response,
@@ -333,6 +334,38 @@ export async function setResponseHeader(site: string, name: string, value: strin
 
 export async function removeResponseHeader(site: string, name: string): Promise<void> {
   ensureOk(await call<Response>("remove_response_header", { site, name }));
+}
+
+// ── project file (.yerd.toml) ────────────────────────────────────────────────
+
+function projectConfigOf(r: Response, cmd: string): ProjectConfig {
+  if (r.type !== "project_config") throw new IpcError(`unexpected response to ${cmd}`);
+  return { file: r.file, exists: r.exists, site: r.site, name: r.name, contents: r.contents };
+}
+
+/** The `.yerd.toml` in `path`, or a draft from the site there when the folder
+ *  has none (`exists: false`). An invalid file throws `project_file_invalid`. */
+export async function projectConfigDraft(path: string): Promise<ProjectConfig> {
+  return projectConfigOf(
+    ensureOk(await call<Response>("project_config_draft", { path })),
+    "project_config_draft",
+  );
+}
+
+/** Start applying the existing `.yerd.toml` in `path`; returns the job id to
+ *  poll. A folder without one throws `not_found`. */
+export async function applyProjectConfig(path: string): Promise<string> {
+  const r = ensureOk(await call<Response>("apply_project_config", { path }));
+  if (r.type !== "job_started") throw new IpcError("unexpected response to apply_project_config");
+  return r.job_id;
+}
+
+/** Write a site's current settings to `.yerd.toml` in its folder. */
+export async function exportProjectConfig(site: string): Promise<ProjectConfig> {
+  return projectConfigOf(
+    ensureOk(await call<Response>("export_project_config", { site })),
+    "export_project_config",
+  );
 }
 
 // ── php versions ───────────────────────────────────────────────────────────

@@ -189,6 +189,7 @@ export default withMermaid({
           text: 'Using Yerd',
           items: [
             { text: 'Sites', link: '/guide/sites' },
+            { text: 'Project File', link: '/guide/project-file' },
             { text: 'Reverse Proxies', link: '/guide/proxies' },
             { text: 'PHP Versions', link: '/guide/php-versions' },
             { text: 'Code Coverage', link: '/guide/code-coverage' },
@@ -217,6 +218,7 @@ export default withMermaid({
           items: [
             { text: 'Overview', link: '/reference/cli/' },
             { text: 'Sites', link: '/reference/cli/sites' },
+            { text: 'Init', link: '/reference/cli/init' },
             { text: 'Domains', link: '/reference/cli/domains' },
             { text: 'Proxies', link: '/reference/cli/proxies' },
             { text: 'Routing rules', link: '/reference/cli/routes' },
@@ -245,6 +247,7 @@ export default withMermaid({
           text: 'Configuration',
           items: [
             { text: 'Config file', link: '/reference/configuration' },
+            { text: 'Project file (.yerd.toml)', link: '/reference/project-file' },
           ],
         },
       ],

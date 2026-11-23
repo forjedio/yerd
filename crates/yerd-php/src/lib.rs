@@ -22,10 +22,12 @@ pub use listen::{AllocatedListen, Listen};
 pub use manager::{DumpExtSettings, PhpManager, PoolRunState, PoolSnapshot};
 pub use pool::{ExtLoad, PoolConfig, ProcessManagerMode, XdebugLoad};
 pub use probe::{
-    probe_extension, probe_ffi, probe_zend_module, CommandRunner, ProbeOutput, TokioCommandRunner,
+    probe_extension, probe_ffi, probe_modules, probe_zend_module, CommandRunner, ProbeOutput,
+    TokioCommandRunner,
 };
 pub use pure::ext_probe::{
-    ffi_listed, interpret_probe, require_zend_module, zend_module_listed, ExtLoadError,
+    ffi_listed, interpret_probe, listed_modules, require_zend_module, zend_module_listed,
+    ExtLoadError,
 };
 pub use real::{SystemClock, TokioChild, TokioProcessSpawner};
 pub use release::{

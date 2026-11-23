@@ -981,6 +981,32 @@ pub enum Request {
     /// Re-detect the proxy (login shell included) and fetch Yerd's release
     /// manifest through it. Replies [`crate::Response::NetworkTest`].
     TestNetwork,
+    /// Read the `.yerd.toml` in a project directory, or draft one from the
+    /// site at that directory (or defaults) when there is none. Replies
+    /// [`crate::Response::ProjectConfig`]; an unparseable file is
+    /// [`crate::ErrorCode::ProjectFileInvalid`].
+    ProjectConfigDraft {
+        /// The project directory (canonicalised by the daemon).
+        path: PathBuf,
+    },
+    /// Apply a project directory's `.yerd.toml` as a background job. Replies
+    /// [`crate::Response::JobStarted`]; progress is polled via
+    /// [`Self::JobStatus`].
+    ApplyProjectConfig {
+        /// The project directory (canonicalised by the daemon).
+        path: PathBuf,
+        /// Wizard output to write as `.yerd.toml` first; refused when the
+        /// file already exists. `None` applies the existing file.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contents: Option<String>,
+    },
+    /// Write a site's current settings to `.yerd.toml` in its directory,
+    /// keeping the file's `name`, services and extensions. Replies
+    /// [`crate::Response::ProjectConfig`].
+    ExportProjectConfig {
+        /// Site name.
+        site: String,
+    },
 }
 
 #[cfg(test)]
@@ -1144,6 +1170,9 @@ mod variant_name_pinning {
             Request::SetResponseHeader { .. } => {}
             Request::RemoveResponseHeader { .. } => {}
             Request::ListResponseHeaders => {}
+            Request::ProjectConfigDraft { .. } => {}
+            Request::ApplyProjectConfig { .. } => {}
+            Request::ExportProjectConfig { .. } => {}
         }
     }
 
@@ -1497,6 +1526,16 @@ mod variant_name_pinning {
         pin(Request::TestNetwork);
         pin(Request::SetLanEnabled { enabled: true });
         pin(Request::MintRemoteSetupCode);
+        pin(Request::ProjectConfigDraft {
+            path: PathBuf::from("/p/acme"),
+        });
+        pin(Request::ApplyProjectConfig {
+            path: PathBuf::from("/p/acme"),
+            contents: Some("php = \"8.4\"\n".into()),
+        });
+        pin(Request::ExportProjectConfig {
+            site: "acme".into(),
+        });
     }
 
     fn laravel_options_fixture() -> crate::LaravelOptions {

@@ -256,6 +256,38 @@ pub async fn remove_response_header(site: String, name: String) -> Result<Respon
     finish(exchange(&Request::RemoveResponseHeader { site, name }).await?)
 }
 
+// ── project file (.yerd.toml) ──────────────────────────────────────────────
+
+/// Read the `.yerd.toml` in `path`, or draft one when the folder has none.
+#[tauri::command]
+pub async fn project_config_draft(path: String) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::ProjectConfigDraft {
+            path: PathBuf::from(path),
+        })
+        .await?,
+    )
+}
+
+/// Apply the existing `.yerd.toml` in `path` as a background job; replies
+/// `JobStarted` for the client to poll via `job_status`.
+#[tauri::command]
+pub async fn apply_project_config(path: String) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::ApplyProjectConfig {
+            path: PathBuf::from(path),
+            contents: None,
+        })
+        .await?,
+    )
+}
+
+/// Write `site`'s current settings to `.yerd.toml` in its folder.
+#[tauri::command]
+pub async fn export_project_config(site: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::ExportProjectConfig { site }).await?)
+}
+
 // ── site groups ────────────────────────────────────────────────────────────
 
 #[tauri::command]

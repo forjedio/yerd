@@ -55,8 +55,11 @@ src/
   parse.rs      Wire mirrors, TOML deserialisation, TryFrom<Wire>, validate().
   serialize.rs  Borrowed wire mirrors + to_toml().
   migrate.rs    Schema-version reading and forward-migration step walker.
-  io.rs         The only impure code: load() and save().
-  error.rs      ConfigError + ValidateErrorReason + MigrationErrorReason.
+  project.rs    The committed per-project .yerd.toml: schema, parse, render,
+                export, write-back delta and apply plan (pure).
+  io.rs         The only impure code: load()/save() and their .yerd.toml twins.
+  error.rs      ConfigError + ValidateErrorReason + MigrationErrorReason,
+                ProjectError.
 ```
 
 The two halves are clearly separated: `parse.rs` / `serialize.rs` / `migrate.rs`
@@ -517,9 +520,60 @@ Properties worth knowing as a contributor:
 - **Parent dirs are created but not cleaned up.** `fs::create_dir_all` may create
   intermediate directories; they are not removed on a later failure.
 
+## The project file (`project.rs`)
+
+`project.rs` owns [`.yerd.toml`](../../reference/project-file), the small file a
+project commits for `yerd init`. It is a separate schema from `yerd.toml`, not a
+subset of it, and adds no field to `yerd.toml` (so no schema bump). Like the rest
+of the crate it is pure; the daemon supplies site state as plain data.
+
+- **`ProjectFile`** - the validated model (`name`, `php`, `secure`, `node`,
+  `domains`, `extensions`, `headers`, `proxy_rules`, `services`).
+  `from_toml` parses through a crate-private `deny_unknown_fields` wire mirror,
+  builds each value with the `yerd-core` validators (`normalize_site_name`,
+  `PhpVersion`, `Domain::parse_subpart`, `ResponseHeader`, `ProxyRule` +
+  `UpstreamTarget`, `node::validate_selector`) and returns `ProjectError` with
+  the offending field. Domains are TLD-less sub-parts so a file is portable
+  across TLDs. `to_toml` renders deterministically: a two-line header comment,
+  then scalars, arrays and tables in a fixed order with sorted keys.
+- **`ProjectFile::from_snapshot`** - builds the file for export and the wizard
+  draft from a `SiteSnapshot`, keeping an existing file's `name`, `services`,
+  `extensions` and (when the caller says it still matches) `node` selector.
+- **`ProjectFile::apply_delta(SyncDelta)`** - the write-back step: one request's
+  change (set PHP/HTTPS/Node, add/remove a domain, header or rule, reset
+  domains), returning whether the model changed so the caller can skip the
+  write.
+- **`plan(file, snapshot, node_unchanged)`** - the ordered site steps of an
+  apply (link, PHP, HTTPS, domains, headers, rules, Node), each flagged
+  `needed` so unchanged items can still be reported. A declared apex is
+  `needed` when the snapshot's `apex_suppressed` is set.
+- **`service_prefix_matches` / `service_action` / `newest_matching`** - component-wise version
+  prefixes (`"8.4"` matches `8.4.9`, not `8.40.1`; `"*"` matches anything) and
+  the install / start / mismatch / unavailable decision. When the instance has
+  a selected version only that version is judged, so another matching version
+  on disk does not satisfy the prefix. With no selected version, apply starts
+  the `newest_matching` installed version rather than the newest overall.
+- **`normalise_module` / `extension_satisfied`** - compare a required extension
+  against `php -m` output, custom extensions and the Xdebug toggle.
+
+`ProjectFile::load` and `ProjectFile::save` are the I/O edge, in `io.rs`
+(`load_project` / `save_project`). `load_project` returns `Ok(None)` for a
+missing file and refuses a symlink or other non-regular file (checked with
+`symlink_metadata`, then re-checked on the opened handle, matched by device and
+inode on Unix) and anything over `PROJECT_FILE_MAX_BYTES` (64 KiB).
+`save_project` validates the model, renders it once and refuses output over
+`PROJECT_FILE_MAX_BYTES` before touching the destination, refuses a
+non-regular file at the destination, writes a sibling
+temp file with mode `0644` (the file is committed and read by other tools,
+unlike `yerd.toml`'s `0600`), then renames it into place (`persist_noclobber` for
+`ProjectFile::save_new`, so a file created meanwhile is never replaced). It
+does not create the directory. Tests: unit tables in `project.rs`, `tests/project_file.rs` (render
+golden and round trip) and `tests/project_io.rs` (the atomic edge).
+
 ## Errors
 
-`ConfigError` is the single error type returned by every fallible public API.
+`ConfigError` is the error type returned by the daemon-config (`Config`) APIs.
+The project-file (`ProjectFile`) APIs return `ProjectError` instead.
 It is `#[non_exhaustive]` (as are the reason sub-enums), so new variants are
 semver-compatible. It is **not** `Clone`/`Eq` because it wraps `toml::de::Error`,
 `toml::ser::Error`, and `std::io::Error` - and it stores the full `io::Error`
@@ -538,6 +592,14 @@ plus a `PathBuf` because diagnostic detail matters for `load`/`save` debugging.
 `ValidateErrorReason` enumerates the eleven checks in the
 [validation table](#validation). `MigrationErrorReason` is `MissingVersion`,
 `NonIntegerVersion`, or `MissingStep { from }`.
+
+`.yerd.toml` has its own `#[non_exhaustive]` `ProjectError`: `Parse` (TOML
+syntax, a wrong type or an unknown key), `Invalid { field, reason }`,
+`Io { path, source }`, `TooLarge { path }`, `NotRegularFile { path }` and
+`AlreadyExists { path }` (from the no-replace `save_new`). A file that is not
+valid UTF-8 is `Invalid { field: "file", .. }`. The daemon maps `Io` to an
+internal error, `AlreadyExists` to `ErrorCode::AlreadyExists`, and every other
+variant to `ErrorCode::ProjectFileInvalid`.
 
 ## Key tests and invariants
 

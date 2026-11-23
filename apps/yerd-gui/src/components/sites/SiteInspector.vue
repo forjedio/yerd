@@ -68,6 +68,8 @@ const emit = defineEmits<{
   changeWpAutoLogin: [site: SiteEntry, enabled: boolean, user: string | null];
   share: [site: SiteEntry];
   unlink: [site: SiteEntry];
+  applyProjectFile: [site: SiteEntry];
+  exportProjectFile: [site: SiteEntry];
   domainsChanged: [];
   toggleFavourite: [site: SiteEntry];
   createGroupAndMove: [site: SiteEntry, name: string];
@@ -232,6 +234,8 @@ onMounted(() => {
             @create-group-and-move="(s, name) => emit('createGroupAndMove', s, name)"
             @unpark="(dir) => emit('unpark', dir)"
             @unlink="(s) => emit('unlink', s)"
+            @apply-project-file="(s) => emit('applyProjectFile', s)"
+            @export-project-file="(s) => emit('exportProjectFile', s)"
             @change-ide="changeIde"
           />
         </div>

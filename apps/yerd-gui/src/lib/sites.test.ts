@@ -12,11 +12,13 @@ import {
   OVERFLOW_LIMIT,
   servedPath,
   servingState,
+  siteAtPath,
   siteChips,
   siteNameTaken,
   siteWarnings,
   sourceDetail,
   tildify,
+  untildify,
   urlParts,
   visibleRows,
   type SiteSection,
@@ -96,6 +98,23 @@ function keys(sections: SiteSection[]): string[] {
 function names(section: SiteSection | undefined): string[] {
   return (section?.sites ?? []).map((s) => s.name);
 }
+
+describe("siteAtPath", () => {
+  const parked = site("foo", { document_root: "/code/foo" });
+  const linked = site("acme", { kind: "linked", document_root: "/code/foo" });
+  const other = site("blog", { kind: "linked", document_root: "/code/blog" });
+
+  it.each([
+    ["/code/foo", [parked, other], "foo"],
+    ["/code/foo/", [parked, other], "foo"],
+    ["/code/foo", [parked, linked, other], "acme"],
+    ["/code/blog", [parked, linked, other], "blog"],
+    ["/code/none", [parked, linked, other], null],
+    ["/code/foo", [], null],
+  ] as const)("%s in %j", (path, sites, want) => {
+    expect(siteAtPath(sites, path)?.name ?? null).toBe(want);
+  });
+});
 
 describe("buildSections", () => {
   const herd = "/home/a/Herd";
@@ -348,6 +367,18 @@ describe("tildify", () => {
     ["/Users/a/x", null, "/Users/a/x"],
   ])("tildify(%s, %s) is %s", (path, home, expected) => {
     expect(tildify(path, home)).toBe(expected);
+  });
+});
+
+describe("untildify", () => {
+  it.each([
+    ["~/Herd/x", "/Users/a", "/Users/a/Herd/x"],
+    ["~", "/Users/a/", "/Users/a"],
+    ["~other/x", "/Users/a", "~other/x"],
+    ["/srv/x", "/Users/a", "/srv/x"],
+    ["~/x", null, "~/x"],
+  ])("untildify(%s, %s) is %s", (path, home, expected) => {
+    expect(untildify(path, home)).toBe(expected);
   });
 });
 

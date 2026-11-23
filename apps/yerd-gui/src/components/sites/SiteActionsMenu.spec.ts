@@ -121,6 +121,17 @@ describe("SiteActionsMenu with real reka components", () => {
     expect(document.activeElement).toBe(el('[aria-label="More actions for blog"]'));
   });
 
+  it.each([
+    ["Apply .yerd.toml", "applyProjectFile"],
+    ["Export to .yerd.toml", "exportProjectFile"],
+  ])("emits %s for the site", async (label, event) => {
+    const w = mountMenu();
+    await openMenu();
+    byText('[role="menuitem"]', label).click();
+    await settle();
+    expect(w.findComponent(SiteActionsMenu).emitted(event)).toEqual([[SITE]]);
+  });
+
   it("clears layerOpen when unmounted while the menu is open", async () => {
     mountMenu();
     await openMenu();

@@ -35,6 +35,7 @@ The exceptions are the two passthrough commands. Anything after [`coverage`](./c
 | Group | Commands |
 | --- | --- |
 | [Sites](./sites) | `sites`, `park`, `unpark`, `link`, `unlink`, `root` |
+| [Init](./init) | `init` (apply or create a project's `.yerd.toml`) |
 | [Domains](./domains) | `domain list`, `domain add`, `domain remove`, `domain primary`, `domain reset` |
 | [Proxies](./proxies) | `proxy add`, `proxy edit`, `proxy remove`, `proxy list` |
 | [Routing rules](./routes) | `route add`, `route remove`, `route list` |

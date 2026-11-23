@@ -1096,6 +1096,7 @@ fn response_error_each_code_byte_shape() {
         (ErrorCode::LegacyRestricted, "legacy_restricted"),
         (ErrorCode::XdebugUnavailable, "xdebug_unavailable"),
         (ErrorCode::InvalidSetting, "invalid_setting"),
+        (ErrorCode::ProjectFileInvalid, "project_file_invalid"),
         (ErrorCode::Internal, "internal"),
     ] {
         let r = Response::Error {
@@ -1524,6 +1525,7 @@ fn error_code_each_variant_byte_shape() {
         (ErrorCode::LegacyRestricted, r#""legacy_restricted""#),
         (ErrorCode::XdebugUnavailable, r#""xdebug_unavailable""#),
         (ErrorCode::InvalidSetting, r#""invalid_setting""#),
+        (ErrorCode::ProjectFileInvalid, r#""project_file_invalid""#),
         (ErrorCode::Internal, r#""internal""#),
     ];
     for (code, expected) in cases {
@@ -4269,4 +4271,85 @@ fn request_update_proxy_rule_byte_shape() {
         r#"{"type":"update_proxy_rule","site":"codestash","prefix":"/live","url":"http://127.0.0.1:8082"}"#
     );
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+// ---------- Project file (.yerd.toml) ----------
+
+#[test]
+fn request_project_config_draft_byte_shape() {
+    let r = Request::ProjectConfigDraft {
+        path: PathBuf::from("/p/acme"),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"project_config_draft","path":"/p/acme"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_apply_project_config_without_contents_byte_shape() {
+    let r = Request::ApplyProjectConfig {
+        path: PathBuf::from("/p/acme"),
+        contents: None,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"apply_project_config","path":"/p/acme"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_apply_project_config_with_contents_byte_shape() {
+    let r = Request::ApplyProjectConfig {
+        path: PathBuf::from("/p/acme"),
+        contents: Some("php = \"8.4\"\n".into()),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"apply_project_config","path":"/p/acme","contents":"php = \"8.4\"\n"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_export_project_config_byte_shape() {
+    let r = Request::ExportProjectConfig {
+        site: "acme".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"export_project_config","site":"acme"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_project_config_byte_shape() {
+    let r = Response::ProjectConfig {
+        file: PathBuf::from("/p/acme/.yerd.toml"),
+        exists: true,
+        site: Some("acme".into()),
+        name: Some("acme".into()),
+        contents: "name = \"acme\"\n".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"project_config","file":"/p/acme/.yerd.toml","exists":true,"site":"acme","name":"acme","contents":"name = \"acme\"\n"}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_project_config_draft_without_site_byte_shape() {
+    let r = Response::ProjectConfig {
+        file: PathBuf::from("/p/new/.yerd.toml"),
+        exists: false,
+        site: None,
+        name: None,
+        contents: String::new(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"project_config","file":"/p/new/.yerd.toml","exists":false,"site":null,"name":null,"contents":""}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }

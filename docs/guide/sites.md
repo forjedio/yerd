@@ -62,6 +62,8 @@ Group names are unique case-insensitively (like site names) and can't be `Unallo
 
 **New site** → **Existing folder** (or the command palette's **Link site**) opens **Link an existing folder**: choose the project folder, name the site (prefilled from the folder), and pick its PHP version and HTTPS. **Link site** registers it as a [linked](#linking-a-directory) site.
 
+If the folder has a committed [`.yerd.toml`](./project-file), the dialog offers to apply it instead: the site name, PHP, HTTPS and the rest come from the file.
+
 <ThemedImage light="/images/site-link-folder-light.png" dark="/images/site-link-folder-dark.png" alt="The Link an existing folder dialog with ~/Code/storefront chosen, the site name storefront, PHP 8.4 and the HTTPS switch" />
 
 ## Create a new site
@@ -229,6 +231,10 @@ To remove it, unlink by name:
 ```sh
 yerd unlink my-app
 ```
+
+For a project with a committed [`.yerd.toml`](./project-file), run
+[`yerd init`](../reference/cli/init) instead: it links the folder and applies the
+PHP version, HTTPS, domains and services the file declares.
 
 ### Site name rules
 
@@ -469,6 +475,7 @@ flush();
 
 ## Related
 
+- [Project File](./project-file) - commit a `.yerd.toml` so `yerd init` sets a project up after a clone.
 - [PHP Versions](./php-versions) - set the global default and pin a site to a version.
 - [Routing rules](../reference/cli/routes) - nested front controllers and SPA deep links.
 - [Response headers](../reference/cli/headers) - custom headers on every response, such as CORS.

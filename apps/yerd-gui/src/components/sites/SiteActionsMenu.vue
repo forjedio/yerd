@@ -4,6 +4,8 @@ import {
   Code2,
   Copy,
   Ellipsis,
+  FileCog,
+  FileDown,
   FileText,
   FolderMinus,
   FolderTree,
@@ -82,6 +84,8 @@ const emit = defineEmits<{
   createGroupAndMove: [site: SiteEntry, name: string];
   unpark: [dir: string];
   unlink: [site: SiteEntry];
+  applyProjectFile: [site: SiteEntry];
+  exportProjectFile: [site: SiteEntry];
   changeIde: [value: string];
 }>();
 
@@ -202,6 +206,12 @@ async function openDumps(): Promise<void> {
           </DropdownMenuSub>
           <DropdownMenuItem @select="later(() => (routingOpen = true))">
             <Route class="size-4" /> Routing rules…
+          </DropdownMenuItem>
+          <DropdownMenuItem @select="emit('applyProjectFile', site)">
+            <FileCog class="size-4" /> Apply .yerd.toml
+          </DropdownMenuItem>
+          <DropdownMenuItem @select="emit('exportProjectFile', site)">
+            <FileDown class="size-4" /> Export to .yerd.toml
           </DropdownMenuItem>
           <DropdownMenuSub v-if="editorAvailable">
             <DropdownMenuSubTrigger>

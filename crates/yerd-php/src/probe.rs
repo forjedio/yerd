@@ -8,6 +8,7 @@
 //! that returns canned output, keeping [`probe_extension`] testable without
 //! spawning PHP.
 
+use std::collections::BTreeSet;
 use std::io;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -15,7 +16,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::pure::ext_probe::{ffi_listed, interpret_probe, require_zend_module, ExtLoadError};
+use crate::pure::ext_probe::{
+    ffi_listed, interpret_probe, listed_modules, require_zend_module, ExtLoadError,
+};
 
 /// Upper bound on one `php -n -m` FFI probe. A cold first run (macOS
 /// Gatekeeper) takes about a second; anything past this is treated as unknown.
@@ -141,6 +144,20 @@ pub async fn probe_ffi(runner: &dyn CommandRunner, php_bin: &Path) -> Option<boo
     out.status_ok.then(|| ffi_listed(&out.stdout))
 }
 
+/// Every module the PHP build at `php_bin` lists under `php -n -m`, raw (see
+/// [`listed_modules`]). `None` when the probe could not answer: the process
+/// failed to spawn, exited unsuccessfully, or ran past the same timeout as
+/// [`probe_ffi`].
+pub async fn probe_modules(runner: &dyn CommandRunner, php_bin: &Path) -> Option<BTreeSet<String>> {
+    let mut cmd = Command::new(php_bin);
+    cmd.arg("-n").arg("-m").stdin(Stdio::null());
+    let out = tokio::time::timeout(FFI_PROBE_TIMEOUT, runner.run(cmd))
+        .await
+        .ok()?
+        .ok()?;
+    out.status_ok.then(|| listed_modules(&out.stdout))
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -165,6 +182,19 @@ mod tests {
                 stdout: self.stdout.clone(),
                 stderr: self.stderr.clone(),
             })
+        }
+    }
+
+    /// Like [`FakeRunner`], but asserts the command is a bare `php -n -m`.
+    struct ModulesRunner(FakeRunner);
+
+    #[async_trait]
+    impl CommandRunner for ModulesRunner {
+        async fn run(&self, cmd: Command) -> Result<ProbeOutput, io::Error> {
+            let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+            assert!(args.contains(&std::ffi::OsStr::new("-n")), "{args:?}");
+            assert!(args.contains(&std::ffi::OsStr::new("-m")), "{args:?}");
+            self.0.run(cmd).await
         }
     }
 
@@ -294,5 +324,27 @@ mod tests {
         assert_eq!(probe_ffi(&without, php).await, Some(false));
         assert_eq!(probe_ffi(&failed_exit, php).await, None);
         assert_eq!(probe_ffi(&FailingRunner, php).await, None);
+    }
+
+    #[tokio::test]
+    async fn probe_modules_lists_modules_or_none() {
+        let ok = ModulesRunner(FakeRunner {
+            status_ok: true,
+            stdout: "[PHP Modules]\nCore\nredis\n\n[Zend Modules]\nZend OPcache\n".to_owned(),
+            stderr: String::new(),
+        });
+        let failed_exit = ModulesRunner(FakeRunner {
+            status_ok: false,
+            stdout: "[PHP Modules]\nCore\n".to_owned(),
+            stderr: String::new(),
+        });
+        let php = Path::new("/php");
+        let want: BTreeSet<String> = ["Core", "Zend OPcache", "redis"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        assert_eq!(probe_modules(&ok, php).await, Some(want));
+        assert_eq!(probe_modules(&failed_exit, php).await, None);
+        assert_eq!(probe_modules(&FailingRunner, php).await, None);
     }
 }

@@ -324,6 +324,11 @@ pub enum Command {
     /// `claude mcp add --scope user yerd -- yerd mcp`. Tools are served only
     /// when AI Agents is enabled in Yerd's General settings.
     Mcp,
+    /// Set up the project in the current directory from its `.yerd.toml`.
+    /// With a file, applies it (links the folder, sets PHP, HTTPS, domains,
+    /// headers, proxy rules, Node and services). Without one, runs a short
+    /// wizard prefilled from the current site, writes the file, then applies it.
+    Init,
     /// Expose your `.test` sites to other devices on the LAN, or check/disable
     /// that exposure. See `yerd remote-setup` to provision a device.
     Lan {
