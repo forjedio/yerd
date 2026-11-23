@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const pickDirectory = vi.fn();
 const projectConfigDraft = vi.fn();
+const suggestSiteName = vi.fn();
 vi.mock("@/ipc/client", () => {
   class IpcError extends Error {
     readonly code: string;
@@ -15,11 +16,13 @@ vi.mock("@/ipc/client", () => {
     IpcError,
     pickDirectory: (...args: unknown[]) => pickDirectory(...args),
     projectConfigDraft: (...args: unknown[]) => projectConfigDraft(...args),
+    suggestSiteName: (...args: unknown[]) => suggestSiteName(...args),
   };
 });
 
 import { IpcError } from "@/ipc/client";
 import type { ProjectConfig } from "@/ipc/types";
+import { slugifySiteName } from "@/lib/siteName";
 
 import LinkFolderDialog from "./LinkFolderDialog.vue";
 
@@ -77,6 +80,7 @@ function deferredDraft(): { resolve: (value: ProjectConfig) => void } {
 beforeEach(() => {
   pickDirectory.mockReset();
   projectConfigDraft.mockReset().mockResolvedValue(draft());
+  suggestSiteName.mockReset().mockImplementation((folder: string) => Promise.resolve(slugifySiteName(folder)));
 });
 
 describe("LinkFolderDialog", () => {
@@ -89,6 +93,76 @@ describe("LinkFolderDialog", () => {
     expect((pathInput(w).element as HTMLInputElement).value).toBe("~/Code/Billing_API");
     expect((nameInput(w).element as HTMLInputElement).value).toBe("billing-api");
     expect(button(w, "Change").exists()).toBe(true);
+  });
+
+  it("prefills the suffix-stripped name the bridge suggests", async () => {
+    pickDirectory.mockResolvedValue("/srv/laravel.com");
+    suggestSiteName.mockResolvedValue("laravel");
+    const w = mountDialog();
+    await button(w, "Choose folder").trigger("click");
+    await flushPromises();
+    expect(suggestSiteName).toHaveBeenCalledWith("laravel.com");
+    expect((nameInput(w).element as HTMLInputElement).value).toBe("laravel");
+  });
+
+  it("fills the suggested name before a slow draft lookup finishes", async () => {
+    const pending = deferredDraft();
+    pickDirectory.mockResolvedValue("/srv/laravel.com");
+    suggestSiteName.mockResolvedValue("laravel");
+    const w = mountDialog();
+    await button(w, "Choose folder").trigger("click");
+    await flushPromises();
+    expect((nameInput(w).element as HTMLInputElement).value).toBe("laravel");
+    expect(button(w, "Link site").attributes("disabled")).toBeDefined();
+    pending.resolve(draft());
+    await flushPromises();
+    expect(button(w, "Link site").attributes("disabled")).toBeUndefined();
+  });
+
+  it("applies a nameless .yerd.toml under the suggested name", async () => {
+    pickDirectory.mockResolvedValue("/srv/laravel.com");
+    suggestSiteName.mockResolvedValue("laravel");
+    projectConfigDraft.mockResolvedValue(draft({ exists: true, name: null }));
+    const w = mountDialog();
+    await button(w, "Choose folder").trigger("click");
+    await flushPromises();
+    expect(w.get('[data-testid="project-file-name"]').text()).toBe("laravel.test");
+    await button(w, "Link site").trigger("click");
+    expect(w.emitted("link")?.[0]?.[0]).toMatchObject({ name: "laravel", applyProjectFile: true });
+  });
+
+  it("does not overwrite a typed name with the suggestion", async () => {
+    pickDirectory.mockResolvedValue("/srv/laravel.com");
+    suggestSiteName.mockResolvedValue("laravel");
+    const w = mountDialog();
+    await nameInput(w).setValue("mine");
+    await button(w, "Choose folder").trigger("click");
+    await flushPromises();
+    expect((nameInput(w).element as HTMLInputElement).value).toBe("mine");
+  });
+
+  it("still links under the suggested name when the draft lookup fails", async () => {
+    pickDirectory.mockResolvedValue("/srv/laravel.com");
+    suggestSiteName.mockResolvedValue("laravel");
+    projectConfigDraft.mockRejectedValue(new IpcError("no such folder", "invalid_path"));
+    const w = mountDialog();
+    await button(w, "Choose folder").trigger("click");
+    await flushPromises();
+    await button(w, "Link site").trigger("click");
+    expect(w.emitted("link")?.[0]?.[0]).toMatchObject({
+      name: "laravel",
+      path: "/srv/laravel.com",
+      applyProjectFile: false,
+    });
+  });
+
+  it("falls back to the plain slug when the suggestion fails", async () => {
+    pickDirectory.mockResolvedValue("/srv/My_App");
+    suggestSiteName.mockRejectedValue(new Error("bridge down"));
+    const w = mountDialog();
+    await button(w, "Choose folder").trigger("click");
+    await flushPromises();
+    expect((nameInput(w).element as HTMLInputElement).value).toBe("my-app");
   });
 
   it("keeps a name the user typed when the folder changes", async () => {

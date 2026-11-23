@@ -1191,7 +1191,7 @@ async fn default_file(dir: &Path, state: &DaemonState) -> ProjectFile {
 fn folder_slug(dir: &Path) -> Option<String> {
     dir.file_name()
         .and_then(|n| n.to_str())
-        .and_then(yerd_core::slugify_site_name)
+        .and_then(yerd_core::folder_site_name)
 }
 
 async fn load(path: &Path) -> Result<Option<ProjectFile>, ProjectError> {
@@ -1281,6 +1281,23 @@ mod tests {
             std::fs::write(dir.join(PROJECT_FILE_NAME), text).unwrap();
         }
         std::fs::canonicalize(dir).unwrap()
+    }
+
+    #[test]
+    fn folder_slug_strips_public_suffix() {
+        let cases: &[(&str, Option<&str>)] = &[
+            ("/srv/laravel.com", Some("laravel")),
+            ("/srv/example.mysite.com", Some("example-mysite")),
+            ("/srv/my_app", Some("my-app")),
+            ("/srv/com", Some("com")),
+        ];
+        for (dir, expected) in cases {
+            assert_eq!(
+                folder_slug(Path::new(dir)).as_deref(),
+                *expected,
+                "dir {dir:?}"
+            );
+        }
     }
 
     fn ok(resp: Response) {

@@ -62,7 +62,7 @@ pub(crate) fn parse_wire_id(id: &str) -> (String, Option<String>) {
 }
 
 /// Format an instance wire id from a type id and optional site.
-fn wire_id(type_id: &str, site: Option<&str>) -> String {
+pub(crate) fn wire_id(type_id: &str, site: Option<&str>) -> String {
     match site {
         Some(s) => format!("{type_id}:{s}"),
         None => type_id.to_owned(),

@@ -284,15 +284,15 @@ fn err(name: &str, reason: SiteNameErrorReason) -> CoreError {
     }
 }
 
-/// Derive a valid site name from an arbitrary string (typically a directory's
-/// last path component), for `yerd link`'s auto-naming: lowercases, replaces
+/// Derive a valid site name from an arbitrary string: lowercases, replaces
 /// every byte outside `[a-z0-9-]` with `-`, collapses runs of `-`, trims
 /// leading/trailing `-`, and caps at the 63-byte DNS-label limit. Returns
 /// `None` if nothing valid remains.
 ///
 /// The output alphabet is always `[a-z0-9-]` with no leading/trailing/doubled
 /// `-`, so unlike [`validate_and_lowercase_name`] it never needs to reject its
-/// own result.
+/// own result. Folder-derived names go through [`folder_site_name`] instead,
+/// which strips a public suffix first.
 #[must_use]
 pub fn slugify_site_name(raw: &str) -> Option<String> {
     let mut out = String::with_capacity(raw.len());
@@ -322,22 +322,65 @@ pub fn slugify_site_name(raw: &str) -> Option<String> {
     }
 }
 
-/// Normalise a discovered directory name to a site name for the daemon's parked
-/// scan. A name that is already valid is kept as-is (only lowercased), so a
-/// folder that was servable before keeps its exact `.test` hostname across
-/// upgrades; a name the strict validator would reject (`_`, `.`, a leading
-/// hyphen, ...) is [`slugify_site_name`]d instead of being dropped. Returns
-/// `None` only when slugging leaves nothing valid.
+/// Normalise a name to a valid site name. A name that is already valid is kept
+/// as-is (only lowercased), so a folder that was servable before keeps its
+/// exact `.test` hostname across upgrades; a name the strict validator would
+/// reject (`_`, `.`, a leading hyphen, ...) is [`slugify_site_name`]d instead of
+/// being dropped. Returns `None` only when slugging leaves nothing valid.
 ///
 /// This differs from `yerd link`'s auto-naming, which always slugifies: link is
 /// a one-shot suggestion the user sees and can edit, whereas a parked name is a
 /// site's persistent identity that should not change under the user's feet.
+/// The daemon's parked scan uses [`parked_folder_site_name`], which strips a
+/// public suffix first.
 #[must_use]
 pub fn normalize_site_name(raw: &str) -> Option<String> {
     match validate_and_lowercase_name(raw) {
         Ok(name) => Some(name),
         Err(_) => slugify_site_name(raw),
     }
+}
+
+/// Derive a site name from a project folder's name for `yerd link`, `yerd init`
+/// and the desktop app's Link dialog: a trailing public suffix (`.com`,
+/// `.co.uk`, `.github.io`, ...) is stripped, then the rest is
+/// [`slugify_site_name`]d, so `example.mysite.com` becomes `example-mysite`.
+///
+/// A folder with no known suffix, or one that is nothing but a suffix (`com`,
+/// `co.uk`), gets exactly [`slugify_site_name`]'s result.
+#[must_use]
+pub fn folder_site_name(folder: &str) -> Option<String> {
+    strip_public_suffix(folder)
+        .and_then(slugify_site_name)
+        .or_else(|| slugify_site_name(folder))
+}
+
+/// Derive a parked site's name from its folder name: like [`folder_site_name`],
+/// but the remainder goes through [`normalize_site_name`], so a folder without
+/// a known suffix keeps exactly the name it had before suffix stripping.
+#[must_use]
+pub fn parked_folder_site_name(folder: &str) -> Option<String> {
+    strip_public_suffix(folder)
+        .and_then(normalize_site_name)
+        .or_else(|| normalize_site_name(folder))
+}
+
+/// The part of `raw` before its trailing public suffix, per the Mozilla Public
+/// Suffix List (ICANN and private sections, longest match). Only a suffix the
+/// list knows counts: the list's implicit `*` rule (any unknown last label) is
+/// ignored, so `foo.local` and `v1.2` are left alone. Returns `None` when there
+/// is no known suffix or nothing would remain before it.
+///
+/// ASCII lowercasing keeps byte offsets, so the suffix length found on the
+/// lowercased copy slices `raw` at the same boundary.
+fn strip_public_suffix(raw: &str) -> Option<&str> {
+    let lowered = raw.to_ascii_lowercase();
+    let suffix = psl::suffix(lowered.as_bytes()).filter(psl::Suffix::is_known)?;
+    let keep = raw.len().checked_sub(suffix.as_bytes().len() + 1)?;
+    if raw.as_bytes().get(keep) != Some(&b'.') {
+        return None;
+    }
+    raw.get(..keep).filter(|rest| !rest.is_empty())
 }
 
 /// A web subpath is safe to join onto the document root iff it is a plain
@@ -611,6 +654,75 @@ mod tests {
         for input in ["MyApp", "foo--bar", "my_app", "example.com", "-leading"] {
             let name = normalize_site_name(input).unwrap();
             assert!(Site::parked(&name, "/x", v83()).is_ok(), "name {name:?}");
+        }
+    }
+
+    #[test]
+    fn folder_names_strip_public_suffixes() {
+        let cases: &[(&str, Option<&str>, Option<&str>)] = &[
+            ("example.com", Some("example"), Some("example")),
+            ("example.co.uk", Some("example"), Some("example")),
+            ("example.us.com", Some("example"), Some("example")),
+            ("app.github.io", Some("app"), Some("app")),
+            ("foo.club", Some("foo"), Some("foo")),
+            ("foo.sex", Some("foo"), Some("foo")),
+            ("my.app", Some("my"), Some("my")),
+            (
+                "example.mysite.com",
+                Some("example-mysite"),
+                Some("example-mysite"),
+            ),
+            ("Example.COM", Some("example"), Some("example")),
+            ("foo.com.", Some("foo"), Some("foo")),
+            ("my_app.com", Some("my-app"), Some("my-app")),
+            ("foo.notatld", Some("foo-notatld"), Some("foo-notatld")),
+            ("foo.test", Some("foo-test"), Some("foo-test")),
+            ("v1.2", Some("v1-2"), Some("v1-2")),
+            ("com", Some("com"), Some("com")),
+            ("co.uk", Some("co-uk"), Some("co-uk")),
+            ("_.com", Some("com"), Some("com")),
+            (
+                "already-valid",
+                Some("already-valid"),
+                Some("already-valid"),
+            ),
+            ("foo--bar", Some("foo-bar"), Some("foo--bar")),
+            ("foo--bar.com", Some("foo-bar"), Some("foo--bar")),
+            ("MyApp", Some("myapp"), Some("myapp")),
+            ("???", None, None),
+            ("", None, None),
+        ];
+        for (input, link, parked) in cases {
+            assert_eq!(
+                folder_site_name(input).as_deref(),
+                *link,
+                "folder_site_name({input:?})"
+            );
+            assert_eq!(
+                parked_folder_site_name(input).as_deref(),
+                *parked,
+                "parked_folder_site_name({input:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn folder_names_are_always_valid() {
+        let inputs = [
+            "example.com",
+            "example.mysite.com",
+            "Example.COM",
+            "foo.com.",
+            "_.com",
+            "foo--bar.com",
+            "co.uk",
+            "v1.2",
+        ];
+        for input in inputs {
+            for name in [folder_site_name(input), parked_folder_site_name(input)] {
+                let name = name.unwrap();
+                assert!(Site::parked(&name, "/x", v83()).is_ok(), "name {name:?}");
+            }
         }
     }
 

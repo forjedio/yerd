@@ -1,6 +1,6 @@
 //! Daemon startup orchestration.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -104,6 +104,9 @@ pub struct Daemon {
     /// The `WordPress` public-URL prepend script for tunnelled requests, or
     /// `None` when writing it failed at startup.
     pub tunnel_wp_prepend: Option<PathBuf>,
+    /// Parked sites renamed by public-suffix stripping whose app-side URL still
+    /// needs a one-time sync, run once the autostarted services are up.
+    pub renamed_sites: Vec<RenamedSite>,
 }
 
 /// Top-level startup: resolve platform dirs, then run the shared
@@ -127,7 +130,7 @@ pub async fn bring_up(args: &ServeArgs) -> Result<Daemon, DaemonError> {
 #[allow(clippy::too_many_lines)]
 pub async fn bring_up_with_dirs(
     dirs: PlatformDirs,
-    config: yerd_config::Config,
+    mut config: yerd_config::Config,
     config_path: PathBuf,
 ) -> Result<Daemon, DaemonError> {
     let lock = InstanceLock::acquire(&dirs)?;
@@ -164,8 +167,14 @@ pub async fn bring_up_with_dirs(
 
     let detect_cache = Arc::new(DetectCache::new());
     let dns_tld = config.tld.clone();
-    let (router, wordpress_sites, laravel_sites, framework_sites) =
+    let (mut router, mut wordpress_sites, mut laravel_sites, mut framework_sites) =
         build_router(&config, &dirs, &detect_cache)?;
+    let renames = parked_renames(&router);
+    if migrate_parked_names(&mut config, &renames, &config_path) {
+        (router, wordpress_sites, laravel_sites, framework_sites) =
+            build_router(&config, &dirs, &detect_cache)?;
+    }
+    let renamed_sites = unsynced_renames(&dirs, &renames);
     if router.is_empty() {
         tracing::info!("no sites configured - every request will 404 until a site is added");
     }
@@ -483,6 +492,7 @@ pub async fn bring_up_with_dirs(
         mail_listener,
         tunnel_listener,
         tunnel_wp_prepend,
+        renamed_sites,
     })
 }
 
@@ -729,6 +739,12 @@ fn ca_validity() -> Result<Validity, DaemonError> {
     )?)
 }
 
+/// Discover every site: each parked root's child directories plus the linked
+/// sites. Parked candidates are gathered root-major (roots in their stored,
+/// lexicographic order, folders sorted within each root) and named by
+/// [`assign_parked_names`], so a folder ending in a public suffix
+/// (`laravel.com`) is served under its stripped name (`laravel`) when that is
+/// free and uncontested, and under its full slug (`laravel-com`) otherwise.
 pub(crate) fn scan_sites(
     cfg: &yerd_config::Config,
     default_php: PhpVersion,
@@ -737,9 +753,8 @@ pub(crate) fn scan_sites(
 ) -> Result<(Vec<Site>, Vec<PathBuf>), DaemonError> {
     let mut parked: Vec<Site> = Vec::new();
     let mut watch_roots: Vec<PathBuf> = Vec::new();
-    let linked_names: std::collections::HashSet<&str> =
-        cfg.linked.iter().map(yerd_core::Site::name).collect();
 
+    let mut found_roots: Vec<(String, PathBuf)> = Vec::new();
     for parked_root in &cfg.parked.paths {
         let entries = match std::fs::read_dir(parked_root) {
             Ok(it) => it,
@@ -754,21 +769,38 @@ pub(crate) fn scan_sites(
                 });
             }
         };
-        for entry in entries.flatten() {
-            let Some(site_name) = parked_site_name(&entry, &linked_names) else {
-                continue;
-            };
-            let doc_root = entry.path();
-            if let Some(site) = build_parked_site(
-                &site_name,
-                &doc_root,
-                default_php,
-                cfg,
-                detect_cache,
-                &mut watch_roots,
-            ) {
-                parked.push(site);
-            }
+        let mut found: Vec<(String, PathBuf)> = entries
+            .flatten()
+            .filter_map(|entry| parked_candidate(&entry).map(|folder| (folder, entry.path())))
+            .collect();
+        found.sort();
+        found_roots.extend(found);
+    }
+
+    let doc_roots: Vec<String> = found_roots
+        .iter()
+        .map(|(_, path)| path.to_string_lossy().into_owned())
+        .collect();
+    let candidates: Vec<ParkedCandidate<'_>> = found_roots
+        .iter()
+        .zip(&doc_roots)
+        .map(|((folder, _), doc_root)| ParkedCandidate { folder, doc_root })
+        .collect();
+    let names = assign_parked_names(&candidates, &TakenNames::from_config(cfg));
+    for ((folder, doc_root), name) in found_roots.iter().zip(names) {
+        let Some(site_name) = name else {
+            tracing::debug!(name = %folder, "skipping parked dir with no valid or free site name");
+            continue;
+        };
+        if let Some(site) = build_parked_site(
+            &site_name,
+            doc_root,
+            default_php,
+            cfg,
+            detect_cache,
+            &mut watch_roots,
+        ) {
+            parked.push(site);
         }
     }
 
@@ -776,16 +808,9 @@ pub(crate) fn scan_sites(
     Ok((parked, watch_roots))
 }
 
-/// Filter one parked-directory entry to its site name, or `None` to skip it
-/// (non-UTF-8, hidden, not a directory, no valid name after normalising, or
-/// shadowed by a linked site - linked wins on a name collision). The name is run
-/// through [`yerd_core::normalize_site_name`]: an already-valid name is kept, and
-/// one the validator would reject (`_`, `.`, ...) is slugified rather than
-/// dropped.
-fn parked_site_name(
-    entry: &std::fs::DirEntry,
-    linked_names: &std::collections::HashSet<&str>,
-) -> Option<String> {
+/// The folder name of one parked-directory entry, or `None` to skip it
+/// (non-UTF-8, hidden, or not a directory).
+fn parked_candidate(entry: &std::fs::DirEntry) -> Option<String> {
     let file_name = entry.file_name();
     let Some(name) = file_name.to_str() else {
         tracing::debug!(
@@ -800,14 +825,381 @@ fn parked_site_name(
     if !entry.metadata().ok()?.is_dir() {
         return None;
     }
-    let Some(site_name) = yerd_core::normalize_site_name(name) else {
-        tracing::debug!(name = %name, "skipping parked dir with no valid site name");
-        return None;
-    };
-    if linked_names.contains(site_name.as_str()) {
-        return None;
+    Some(name.to_owned())
+}
+
+/// One parked folder awaiting a name.
+struct ParkedCandidate<'a> {
+    folder: &'a str,
+    doc_root: &'a str,
+}
+
+/// Names held by something other than a parked folder, which a folder's
+/// suffix-stripped name must not take.
+struct TakenNames<'a> {
+    linked: HashSet<&'a str>,
+    proxies: HashSet<&'a str>,
+    /// Exact (non-wildcard) domains explicitly added in `[domains]`, each with
+    /// the parked document root that added it (`None` for a linked site or a
+    /// proxy). An explicit domain beats a site's implicit apex when claims are
+    /// built, so a stripped name equal to one would leave the site unreachable.
+    added: Vec<(Option<&'a str>, &'a str)>,
+}
+
+impl<'a> TakenNames<'a> {
+    fn from_config(cfg: &'a yerd_config::Config) -> Self {
+        let unowned = cfg
+            .domains
+            .linked
+            .values()
+            .chain(cfg.domains.proxy.values())
+            .flat_map(|delta| delta.added.iter().map(|d| (None, d)));
+        let parked =
+            cfg.domains.parked.iter().flat_map(|(root, delta)| {
+                delta.added.iter().map(move |d| (Some(root.as_str()), d))
+            });
+        Self {
+            linked: cfg.linked.iter().map(yerd_core::Site::name).collect(),
+            proxies: cfg.proxies.iter().map(yerd_core::ProxySite::name).collect(),
+            added: unowned
+                .chain(parked)
+                .filter(|(_, d)| !d.is_wildcard())
+                .map(|(owner, d)| (owner, d.as_str()))
+                .collect(),
+        }
     }
-    Some(site_name)
+
+    fn added_by_other(&self, name: &str, doc_root: &str) -> bool {
+        self.added
+            .iter()
+            .any(|(owner, domain)| *domain == name && *owner != Some(doc_root))
+    }
+}
+
+/// Name every parked candidate, in the given root-major order, or `None` to
+/// skip it. Each folder's legacy name is [`yerd_core::normalize_site_name`]
+/// (what builds before suffix stripping served it as) and its preferred name is
+/// [`yerd_core::parked_folder_site_name`]. In order:
+///
+/// 1. Folders sharing a legacy name keep only the first; later ones are
+///    skipped, exactly as the router dropped such duplicates before.
+/// 2. The survivors' legacy names are reserved, so no stripped name can take
+///    another folder's fallback slug. A folder's own reservation never blocks
+///    its own fallback.
+/// 3. A folder whose name does not change keeps it, unless a linked site holds
+///    it (linked wins, as before).
+/// 4. A stripped name wanted by two or more changed folders is contested and
+///    given to none of them (`laravel.com` and `laravel.org` both fall back),
+///    so adding a folder never hands an existing site's name and settings to a
+///    different project.
+/// 5. Each remaining folder takes its stripped name if it is uncontested and no
+///    linked site, proxy, other folder's explicitly added domain, reserved
+///    legacy name or earlier pick holds it; otherwise its legacy name, unless a
+///    linked site or an earlier pick holds that too.
+///
+/// The result depends only on the folder set and config, so it is stable
+/// across rescans and restarts.
+fn assign_parked_names(
+    candidates: &[ParkedCandidate<'_>],
+    taken: &TakenNames<'_>,
+) -> Vec<Option<String>> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let names: Vec<(Option<String>, Option<String>)> = candidates
+        .iter()
+        .map(|candidate| {
+            let legacy =
+                yerd_core::normalize_site_name(candidate.folder).filter(|l| seen.insert(l.clone()));
+            let preferred = legacy
+                .as_ref()
+                .and_then(|_| yerd_core::parked_folder_site_name(candidate.folder));
+            (legacy, preferred)
+        })
+        .collect();
+    let reserved: HashSet<&str> = names.iter().filter_map(|(l, _)| l.as_deref()).collect();
+    let mut wanted: HashMap<&str, usize> = HashMap::new();
+    for (legacy, preferred) in &names {
+        if let (Some(_), Some(p)) = (legacy, preferred.as_deref()) {
+            if legacy.as_deref() != Some(p) {
+                *wanted.entry(p).or_default() += 1;
+            }
+        }
+    }
+
+    let mut picked: HashSet<String> = HashSet::new();
+    let mut out: Vec<Option<String>> = vec![None; names.len()];
+    for (slot, (legacy, preferred)) in out.iter_mut().zip(&names) {
+        let Some(legacy) = legacy.as_deref() else {
+            continue;
+        };
+        if preferred.as_deref() == Some(legacy) && !taken.linked.contains(legacy) {
+            picked.insert(legacy.to_owned());
+            *slot = Some(legacy.to_owned());
+        }
+    }
+    for ((slot, (legacy, preferred)), candidate) in out.iter_mut().zip(&names).zip(candidates) {
+        let Some(legacy) = legacy.as_deref() else {
+            continue;
+        };
+        if preferred.as_deref() == Some(legacy) {
+            continue;
+        }
+        let pick = preferred.as_deref().filter(|p| {
+            wanted.get(p).copied() == Some(1)
+                && !taken.linked.contains(p)
+                && !taken.proxies.contains(p)
+                && !taken.added_by_other(p, candidate.doc_root)
+                && !reserved.contains(p)
+                && !picked.contains(*p)
+        });
+        let fallback = Some(legacy).filter(|l| !taken.linked.contains(l) && !picked.contains(*l));
+        if let Some(name) = pick.or(fallback) {
+            picked.insert(name.to_owned());
+            *slot = Some(name.to_owned());
+        }
+    }
+    out
+}
+
+/// A parked site whose name changed when public-suffix stripping arrived:
+/// `legacy` is the name older builds served it under (`laravel-com`), `new`
+/// the name it is served under now (`laravel`), and `doc_root` its
+/// document-root key, the same `to_string_lossy` string the overrides and
+/// per-site maps use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParkedRename {
+    legacy: String,
+    new: String,
+    doc_root: String,
+}
+
+/// Every parked site in `router` whose legacy folder name differs from its
+/// current name, skipping any whose legacy name is still a live site (that
+/// site owns the old settings).
+fn parked_renames(router: &SiteRouter) -> Vec<ParkedRename> {
+    router
+        .iter()
+        .filter(|site| site.kind() == yerd_core::SiteKind::Parked)
+        .filter_map(|site| {
+            let folder = site.document_root().file_name()?.to_str()?;
+            let legacy = yerd_core::normalize_site_name(folder)?;
+            (legacy != site.name() && router.get(&legacy).is_none()).then(|| ParkedRename {
+                legacy,
+                new: site.name().to_owned(),
+                doc_root: site.document_root().to_string_lossy().into_owned(),
+            })
+        })
+        .collect()
+}
+
+/// Upgrade step run on every start: move the name-keyed settings of parked
+/// sites renamed by public-suffix stripping (`laravel-com` to `laravel`) and
+/// persist the config when anything moved. Settings keyed by document root
+/// need no move. A save failure only warns: the in-memory config carries the
+/// change and the next mutation persists it. Returns whether the config
+/// changed, so the caller can rebuild routing from the migrated config.
+fn migrate_parked_names(
+    cfg: &mut yerd_config::Config,
+    renames: &[ParkedRename],
+    config_path: &std::path::Path,
+) -> bool {
+    if !rekey_parked_names(cfg, renames) {
+        return false;
+    }
+    if let Err(e) = cfg.save(config_path) {
+        tracing::warn!(error = %e, "could not persist migrated parked site names");
+    }
+    true
+}
+
+/// Rekey every name-keyed setting from each rename's legacy name to its new
+/// one, never overwriting an entry already under the new name. Covers
+/// favourites, group membership, tunnel hostnames and passwords (including the
+/// older `<name>.<tld>` key form), per-site service instances, and the apex
+/// held in the site's parked domain delta (`suppressed` and `primary`; `added`
+/// domains are left so those hosts keep routing). Returns whether anything
+/// changed, so a second run is a no-op.
+fn rekey_parked_names(cfg: &mut yerd_config::Config, renames: &[ParkedRename]) -> bool {
+    let mut changed = false;
+    for rename in renames {
+        if rekey_parked_name(cfg, rename) {
+            tracing::info!(
+                from = %rename.legacy,
+                to = %rename.new,
+                "moved parked site settings to its suffix-stripped name"
+            );
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn rekey_parked_name(cfg: &mut yerd_config::Config, rename: &ParkedRename) -> bool {
+    let mut changed = rekey_parked_domains(cfg, rename);
+    if cfg.favourites.sites.remove(&rename.legacy) {
+        cfg.favourites.sites.insert(rename.new.clone());
+        changed = true;
+    }
+    changed |= move_key(
+        &mut cfg.groups.members,
+        "group",
+        &rename.legacy,
+        &rename.new,
+    );
+    let host_key = format!("{}.{}", rename.legacy, cfg.tld.as_str());
+    for key in [rename.legacy.as_str(), host_key.as_str()] {
+        changed |= move_key(&mut cfg.tunnel.sites, "tunnel hostname", key, &rename.new);
+        changed |= move_key(
+            &mut cfg.tunnel.passwords,
+            "tunnel password",
+            key,
+            &rename.new,
+        );
+    }
+    changed | rekey_service_instances(&mut cfg.services.instances, rename)
+}
+
+fn rekey_parked_domains(cfg: &mut yerd_config::Config, rename: &ParkedRename) -> bool {
+    let Some(delta) = cfg.domains.parked.get_mut(&rename.doc_root) else {
+        return false;
+    };
+    let old = yerd_core::Domain::apex(&rename.legacy);
+    let new = yerd_core::Domain::apex(&rename.new);
+    let mut changed = false;
+    for domain in delta.suppressed.iter_mut().chain(delta.primary.iter_mut()) {
+        if *domain == old {
+            domain.clone_from(&new);
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn rekey_service_instances(
+    instances: &mut BTreeMap<String, yerd_config::ServiceInstance>,
+    rename: &ParkedRename,
+) -> bool {
+    let keys: Vec<String> = instances
+        .keys()
+        .filter(|key| {
+            crate::services::parse_wire_id(key).1.as_deref() == Some(rename.legacy.as_str())
+        })
+        .cloned()
+        .collect();
+    let mut changed = false;
+    for key in keys {
+        let (type_id, _) = crate::services::parse_wire_id(&key);
+        let new_key = crate::services::wire_id(&type_id, Some(&rename.new));
+        if instances.contains_key(&new_key) {
+            tracing::warn!(
+                setting = "service instance",
+                from = %key,
+                to = %new_key,
+                "not moving a renamed parked site's setting: the new name already has one"
+            );
+            continue;
+        }
+        if let Some(mut instance) = instances.remove(&key) {
+            instance.site = Some(rename.new.clone());
+            instances.insert(new_key, instance);
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn move_key<V>(map: &mut BTreeMap<String, V>, setting: &str, from: &str, to: &str) -> bool {
+    if !map.contains_key(from) {
+        return false;
+    }
+    if map.contains_key(to) {
+        tracing::warn!(
+            setting,
+            from,
+            to,
+            "not moving a renamed parked site's setting: the new name already has one"
+        );
+        return false;
+    }
+    match map.remove(from) {
+        Some(value) => {
+            map.insert(to.to_owned(), value);
+            true
+        }
+        None => false,
+    }
+}
+
+/// A parked site renamed by public-suffix stripping whose app-side URL
+/// (`WordPress` `siteurl`/`home`, `CodeIgniter` `app.baseURL`) has not yet been
+/// pointed at its new name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenamedSite {
+    /// The site's current name.
+    pub name: String,
+    /// The site's document-root key.
+    pub doc_root: String,
+}
+
+impl RenamedSite {
+    fn marker_line(&self) -> String {
+        format!("{}\t{}", self.doc_root, self.name)
+    }
+}
+
+/// The record of renamed parked sites whose app URLs were already synced, one
+/// `doc_root<TAB>name` per line. Keeps the one-time URL sync from re-running
+/// (and overwriting a URL the user later changed) on every start.
+fn renamed_sync_marker(dirs: &PlatformDirs) -> PathBuf {
+    dirs.state.join("renamed-sites-synced")
+}
+
+/// The renames whose app URLs have not been synced yet, per the marker file.
+fn unsynced_renames(dirs: &PlatformDirs, renames: &[ParkedRename]) -> Vec<RenamedSite> {
+    let done = std::fs::read_to_string(renamed_sync_marker(dirs)).unwrap_or_default();
+    let done: HashSet<&str> = done.lines().collect();
+    renames
+        .iter()
+        .map(|r| RenamedSite {
+            name: r.new.clone(),
+            doc_root: r.doc_root.clone(),
+        })
+        .filter(|site| !done.contains(site.marker_line().as_str()))
+        .collect()
+}
+
+/// Point each renamed site's app-side URL at its new name, mirroring the
+/// post-mutation hook, then record it so later starts skip it. Run after the
+/// autostarted services are up, because the `WordPress` update goes through
+/// WP-CLI and needs the site's database. Best-effort: the sync hooks only log
+/// on failure, and a site is recorded either way.
+pub(crate) async fn sync_renamed_site_urls(state: &DaemonState, renamed: &[RenamedSite]) {
+    for renamed_site in renamed {
+        let site = state.router.read().await.get(&renamed_site.name).cloned();
+        if let Some(site) = site {
+            crate::wordpress_url_sync::sync_site_url(&site, state).await;
+            crate::codeigniter_url_sync::sync_base_url(&site, state).await;
+        }
+        record_renamed_synced(&state.dirs, renamed_site).await;
+    }
+}
+
+async fn record_renamed_synced(dirs: &PlatformDirs, site: &RenamedSite) {
+    use tokio::io::AsyncWriteExt;
+    let path = renamed_sync_marker(dirs);
+    let line = format!("{}\n", site.marker_line());
+    let written = async {
+        tokio::fs::create_dir_all(&dirs.state).await?;
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .await?;
+        file.write_all(line.as_bytes()).await
+    }
+    .await;
+    if let Err(e) = written {
+        tracing::warn!(error = %e, path = %path.display(), "could not record a renamed site's URL sync");
+    }
 }
 
 /// Build a parked [`Site`] for `doc_root`, re-applying any persisted per-site
@@ -1316,33 +1708,384 @@ mod tests {
     }
 
     #[test]
-    fn parked_site_name_filters_and_slugifies() {
+    fn parked_candidate_filters_entries() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         std::fs::create_dir_all(root.join("MyApp")).unwrap();
-        std::fs::create_dir_all(root.join("foo_bar")).unwrap();
         std::fs::create_dir_all(root.join("ex.com")).unwrap();
-        std::fs::create_dir_all(root.join("keep--me")).unwrap();
         std::fs::create_dir_all(root.join(".hidden")).unwrap();
-        std::fs::create_dir_all(root.join("linked")).unwrap();
         std::fs::write(root.join("afile"), b"x").unwrap();
-
-        let mut linked = std::collections::HashSet::new();
-        linked.insert("linked");
 
         let mut got: std::collections::BTreeMap<String, Option<String>> =
             std::collections::BTreeMap::default();
         for entry in std::fs::read_dir(root).unwrap().flatten() {
             let key = entry.file_name().to_string_lossy().into_owned();
-            got.insert(key, parked_site_name(&entry, &linked));
+            got.insert(key, parked_candidate(&entry));
         }
-        assert_eq!(got.get("MyApp").unwrap().as_deref(), Some("myapp"));
-        assert_eq!(got.get("foo_bar").unwrap().as_deref(), Some("foo-bar"));
-        assert_eq!(got.get("ex.com").unwrap().as_deref(), Some("ex-com"));
-        assert_eq!(got.get("keep--me").unwrap().as_deref(), Some("keep--me"));
+        assert_eq!(got.get("MyApp").unwrap().as_deref(), Some("MyApp"));
+        assert_eq!(got.get("ex.com").unwrap().as_deref(), Some("ex.com"));
         assert_eq!(got.get(".hidden").unwrap().as_deref(), None);
         assert_eq!(got.get("afile").unwrap().as_deref(), None);
-        assert_eq!(got.get("linked").unwrap().as_deref(), None);
+    }
+
+    type AssignCase = (
+        &'static str,
+        &'static [&'static str],
+        &'static [&'static str],
+        &'static [&'static str],
+        &'static [Option<&'static str>],
+    );
+
+    const ASSIGN_CASES: &[AssignCase] = &[
+        (
+            "suffix stripped",
+            &["laravel.com"],
+            &[],
+            &[],
+            &[Some("laravel")],
+        ),
+        (
+            "plain folder keeps its name, suffixed one falls back",
+            &["laravel", "laravel.com"],
+            &[],
+            &[],
+            &[Some("laravel"), Some("laravel-com")],
+        ),
+        (
+            "a contested stripped name goes to nobody",
+            &["laravel.com", "laravel.org"],
+            &[],
+            &[],
+            &[Some("laravel-com"), Some("laravel-org")],
+        ),
+        (
+            "a three-way contest also goes to nobody",
+            &["laravel.app", "laravel.com", "laravel.org"],
+            &[],
+            &[],
+            &[
+                Some("laravel-app"),
+                Some("laravel-com"),
+                Some("laravel-org"),
+            ],
+        ),
+        (
+            "uncontested stripped names are unaffected by a contest",
+            &["acme.io", "laravel.com", "laravel.org"],
+            &[],
+            &[],
+            &[Some("acme"), Some("laravel-com"), Some("laravel-org")],
+        ),
+        (
+            "unchanged folder wins regardless of sort",
+            &["a.com", "a_"],
+            &[],
+            &[],
+            &[Some("a-com"), Some("a")],
+        ),
+        (
+            "reserved legacy names block stripped picks",
+            &["a", "a-com.org", "a.com"],
+            &[],
+            &[],
+            &[Some("a"), Some("a-com-org"), Some("a-com")],
+        ),
+        (
+            "duplicate plain names across roots keep the first",
+            &["blog", "blog"],
+            &[],
+            &[],
+            &[Some("blog"), None],
+        ),
+        (
+            "duplicate suffixed names across roots keep the first",
+            &["laravel.com", "laravel.com"],
+            &[],
+            &[],
+            &[Some("laravel"), None],
+        ),
+        (
+            "later plain folder sharing the legacy name is skipped",
+            &["laravel.com", "laravel-com"],
+            &[],
+            &[],
+            &[Some("laravel"), None],
+        ),
+        (
+            "stripped name held by a linked site falls back",
+            &["laravel.com"],
+            &["laravel"],
+            &[],
+            &[Some("laravel-com")],
+        ),
+        (
+            "legacy name held by a linked site is skipped",
+            &["shop"],
+            &["shop"],
+            &[],
+            &[None],
+        ),
+        (
+            "stripped and legacy both held by linked sites",
+            &["laravel.com"],
+            &["laravel", "laravel-com"],
+            &[],
+            &[None],
+        ),
+        (
+            "stripped name held by a proxy falls back",
+            &["reverb.app"],
+            &[],
+            &["reverb"],
+            &[Some("reverb-app")],
+        ),
+        (
+            "plain names unchanged",
+            &["MyApp", "foo_bar", "keep--me", "???"],
+            &[],
+            &[],
+            &[Some("myapp"), Some("foo-bar"), Some("keep--me"), None],
+        ),
+    ];
+
+    type AddedDomain<'a> = (Option<&'a str>, &'a str);
+
+    fn doc_root_for(index: usize, folder: &str) -> String {
+        format!("/root{index}/{folder}")
+    }
+
+    fn assign<'a>(
+        folders: &[&str],
+        linked: &[&'a str],
+        proxies: &[&'a str],
+        added: Vec<(Option<&'a str>, &'a str)>,
+    ) -> Vec<Option<String>> {
+        let doc_roots: Vec<String> = folders
+            .iter()
+            .enumerate()
+            .map(|(i, f)| doc_root_for(i, f))
+            .collect();
+        let candidates: Vec<ParkedCandidate<'_>> = folders
+            .iter()
+            .zip(&doc_roots)
+            .map(|(folder, doc_root)| ParkedCandidate { folder, doc_root })
+            .collect();
+        let taken = TakenNames {
+            linked: linked.iter().copied().collect(),
+            proxies: proxies.iter().copied().collect(),
+            added,
+        };
+        assign_parked_names(&candidates, &taken)
+    }
+
+    #[test]
+    fn assign_parked_names_cases() {
+        for (label, folders, linked, proxies, expected) in ASSIGN_CASES {
+            let got = assign(folders, linked, proxies, Vec::new());
+            let got: Vec<Option<&str>> = got.iter().map(Option::as_deref).collect();
+            assert_eq!(got, *expected, "{label}");
+        }
+    }
+
+    #[test]
+    fn assign_parked_names_respects_explicitly_added_domains() {
+        let own_root = doc_root_for(0, "laravel.com");
+        let own_root = own_root.as_str();
+        let cases: &[(&str, Vec<AddedDomain<'_>>, Option<&str>)] = &[
+            (
+                "linked site added the name",
+                vec![(None, "laravel")],
+                Some("laravel-com"),
+            ),
+            (
+                "another parked site added the name",
+                vec![(Some("/elsewhere"), "laravel")],
+                Some("laravel-com"),
+            ),
+            (
+                "the folder's own delta added the name",
+                vec![(Some(own_root), "laravel")],
+                Some("laravel"),
+            ),
+            (
+                "a subdomain does not block the apex",
+                vec![(None, "api.laravel")],
+                Some("laravel"),
+            ),
+        ];
+        for (label, added, expected) in cases {
+            let got = assign(&["laravel.com"], &[], &[], added.clone());
+            assert_eq!(got.first().unwrap().as_deref(), *expected, "{label}");
+        }
+    }
+
+    #[test]
+    fn taken_names_collects_exact_added_domains_only() {
+        let mut cfg = yerd_config::Config::default();
+        cfg.domains.linked.insert(
+            "shop".to_owned(),
+            yerd_config::DomainDelta {
+                added: vec![
+                    yerd_core::Domain::parse_subpart("laravel").unwrap(),
+                    yerd_core::Domain::parse_subpart("*.wild").unwrap(),
+                ],
+                ..yerd_config::DomainDelta::default()
+            },
+        );
+        cfg.domains.parked.insert(
+            "/srv/blog".to_owned(),
+            yerd_config::DomainDelta {
+                added: vec![yerd_core::Domain::parse_subpart("acme").unwrap()],
+                ..yerd_config::DomainDelta::default()
+            },
+        );
+        let taken = TakenNames::from_config(&cfg);
+        assert!(taken.added_by_other("laravel", "/srv/x"));
+        assert!(taken.added_by_other("acme", "/srv/x"));
+        assert!(!taken.added_by_other("acme", "/srv/blog"));
+        assert!(!taken.added_by_other("wild", "/srv/x"));
+        assert!(!taken.added.iter().any(|(_, d)| d.starts_with('*')));
+    }
+
+    fn rename(legacy: &str, new: &str, doc_root: &str) -> ParkedRename {
+        ParkedRename {
+            legacy: legacy.to_owned(),
+            new: new.to_owned(),
+            doc_root: doc_root.to_owned(),
+        }
+    }
+
+    fn rekey_fixture() -> yerd_config::Config {
+        let mut cfg = yerd_config::Config::default();
+        cfg.favourites.sites.insert("laravel-com".to_owned());
+        cfg.groups.order.push("Work".to_owned());
+        cfg.groups
+            .members
+            .insert("laravel-com".to_owned(), "Work".to_owned());
+        cfg.tunnel.sites.insert(
+            "laravel-com.test".to_owned(),
+            "laravel.example.com".to_owned(),
+        );
+        cfg.tunnel
+            .passwords
+            .insert("laravel-com".to_owned(), "secret".to_owned());
+        cfg.services.instances.insert(
+            "reverb:laravel-com".to_owned(),
+            yerd_config::ServiceInstance {
+                site: Some("laravel-com".to_owned()),
+                enabled: false,
+                ..yerd_config::ServiceInstance::default()
+            },
+        );
+        cfg.domains.parked.insert(
+            "/srv/laravel.com".to_owned(),
+            yerd_config::DomainDelta {
+                added: vec![yerd_core::Domain::apex("laravel-com")],
+                suppressed: vec![yerd_core::Domain::apex("laravel-com")],
+                primary: Some(yerd_core::Domain::apex("laravel-com")),
+            },
+        );
+        cfg
+    }
+
+    #[test]
+    fn rekey_parked_names_moves_name_keyed_settings() {
+        let mut cfg = rekey_fixture();
+        let renames = [rename("laravel-com", "laravel", "/srv/laravel.com")];
+
+        assert!(rekey_parked_names(&mut cfg, &renames));
+
+        assert!(cfg.favourites.sites.contains("laravel"));
+        assert!(!cfg.favourites.sites.contains("laravel-com"));
+        assert_eq!(
+            cfg.groups.members.get("laravel").map(String::as_str),
+            Some("Work")
+        );
+        assert!(!cfg.groups.members.contains_key("laravel-com"));
+        assert_eq!(
+            cfg.tunnel.sites.get("laravel").map(String::as_str),
+            Some("laravel.example.com")
+        );
+        assert!(!cfg.tunnel.sites.contains_key("laravel-com.test"));
+        assert_eq!(
+            cfg.tunnel.passwords.get("laravel").map(String::as_str),
+            Some("secret")
+        );
+        let reverb = cfg.services.instances.get("reverb:laravel").unwrap();
+        assert_eq!(reverb.site.as_deref(), Some("laravel"));
+        assert!(!cfg.services.instances.contains_key("reverb:laravel-com"));
+        let delta = cfg.domains.parked.get("/srv/laravel.com").unwrap();
+        assert_eq!(delta.added, vec![yerd_core::Domain::apex("laravel-com")]);
+        assert_eq!(delta.suppressed, vec![yerd_core::Domain::apex("laravel")]);
+        assert_eq!(delta.primary, Some(yerd_core::Domain::apex("laravel")));
+
+        assert!(!rekey_parked_names(&mut cfg, &renames));
+    }
+
+    #[test]
+    fn rekey_parked_names_never_overwrites_the_new_key() {
+        let mut cfg = rekey_fixture();
+        cfg.groups.order.push("Home".to_owned());
+        cfg.groups
+            .members
+            .insert("laravel".to_owned(), "Home".to_owned());
+        cfg.tunnel
+            .passwords
+            .insert("laravel".to_owned(), "kept".to_owned());
+        cfg.services.instances.insert(
+            "reverb:laravel".to_owned(),
+            yerd_config::ServiceInstance {
+                site: Some("laravel".to_owned()),
+                enabled: true,
+                ..yerd_config::ServiceInstance::default()
+            },
+        );
+        let renames = [rename("laravel-com", "laravel", "/srv/laravel.com")];
+
+        assert!(rekey_parked_names(&mut cfg, &renames));
+
+        assert_eq!(
+            cfg.groups.members.get("laravel").map(String::as_str),
+            Some("Home")
+        );
+        assert_eq!(
+            cfg.tunnel.passwords.get("laravel").map(String::as_str),
+            Some("kept")
+        );
+        assert!(
+            cfg.services
+                .instances
+                .get("reverb:laravel")
+                .unwrap()
+                .enabled
+        );
+        assert!(cfg.services.instances.contains_key("reverb:laravel-com"));
+    }
+
+    #[tokio::test]
+    async fn renamed_url_sync_is_recorded_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = make_dirs(tmp.path());
+        let renames = [
+            rename("laravel-com", "laravel", "/srv/laravel.com"),
+            rename("acme-io", "acme", "/srv/acme.io"),
+        ];
+        let pending = unsynced_renames(&dirs, &renames);
+        assert_eq!(pending.len(), 2);
+
+        record_renamed_synced(&dirs, pending.first().unwrap()).await;
+
+        let pending = unsynced_renames(&dirs, &renames);
+        let names: Vec<&str> = pending.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["acme"]);
+    }
+
+    #[test]
+    fn rekey_parked_names_without_renames_is_a_no_op() {
+        let mut cfg = rekey_fixture();
+        let before = cfg.clone();
+        assert!(!rekey_parked_names(&mut cfg, &[]));
+        assert_eq!(cfg, before);
     }
 
     #[test]

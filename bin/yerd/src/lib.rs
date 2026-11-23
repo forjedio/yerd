@@ -1029,7 +1029,7 @@ pub fn resolve_link(
             .file_name()
             .map(|s| s.to_string_lossy())
             .unwrap_or_default();
-        yerd_core::slugify_site_name(&folder).ok_or_else(|| {
+        yerd_core::folder_site_name(&folder).ok_or_else(|| {
             ClientError::Usage(format!(
                 "cannot derive a site name from '{}'; run `yerd link <name> {}` to set one explicitly",
                 resolved_path.display(),
@@ -1375,7 +1375,7 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         assert_eq!(path, cwd);
         let folder = cwd.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        assert_eq!(Some(name), yerd_core::slugify_site_name(folder));
+        assert_eq!(Some(name), yerd_core::folder_site_name(folder));
     }
 
     #[test]
@@ -1397,6 +1397,19 @@ mod tests {
         assert_eq!(name, "my-app");
         assert!(path.is_absolute());
         assert!(path.ends_with("../my-app"));
+    }
+
+    #[test]
+    fn resolve_link_strips_public_suffix_from_folder_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("laravel.com");
+        let arg = dir.to_string_lossy().into_owned();
+        let req = resolve_link(Some(&arg), None).unwrap();
+        let Request::Link { name, path } = req else {
+            panic!("expected Link");
+        };
+        assert_eq!(name, "laravel");
+        assert!(path.ends_with("laravel.com"));
     }
 
     #[test]

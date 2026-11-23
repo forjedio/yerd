@@ -71,6 +71,7 @@ fn main() {
             commands::park,
             commands::link,
             commands::unlink,
+            commands::suggest_site_name,
             commands::list_parked,
             commands::unpark,
             commands::set_php,

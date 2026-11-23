@@ -34,7 +34,7 @@ yerd sites
 ::: details How site names are validated
 `link`, `unlink`, `secure`, `unsecure`, and `root` validate the name client-side before connecting: a name must be a single valid DNS label. A bad name (e.g. `bad name` or `bad/name`) fails immediately with a usage error and exit code `2`, before any request reaches the daemon.
 
-`link` accepts a single positional argument as either a name or a path: an argument containing a path separator (or `.`/`..`) is treated as a directory, and the site name is derived from its folder name (lowercased, with runs of invalid characters collapsed to a single `-`); a bare word is always treated as a name, even if a same-named subdirectory happens to exist. With no arguments at all, the current directory is linked and named after its own folder.
+`link` accepts a single positional argument as either a name or a path: an argument containing a path separator (or `.`/`..`) is treated as a directory, and the site name is derived from its folder name (a trailing public suffix such as `.com` or `.co.uk` dropped, then lowercased, with runs of invalid characters collapsed to a single `-`, so `laravel.com` links as `laravel`); a bare word is always treated as a name, even if a same-named subdirectory happens to exist. With no arguments at all, the current directory is linked and named after its own folder.
 :::
 
 ::: tip Web root detection

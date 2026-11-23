@@ -26,6 +26,7 @@ description = "Pure domain model and host→site routing for Yerd."
 [dependencies]
 serde     = { workspace = true }
 thiserror = { workspace = true }
+psl       = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
@@ -33,8 +34,9 @@ serde_test = { workspace = true }
 toml       = { workspace = true }
 ```
 
-The only runtime dependencies are `serde` (for wire serialisation) and
-`thiserror` (for the error enum). There are no internal dependencies - this is
+The only runtime dependencies are `serde` (for wire serialisation),
+`thiserror` (for the error enum) and `psl` (the compiled-in Public Suffix List
+behind `folder_site_name` / `parked_folder_site_name`; pure and `no_std`). There are no internal dependencies - this is
 the bottom of the dependency graph. The crate root opens with:
 
 ```rust
@@ -82,7 +84,10 @@ pub use proxy::{match_rule, validate_proxy_name, ProxyRule, ProxySite, UpstreamT
 pub use response_header::ResponseHeader;
 pub use route_rule::RouteRule;
 pub use router::{Route, RouterConfig, SiteRouter};
-pub use site::{normalize_site_name, slugify_site_name, Site, SiteKind};
+pub use site::{
+    folder_site_name, normalize_site_name, parked_folder_site_name, slugify_site_name, Site,
+    SiteKind,
+};
 pub use tld::Tld;
 ```
 
@@ -90,7 +95,7 @@ pub use tld::Tld;
 | -------------------- | ------------- | --------------------------------------------------------- |
 | `error`              | re-exported   | `CoreError` + the typed `*Reason` sub-enums               |
 | `php`                | re-exported   | `PhpVersion` `(major, minor)` value type                  |
-| `site`               | re-exported   | `Site` / `SiteKind` + name normalisation/slugification    |
+| `site`               | re-exported   | `Site` / `SiteKind` + name normalisation/slugification + folder-name suffix stripping |
 | `tld`                | re-exported   | `Tld` validated DNS-suffix newtype                        |
 | `domain`             | re-exported   | `Domain` sub-part + `effective_domains` / `choose_primary` algebra |
 | `proxy`              | re-exported   | whole-host proxies + path-prefix rules (`match_rule`)     |

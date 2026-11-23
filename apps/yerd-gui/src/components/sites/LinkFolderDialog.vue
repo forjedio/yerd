@@ -11,7 +11,7 @@ import Select from "@/components/ui/Select.vue";
 import SuffixInput from "@/components/ui/SuffixInput.vue";
 import Switch from "@/components/ui/Switch.vue";
 import { preferredPhp } from "@/composables/useSiteStarters";
-import { IpcError, pickDirectory, projectConfigDraft } from "@/ipc/client";
+import { IpcError, pickDirectory, projectConfigDraft, suggestSiteName } from "@/ipc/client";
 import type { ProjectConfig } from "@/ipc/types";
 import { comparePhpVersions } from "@/lib/phpVersion";
 import { slugifySiteName } from "@/lib/siteName";
@@ -66,6 +66,9 @@ const php = ref("");
 const secure = ref(false);
 
 const draft = ref<ProjectConfig | null>(null);
+/** The site name derived from the looked-up folder's name, as `yerd link`
+ *  and the daemon derive it (public suffix stripped). */
+const folderSlug = ref<string | null>(null);
 const draftError = ref<string | null>(null);
 const applyFile = ref(true);
 /** Bumped per lookup so a slow reply for an older folder is dropped. */
@@ -84,7 +87,7 @@ const ignoringFile = computed(() => hasFile.value && !applyFile.value);
 /** The name the apply job links under: the file's `name`, else the site
  *  already at the folder, else the folder name, as the daemon resolves it. */
 const fileName = computed(
-  () => draft.value?.name ?? draft.value?.site ?? slugifySiteName(baseName(path.value)),
+  () => draft.value?.name ?? draft.value?.site ?? folderSlug.value,
 );
 
 const versions = computed(() => [...props.phpVersions].sort(comparePhpVersions));
@@ -136,6 +139,7 @@ function baseName(p: string): string {
 function resetDraft(): void {
   draftSeq += 1;
   draft.value = null;
+  folderSlug.value = null;
   draftError.value = null;
   applyFile.value = true;
   looking.value = false;
@@ -143,20 +147,43 @@ function resetDraft(): void {
   lookup = null;
 }
 
-/** Look for a `.yerd.toml` in `dir`. Only an invalid file is reported: any
- *  other failure (a folder that doesn't exist yet) is left to the link itself. */
+/** The folder's suggested site name. Falls back to the plain slug if the
+ *  bridge call fails, so the name is never left empty. */
+async function suggestFor(dir: string): Promise<string | null> {
+  try {
+    return await suggestSiteName(baseName(dir));
+  } catch {
+    return slugifySiteName(baseName(dir));
+  }
+}
+
+/** Look for a `.yerd.toml` in `dir` and derive the folder's suggested name.
+ *  The two lookups run independently: the name field is prefilled (unless the
+ *  user typed one) as soon as the suggestion arrives, even while the draft is
+ *  still loading or after it fails, and the lookup only counts as done once
+ *  both have finished. Only an invalid file is reported: any other failure (a
+ *  folder that doesn't exist yet) is left to the link itself. */
 function detectProjectFile(dir: string): Promise<void> {
   resetDraft();
   if (!dir) return Promise.resolve();
   const seq = draftSeq;
   looking.value = true;
   const done = (async () => {
-    try {
-      const reply = await projectConfigDraft(dir);
-      if (seq === draftSeq) draft.value = reply;
-    } catch (e) {
+    const named = suggestFor(dir).then((slug) => {
       if (seq !== draftSeq) return;
-      if (e instanceof IpcError && e.code === "project_file_invalid") draftError.value = e.message;
+      folderSlug.value = slug;
+      if (!nameDirty.value) name.value = slug ?? "";
+    });
+    try {
+      try {
+        const reply = await projectConfigDraft(dir);
+        if (seq === draftSeq) draft.value = reply;
+      } catch (e) {
+        if (seq === draftSeq && e instanceof IpcError && e.code === "project_file_invalid") {
+          draftError.value = e.message;
+        }
+      }
+      await named;
     } finally {
       if (seq === draftSeq) {
         looking.value = false;
@@ -169,7 +196,7 @@ function detectProjectFile(dir: string): Promise<void> {
 }
 
 function folderChosen(dir: string): Promise<void> {
-  if (!nameDirty.value) name.value = slugifySiteName(baseName(dir)) ?? "";
+  if (!dir && !nameDirty.value) name.value = "";
   return detectProjectFile(dir);
 }
 
