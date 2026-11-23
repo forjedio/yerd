@@ -134,6 +134,26 @@ pub async fn available_services(state: &DaemonState, dl: &dyn Downloader) -> Res
     Response::AvailableServices { services }
 }
 
+/// Every published version label of `type_id` for this platform, ascending.
+///
+/// # Errors
+/// A message when the platform is unsupported or the listing is unreachable.
+pub(crate) async fn available_labels(
+    type_id: &str,
+    dl: &dyn Downloader,
+) -> Result<Vec<String>, String> {
+    let (os, arch) = current_os_arch().map_err(|e| e.to_string())?;
+    let bytes = dl
+        .download(&listing_url())
+        .await
+        .map_err(|e| format!("couldn't reach the services distribution: {e}"))?;
+    let listing = String::from_utf8_lossy(&bytes);
+    Ok(available_versions(&listing, type_id, os, arch)
+        .iter()
+        .map(ToString::to_string)
+        .collect())
+}
+
 /// `addable-service-types` - the "Add Service" dialog catalog: per-type
 /// multiplicity, install state, versions, and a suggested next-free port.
 pub async fn addable_service_types(state: &DaemonState, dl: &dyn Downloader) -> Response {

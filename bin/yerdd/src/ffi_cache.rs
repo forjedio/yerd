@@ -48,6 +48,11 @@ impl FfiCache {
         }
     }
 
+    /// The runner probes go through, for other `php -n -m` callers.
+    pub fn runner(&self) -> Arc<dyn CommandRunner> {
+        self.runner.clone()
+    }
+
     /// The versions in `bins` (version plus its CLI binary path) whose build
     /// includes FFI, in input order. Legacy versions and missing binaries count
     /// as not capable and are not probed; a probe that cannot answer counts as

@@ -51,6 +51,7 @@ the `tests/cli_e2e.rs` integration test can drive the same code paths.
 | `src/exec_cmd.rs` | `yerd exec` / `yerd which`: run a tool under a site's pinned PHP, or print the binary that would be used (local exec, no IPC beyond the site lookup; Unix-only). |
 | `src/path_cmd.rs` | `yerd path install`/`uninstall`/`print`: edit the user's shell startup file to add `{data}/bin` to `PATH` (local, no IPC; Unix-only). |
 | `src/mcp_cmd.rs` | `yerd mcp`: serve Yerd's tools to AI agents over MCP on stdin/stdout. |
+| `src/init_cmd.rs` | `yerd init`: asks the daemon for a `ProjectConfigDraft`, applies an existing `.yerd.toml` or runs the wizard (behind a `Prompter` trait so tests script the answers, validating each answer with `yerd_config::ProjectFile`), sends `ApplyProjectConfig` and follows the job's log. The daemon writes the file; the CLI never touches it. |
 | `src/apply.rs` | Self-update applier: install a staged, verified artifact, in-process for `yerd update --yes` or detached (gated by `YERD_APPLY_UPDATE`) when the GUI drives it. |
 | `src/uninstall.rs` | `yerd uninstall`: the full self-uninstall flow. |
 | `src/error.rs` | `ClientError` - the client's error type. |
@@ -368,6 +369,11 @@ The flow:
    an already-deleted directory is still removable by its stored path.)
 4. `transport::exchange`, then `map::render`, then print and exit with the
    rendered code.
+
+`yerd init` is special-cased before step 2 (`map::to_request` returns a usage
+error for it) because it needs several exchanges and a terminal: see
+[`yerd init`](../../reference/cli/init) for its prompts, JSON shape and exit
+codes.
 
 Two extra behaviours live here:
 

@@ -123,6 +123,7 @@ The daemon's modules (`src/lib.rs` re-exports each as `pub mod`):
 | `services` | Service-instance lifecycle over IPC: add/remove/start/stop/restart, port and autostart changes, and the free-form [configuration overrides](../crates/yerd-services#configuration-overrides) (`SetServiceOverrides` / `ServiceOverrides`). |
 | `service_install` | Download + unpack prebuilt service builds per engine and version. |
 | `db_admin` | SQL database administration (`ListDatabases`, `CreateDatabase`, `DropDatabase`, backup/restore). |
+| `project_file` | `.yerd.toml` project files: the `ProjectConfigDraft` / `ExportProjectConfig` replies, the `ApplyProjectConfig` job, and the write-back `sync` hook. See [Project files](#project-files-yerd-toml). |
 | `jobs` | The background-job registry behind `JobStarted` / `JobStatus` (site creation, streamed installs). |
 | `lan_setup` | The one-time LAN remote-device bootstrap endpoint (serves the public CA + installer script). |
 | `laravel_detect` | Narrow marker-file check for whether a site is a Laravel app (`artisan`), gating per-site Reverb instances. |
@@ -270,6 +271,42 @@ Mutations go through `handle_mutation`, which is strict **build → validate →
 The pure delta lives in `mutate::apply` (`mutate.rs`), which is deliberately I/O-free - paths arrive pre-canonicalised, the router and config are borrowed, and nothing touches the filesystem, clock, or environment. It lowercases the request `name` before every lookup (the router and `cfg.linked` are keyed by lowercased names). For a parked site, `SetPhp`/`SetSecure` record an override via `cfg.overrides.entry(key).or_default()` - using `.entry().or_default()` (never `.insert()`) so a co-existing override on the same path is preserved - and the site **stays parked**. `MutateError` maps to wire `ErrorCode`s (`NotFound`, `AlreadyExists`, `InvalidPath`).
 
 `SetWebRoot` is handled outside the pure `apply` because it does I/O - it needs the target site's `document_root` (read from the router/`cfg.linked`) to validate the requested path or to re-detect. `resolve_web_root_mutation` resolves the path against the document root, **canonicalises both sides** (so a Windows `\\?\` verbatim prefix doesn't spuriously fail the containment check), requires the result be a directory *inside* the project, and stores the relative remainder: on the linked `Site`'s `web_subpath`, or in `cfg.overrides[..].web_root` for a parked site. `path: None` resets to auto-detect (re-detect now for a linked site; drop the override for a parked one). After commit, step 7 pings `watch_dirty` so the watcher reconciles.
+
+### Project files (`.yerd.toml`)
+
+`project_file.rs` is the daemon side of [`yerd init`](../../reference/cli/init);
+the schema, plan and delta logic is pure and lives in
+[`yerd_config::ProjectFile`](../crates/yerd-config#the-project-file-project-rs).
+
+- **Draft and export.** `draft` reads the folder's `.yerd.toml`, or renders one
+  from the site serving the folder (`find_site_for_dir`, which prefers a linked
+  site over a parked twin) or from defaults. `export` writes the site's current
+  state under the `project_file_mutate` lock, keeping the file's `name`,
+  services, extensions and a still-matching `node` selector.
+- **Apply job.** `start_apply` validates synchronously (writing wizard
+  `contents` first, refused with `AlreadyExists` if a file is there), then
+  spawns a `jobs` job that reserves the site name in `reserved_names` and walks
+  `yerd_config::plan`: link (or link a parked folder under the declared name),
+  PHP (installing a missing non-legacy version), HTTPS, domains, headers, path
+  rules (via `proxy_mutation`, which keeps the loop check), Node (installing a
+  matching release, then `set_node_version`), then services
+  (`services::add_service` / `start_service`, decided by
+  `yerd_config::service_action`) and extensions (`yerd_php::probe_modules`
+  through the `ffi_cache` runner). Each item logs one `applied:` /
+  `installed:` / `started:` / `unchanged:` / `warning:` / `failed:` line; any
+  `failed:` ends the job `Failed`. Auto-installing PHP and Node here is a
+  deliberate exception to the notify-only install rule: it only happens on an
+  explicit apply and never for legacy minors.
+- **Write-back sync.** `handle_client` sends every request through
+  `ipc_server::respond`, which computes `project_file::sync_target(&req)` before
+  `dispatch` and, on `Response::Ok`, calls `project_file::sync`. `sync` resolves
+  the site through the router and applies that one request's `SyncDelta` to
+  `<document_root>/.yerd.toml` under `project_file_mutate`, only when the file
+  already exists and its parsed content changes. `SetPrimaryDomain` syncs as an
+  added domain, since it can add one; the apex is never written. Failures are
+  logged and never change the reply. The apply job, create-site registration and export call
+  `handle_mutation` and friends directly, never `respond`, so applying a file
+  cannot write it back (no loop, no churn).
 
 ### PHP install / update flows
 

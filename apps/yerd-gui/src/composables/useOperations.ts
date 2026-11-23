@@ -21,6 +21,7 @@ export type OperationKind =
   | "daemon-restart"
   | "php-install"
   | "php-update"
+  | "project-apply"
   | "service-install"
   | "service-start"
   | "site-create"

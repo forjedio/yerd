@@ -26,6 +26,7 @@ import {
   groupNameAvailable,
   matchesChip,
   parentDir,
+  siteAtPath,
   siteChips,
   siteWarnings,
   tildify,
@@ -35,6 +36,7 @@ import { siteHost, siteUrl } from "@/lib/siteUrl";
 import { copyUrlWithToast, toastOnError } from "@/lib/toastActions";
 import { plural } from "@/lib/utils";
 import { useDaemon } from "@/composables/useDaemon";
+import { useOperations } from "@/composables/useOperations";
 import { loadPlatform, usePlatform } from "@/composables/usePlatform";
 import { usePoll } from "@/composables/usePoll";
 import { useResource } from "@/composables/useResource";
@@ -42,8 +44,10 @@ import { openSiteInEditor } from "@/composables/useSiteEditor";
 import { useToast } from "@/composables/useToast";
 import { useWideLayout } from "@/composables/useWideLayout";
 import {
+  applyProjectConfig,
   createGroup,
   deleteGroup,
+  exportProjectConfig,
   IpcError,
   link,
   nodeSites,
@@ -52,6 +56,7 @@ import {
   openPath,
   park,
   pickDirectory,
+  pollJobToEnd,
   renameGroup,
   setGroupOrder,
   setPhp,
@@ -69,6 +74,7 @@ import {
 import type { GroupsState, Site, SiteEntry } from "@/ipc/types";
 
 const toast = useToast();
+const operations = useOperations();
 const { report } = useDaemon();
 const { home, supportsPathInstall } = usePlatform();
 
@@ -588,12 +594,19 @@ function openLink(): void {
 }
 
 /** Link the folder, then apply the PHP version and HTTPS the dialog asked for
- *  where they differ from what the daemon assigned. Each follow-up failure is
+ *  (if any: `null` when an unapplied `.yerd.toml` keeps the defaults) where
+ *  they differ from what the daemon assigned. Each follow-up failure is
  *  reported on its own; the site stays linked either way. */
 async function onLink(request: LinkRequest): Promise<void> {
   const { name, path, php, secure } = request;
   rowBusy.value = "link";
   try {
+    if (request.applyProjectFile) {
+      await applyProjectFile(path, name);
+      const linked = siteAtPath(sites.value, path);
+      if (linked) selectedName.value = linked.name;
+      return;
+    }
     try {
       await link(name, path);
     } catch (e) {
@@ -614,7 +627,7 @@ async function onLink(request: LinkRequest): Promise<void> {
         toast.error("Couldn't change PHP version", (e as IpcError).message);
       }
     }
-    if (site.secure !== secure) {
+    if (secure !== null && site.secure !== secure) {
       try {
         await setSecure(name, secure);
         changed = true;
@@ -625,6 +638,80 @@ async function onLink(request: LinkRequest): Promise<void> {
     if (changed) await reload();
   } finally {
     rowBusy.value = null;
+  }
+}
+
+// ── project file (.yerd.toml) ──
+const WARNING_PREFIX = "warning:";
+const FAILED_PREFIX = "failed:";
+
+function stripPrefix(line: string, prefix: string): string {
+  return line.slice(prefix.length).trim();
+}
+
+/** Apply the `.yerd.toml` in `path` as a daemon job, tracked as an operation,
+ *  then toast the outcome: success, success with the job's warnings, or the
+ *  job's error with its failed items. Resolves true when the job succeeded. */
+async function applyProjectFile(path: string, label: string): Promise<boolean> {
+  const opId = `project-apply:${path}`;
+  operations.begin({ id: opId, kind: "project-apply", label: `Applying .yerd.toml for ${label}` });
+  const warnings: string[] = [];
+  const failures: string[] = [];
+  try {
+    const jobId = await applyProjectConfig(path);
+    const final = await pollJobToEnd(
+      jobId,
+      (lines) => {
+        for (const line of lines) {
+          if (line.startsWith(WARNING_PREFIX)) warnings.push(stripPrefix(line, WARNING_PREFIX));
+          if (line.startsWith(FAILED_PREFIX)) failures.push(stripPrefix(line, FAILED_PREFIX));
+        }
+        const latest = lines[lines.length - 1];
+        if (latest) operations.update(opId, { detail: latest });
+      },
+      undefined,
+      500,
+      5,
+    );
+    if (final.state !== "succeeded") {
+      const reason = final.error || `apply ${final.state}`;
+      toast.error("Couldn't apply .yerd.toml", [reason, ...failures].join(". "));
+      return false;
+    }
+    if (warnings.length) {
+      toast.info(
+        `Applied .yerd.toml for ${label} with ${plural(warnings.length, "warning", "warnings")}`,
+        warnings.join(". "),
+        10000,
+      );
+    } else {
+      toast.success(`Applied .yerd.toml for ${label}`);
+    }
+    return true;
+  } catch (e) {
+    toast.error("Couldn't apply .yerd.toml", (e as IpcError).message);
+    return false;
+  } finally {
+    operations.end(opId);
+    await reload();
+  }
+}
+
+async function applySiteProjectFile(site: SiteEntry): Promise<void> {
+  rowBusy.value = `edit:${site.name}`;
+  try {
+    await applyProjectFile(site.document_root, site.name);
+  } finally {
+    rowBusy.value = null;
+  }
+}
+
+async function exportSiteProjectFile(site: SiteEntry): Promise<void> {
+  try {
+    const written = await exportProjectConfig(site.name);
+    toast.success(`Exported ${site.name} to .yerd.toml`, tildify(written.file, home.value));
+  } catch (e) {
+    toast.error("Couldn't export .yerd.toml", (e as IpcError).message);
   }
 }
 
@@ -870,6 +957,8 @@ const inspectorProps = computed(() => {
               @change-wp-auto-login="changeWpAutoLogin"
               @share="shareSitePublicly"
               @unlink="openUnlink"
+              @apply-project-file="applySiteProjectFile"
+              @export-project-file="exportSiteProjectFile"
               @domains-changed="reload"
               @toggle-favourite="toggleFavourite"
               @create-group-and-move="createGroupAndMove"
@@ -898,6 +987,8 @@ const inspectorProps = computed(() => {
       @change-wp-auto-login="changeWpAutoLogin"
       @share="shareSitePublicly"
       @unlink="openUnlink"
+      @apply-project-file="applySiteProjectFile"
+      @export-project-file="exportSiteProjectFile"
       @domains-changed="reload"
       @toggle-favourite="toggleFavourite"
       @create-group-and-move="createGroupAndMove"

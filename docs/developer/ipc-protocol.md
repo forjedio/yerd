@@ -233,6 +233,9 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `MintWordpressLoginToken { site }` | `{"type":"mint_wordpress_login_token","site":"blog"}` |
 | `SetWordpressAutoLogin { name, enabled, user: Option }` | `{"type":"set_wordpress_auto_login","name":"blog","enabled":true,"user":"admin"}` |
 | `WordpressAdminUsers { site }` | `{"type":"wordpress_admin_users","site":"blog"}` |
+| `ProjectConfigDraft { path }` | `{"type":"project_config_draft","path":"/p/acme"}` (replies `ProjectConfig`; the existing `.yerd.toml`, else a draft from the site at that folder, else defaults) |
+| `ApplyProjectConfig { path, contents: Option }` | `{"type":"apply_project_config","path":"/p/acme"}` or `…,"contents":"php = \"8.4\"\n"}` (`contents` skipped when `None`; replies `JobStarted`; poll `JobStatus`) |
+| `ExportProjectConfig { site }` | `{"type":"export_project_config","site":"acme"}` (writes the site's settings to its `.yerd.toml`; replies `ProjectConfig`) |
 
 Database `name` has operation-specific validation. `CreateDatabase` uses Yerd's
 portable creation allowlist. `DropDatabase`, `BackupDatabase`, and
@@ -391,6 +394,31 @@ Fields marked `skip_serializing_if` are omitted when empty: `NodeRelease.codenam
 Per-site [response headers](../reference/cli/headers) follow the same pattern: `SetResponseHeader { site, name, value }` and `RemoveResponseHeader { site, name }` (both reply with the generic `Ok`) plus the `ListResponseHeaders` query, answered by `Response::ResponseHeaders { headers: Vec<ResponseHeaderEntry> }` where `ResponseHeaderEntry` is `{ site, name, value }`. The daemon validates the name and value with `yerd_core::ResponseHeader` and replies `Error` for a malformed or reserved header. These are additive too, with no `PROTOCOL_VERSION` bump.
 :::
 
+::: info Project files: `.yerd.toml` requests
+Three additive requests back [`yerd init`](../reference/cli/init) and the
+desktop app's [project file](../guide/project-file) actions.
+`ProjectConfigDraft { path }` and `ExportProjectConfig { site }` reply
+`Response::ProjectConfig { file, exists, site, name, contents }`: `file` is the
+`.yerd.toml` path, `exists` whether it is on disk (always `true` after an
+export), `site` the site serving the folder (`null` when none), `name` the
+file's declared name (`null` when absent) and `contents` the TOML text (the
+file itself, or a rendered draft). `site` and `name` always serialise, as
+`null` when absent.
+
+`ApplyProjectConfig { path, contents }` validates synchronously and then
+replies `JobStarted`. With `contents` (the wizard's output) the daemon parses it
+and writes `.yerd.toml` first, refusing with `AlreadyExists` when a file is
+already there; without it, the existing file is applied and a folder without one
+is `NotFound`. A file that fails to parse or validate, is a symlink, or is over
+64 KiB is `ErrorCode::ProjectFileInvalid`, as is invalid `contents`; a folder
+whose name can't be slugged into a site name and a file without `name` is
+`InvalidPath`. `ExportProjectConfig` for an unknown site is `NotFound`. The job's
+log lines start with `applied:`, `installed:`, `started:`, `unchanged:`,
+`warning:` or `failed:`, followed by a `done: …` summary; any `failed:` line
+ends the job `Failed` with "N item(s) could not be applied". All additive, no
+`PROTOCOL_VERSION` bump.
+:::
+
 ::: info Outbound proxy settings
 `GetNetworkSettings` and `SetNetworkSettings { mode, http_proxy?, https_proxy?, no_proxy? }` both reply `Response::NetworkSettings { settings: NetworkSettings }` (`mode`, the redacted manual `http_proxy` / `https_proxy`, `no_proxy`, and `effective: Option<EffectiveProxy>` - the mode, `ProxySource`, redacted URLs and bypass list actually in use). `TestNetwork` replies `Response::NetworkTest { result: NetworkTestResult }` (`ok`, `url`, `status?`, `error?`, `via?`, `source`). In `SetNetworkSettings` an omitted field keeps the stored value and an empty one clears it; a URL whose password is the redacted `***` keeps the stored password only while scheme, user, host and port are unchanged, otherwise the daemon replies `ErrorCode::InvalidPath` ("re-enter the proxy password"). Every URL on the wire is redacted, and `OutboundProxyMode` / `ProxySource` are `yerd_core::network` enums serialised `snake_case`. `DiagnosisCode` gained `OutboundProxyUnreachable` and `OutboundProxyPacUnsupported`; reachability and PAC state are a Doctor side channel, not `StatusReport` fields. All additive, no `PROTOCOL_VERSION` bump.
 :::
@@ -440,6 +468,7 @@ pub enum ErrorCode {
     LegacyRestricted,     // "legacy_restricted" - a legacy version used somewhere it's disallowed
     XdebugUnavailable,    // "xdebug_unavailable" - no bundled Xdebug for that version/platform, or its download failed or timed out
     InvalidSetting,       // "invalid_setting" - a setting value failed validation (e.g. an empty Xdebug mode list)
+    ProjectFileInvalid,   // "project_file_invalid" - a .yerd.toml (or wizard contents) failed to parse or validate
     Internal,             // "internal" - catch-all; expand the enum, don't overload this
 }
 ```

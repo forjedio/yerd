@@ -60,6 +60,19 @@ export function parentDir(p: string): string {
   return i <= 0 ? p : p.slice(0, i);
 }
 
+function trimTrailingSeparators(p: string): string {
+  const trimmed = p.replace(/[/\\]+$/, "");
+  return trimmed === "" ? p : trimmed;
+}
+
+/** The site whose document root is `path` (trailing separators ignored),
+ *  preferring a linked site over a parked twin the way the daemon does. */
+export function siteAtPath(sites: readonly SiteEntry[], path: string): SiteEntry | null {
+  const want = trimTrailingSeparators(path);
+  const matching = sites.filter((s) => trimTrailingSeparators(s.document_root) === want);
+  return matching.find((s) => s.kind === "linked") ?? matching[0] ?? null;
+}
+
 /** A filter chip's identity. */
 export type ChipKey = "all" | "https" | "linked" | "not-default" | `framework:${SiteFramework}`;
 
@@ -324,6 +337,15 @@ export function tildify(path: string, home: string | null | undefined): string {
   const root = home.replace(/[/\\]+$/, "");
   if (path === root) return "~";
   return path.startsWith(`${root}/`) ? `~${path.slice(root.length)}` : path;
+}
+
+/** The inverse of {@link tildify} for a typed path: a leading `~` or `~/`
+ *  becomes `home`. Anything else (or no `home`) is returned as is. */
+export function untildify(path: string, home: string | null | undefined): string {
+  if (!home) return path;
+  const root = home.replace(/[/\\]+$/, "");
+  if (path === "~") return root;
+  return path.startsWith("~/") ? `${root}${path.slice(1)}` : path;
 }
 
 /** The Source row's subtitle. `dir` is the matching parked root, if any. */

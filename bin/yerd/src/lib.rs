@@ -23,6 +23,7 @@ pub mod elevate;
 pub mod error;
 #[cfg(unix)]
 pub mod exec_cmd;
+pub mod init_cmd;
 #[cfg(unix)]
 pub mod laravel_shim;
 pub mod map;
@@ -61,6 +62,7 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Path { action } => return path_cmd::run(*action),
         Command::Daemon { action } => return daemon_cmd::run(*action),
         Command::Mcp => return mcp_cmd::run().await,
+        Command::Init => return init_cmd::run(cli.json).await,
         #[cfg(unix)]
         Command::Node {
             action: crate::cli::NodeAction::List,

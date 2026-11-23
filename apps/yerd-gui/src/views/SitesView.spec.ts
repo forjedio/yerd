@@ -37,6 +37,7 @@ import NewSiteDialog from "@/components/site-create/NewSiteDialog.vue";
 import LinkFolderDialog from "@/components/sites/LinkFolderDialog.vue";
 import SiteInspector from "@/components/sites/SiteInspector.vue";
 import { useDaemon } from "@/composables/useDaemon";
+import { useToast } from "@/composables/useToast";
 import { resetResourceCache } from "@/composables/useResource";
 import { resetSitesGroupState } from "@/lib/sitesGroupState";
 import type { GroupsState, SiteEntry, StatusReport } from "@/ipc/types";
@@ -605,6 +606,145 @@ describe("SitesView link", () => {
     expect(writes()).toEqual(["link", "set_php", "set_secure"]);
     expect(calls("set_php")).toEqual([{ name: "app", version: "8.3" }]);
     expect(calls("set_secure")).toEqual([{ name: "app", secure: true }]);
+  });
+
+  it("only links when an unapplied .yerd.toml leaves PHP and HTTPS at the defaults", async () => {
+    linkWorld({ php: "8.4", secure: true });
+    const w = await mountSites();
+    w.findComponent(LinkFolderDialog).vm.$emit("link", {
+      name: "app",
+      path: "/code/app",
+      php: null,
+      secure: null,
+      applyProjectFile: false,
+    });
+    await flushPromises();
+    expect(writes()).toEqual(["link"]);
+  });
+});
+
+describe("SitesView .yerd.toml", () => {
+  function applyWorld(log: string[], state = "succeeded", error?: string) {
+    serve({
+      sites: [site("acme", { kind: "linked", document_root: "/code/acme" })],
+      routes: {
+        apply_project_config: () => ({ type: "job_started", job_id: "j1" }),
+        job_status: () => ({
+          type: "job_progress",
+          state,
+          phase: "Done",
+          log,
+          next_cursor: log.length,
+          error,
+        }),
+        export_project_config: () => ({
+          type: "project_config",
+          file: "/code/acme/.yerd.toml",
+          exists: true,
+          site: "acme",
+          name: "acme",
+          contents: "",
+        }),
+        link: () => ({ type: "ok" }),
+        set_php: () => ({ type: "ok" }),
+        set_secure: () => ({ type: "ok" }),
+      },
+    });
+  }
+
+  beforeEach(() => {
+    for (const t of [...useToast().toasts.value]) useToast().dismiss(t.id);
+  });
+
+  function toasts(): string {
+    return useToast()
+      .toasts.value.map((t) => `${t.title} ${t.detail ?? ""}`)
+      .join("\n");
+  }
+
+  it("applies the file through the daemon instead of linking from the dialog", async () => {
+    applyWorld(["applied: linked acme", "done: 1 applied, 0 unchanged, 0 warning(s), 0 failed"]);
+    const w = await mountSites();
+    w.findComponent(LinkFolderDialog).vm.$emit("link", {
+      name: "acme",
+      path: "/code/acme",
+      php: "8.3",
+      secure: true,
+      applyProjectFile: true,
+    });
+    await flushPromises();
+    expect(calls("apply_project_config")).toEqual([{ path: "/code/acme" }]);
+    expect(calls("link")).toEqual([]);
+    expect(calls("set_php")).toEqual([]);
+    expect(calls("set_secure")).toEqual([]);
+    expect(toasts()).toContain("Applied .yerd.toml for acme");
+  });
+
+  it("selects the site the file linked at the folder, not the dialog's name", async () => {
+    setWide(true);
+    serve({
+      sites: [
+        site("acme", { kind: "linked", document_root: "/code/checkout" }),
+        site("checkout", { document_root: "/code/other" }),
+      ],
+      routes: {
+        apply_project_config: () => ({ type: "job_started", job_id: "j1" }),
+        job_status: () => ({
+          type: "job_progress",
+          state: "succeeded",
+          phase: "Done",
+          log: ["applied: linked acme"],
+          next_cursor: 1,
+        }),
+      },
+    });
+    const w = await mountSites();
+    w.findComponent(LinkFolderDialog).vm.$emit("link", {
+      name: "checkout",
+      path: "/code/checkout/",
+      php: "8.3",
+      secure: false,
+      applyProjectFile: true,
+    });
+    await flushPromises();
+    expect(row(w, "acme").attributes("aria-selected")).toBe("true");
+    expect(row(w, "checkout").attributes("aria-selected")).not.toBe("true");
+  });
+
+  it("counts the job's warnings in the toast", async () => {
+    applyWorld([
+      "warning: domain shared.test: owned elsewhere; skipped",
+      "warning: extension imagick is not available in PHP 8.4",
+      "done: 0 applied, 3 unchanged, 2 warning(s), 0 failed",
+    ]);
+    const w = await mountSites();
+    w.findComponent(SiteInspector).vm.$emit("applyProjectFile", site("acme", { document_root: "/code/acme" }));
+    await flushPromises();
+    expect(calls("apply_project_config")).toEqual([{ path: "/code/acme" }]);
+    expect(toasts()).toContain("with 2 warnings");
+    expect(toasts()).toContain("extension imagick is not available in PHP 8.4");
+  });
+
+  it("reports a failed apply with its failed items", async () => {
+    applyWorld(
+      ["failed: install PHP 8.5: offline", "done: 0 applied, 0 unchanged, 0 warning(s), 1 failed"],
+      "failed",
+      "1 item(s) could not be applied",
+    );
+    const w = await mountSites();
+    w.findComponent(SiteInspector).vm.$emit("applyProjectFile", site("acme", { document_root: "/code/acme" }));
+    await flushPromises();
+    expect(toasts()).toContain("Couldn't apply .yerd.toml");
+    expect(toasts()).toContain("install PHP 8.5: offline");
+  });
+
+  it("exports a site and toasts the file path", async () => {
+    applyWorld([]);
+    const w = await mountSites();
+    w.findComponent(SiteInspector).vm.$emit("exportProjectFile", site("acme"));
+    await flushPromises();
+    expect(calls("export_project_config")).toEqual([{ site: "acme" }]);
+    expect(toasts()).toContain("Exported acme to .yerd.toml");
   });
 });
 

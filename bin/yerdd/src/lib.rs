@@ -34,6 +34,7 @@ pub mod network;
 pub mod node_updates;
 pub mod php_install;
 pub mod php_updates;
+pub mod project_file;
 pub mod public_url;
 pub mod secure_fs;
 pub mod self_update;

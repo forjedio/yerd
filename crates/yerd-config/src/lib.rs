@@ -4,7 +4,8 @@
 //!
 //! ## Purity boundary
 //!
-//! Every function except [`Config::load`] and [`Config::save`] is pure.
+//! Every function except [`Config::load`], [`Config::save`],
+//! [`ProjectFile::load`] and [`ProjectFile::save`] is pure.
 //!
 //! ## Schema versioning
 //!
@@ -18,10 +19,16 @@ mod error;
 mod io;
 mod migrate;
 mod parse;
+mod project;
 mod schema;
 mod serialize;
 
-pub use error::{ConfigError, MigrationErrorReason, ValidateErrorReason};
+pub use error::{ConfigError, MigrationErrorReason, ProjectError, ValidateErrorReason};
+pub use project::{
+    ends_with_tld, extension_satisfied, normalise_module, plan, service_action,
+    service_prefix_matches, PlannedAction, PlannedStep, ProjectFile, ServiceAction, SiteSnapshot,
+    SyncDelta, ANY_SERVICE_VERSION, PROJECT_FILE_MAX_BYTES, PROJECT_FILE_NAME,
+};
 pub use schema::{
     Config, DomainDelta, DomainsSection, DumpsSection, ExtEntry, FavouritesSection, GroupsSection,
     MailSection, NetworkSection, NodeSection, ParkedSection, PhpSection, Ports,

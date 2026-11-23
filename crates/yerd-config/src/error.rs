@@ -84,6 +84,50 @@ pub enum ConfigError {
     },
 }
 
+/// Errors from parsing, validating, loading or saving a `.yerd.toml` project
+/// file ([`crate::ProjectFile`]).
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum ProjectError {
+    /// Malformed TOML, a value of the wrong type, or an unknown key (the
+    /// message names it).
+    #[error("could not parse .yerd.toml: {0}")]
+    Parse(#[from] toml::de::Error),
+
+    /// A value failed validation.
+    #[error("invalid `{field}` in .yerd.toml: {reason}")]
+    Invalid {
+        /// The top-level key holding the bad value.
+        field: &'static str,
+        /// Why the value was rejected.
+        reason: String,
+    },
+
+    /// Reading or writing the file failed.
+    #[error(".yerd.toml I/O failed at {}: {source}", path.display())]
+    Io {
+        /// The project file's path.
+        path: PathBuf,
+        /// The underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The file is larger than [`crate::PROJECT_FILE_MAX_BYTES`].
+    #[error("{} is larger than {} bytes", path.display(), crate::PROJECT_FILE_MAX_BYTES)]
+    TooLarge {
+        /// The project file's path.
+        path: PathBuf,
+    },
+
+    /// The path is a symlink, directory or other non-regular file.
+    #[error("{} is not a regular file (symlinks are refused)", path.display())]
+    NotRegularFile {
+        /// The project file's path.
+        path: PathBuf,
+    },
+}
+
 /// Specific failure modes for [`crate::Config::validate`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -448,6 +492,46 @@ mod tests {
             path: PathBuf::from("/x"),
             source: std::io::Error::from(ErrorKind::PermissionDenied),
         };
+    }
+
+    #[test]
+    fn display_project_error_each_variant() {
+        let cases: Vec<(ProjectError, &str)> = vec![
+            (
+                ProjectError::Parse(toml::from_str::<toml::Value>("x =").unwrap_err()),
+                "parse",
+            ),
+            (
+                ProjectError::Invalid {
+                    field: "php",
+                    reason: "bad".to_owned(),
+                },
+                "`php`",
+            ),
+            (
+                ProjectError::Io {
+                    path: PathBuf::from("/p/.yerd.toml"),
+                    source: std::io::Error::from(ErrorKind::PermissionDenied),
+                },
+                "/p/.yerd.toml",
+            ),
+            (
+                ProjectError::TooLarge {
+                    path: PathBuf::from("/p/.yerd.toml"),
+                },
+                "65536",
+            ),
+            (
+                ProjectError::NotRegularFile {
+                    path: PathBuf::from("/p/.yerd.toml"),
+                },
+                "symlinks",
+            ),
+        ];
+        for (err, want) in cases {
+            let s = err.to_string();
+            assert!(s.contains(want), "{s:?} missing {want:?}");
+        }
     }
 
     /// Construct a real `toml::ser::Error` by attempting to serialise a

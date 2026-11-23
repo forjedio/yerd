@@ -6,6 +6,10 @@ Yerd stores all of its persistent state in a single TOML file: `yerd.toml`. This
 The daemon (`yerdd`) owns `yerd.toml`. Day to day you change it through the [CLI](./cli/) or the [desktop app](../guide/desktop-app), and the daemon rewrites the file atomically. Hand-editing works too - Yerd parses and re-validates the file on every load - but the CLI is the safer path.
 :::
 
+::: tip Looking for `.yerd.toml`?
+This page is about Yerd's own per-user `yerd.toml`. The `.yerd.toml` you commit inside a project (site name, PHP, services and more for `yerd init`) is documented in the [project file reference](./project-file).
+:::
+
 ## Where the config file lives
 
 The file is always named `yerd.toml` and sits in your per-OS, user-owned config directory:

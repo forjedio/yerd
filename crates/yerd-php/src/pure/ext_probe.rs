@@ -10,6 +10,8 @@
 //! and is a pure function so the classification is unit-tested without spawning
 //! PHP.
 
+use std::collections::BTreeSet;
+
 use thiserror::Error;
 
 /// Why a candidate extension failed its load-probe.
@@ -118,6 +120,22 @@ pub fn require_zend_module(
 #[must_use]
 pub fn ffi_listed(modules_output: &str) -> bool {
     modules_output.lines().any(|line| line.trim() == "FFI")
+}
+
+/// Every module name `php -m` output lists, raw and trimmed, across all of its
+/// sections. Blank lines and `[...]` section headings are skipped.
+#[must_use]
+pub fn listed_modules(modules_output: &str) -> BTreeSet<String> {
+    modules_output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !is_section_heading(line))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn is_section_heading(line: &str) -> bool {
+    line.starts_with('[') && line.ends_with(']')
 }
 
 #[cfg(test)]
@@ -259,6 +277,24 @@ mod tests {
         ];
         for (output, want) in cases {
             assert_eq!(ffi_listed(output), *want, "{output:?}");
+        }
+    }
+
+    #[test]
+    fn listed_modules_collects_every_section() {
+        let cases: &[(&str, &[&str])] = &[
+            (
+                "[PHP Modules]\nCore\nFFI\nzlib\n\n[Zend Modules]\nZend OPcache\n",
+                &["Core", "FFI", "Zend OPcache", "zlib"],
+            ),
+            ("[PHP Modules]\r\nCore\r\nredis\r\n", &["Core", "redis"]),
+            ("  imagick  \n\n", &["imagick"]),
+            ("[PHP Modules]\n[Zend Modules]\n", &[]),
+            ("", &[]),
+        ];
+        for (output, want) in cases {
+            let want: BTreeSet<String> = want.iter().map(|s| (*s).to_owned()).collect();
+            assert_eq!(listed_modules(output), want, "{output:?}");
         }
     }
 }

@@ -319,6 +319,11 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 "mcp runs its own protocol loop, not a single IPC exchange".to_owned(),
             ));
         }
+        Command::Init => {
+            return Err(ClientError::Usage(
+                "init is handled locally, not over IPC".to_owned(),
+            ));
+        }
         Command::Link { .. } => {
             return Err(ClientError::Usage(
                 "link is handled locally, not over IPC".to_owned(),
@@ -5265,6 +5270,7 @@ mod tests {
                 site: None,
             },
             Command::Mcp,
+            Command::Init,
             Command::Link {
                 name_or_path: None,
                 path: None,

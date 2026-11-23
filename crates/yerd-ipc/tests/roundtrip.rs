@@ -493,3 +493,32 @@ fn network_variants_roundtrip() {
         }),
     });
 }
+
+#[test]
+fn project_config_variants_roundtrip() {
+    assert_request_roundtrips(Request::ProjectConfigDraft {
+        path: PathBuf::from("/p/acme"),
+    });
+    assert_request_roundtrips(Request::ApplyProjectConfig {
+        path: PathBuf::from("/p/acme"),
+        contents: None,
+    });
+    assert_request_roundtrips(Request::ApplyProjectConfig {
+        path: PathBuf::from("/p/acme"),
+        contents: Some("secure = true\n".into()),
+    });
+    assert_request_roundtrips(Request::ExportProjectConfig {
+        site: "acme".into(),
+    });
+    assert_response_roundtrips(Response::ProjectConfig {
+        file: PathBuf::from("/p/acme/.yerd.toml"),
+        exists: false,
+        site: None,
+        name: Some("acme".into()),
+        contents: "name = \"acme\"\n".into(),
+    });
+    assert_response_roundtrips(Response::Error {
+        code: ErrorCode::ProjectFileInvalid,
+        message: "invalid `php` in .yerd.toml".into(),
+    });
+}

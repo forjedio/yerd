@@ -13,6 +13,9 @@ vi.mock("@tauri-apps/api/path", () => ({
 import {
   addDomain,
   addRouteRule,
+  applyProjectConfig,
+  exportProjectConfig,
+  projectConfigDraft,
   availableNode,
   clearMails,
   clearNodeVersion,
@@ -405,6 +408,46 @@ describe("client → command mapping", () => {
     invokeMock.mockResolvedValue({ type: "ok" });
     await resetDomains("blog");
     expect(invokeMock).toHaveBeenCalledWith("reset_domains", { name: "blog" });
+  });
+});
+
+describe("project file commands", () => {
+  const config = {
+    file: "/code/acme/.yerd.toml",
+    exists: true,
+    site: "acme",
+    name: "acme",
+    contents: 'name = "acme"\n',
+  };
+
+  it("projectConfigDraft sends the path and unwraps the reply", async () => {
+    invokeMock.mockResolvedValue({ type: "project_config", ...config });
+    await expect(projectConfigDraft("/code/acme")).resolves.toEqual(config);
+    expect(invokeMock).toHaveBeenCalledWith("project_config_draft", { path: "/code/acme" });
+  });
+
+  it("applyProjectConfig returns the job id", async () => {
+    invokeMock.mockResolvedValue({ type: "job_started", job_id: "j9" });
+    await expect(applyProjectConfig("/code/acme")).resolves.toBe("j9");
+    expect(invokeMock).toHaveBeenCalledWith("apply_project_config", { path: "/code/acme" });
+  });
+
+  it("exportProjectConfig sends the site name", async () => {
+    invokeMock.mockResolvedValue({ type: "project_config", ...config });
+    await expect(exportProjectConfig("acme")).resolves.toEqual(config);
+    expect(invokeMock).toHaveBeenCalledWith("export_project_config", { site: "acme" });
+  });
+
+  it("keeps the project_file_invalid code on a daemon error", async () => {
+    invokeMock.mockResolvedValue({ type: "error", code: "project_file_invalid", message: "bad php" });
+    await expect(projectConfigDraft("/code/acme")).rejects.toMatchObject({
+      code: "project_file_invalid",
+    });
+  });
+
+  it("rejects an unexpected reply", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await expect(applyProjectConfig("/code/acme")).rejects.toBeInstanceOf(IpcError);
   });
 });
 

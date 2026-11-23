@@ -521,6 +521,20 @@ pub enum Response {
         /// Per-site custom response headers, in each site's configured order.
         headers: Vec<ResponseHeaderEntry>,
     },
+    /// Reply to [`crate::Request::ProjectConfigDraft`] and
+    /// [`crate::Request::ExportProjectConfig`]: a project file's text.
+    ProjectConfig {
+        /// The `.yerd.toml` path.
+        file: PathBuf,
+        /// Whether the file exists on disk (always true after an export).
+        exists: bool,
+        /// The site at the project directory, if it is one.
+        site: Option<String>,
+        /// The file's declared `name`, if any.
+        name: Option<String>,
+        /// The file's TOML text: the existing file, or a rendered draft.
+        contents: String,
+    },
 }
 
 /// One registered custom PHP extension (see [`Response::PhpExtensions`]).
@@ -786,6 +800,10 @@ pub enum ErrorCode {
     /// filesystem paths. Returned only for `SetXdebug`, so older clients
     /// never receive it.
     InvalidSetting,
+    /// A `.yerd.toml` (or wizard contents) failed to parse or validate; the
+    /// message carries the parser's explanation. Returned only for the
+    /// project-file requests, so older clients never receive it.
+    ProjectFileInvalid,
     /// Catch-all for daemon-side failures that don't fit a typed code.
     /// Expand this enum rather than overloading `Internal`.
     Internal,
@@ -855,6 +873,7 @@ mod variant_name_pinning {
             Response::Proxies { .. } => {}
             Response::Routes { .. } => {}
             Response::ResponseHeaders { .. } => {}
+            Response::ProjectConfig { .. } => {}
         }
     }
 
@@ -875,6 +894,7 @@ mod variant_name_pinning {
             ErrorCode::LegacyRestricted => {}
             ErrorCode::XdebugUnavailable => {}
             ErrorCode::InvalidSetting => {}
+            ErrorCode::ProjectFileInvalid => {}
             ErrorCode::Internal => {}
         }
     }
@@ -1244,6 +1264,13 @@ mod variant_name_pinning {
                 value: "https://app.test".into(),
             }],
         });
+        pin_response(Response::ProjectConfig {
+            file: PathBuf::from("/p/acme/.yerd.toml"),
+            exists: true,
+            site: Some("acme".into()),
+            name: Some("acme".into()),
+            contents: "name = \"acme\"\n".into(),
+        });
         for c in [
             ErrorCode::NotFound,
             ErrorCode::AlreadyExists,
@@ -1259,6 +1286,7 @@ mod variant_name_pinning {
             ErrorCode::LegacyRestricted,
             ErrorCode::XdebugUnavailable,
             ErrorCode::InvalidSetting,
+            ErrorCode::ProjectFileInvalid,
             ErrorCode::Internal,
         ] {
             pin_code(c);
