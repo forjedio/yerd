@@ -256,6 +256,7 @@ async fn run_until_shutdown(
         shutdown_rx.clone(),
     );
     crate::tunnel::orphans::reap(&daemon.state.dirs).await;
+    crate::tools::cloudflared::migrate_cloudflared_now(&daemon.state.dirs).await;
     crate::tunnel::rebuild_routes(&daemon.state).await;
 
     let redirect_probe_handle =

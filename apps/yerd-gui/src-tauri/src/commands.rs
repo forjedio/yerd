@@ -1141,12 +1141,6 @@ pub async fn contributors() -> Result<Response, GuiError> {
 
 // ── tunnels (Cloudflare Tunnel integration) ──────────────────────────────────
 
-/// Install the `cloudflared` binary as a streamed job (returns a job id).
-#[tauri::command]
-pub async fn install_cloudflared_streamed() -> Result<Response, GuiError> {
-    finish(exchange(&Request::InstallCloudflaredStreamed).await?)
-}
-
 /// Publish a site at a temporary `*.trycloudflare.com` Quick Tunnel URL.
 #[tauri::command]
 pub async fn start_quick_tunnel(site: String) -> Result<Response, GuiError> {

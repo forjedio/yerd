@@ -135,7 +135,8 @@ pub enum Command {
     },
     /// List local managed services and their status.
     Services,
-    /// List installable dev tools (Composer, Node, Bun, pnpm) and their install status.
+    /// List installable dev tools (Composer, Node, Bun, pnpm, Laravel, WP-CLI,
+    /// cloudflared) and their install status.
     Tools,
     /// Manage installed Node versions and defaults.
     Node {
@@ -783,10 +784,8 @@ pub enum ServiceAction {
 /// Action of `yerd tunnel`.
 #[derive(clap::Subcommand, Debug, Clone)]
 pub enum TunnelAction {
-    /// Download the `cloudflared` binary (required before sharing a site).
-    Install,
     /// Share a site publicly via a Quick Tunnel (a random `*.trycloudflare.com`
-    /// URL). Requires `cloudflared` to be installed.
+    /// URL). Requires `cloudflared` (`yerd install tool cloudflared`).
     Share {
         /// Site name (e.g. `app` or `app.test`).
         site: String,
@@ -1074,9 +1073,11 @@ pub enum UninstallTarget {
         /// PHP version, e.g. `8.5`.
         version: String,
     },
-    /// Uninstall a dev tool (`composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`).
+    /// Uninstall a dev tool (`composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`,
+    /// `cloudflared`).
     Tool {
-        /// Tool id: `composer`, `node`, `bun`, `pnpm`, `laravel`, or `wp-cli`.
+        /// Tool id: `composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`, or
+        /// `cloudflared`.
         id: String,
     },
 }
@@ -1094,10 +1095,11 @@ pub enum InstallTarget {
         #[arg(long)]
         legacy: bool,
     },
-    /// Install a dev tool (`composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`) at
-    /// its latest release.
+    /// Install a dev tool (`composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`,
+    /// `cloudflared`) at its latest release.
     Tool {
-        /// Tool id: `composer`, `node`, `bun`, `pnpm`, `laravel`, or `wp-cli`.
+        /// Tool id: `composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`, or
+        /// `cloudflared`.
         id: String,
         /// Optional Node release selector, e.g. 24, v24.1.0, lts/* or lts/iron.
         version: Option<String>,
@@ -1250,6 +1252,11 @@ mod tests {
     #[test]
     fn which_rejects_composer() {
         assert!(Cli::try_parse_from(["yerd", "which", "composer"]).is_err());
+    }
+
+    #[test]
+    fn tunnel_install_is_no_longer_a_subcommand() {
+        assert!(Cli::try_parse_from(["yerd", "tunnel", "install"]).is_err());
     }
 
     #[test]

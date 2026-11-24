@@ -114,10 +114,11 @@ fn ensure_secret_dirs(dirs: &PlatformDirs) -> Result<(), String> {
         .map_err(|e| format!("could not prepare tunnel dir: {e}"))
 }
 
-fn not_installed() -> Response {
+/// The reply when no usable `cloudflared` is available, pointing at Tooling.
+pub(super) fn not_installed() -> Response {
     Response::Error {
         code: ErrorCode::NotFound,
-        message: "cloudflared is not installed - install it from Integrations first".into(),
+        message: "cloudflared is not installed - install it from Tooling or with `yerd install tool cloudflared`".into(),
     }
 }
 
@@ -721,6 +722,7 @@ async fn ensure(
         .await
         .map_err(|e| match e {
             yerd_tunnel::TunnelError::ShuttingDown => EnsureFailure::ShuttingDown,
+            yerd_tunnel::TunnelError::NotInstalled => EnsureFailure::Reply(not_installed()),
             other => EnsureFailure::Reply(internal(format!(
                 "could not start the named tunnel: {other}"
             ))),
@@ -1251,7 +1253,11 @@ mod tests {
     async fn stop_waits_for_tunnel_mutate() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_with_site(tmp.path(), "blog").await;
-        install::install_binary_for_test(&state.dirs, "2026.6.1", b"#!/bin/sh\nexit 0\n");
+        crate::tools::cloudflared::install_binary_for_test(
+            &state.dirs,
+            "2026.6.1",
+            b"#!/bin/sh\nexit 0\n",
+        );
         super::super::refresh_cloudflared_cache_after_install(&state).await;
         let guard = state.tunnel_mutate.lock().await;
         let stopping = {
@@ -1276,7 +1282,11 @@ mod tests {
         let mut state = state_in(tmp.path());
         state.tunnel_origin_port = Some(1);
         let state = Arc::new(state);
-        install::install_binary_for_test(&state.dirs, "2026.6.1", b"#!/bin/sh\nexit 0\n");
+        crate::tools::cloudflared::install_binary_for_test(
+            &state.dirs,
+            "2026.6.1",
+            b"#!/bin/sh\nexit 0\n",
+        );
         super::super::refresh_cloudflared_cache_after_install(&state).await;
         std::fs::create_dir_all(origincert(&state.dirs).parent().unwrap()).unwrap();
         std::fs::write(origincert(&state.dirs), "cert").unwrap();
@@ -1307,7 +1317,11 @@ mod tests {
         let site = Site::linked("blog", "/srv/www/blog", PhpVersion::new(8, 3)).unwrap();
         state.router.write().await.insert(site).unwrap();
         let state = Arc::new(state);
-        install::install_binary_for_test(&state.dirs, "2026.6.1", b"#!/bin/sh\nsleep 30\n");
+        crate::tools::cloudflared::install_binary_for_test(
+            &state.dirs,
+            "2026.6.1",
+            b"#!/bin/sh\nsleep 30\n",
+        );
         super::super::refresh_cloudflared_cache_after_install(&state).await;
         std::fs::create_dir_all(origincert(&state.dirs).parent().unwrap()).unwrap();
         std::fs::write(origincert(&state.dirs), "cert").unwrap();

@@ -13,7 +13,7 @@ import { SECTION_LABEL } from "@/components/ui/styles";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
 import { useOperations } from "@/composables/useOperations";
-import { useResource } from "@/composables/useResource";
+import { invalidate, useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
 import {
   installToolStreamed,
@@ -163,8 +163,15 @@ async function install(t: ToolStatus, update: boolean): Promise<void> {
     toast.error(`Install of ${t.display_name} failed`, message);
   } finally {
     operations.end(opId);
-    await Promise.all([reload({ force: true }), refreshDaemon()]);
+    await Promise.all([reload({ force: true }), refreshDaemon(), refreshShare(id)]);
   }
+}
+
+/** Share keeps cloudflared's status in its own cache and only re-polls while
+ *  tunnels exist, so a cloudflared install that finishes after the user went
+ *  back to Share refreshes it here. */
+function refreshShare(id: string): Promise<void> {
+  return id === "cloudflared" ? invalidate("share-page") : Promise.resolve();
 }
 
 function installComposer(): void {

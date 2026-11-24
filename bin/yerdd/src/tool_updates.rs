@@ -4,8 +4,8 @@
 //! published at the last poll. [`poll_and_refresh`] fills it on the same
 //! 12-hour tick as the PHP and Node checks, and `ListTools` / `TunnelStatus`
 //! compare it to what is installed without touching the network. Node is not
-//! cached here: its updates come from `node_updates`. The managed
-//! `cloudflared` binary is cached under [`CLOUDFLARED_KEY`].
+//! cached here: its updates come from `node_updates`. `cloudflared` is a tool
+//! like any other, so `TunnelStatus` reads its entry under its tool id.
 //!
 //! Notify-only: nothing is installed or updated by the poll.
 
@@ -14,13 +14,9 @@ use yerd_php::Downloader;
 use crate::state::DaemonState;
 use crate::tools::Tool;
 
-/// Cache key for the managed `cloudflared` release.
-pub const CLOUDFLARED_KEY: &str = "cloudflared";
-
-/// Fetch the latest version of every installed managed tool (and of the
-/// managed `cloudflared`, when installed) and refresh the cache. Uninstalled
-/// tools and a `PATH`-only `cloudflared` are never fetched. A failed lookup
-/// keeps that tool's previous entry.
+/// Fetch the latest version of every installed managed tool and refresh the
+/// cache. Uninstalled tools (including a `PATH`-only `cloudflared`) are never
+/// fetched. A failed lookup keeps that tool's previous entry.
 pub async fn poll_and_refresh(state: &DaemonState, dl: &dyn Downloader) {
     for tool in Tool::ALL {
         if tool == Tool::Node || crate::tools::installed_version(&state.dirs, tool, None).is_none()
@@ -32,14 +28,6 @@ pub async fn poll_and_refresh(state: &DaemonState, dl: &dyn Downloader) {
             Ok(None) => {}
             Err(e) => {
                 tracing::debug!(tool = tool.id(), error = %e, "tool update poll failed, keeping cached entry");
-            }
-        }
-    }
-    if crate::tunnel::install::is_installed(&state.dirs) {
-        match crate::tunnel::install::latest_tag(dl).await {
-            Ok(tag) => store(state, CLOUDFLARED_KEY, tag).await,
-            Err(e) => {
-                tracing::debug!(error = %e, "cloudflared update poll failed, keeping cached entry");
             }
         }
     }
@@ -203,10 +191,16 @@ mod tests {
     async fn managed_cloudflared_reports_a_newer_release() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        crate::tunnel::install::install_binary_for_test(&state.dirs, "2024.6.1", b"bin");
+        crate::tools::cloudflared::install_binary_for_test(&state.dirs, "2024.6.1", b"bin");
         poll_and_refresh(&state, &online()).await;
         assert_eq!(
-            cached(&state, CLOUDFLARED_KEY).await.as_deref(),
+            cached(&state, "cloudflared").await.as_deref(),
+            Some("2025.11.1")
+        );
+        assert_eq!(
+            by_id(&listed(&state).await, "cloudflared")
+                .update_available
+                .as_deref(),
             Some("2025.11.1")
         );
         let status = crate::tunnel::cloudflared_status(&state).await;
@@ -218,7 +212,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
         poll_and_refresh(&state, &online()).await;
-        assert_eq!(cached(&state, CLOUDFLARED_KEY).await, None);
+        assert_eq!(cached(&state, "cloudflared").await, None);
         let status = crate::tunnel::cloudflared_status(&state).await;
         assert_eq!(status.update_available, None);
     }

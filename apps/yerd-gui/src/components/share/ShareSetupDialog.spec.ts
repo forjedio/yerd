@@ -25,7 +25,6 @@ function mountDialog(props: Partial<InstanceType<typeof ShareSetupDialog>["$prop
       entry: named("running"),
       exposedCount: 2,
       busy: null,
-      installing: false,
       connected: true,
       ...props,
     },
@@ -54,25 +53,26 @@ afterEach(() => {
 });
 
 describe("ShareSetupDialog", () => {
-  it("installs cloudflared when it is missing", async () => {
+  it("points to Tooling when cloudflared is missing", async () => {
     const w = mountDialog({ cloudflared: { installed: false, logged_in: false }, tunnel: null, entry: null, exposedCount: 0 });
     await flushPromises();
-    buttonIn("cloudflared", "Install")?.click();
-    expect(w.emitted("install")).toHaveLength(1);
+    buttonIn("cloudflared", "Open Tooling")?.click();
+    expect(w.emitted("tooling")).toHaveLength(1);
   });
 
   it.each([
-    [managed, null],
-    [{ ...managed, update_available: "2026.7.0" }, "Update to 2026.7.0"],
-    [{ ...managed, source: "system" as const }, "Use Yerd's copy"],
-  ])("offers the cloudflared action that applies", async (status, label) => {
+    [managed, false, "Yerd's copy · used for every tunnel"],
+    [{ ...managed, update_available: "2026.7.0" }, true, "Yerd's copy · update to 2026.7.0 available in Tooling"],
+    [{ ...managed, source: "system" as const, update_available: "2026.7.0" }, false, "Found on PATH · used for every tunnel"],
+  ])("links to Tooling only when there is something to do there", async (status, linked, subline) => {
     const w = mountDialog({ cloudflared: status });
     await flushPromises();
     const buttons = section("cloudflared").querySelectorAll("button");
-    expect(Array.from(buttons).map((b) => b.textContent?.trim())).toEqual(label ? [label] : []);
-    if (label) {
+    expect(Array.from(buttons).map((b) => b.textContent?.trim())).toEqual(linked ? ["Open Tooling"] : []);
+    expect(document.querySelector('[data-testid="cloudflared-source"]')?.textContent?.trim()).toBe(subline);
+    if (linked) {
       buttons[0]?.click();
-      expect(w.emitted("install")).toHaveLength(1);
+      expect(w.emitted("tooling")).toHaveLength(1);
     }
   });
 

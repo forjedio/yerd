@@ -736,10 +736,10 @@ pub enum Request {
         /// Override the configured channel for this stage only.
         channel: Option<crate::Channel>,
     },
-    /// Download + install the `cloudflared` binary as a streamed background job
-    /// (the Cloudflare Tunnel integration's prerequisite). Replies
+    /// Kept for older clients: equivalent to
+    /// `InstallToolStreamed { tool: "cloudflared" }`. Replies
     /// [`super::Response::JobStarted`] immediately; progress is polled via
-    /// [`Self::JobStatus`]. The streaming-only sibling of the dev-tool installers.
+    /// [`Self::JobStatus`].
     InstallCloudflaredStreamed,
     /// Start a Quick Tunnel for a site, publishing it at a random
     /// `*.trycloudflare.com` URL. Replies [`super::Response::Tunnels`] with the

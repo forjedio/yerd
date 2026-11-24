@@ -1,8 +1,9 @@
 # Tooling
 
 Yerd can install the **developer tools** a typical PHP/Laravel/WordPress project
-reaches for - [Composer](https://getcomposer.org), [Bun](https://bun.sh), [pnpm](https://pnpm.io), the **Laravel installer**, and
-**WP-CLI** - the same way it installs [PHP versions](./php-versions):
+reaches for - [Composer](https://getcomposer.org), [Bun](https://bun.sh), [pnpm](https://pnpm.io), the **Laravel installer**,
+**WP-CLI**, and **cloudflared** (the Cloudflare Tunnel connector used for
+[sharing](./sharing)) - the same way it installs [PHP versions](./php-versions):
 self-contained binaries fetched on demand (the Laravel installer and WP-CLI are
 built via Composer) and dropped onto your `PATH`. No system package manager, no
 global install, nothing to uninstall by hand. Already have one installed
@@ -19,6 +20,7 @@ per-site preferences: see [Node.js](./node).
 | pnpm | `pnpm` | `pnpm`, `pnpx` | github.com/pnpm/pnpm |
 | Laravel installer | `laravel` | `laravel` | Composer (`laravel/installer`) |
 | WP-CLI | `wp-cli` | `wp` | Composer (`wp-cli/wp-cli-bundle`) |
+| cloudflared | `cloudflared` | `cloudflared` | github.com/cloudflare/cloudflared |
 
 ::: tip Why bundle these?
 A fresh machine that has Yerd shouldn't also need Homebrew, `nvm`, or a global
@@ -32,15 +34,16 @@ removes them cleanly on uninstall.
 Open the **Tooling** page from the sidebar (under the **Developer** group). It
 lists the developer tools Yerd manages in two groups:
 
-<ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="The Tooling page: Composer (with an update to 2.9.1), the Laravel installer and WP-CLI installed, and Bun (found externally in /opt/homebrew/bin) and pnpm available" />
+<ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="The Tooling page: Composer (with an update to 2.9.1), the Laravel installer, WP-CLI and cloudflared installed, and Bun (found externally in /opt/homebrew/bin) and pnpm available" />
 
 - **Installed** lists each installed tool (**Composer**, **Bun**, **pnpm**, the
-  **Laravel installer**, **WP-CLI**) with its version and the commands it
+  **Laravel installer**, **WP-CLI**, **cloudflared**) with its version and the commands it
   provides. When Yerd knows a newer version exists, an amber **↑** chip shows it
   beside the version and **Update** installs it; otherwise **Update** is
   disabled. Yerd checks for tool updates every 12 hours, and
   `yerd install tool <id>` always fetches the latest release. The trash button
-  uninstalls the tool after a confirmation.
+  uninstalls the tool after a confirmation; `cloudflared` can't be uninstalled
+  while a tunnel is running.
 - **Available** shows a card for each tool you haven't installed, with an
   **Install** button that fetches the latest release.
 - A tool you've installed yourself shows an **External** chip, where it was
@@ -128,11 +131,11 @@ mistaken for an external install.
 
 The model mirrors [PHP versions](./php-versions) and [services](./services):
 
-- **Self-contained binaries.** Each tool is a relocatable build - Bun is a single binary, pnpm is a native
+- **Self-contained binaries.** Each tool is a relocatable build - Bun and cloudflared are single binaries, pnpm is a native
   binary with its bundled `dist/`, Composer is a phar run
   by Yerd's managed PHP. Nothing is compiled and nothing touches system paths.
 - **Verified downloads.** Every artifact is checked against the publisher's
-  `SHASUMS256.txt` (Bun), the GitHub release `digest` (pnpm), or
+  `SHASUMS256.txt` (Bun), the GitHub release `digest` (pnpm, cloudflared), or
   `composer.phar.sha256sum` (Composer) before it
   is installed.
 - **Installed under Yerd's data dir.** Tools live in `{data}/tools/<id>/`
@@ -143,7 +146,9 @@ The model mirrors [PHP versions](./php-versions) and [services](./services):
   `PATH` once (see below) and `composer`, `node`, `npm`, `bun`, … just work.
 - **Proxy-aware.** Each command runs through Yerd, which fills in the
   [outbound proxy](./corporate-networks) when your shell doesn't name a proxy
-  of its own.
+  of its own. `cloudflared` is the exception: Yerd downloads it through the
+  proxy, but its command links straight to the binary and tunnels run without
+  proxy settings.
 - **Rootless.** Everything runs as your user, no elevation.
 
 ## Put Yerd's bin directory on your PATH
@@ -208,8 +213,9 @@ extension list.
 | `{data}/tools/pnpm/pnpm-<os>-<arch>/pnpm` | The pnpm binary (`pnpx` beside it). |
 | `{data}/tools/laravel/bin/laravel` | The Laravel installer (built via Composer). |
 | `{data}/tools/wp-cli/vendor/wp-cli/wp-cli/php/boot-fs.php` | WP-CLI (built via Composer). |
-| `{data}/bin/{composer,bun,bunx,pnpm,pnpx,laravel,wp}` | The `PATH` shims (Node's are on the [Node.js](./node#where-things-live) page). |
-| `{data}/bin/{mysql,mysqldump,mariadb,mariadb-dump,psql,pg_dump,pg_dumpall,pg_restore,createdb,valkey-cli,cloudflared}` | Service client and `cloudflared` commands, present while the engine (or `cloudflared`) is installed. See [Services & Databases](./services#client-commands-on-your-path). |
+| `{data}/tools/cloudflared/cloudflared` | The cloudflared binary. |
+| `{data}/bin/{composer,bun,bunx,pnpm,pnpx,laravel,wp,cloudflared}` | The `PATH` shims (Node's are on the [Node.js](./node#where-things-live) page). `cloudflared` links straight to the managed binary. |
+| `{data}/bin/{mysql,mysqldump,mariadb,mariadb-dump,psql,pg_dump,pg_dumpall,pg_restore,createdb,valkey-cli}` | Service client commands, present while the engine is installed. See [Services & Databases](./services#client-commands-on-your-path). |
 
 `{data}` is Yerd's per-user data directory (`yerd status` and
 `yerd path print` both show the exact path for your platform).

@@ -125,11 +125,6 @@ pub async fn run(cli: Cli) -> ExitCode {
             };
         }
         Command::Tunnel {
-            action: crate::cli::TunnelAction::Install,
-        } if !cli.json => {
-            return stream_tunnel_job(yerd_ipc::Request::InstallCloudflaredStreamed).await
-        }
-        Command::Tunnel {
             action: crate::cli::TunnelAction::Login,
         } if !cli.json => return stream_tunnel_job(yerd_ipc::Request::CloudflaredLogin).await,
         Command::Update {
@@ -814,18 +809,12 @@ async fn stream_install_tool(start: yerd_ipc::Request, json: bool) -> ExitCode {
     }
 }
 
-/// Run a streamed tunnel job (`cloudflared` install or account login), printing
-/// progress lines (including the login auth URL) as they arrive. Mirrors
+/// Run the streamed Cloudflare account login job, printing progress lines
+/// (including the login auth URL) as they arrive. Mirrors
 /// [`stream_install_tool`].
 async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
     use std::time::Duration;
     use yerd_ipc::{JobState, Request, Response};
-
-    let noun = if matches!(req, Request::CloudflaredLogin) {
-        "login"
-    } else {
-        "install"
-    };
 
     let job_id = match transport::exchange(&req).await {
         Ok(Response::JobStarted { job_id }) => job_id,
@@ -834,7 +823,7 @@ async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
             return ExitCode::from(1);
         }
         Ok(_) => {
-            eprintln!("yerd: unexpected response starting {noun}");
+            eprintln!("yerd: unexpected response starting login");
             return ExitCode::from(74);
         }
         Err(e) if e.is_daemon_down() => {
@@ -876,7 +865,7 @@ async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
                         return ExitCode::from(1);
                     }
                     JobState::Cancelled => {
-                        eprintln!("yerd: {noun} cancelled");
+                        eprintln!("yerd: login cancelled");
                         return ExitCode::from(1);
                     }
                 }
@@ -886,7 +875,7 @@ async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
                 return ExitCode::from(1);
             }
             Ok(_) => {
-                eprintln!("yerd: unexpected response polling {noun}");
+                eprintln!("yerd: unexpected response polling login");
                 return ExitCode::from(74);
             }
             Err(e) if e.is_daemon_down() => {

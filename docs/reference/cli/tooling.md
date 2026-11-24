@@ -1,9 +1,11 @@
 # Tooling
 
 Yerd installs developer tools - **Composer**, **Node.js** (`node`/`npm`/`npx`),
-**Bun** (`bun`/`bunx`), **pnpm** (`pnpm`/`pnpx`), the **Laravel installer** (`laravel`), and **WP-CLI**
-(`wp`) - as self-contained binaries on your `PATH`. Each is identified by a
-short `id`: `composer`, `node`, `bun`, `pnpm`, `laravel`, or `wp-cli`. The
+**Bun** (`bun`/`bunx`), **pnpm** (`pnpm`/`pnpx`), the **Laravel installer** (`laravel`), **WP-CLI**
+(`wp`), and **cloudflared** (the Cloudflare Tunnel connector used by
+[sharing](../../guide/sharing)) - as self-contained binaries on your `PATH`. Each
+is identified by a short `id`: `composer`, `node`, `bun`, `pnpm`, `laravel`,
+`wp-cli`, or `cloudflared`. The
 [Tooling guide](../../guide/tooling) covers the model in depth; this page is the
 command reference.
 
@@ -24,11 +26,12 @@ yerd tools
 ```
 
 ```text
-TOOL      STATUS          COMMANDS       LOCATION
-composer  2.10.1          composer       -
-node      external        node,npm,npx   /opt/homebrew/bin/node
-bun       not installed   bun,bunx       -
-pnpm      not installed   pnpm,pnpx      -
+TOOL         STATUS          COMMANDS       LOCATION
+composer     2.10.1          composer       -
+node         external        node,npm,npx   /opt/homebrew/bin/node
+bun          not installed   bun,bunx       -
+pnpm         not installed   pnpm,pnpx      -
+cloudflared  2025.11.1       cloudflared    -
 ```
 
 `LOCATION` is only populated for `external` tools - ones already on your
@@ -42,8 +45,8 @@ Add `--json` for machine-readable output.
 
 | Command | Description | Example |
 | --- | --- | --- |
-| `yerd install tool <ID>` | Install the tool's latest version, then expose its commands on `PATH` - a **verified release download** for `node` / `bun` / `pnpm` / `composer`, or a **Composer build** (`create-project`) for `laravel` / `wp-cli`. **Idempotent** - run again to update to the current latest. For `node` the new release is installed beside the old one and an existing default is kept, so select it with `yerd node use <version>` to move the `node`/`npm`/`npx` shims. | `yerd install tool node` |
-| `yerd uninstall tool <ID>` | Remove the tool's files and its `PATH` commands. | `yerd uninstall tool bun` |
+| `yerd install tool <ID>` | Install the tool's latest version, then expose its commands on `PATH` - a **verified release download** for `node` / `bun` / `pnpm` / `composer` / `cloudflared`, or a **Composer build** (`create-project`) for `laravel` / `wp-cli`. **Idempotent** - run again to update to the current latest. For `node` the new release is installed beside the old one and an existing default is kept, so select it with `yerd node use <version>` to move the `node`/`npm`/`npx` shims. | `yerd install tool node` |
+| `yerd uninstall tool <ID>` | Remove the tool's files and its `PATH` commands. `cloudflared` is refused while any tunnel is running, and keeps your Cloudflare login and tunnels. | `yerd uninstall tool bun` |
 
 ```sh
 yerd install tool composer    # PHP dependency manager (needs a PHP version)
@@ -52,12 +55,13 @@ yerd install tool bun         # bun + bunx
 yerd install tool pnpm        # pnpm + pnpx
 yerd install tool laravel     # the laravel new installer (needs Composer)
 yerd install tool wp-cli      # the wp command for WordPress (needs Composer)
+yerd install tool cloudflared # the Cloudflare Tunnel connector for sharing
 yerd install tool node        # run again to add the newest LTS beside the old one
 yerd node use 24              # then select it; the default isn't moved for you
 yerd uninstall tool bun       # remove bun and prune its shims
 ```
 
-`<ID>` is one of `composer`, `node`, `bun`, `pnpm`, `laravel`, or `wp-cli`. An unknown
+`<ID>` is one of `composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`, or `cloudflared`. An unknown
 id returns a `not_found` error.
 
 ::: warning Composer requires PHP

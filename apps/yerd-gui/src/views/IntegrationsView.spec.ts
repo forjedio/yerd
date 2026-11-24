@@ -10,9 +10,14 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: vi.fn(),
 }));
 
+const push = vi.hoisted(() => vi.fn());
+vi.mock("vue-router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("vue-router")>()),
+  useRouter: () => ({ push }),
+}));
+
 import IntegrationsView from "./IntegrationsView.vue";
 import { useDaemon } from "@/composables/useDaemon";
-import { useOperations } from "@/composables/useOperations";
 import { resetResourceCache } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
 import type { CloudflaredStatus, SiteEntry, SiteHostname, StatusReport, TunnelInfo } from "@/ipc/types";
@@ -36,6 +41,7 @@ interface StubOpts {
   cloudflared?: CloudflaredStatus;
   tunnelStatus?: () => Promise<unknown>;
   routeDns?: () => Promise<unknown>;
+  stop?: () => Promise<unknown>;
   jobStates?: ("running" | "succeeded")[];
 }
 
@@ -70,8 +76,7 @@ function stubIpc(opts: StubOpts = {}) {
           cloudflared,
         });
       case "stop_tunnel":
-        return Promise.resolve({ type: "tunnels", tunnels: [], cloudflared });
-      case "install_cloudflared_streamed":
+        return opts.stop?.() ?? Promise.resolve({ type: "tunnels", tunnels: [], cloudflared });
       case "cloudflared_login":
         return Promise.resolve({ type: "job_started", job_id: "j1" });
       case "job_status":
@@ -191,6 +196,7 @@ function quick(state: TunnelInfo["state"], extra: Partial<TunnelInfo> = {}): Tun
 
 beforeEach(() => {
   invokeMock.mockReset();
+  push.mockReset();
   resetResourceCache();
   useDaemon().report.value = null;
   for (const t of [...useToast().toasts.value]) useToast().dismiss(t.id);
@@ -234,12 +240,13 @@ describe("IntegrationsView list", () => {
 });
 
 describe("IntegrationsView empty states", () => {
-  it("installs cloudflared from the not-installed state", async () => {
+  it("points to Tooling when cloudflared is missing", async () => {
     stubIpc({ cloudflared: { installed: false, logged_in: false } });
     await mountView();
     expect(document.body.textContent).toContain("Sharing needs cloudflared");
-    await click(buttonByText("Install cloudflared"));
-    expect(calls("install_cloudflared_streamed")).toHaveLength(1);
+    await click(buttonByText("Open Tooling"));
+    expect(push).toHaveBeenCalledWith("/tooling");
+    expect(calls("install_cloudflared_streamed")).toHaveLength(0);
   });
 
   it("opens Share a site from the nothing-shared state", async () => {
@@ -328,14 +335,12 @@ describe("IntegrationsView sharing", () => {
   });
 
   it("disables Share a site while an action runs", async () => {
-    stubIpc({ tunnels: [quick("running")] });
+    stubIpc({ tunnels: [quick("running")], stop: () => new Promise(() => {}) });
     await mountView();
     const share = document.querySelector('[data-testid="open-share"]') as HTMLButtonElement;
     expect(share.disabled).toBe(false);
-    useOperations().begin({ id: "cloudflared-install", kind: "tool-install", label: "Installing cloudflared" });
-    await flushPromises();
+    await click(inspector()?.querySelector('[data-action="stop"]') ?? null);
     expect(share.disabled).toBe(true);
-    useOperations().end("cloudflared-install");
   });
 });
 
@@ -384,26 +389,6 @@ describe("IntegrationsView share password", () => {
 });
 
 describe("IntegrationsView setup", () => {
-  it("updates cloudflared in a log that keeps polling after it closes", async () => {
-    vi.useFakeTimers();
-    stubIpc({ cloudflared: { ...MANAGED, update_available: "2026.7.0" }, jobStates: ["running", "succeeded"] });
-    await mountView();
-    await openSetup();
-    await click(buttonByText("Update to 2026.7.0"));
-
-    expect(dialogTitles()).not.toContain("Share setup");
-    expect(document.querySelector('[data-testid="tool-install-title"]')?.textContent).toBe("Updating cloudflared");
-    expect(useOperations().isRunning("cloudflared-install")).toBe(true);
-    await click(buttonByText("Close"));
-    expect(document.querySelector('[data-testid="tool-install-title"]')).toBeNull();
-
-    await vi.advanceTimersByTimeAsync(600);
-    await flushPromises();
-    expect(calls("job_status")).toHaveLength(2);
-    expect(useOperations().isRunning("cloudflared-install")).toBe(false);
-    expect(toastTitles()).toContain("Updated cloudflared 2026.6.1");
-  });
-
   it("closes Setup before the login dialog opens", async () => {
     stubIpc({ cloudflared: { ...MANAGED, logged_in: false } });
     await mountView();
