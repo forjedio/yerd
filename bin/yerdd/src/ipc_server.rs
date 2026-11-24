@@ -1744,7 +1744,9 @@ pub(crate) async fn reconcile_client_shims_now(state: &DaemonState) {
 /// [don't accept an external copy](crate::tools::Tool::accepts_external) are
 /// never tagged - yerd needs its own build, so Tooling shows them as simply not
 /// installed. Skips the (login-shell) PATH resolution entirely when no remaining
-/// tool could be tagged.
+/// tool could be tagged. `cloudflared` is tagged from the tunnel resolution
+/// instead, which searches the daemon's own `PATH` too, so it is still detected
+/// when the login-shell `PATH` cannot be resolved.
 async fn list_tools_with_external(state: &DaemonState) -> Vec<yerd_ipc::ToolStatus> {
     let node_default = state.config.lock().await.node.default.clone();
     let mut tools = crate::tools::list_status(&state.dirs, node_default.as_deref());
@@ -1753,11 +1755,13 @@ async fn list_tools_with_external(state: &DaemonState) -> Vec<yerd_ipc::ToolStat
         !t.installed
             && crate::tools::Tool::parse(&t.id).is_some_and(crate::tools::Tool::accepts_external)
     };
-    if !tools.iter().any(taggable) {
-        return tools;
-    }
-    let Some(dirs) = crate::tools::external::resolve_user_path().await else {
-        return tools;
+    let needs_user_path = tools
+        .iter()
+        .any(|t| taggable(t) && t.id != crate::tools::Tool::Cloudflared.id());
+    let dirs = if needs_user_path {
+        crate::tools::external::resolve_user_path().await
+    } else {
+        None
     };
     let data_bin = crate::tools::bin_dir(&state.dirs);
     let data_root = &state.dirs.data;
@@ -1765,15 +1769,18 @@ async fn list_tools_with_external(state: &DaemonState) -> Vec<yerd_ipc::ToolStat
         if !taggable(t) {
             continue;
         }
-        if let Some(tool) = crate::tools::Tool::parse(&t.id) {
-            let found = if tool == crate::tools::Tool::Cloudflared {
-                crate::tunnel::system_cloudflared(state).await
-            } else {
-                crate::tools::external::external_tool(&dirs, tool, &data_bin, data_root)
-            };
-            t.external = found.is_some();
-            t.external_path = found.map(|p| p.display().to_string());
-        }
+        let Some(tool) = crate::tools::Tool::parse(&t.id) else {
+            continue;
+        };
+        let found = if tool == crate::tools::Tool::Cloudflared {
+            crate::tunnel::system_cloudflared(state).await
+        } else if let Some(dirs) = &dirs {
+            crate::tools::external::external_tool(dirs, tool, &data_bin, data_root)
+        } else {
+            continue;
+        };
+        t.external = found.is_some();
+        t.external_path = found.map(|p| p.display().to_string());
     }
     tools
 }

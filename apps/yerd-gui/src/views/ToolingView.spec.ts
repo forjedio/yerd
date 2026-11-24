@@ -1,5 +1,6 @@
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { defineComponent, h } from "vue";
 
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -15,7 +16,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 
 import ToolingView from "./ToolingView.vue";
 import { useOperations } from "@/composables/useOperations";
-import { resetResourceCache } from "@/composables/useResource";
+import { resetResourceCache, useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
 import type { ToolStatus } from "@/ipc/types";
 
@@ -280,6 +281,24 @@ describe("ToolingView", () => {
     });
     expect(wrapper.find('[data-testid="tool-card-bun"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="tool-row-bun"]').exists()).toBe(true);
+  });
+
+  it("refreshes Share's cached status when a cloudflared install finishes", async () => {
+    const shareFetch = vi.fn(() => Promise.resolve({}));
+    const SharePage = defineComponent({
+      setup() {
+        useResource("share-page", shareFetch);
+        return () => h("div");
+      },
+    });
+    mounted.push(mount(SharePage));
+    await flushPromises();
+    expect(shareFetch).toHaveBeenCalledTimes(1);
+    stubIpc({ tools: [tool("cloudflared")], after: [installed("cloudflared", "2026.10.0")] });
+    const wrapper = await mountView();
+    await buttonIn(wrapper, "tool-card-cloudflared", "Install").trigger("click");
+    await finishJob({ state: "succeeded" }, "Installed cloudflared 2026.10.0");
+    expect(shareFetch).toHaveBeenCalledTimes(2);
   });
 
   it("keeps polling after the log is closed mid-install", async () => {
