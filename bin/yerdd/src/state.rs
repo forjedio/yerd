@@ -214,8 +214,10 @@ pub struct DaemonState {
     /// IPC dispatch is `tokio::spawn`-per-connection, so two clients could swap
     /// `{data}/tools/<id>` concurrently; this guard makes commit+reconcile atomic.
     pub tool_mutate: Mutex<()>,
-    /// Serializes `cloudflared` install (and Phase-2 login) mutations of
-    /// `{data}/tunnel`, so two clients can't clobber the staging binary.
+    /// Serializes Cloudflare account and named-tunnel mutations of
+    /// `{data}/tunnel` (login, logout, named setup), and gates the `cloudflared`
+    /// uninstall so it never runs mid-mutation. The `cloudflared` install itself
+    /// runs under `tool_mutate` like every tool.
     pub tunnel_mutate: Mutex<()>,
     /// Serializes PHP-version install/update mutations. IPC dispatch is
     /// `tokio::spawn`-per-connection (and the streamed install is its own task),

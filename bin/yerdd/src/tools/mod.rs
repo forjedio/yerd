@@ -1,5 +1,6 @@
 //! Dev-tool installer subsystem - Composer, Node (node/npm/npx), Bun (bun/bunx),
-//! pnpm (pnpm/pnpx), the Laravel installer, and WP-CLI.
+//! pnpm (pnpm/pnpx), the Laravel installer, WP-CLI, and cloudflared (the
+//! Cloudflare Tunnel connector Share uses).
 //!
 //! Most tools ship as a self-contained, relocatable binary (no global install):
 //! Node's tarball, Bun's zip, pnpm's tarball, Composer's phar. yerd downloads + sha256-verifies
@@ -11,6 +12,7 @@
 //! `laravel`/`wp_cli`).
 
 pub mod bun;
+pub mod cloudflared;
 pub mod composer;
 pub mod external;
 pub mod laravel;
@@ -44,6 +46,9 @@ pub enum Tool {
     /// (`wp-cli/wp-cli-bundle`) run via the managed PHP, exposed as the `wp`
     /// multi-call shim.
     WpCli,
+    /// cloudflared - the Cloudflare Tunnel connector used by Share, a single
+    /// static binary from Cloudflare's GitHub releases.
+    Cloudflared,
 }
 
 /// Filename of the installed-version marker inside a tool's dir.
@@ -51,13 +56,14 @@ const VERSION_MARKER: &str = ".version";
 
 impl Tool {
     /// Every tool, for `list_status` / reconcile.
-    pub const ALL: [Tool; 6] = [
+    pub const ALL: [Tool; 7] = [
         Tool::Composer,
         Tool::Node,
         Tool::Bun,
         Tool::Pnpm,
         Tool::Laravel,
         Tool::WpCli,
+        Tool::Cloudflared,
     ];
 
     /// Stable id used on the wire and as the on-disk dir name.
@@ -70,6 +76,7 @@ impl Tool {
             Tool::Pnpm => "pnpm",
             Tool::Laravel => "laravel",
             Tool::WpCli => "wp-cli",
+            Tool::Cloudflared => "cloudflared",
         }
     }
 
@@ -83,6 +90,7 @@ impl Tool {
             Tool::Pnpm => "pnpm",
             Tool::Laravel => "Laravel Installer",
             Tool::WpCli => "WP-CLI",
+            Tool::Cloudflared => "cloudflared",
         }
     }
 
@@ -97,6 +105,7 @@ impl Tool {
             Tool::Pnpm => "pnpm",
             Tool::Laravel => "laravel",
             Tool::WpCli => "wp",
+            Tool::Cloudflared => "cloudflared",
         }
     }
 
@@ -110,6 +119,7 @@ impl Tool {
             Tool::Pnpm => &["pnpm", "pnpx"],
             Tool::Laravel => &["laravel"],
             Tool::WpCli => &["wp"],
+            Tool::Cloudflared => &["cloudflared"],
         }
     }
 
@@ -129,7 +139,12 @@ impl Tool {
     #[must_use]
     pub const fn accepts_external(self) -> bool {
         match self {
-            Tool::Composer | Tool::Node | Tool::Bun | Tool::Pnpm | Tool::Laravel => true,
+            Tool::Composer
+            | Tool::Node
+            | Tool::Bun
+            | Tool::Pnpm
+            | Tool::Laravel
+            | Tool::Cloudflared => true,
             Tool::WpCli => false,
         }
     }
@@ -287,6 +302,7 @@ pub(crate) async fn latest(
         Tool::Pnpm => pnpm::latest(dl).await?,
         Tool::Laravel => laravel::latest(dl).await?,
         Tool::WpCli => wp_cli::latest(dl).await?,
+        Tool::Cloudflared => cloudflared::latest(dl).await?,
     };
     Ok(Some(version))
 }
@@ -336,6 +352,7 @@ pub async fn install(
         Tool::Pnpm => pnpm::install(dirs, dl).await,
         Tool::Laravel => laravel::install(dirs, proxy_env, progress).await,
         Tool::WpCli => wp_cli::install(dirs, proxy_env, progress).await,
+        Tool::Cloudflared => cloudflared::install(dirs, dl, progress).await,
     };
     match &result {
         Ok(()) => note(progress, format!("Installed {}", tool.display_name())),
@@ -375,7 +392,9 @@ fn via_yerd(links: Vec<(String, PathBuf)>, yerd_bin: &Path) -> Vec<(String, Path
 
 /// The `(name_in_bin, symlink_target)` pairs for an installed `tool`. Empty if
 /// the tool isn't installed or its root can't be resolved. Every command is a
-/// link to the yerd multi-call binary.
+/// link to the yerd multi-call binary except `cloudflared`, which links straight
+/// to the managed binary: its path carries no version to resolve, and it is the
+/// documented outbound-proxy exception, so there is no environment to inject.
 #[cfg(unix)]
 fn shim_links(
     dirs: &PlatformDirs,
@@ -390,7 +409,58 @@ fn shim_links(
         Tool::Pnpm => via_yerd(pnpm::shim_links(dirs), yerd_bin),
         Tool::Laravel => vec![("laravel".to_owned(), yerd_bin.to_path_buf())],
         Tool::WpCli => vec![("wp".to_owned(), yerd_bin.to_path_buf())],
+        Tool::Cloudflared => cloudflared_links(dirs),
     }
+}
+
+#[cfg(unix)]
+fn cloudflared_links(dirs: &PlatformDirs) -> Vec<(String, PathBuf)> {
+    vec![("cloudflared".to_owned(), cloudflared::binary_path(dirs))]
+}
+
+/// Create `tool`'s links in `bin` when it is installed, else prune its names
+/// (symlinks only).
+#[cfg(unix)]
+fn reconcile_tool(
+    dirs: &PlatformDirs,
+    bin: &Path,
+    tool: Tool,
+    node_default: Option<&str>,
+    links: impl FnOnce() -> Vec<(String, PathBuf)>,
+) -> Result<(), ToolError> {
+    if installed_version(dirs, tool, node_default).is_some() {
+        for (name, target) in links() {
+            crate::php_install::place_symlink(&bin.join(&name), &target)
+                .map_err(|e| ToolError::Io(e.to_string()))?;
+        }
+    } else {
+        for &name in tool.exposed_bins() {
+            let p = bin.join(name);
+            let is_link = std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink());
+            if is_link {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Reconcile only the `{data}/bin/cloudflared` link, which targets the managed
+/// binary rather than the `yerd` multi-call binary, so it is kept even when the
+/// `yerd` sibling cannot be located. Callers must hold the shared
+/// `shim_reconcile` mutex. Unix-only; no-op elsewhere.
+#[cfg(unix)]
+pub fn reconcile_cloudflared_shim(dirs: &PlatformDirs) -> Result<(), ToolError> {
+    let bin = bin_dir(dirs);
+    std::fs::create_dir_all(&bin).map_err(|e| ToolError::Io(format!("{}: {e}", bin.display())))?;
+    reconcile_tool(dirs, &bin, Tool::Cloudflared, None, || {
+        cloudflared_links(dirs)
+    })
+}
+
+#[cfg(not(unix))]
+pub fn reconcile_cloudflared_shim(_dirs: &PlatformDirs) -> Result<(), ToolError> {
+    Ok(())
 }
 
 /// Reconcile `{data}/bin` tool shims against what's installed: (re)create the
@@ -409,21 +479,9 @@ pub fn reconcile_tool_shims(
     std::fs::create_dir_all(&bin).map_err(|e| ToolError::Io(format!("{}: {e}", bin.display())))?;
 
     for &tool in &Tool::ALL {
-        if installed_version(dirs, tool, node_default).is_some() {
-            for (name, target) in shim_links(dirs, tool, yerd_bin, node_default) {
-                crate::php_install::place_symlink(&bin.join(&name), &target)
-                    .map_err(|e| ToolError::Io(e.to_string()))?;
-            }
-        } else {
-            for &name in tool.exposed_bins() {
-                let p = bin.join(name);
-                let is_link =
-                    std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink());
-                if is_link {
-                    let _ = std::fs::remove_file(&p);
-                }
-            }
-        }
+        reconcile_tool(dirs, &bin, tool, node_default, || {
+            shim_links(dirs, tool, yerd_bin, node_default)
+        })?;
     }
     Ok(())
 }
@@ -598,6 +656,10 @@ mod tests {
             ("2.8.1", "garbage", None),
             ("installed", "v5.33.0", None),
             ("v5.32.0", "v5.33.0", Some("v5.33.0")),
+            ("2024.6.1", "2024.12.0", Some("2024.12.0")),
+            ("2024.12.0", "2024.12.0", None),
+            ("2025.1.0", "2024.12.0", None),
+            ("installed", "2025.11.1", None),
         ];
         for (installed, latest, want) in cases {
             assert_eq!(
@@ -686,12 +748,17 @@ mod tests {
             .with(
                 "https://repo.packagist.org/p2/laravel/installer.json",
                 P2_INSTALLER,
+            )
+            .with(
+                "https://api.github.com/repos/cloudflare/cloudflared/releases/latest",
+                r#"{"tag_name":"2025.11.1","assets":[]}"#,
             );
         let cases: &[(Tool, Option<&str>)] = &[
             (Tool::Composer, Some("2.8.12")),
             (Tool::Bun, Some("v1.3.15")),
             (Tool::Pnpm, Some("v10.2.0")),
             (Tool::Laravel, Some("v5.33.0")),
+            (Tool::Cloudflared, Some("2025.11.1")),
             (Tool::Node, None),
         ];
         for (tool, want) in cases {
@@ -931,6 +998,39 @@ mod tests {
                 "{name}"
             );
         }
+
+        cloudflared::install_binary_for_test(&dirs, "2025.11.1", b"#!/bin/sh\n");
+        reconcile_tool_shims(&dirs, &yerd_bin, None).unwrap();
+        assert_eq!(
+            std::fs::read_link(bin.join("cloudflared")).unwrap(),
+            cloudflared::binary_path(&dirs)
+        );
+
+        uninstall(&dirs, Tool::Cloudflared).unwrap();
+        reconcile_tool_shims(&dirs, &yerd_bin, None).unwrap();
+        assert!(std::fs::symlink_metadata(bin.join("cloudflared")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_cloudflared_shim_links_then_prunes_without_yerd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let link = bin_dir(&dirs).join("cloudflared");
+
+        reconcile_cloudflared_shim(&dirs).unwrap();
+        assert!(std::fs::symlink_metadata(&link).is_err());
+
+        cloudflared::install_binary_for_test(&dirs, "2025.11.1", b"#!/bin/sh\n");
+        reconcile_cloudflared_shim(&dirs).unwrap();
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            cloudflared::binary_path(&dirs)
+        );
+
+        uninstall(&dirs, Tool::Cloudflared).unwrap();
+        reconcile_cloudflared_shim(&dirs).unwrap();
+        assert!(std::fs::symlink_metadata(&link).is_err());
     }
 
     #[test]

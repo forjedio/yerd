@@ -1,6 +1,7 @@
 //! Cloudflare Tunnel wiring: the daemon's `TunnelManager` type, the IPC handlers
-//! for the tunnel requests, the `cloudflared` install job, and the
-//! snapshot→wire mapping.
+//! for the tunnel requests, the `cloudflared` resolution cache and uninstall
+//! guard, and the snapshot→wire mapping. Installing `cloudflared` is a regular
+//! tool job (`tools::cloudflared`).
 //!
 //! Every `cloudflared` points at the daemon's loopback tunnel listener
 //! (`state.tunnel_origin_port`), which routes by the public `Host` through
@@ -11,7 +12,9 @@
 //! Lock discipline mirrors the services path: the site facts are read under the
 //! router lock, which is released before the `tunnel_manager` is taken; the
 //! config/router lock and the tunnel-manager lock are never held simultaneously
-//! across an `.await`. The `cloudflared` install runs under `tunnel_mutate` only.
+//! across an `.await`. A `cloudflared` uninstall takes `tool_mutate`, then
+//! `tunnel_mutate` (try-lock), then `tunnel_manager` (see
+//! [`lock_for_cloudflared_uninstall`]).
 //!
 //! The tunnel origin listener's route map is rebuilt by [`rebuild_routes`] with
 //! a fixed lock order: `tunnel_routes_rebuild`, then `tunnel_manager`
@@ -43,10 +46,7 @@ use yerd_tunnel::{LaunchSpec, TunnelKind, TunnelManager};
 
 use self::supervise::Settled;
 use crate::state::DaemonState;
-
-/// A sink for streamed install output (one line per send), drained into the job
-/// log by the streamed-install job.
-pub type ProgressTx = tokio::sync::mpsc::UnboundedSender<String>;
+use crate::tools::Tool;
 
 /// Concrete `TunnelManager` the daemon uses.
 pub type DaemonTunnelManager = TunnelManager<TokioProcessSpawner, SystemClock>;
@@ -124,7 +124,8 @@ fn write_quick_config(dirs: &PlatformDirs) -> Result<PathBuf, String> {
 }
 
 /// `cloudflared` install + account status for the wire. `update_available`
-/// comes from the `tool_updates` cache and is set only for the managed binary.
+/// comes from the same `tool_updates` entry and comparison Tooling uses, and is
+/// set only for the managed binary.
 pub async fn cloudflared_status(state: &DaemonState) -> CloudflaredStatus {
     let resolved = resolved_cloudflared(state).await;
     let update_available = match resolved.as_ref() {
@@ -132,9 +133,9 @@ pub async fn cloudflared_status(state: &DaemonState) -> CloudflaredStatus {
             source: install::CloudflaredSource::Managed,
             version: Some(version),
             ..
-        }) => crate::tool_updates::cached(state, crate::tool_updates::CLOUDFLARED_KEY)
+        }) => crate::tool_updates::cached(state, Tool::Cloudflared.id())
             .await
-            .and_then(|latest| install::calver_newer(version, &latest)),
+            .and_then(|latest| crate::tools::newer_version(version, &latest)),
         _ => None,
     };
     CloudflaredStatus {
@@ -162,13 +163,17 @@ fn source_to_wire(source: install::CloudflaredSource) -> yerd_ipc::CloudflaredSo
 /// A cached `System` entry is re-checked for existence (cheap, no re-spawn)
 /// before use, so a binary removed or replaced out from under a live session
 /// is detected and dropped rather than silently spawned from a dangling path.
-/// A cached `Managed` entry is trusted as-is (it's invalidated explicitly by a
-/// fresh install instead, see `install_cloudflared_streamed`). On a cache
-/// miss this recomputes via `install::resolve` and writes the result back
-/// under a no-downgrade rule: a fresh `Managed` result always overwrites, but
-/// a `System` (or absent) result never overwrites an existing `Managed`
+/// A cached `Managed` entry is trusted as-is (it's refreshed explicitly by a
+/// fresh install and cleared by an uninstall, see
+/// [`refresh_cloudflared_cache_after_install`] and [`forget_cloudflared`]). On
+/// a cache miss this recomputes via `install::resolve` and writes the result
+/// back under a no-downgrade rule: a fresh `Managed` result always overwrites,
+/// but a `System` (or absent) result never overwrites an existing `Managed`
 /// entry, since a concurrent successful install may have raced ahead of a
-/// slow `PATH` probe that started before it committed.
+/// slow `PATH` probe that started before it committed. A fresh `Managed`
+/// result whose binary is already gone (an uninstall landed after the resolve
+/// started) is discarded and the cache cleared, so it can't outlive
+/// [`forget_cloudflared`].
 pub(super) async fn resolved_cloudflared(state: &DaemonState) -> Option<install::Resolved> {
     if let Some(cached) = cached_cloudflared_if_valid(state).await {
         return Some(cached);
@@ -182,6 +187,13 @@ pub(super) async fn resolved_cloudflared(state: &DaemonState) -> Option<install:
     .await;
 
     let mut guard = state.cloudflared_resolution.write().await;
+    if fresh
+        .as_ref()
+        .is_some_and(|r| r.source == install::CloudflaredSource::Managed && !r.binary.is_file())
+    {
+        *guard = None;
+        return None;
+    }
     if is_downgrade(guard.as_ref(), fresh.as_ref()) {
         return guard.clone();
     }
@@ -230,10 +242,7 @@ fn is_downgrade(existing: Option<&install::Resolved>, fresh: Option<&install::Re
 /// recomputed and cached on every call; they never block the start.
 pub async fn start_quick_tunnel(site: &str, state: &Arc<DaemonState>) -> Response {
     let Some(resolved) = resolved_cloudflared(state).await else {
-        return Response::Error {
-            code: ErrorCode::NotFound,
-            message: "cloudflared is not installed - install it from Integrations first".into(),
-        };
+        return named::not_installed();
     };
 
     let Some((name, _host)) = resolve_site(state, site).await else {
@@ -264,6 +273,7 @@ pub async fn start_quick_tunnel(site: &str, state: &Arc<DaemonState>) -> Respons
 
     let launched = match supervise::launch(state, &name, spec, TunnelKind::Quick).await {
         Ok(launched) => launched,
+        Err(yerd_tunnel::TunnelError::NotInstalled) => return named::not_installed(),
         Err(e) => {
             return Response::Error {
                 code: ErrorCode::Internal,
@@ -703,79 +713,67 @@ fn to_wire(s: TunnelSnapshot, protected: bool, warnings: Vec<String>) -> TunnelI
 /// cached `System` entry that hasn't yet failed its existence re-check (see
 /// `resolved_cloudflared`). Writing `Managed` here is never a downgrade, so it
 /// doesn't need the no-downgrade check `resolved_cloudflared` itself applies.
-async fn refresh_cloudflared_cache_after_install(state: &DaemonState) {
+pub(crate) async fn refresh_cloudflared_cache_after_install(state: &DaemonState) {
     let resolved = install::Resolved {
-        binary: install::binary_path(&state.dirs),
+        binary: crate::tools::cloudflared::binary_path(&state.dirs),
         source: install::CloudflaredSource::Managed,
-        version: install::installed_version(&state.dirs),
+        version: crate::tools::installed_version(&state.dirs, Tool::Cloudflared, None),
     };
     *state.cloudflared_resolution.write().await = Some(resolved);
 }
 
-/// `InstallCloudflaredStreamed`: download `cloudflared` as a background job,
-/// streaming progress into the job log. Returns `JobStarted` immediately; the
-/// client polls `JobStatus`.
-pub async fn install_cloudflared_streamed(state: Arc<DaemonState>) -> Response {
-    let (job_id, mut cancel) = state.jobs.create().await;
-    let id = job_id.clone();
-    tokio::spawn(async move {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let drain = {
-            let state = state.clone();
-            let id = id.clone();
-            tokio::spawn(async move {
-                while let Some(line) = rx.recv().await {
-                    state.jobs.push_log(&id, line).await;
-                }
-            })
-        };
+/// The locks a `cloudflared` uninstall holds while it removes the binary. Both
+/// must outlive the removal and the cache reset: `tunnel_mutate` keeps login and
+/// named mutations out, and `tunnel_manager` keeps quick starts and supervised
+/// restarts (which spawn under the manager, not `tunnel_mutate`) from launching
+/// between the "no tunnels" check and the removal. A start that resolved the
+/// binary before the uninstall is refused by `supervise::launch`, which checks
+/// the binary still exists once it holds the manager.
+pub(crate) struct CloudflaredUninstallGuard<'a> {
+    _mutate: tokio::sync::MutexGuard<'a, ()>,
+    _manager: tokio::sync::MutexGuard<'a, DaemonTunnelManager>,
+}
 
-        state.jobs.set_phase(&id, "Installing cloudflared").await;
-        let dl = crate::network::downloader(&state).await;
-        let guard = tokio::select! {
-            g = state.tunnel_mutate.lock() => g,
-            _ = cancel.changed() => {
-                drop(tx);
-                let _ = drain.await;
-                state
-                    .jobs
-                    .finish(&id, yerd_ipc::JobState::Cancelled, None)
-                    .await;
-                return;
-            }
-        };
-        let result = tokio::select! {
-            r = install::install(&state.dirs, &dl, Some(&tx)) => Some(r),
-            _ = cancel.changed() => None,
-        };
-        drop(guard);
-        drop(tx);
-        let _ = drain.await;
+/// Take the locks for a `cloudflared` uninstall, refusing while a tunnel
+/// operation is in progress or any tunnel instance exists (quick or named, in
+/// any state, including a failed one still retrying).
+///
+/// Lock order: the caller already holds `tool_mutate`; this `try_lock`s
+/// `tunnel_mutate` (never waiting minutes behind a login), then takes
+/// `tunnel_manager`, the same `tunnel_mutate`-before-manager order `named` uses.
+///
+/// # Errors
+///
+/// `Response::Error` (`InvalidPath`) describing why the uninstall is refused.
+pub(crate) async fn lock_for_cloudflared_uninstall(
+    state: &DaemonState,
+) -> Result<CloudflaredUninstallGuard<'_>, Response> {
+    let Ok(mutate) = state.tunnel_mutate.try_lock() else {
+        return Err(Response::Error {
+            code: ErrorCode::InvalidPath,
+            message: "a tunnel operation is in progress - try again when it finishes".into(),
+        });
+    };
+    let mut manager = state.tunnel_manager.lock().await;
+    if !manager.snapshots().is_empty() {
+        return Err(Response::Error {
+            code: ErrorCode::InvalidPath,
+            message: "stop every tunnel before uninstalling cloudflared".into(),
+        });
+    }
+    Ok(CloudflaredUninstallGuard {
+        _mutate: mutate,
+        _manager: manager,
+    })
+}
 
-        match result {
-            Some(Ok(())) => {
-                refresh_cloudflared_cache_after_install(&state).await;
-                crate::ipc_server::reconcile_client_shims_now(&state).await;
-                state
-                    .jobs
-                    .finish(&id, yerd_ipc::JobState::Succeeded, None)
-                    .await;
-            }
-            Some(Err(e)) => {
-                state
-                    .jobs
-                    .finish(&id, yerd_ipc::JobState::Failed, Some(e.to_string()))
-                    .await;
-            }
-            None => {
-                state
-                    .jobs
-                    .finish(&id, yerd_ipc::JobState::Cancelled, None)
-                    .await;
-            }
-        }
-    });
-    Response::JobStarted { job_id }
+/// Clear the `cloudflared`-resolution cache after an uninstall. Required: a
+/// cached `Managed` entry is trusted without re-checking its binary, and the
+/// no-downgrade rule would stop a later `System` resolution from replacing it.
+/// Touches only the resolution `RwLock`, which is never taken while acquiring
+/// `tunnel_manager`, so calling it under the uninstall guard cannot deadlock.
+pub(crate) async fn forget_cloudflared(state: &DaemonState) {
+    *state.cloudflared_resolution.write().await = None;
 }
 
 #[cfg(test)]
@@ -1046,7 +1044,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
 
-        install::install_binary_for_test(&state.dirs, "2026.6.1", b"#!/bin/sh\n");
+        crate::tools::cloudflared::install_binary_for_test(&state.dirs, "2026.6.1", b"#!/bin/sh\n");
         refresh_cloudflared_cache_after_install(&state).await;
 
         let resolved = resolved_cloudflared(&state).await.unwrap();
@@ -1098,17 +1096,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
 
-        install::install_binary_for_test(&state.dirs, "2026.6.1", b"#!/bin/sh\n");
+        crate::tools::cloudflared::install_binary_for_test(&state.dirs, "2026.6.1", b"#!/bin/sh\n");
         refresh_cloudflared_cache_after_install(&state).await;
         assert_eq!(
             resolved_cloudflared(&state).await.unwrap().source,
             install::CloudflaredSource::Managed
         );
 
-        // A cached Managed entry short-circuits in `cached_cloudflared_if_valid`
-        // before any fresh resolution (and thus the no-downgrade write) is even
-        // attempted, so repeated calls keep reporting Managed regardless of
-        // what the real PATH/managed-dir state is.
         for _ in 0..3 {
             assert_eq!(
                 resolved_cloudflared(&state).await.unwrap().source,
@@ -1143,5 +1137,21 @@ mod tests {
             cached_cloudflared_if_valid(&state).await.is_none(),
             "a System entry whose binary has disappeared must not be served from cache"
         );
+    }
+
+    #[tokio::test]
+    async fn cloudflared_uninstall_is_refused_while_a_tunnel_mutation_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let held = state.tunnel_mutate.lock().await;
+        assert!(matches!(
+            lock_for_cloudflared_uninstall(&state).await,
+            Err(Response::Error {
+                code: ErrorCode::InvalidPath,
+                ..
+            })
+        ));
+        drop(held);
+        assert!(lock_for_cloudflared_uninstall(&state).await.is_ok());
     }
 }

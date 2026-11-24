@@ -9,17 +9,18 @@ The [Sharing Sites guide](../../guide/sharing) covers the model and the two tier
 ::: info cloudflared is detected on PATH, or downloaded on demand
 The first share needs the `cloudflared` binary. Yerd looks for one already on
 your `PATH` first and uses it if it's version 2023.3.0 or newer; otherwise
-`yerd tunnel install` fetches the official static build (checksum-verified) into
-the daemon's data directory - it is not bundled and never touches your system
-unless you already had a compatible `cloudflared` installed. Quick share needs no
-Cloudflare account; named tunnels need a one-time `yerd tunnel login`.
+`yerd install tool cloudflared` (see [Tooling](./tooling)) fetches the official
+static build (checksum-verified) into the daemon's data directory - it is not
+bundled and never touches your system unless you already had a compatible
+`cloudflared` installed. Yerd's copy is used ahead of a `PATH` one once
+installed. Quick share needs no Cloudflare account; named tunnels need a one-time
+`yerd tunnel login`.
 :::
 
 ## Commands
 
 | Command | Description |
 | --- | --- |
-| `yerd tunnel install` | Download the `cloudflared` binary (required before sharing). |
 | `yerd tunnel share <SITE>` | Share a site via a Quick Tunnel (random `*.trycloudflare.com` URL). |
 | `yerd tunnel stop <SITE>` | Stop sharing a site. |
 | `yerd tunnel status` | Show live tunnels and `cloudflared` install status. |
@@ -34,20 +35,13 @@ Cloudflare account; named tunnels need a one-time `yerd tunnel login`.
 | `yerd tunnel unpublish` | Stop the named tunnel until the next hostname change or daemon start. |
 
 ```sh
-yerd tunnel install
+yerd install tool cloudflared
 yerd tunnel share app
 yerd tunnel status
 yerd tunnel stop app
 ```
 
 ## Quick tunnels
-
-### `yerd tunnel install`
-
-Downloads and installs `cloudflared`. Idempotent; safe to re-run. Needed once
-before any share, unless a compatible `cloudflared` is already on `PATH` (see
-above). Re-running it always switches Yerd back to the managed copy, even if a
-`PATH` binary was previously in use.
 
 ### `yerd tunnel share <SITE>`
 
@@ -56,7 +50,8 @@ Publishes `<SITE>` (a site name like `app`, or its host `app.test`) at a random
 warnings](../../guide/sharing#preflight-warnings). It waits until Cloudflare's
 edge reports the tunnel online; if it doesn't come online, the share is stopped
 and the command fails with `could not start tunnel for <site>: <reason>`.
-Requires `cloudflared` to be installed.
+Requires `cloudflared` (`yerd install tool cloudflared`, unless a compatible
+one is on `PATH`).
 
 The URL is temporary - it changes on the next share and is torn down on `stop`
 or daemon shutdown. Once online, a crashed quick tunnel is restarted

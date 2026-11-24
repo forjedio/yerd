@@ -115,7 +115,7 @@ The **Editor** submenu defaults to the Preferred editor set in [Settings](#setti
 
 <ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="The Tooling page: installed Composer (update available), Laravel installer and WP-CLI, with Bun (external) and pnpm available" />
 
-Installs self-contained developer tools - Composer, Bun, pnpm, the Laravel installer, and WP-CLI - onto your PATH alongside PHP, each managed by Yerd (install / update / uninstall) so they don't collide with system installs. Node.js isn't listed here: it has its own [Node](#node) page. See [Tooling](./tooling).
+Installs self-contained developer tools - Composer, Bun, pnpm, the Laravel installer, WP-CLI, and cloudflared (used by [Share](#share)) - onto your PATH alongside PHP, each managed by Yerd (install / update / uninstall) so they don't collide with system installs. Node.js isn't listed here: it has its own [Node](#node) page. See [Tooling](./tooling).
 
 ### Proxies
 
@@ -154,7 +154,7 @@ Laravel telemetry interception - `dump()`/`dd()` plus queries, jobs, views, requ
 
 <ThemedImage light="/images/share-light.png" dark="/images/share-dark.png" alt="Share page" />
 
-Publishes a local site to the public internet over Cloudflare Tunnel. Your shares are listed in two groups, **Quick links** and **Your domain**, each with a status dot and its public address; selecting one shows its public URL (**Copy**, **Open**), its type, local site and health (Connecting, Running, Reconnecting, Failed) with the last error and any preflight warnings, and **Stop sharing** or **Remove from domain**. On a narrower window the list becomes a table and the details open in a drawer. **Share a site** shares a site as a temporary Quick link or on your own domain in one step; **Setup** installs or updates `cloudflared`, connects your Cloudflare account and manages the tunnel for your domain. A key button on each share sets an optional share password. See [Sharing Sites](./sharing).
+Publishes a local site to the public internet over Cloudflare Tunnel. Your shares are listed in two groups, **Quick links** and **Your domain**, each with a status dot and its public address; selecting one shows its public URL (**Copy**, **Open**), its type, local site and health (Connecting, Running, Reconnecting, Failed) with the last error and any preflight warnings, and **Stop sharing** or **Remove from domain**. On a narrower window the list becomes a table and the details open in a drawer. **Share a site** shares a site as a temporary Quick link or on your own domain in one step; **Setup** shows which `cloudflared` is in use (install or update it from [Tooling](#tooling)), connects your Cloudflare account and manages the tunnel for your domain. A key button on each share sets an optional share password. See [Sharing Sites](./sharing).
 
 ### Doctor
 

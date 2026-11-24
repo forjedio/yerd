@@ -21,9 +21,10 @@ cloudflared lifecycle for Yerd.* `#![forbid(unsafe_code)]`. Depends only on
 `ProcessSpawner` / `ChildHandle` / `Clock` / `HealthProbe` traits),
 `async-trait`, and `thiserror`; the only async runtime is `tokio` (`time`,
 `macros`, `net`, `io-util`). It does **not** depend on any binary - the
-`cloudflared` installer, the Cloudflare-account flows, the per-instance driver
-task, and the tunnel origin listener live in [`yerdd`](../binaries/yerdd) and
-[`yerd-proxy`](./yerd-proxy), which call into this crate.
+`cloudflared` installer (a regular tool in `yerdd`'s [tools subsystem](../dev-tools)),
+the Cloudflare-account flows, the per-instance driver task, and the tunnel origin
+listener live in [`yerdd`](../binaries/yerdd) and [`yerd-proxy`](./yerd-proxy),
+which call into this crate.
 :::
 
 See also the [Crates overview](../crates), [`yerd-supervise`](./yerd-supervise)

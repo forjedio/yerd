@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
-import { CloudDownload, Download, Plus, Share2, SlidersHorizontal, Trash2 } from "lucide-vue-next";
+import { useRouter } from "vue-router";
+import { CloudDownload, Plus, Share2, SlidersHorizontal, Trash2, Wrench } from "lucide-vue-next";
 
 import PageHeader from "@/components/PageHeader.vue";
 import CloudflareLoginDialog from "@/components/share/CloudflareLoginDialog.vue";
@@ -8,15 +9,12 @@ import ShareInspector from "@/components/share/ShareInspector.vue";
 import ShareList from "@/components/share/ShareList.vue";
 import ShareSetupDialog from "@/components/share/ShareSetupDialog.vue";
 import ShareSiteDialog, { type ShareRequest } from "@/components/share/ShareSiteDialog.vue";
-import ToolInstallLogDialog from "@/components/tooling/ToolInstallLogDialog.vue";
 import AsyncState from "@/components/ui/AsyncState.vue";
 import Button from "@/components/ui/Button.vue";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import Input from "@/components/ui/Input.vue";
 import Modal from "@/components/ui/Modal.vue";
-import Spinner from "@/components/ui/Spinner.vue";
 import { useDaemon } from "@/composables/useDaemon";
-import { useOperations } from "@/composables/useOperations";
 import { usePoll } from "@/composables/usePoll";
 import { useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
@@ -25,7 +23,6 @@ import {
   cloudflaredLogin,
   createNamedTunnel,
   deleteNamedTunnel,
-  installCloudflaredStreamed,
   IpcError,
   jobCancel,
   listNamedTunnels,
@@ -54,19 +51,11 @@ import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 
 const toast = useToast();
 const { connected, report, refresh: refreshDaemon } = useDaemon();
-const operations = useOperations();
+const router = useRouter();
 const wide = useWideLayout();
 
 /** A long-running action in flight, e.g. `share:app`, `stop:app` or `create`. */
 const busy = ref<string | null>(null);
-
-/** The cloudflared install is an app-wide operation, so it outlives this view
- *  and shows in the sidebar; its id stays clear of Tooling's `tool-install:` prefix. */
-const INSTALL_OP = "cloudflared-install";
-const installing = computed(() => operations.isRunning(INSTALL_OP));
-/** The in-flight key the children see: the view's own, or `install` while the
- *  cloudflared install runs (also after a remount). */
-const activeBusy = computed(() => busy.value ?? (installing.value ? "install" : null));
 
 const tld = computed(() => report.value?.tld ?? "test");
 
@@ -165,49 +154,10 @@ function select(key: string): void {
   if (!wide.value) drawerOpen.value = true;
 }
 
-// ── install / update ──
-const installOpen = ref(false);
-const installTitle = ref("Installing cloudflared");
-const installPhase = ref<"running" | "done" | "error">("running");
-const installLines = ref<string[]>([]);
-
-/** Install cloudflared, update Yerd's copy, or replace a PATH copy with Yerd's:
- *  the daemon always downloads the latest release. The poll runs to the job's
- *  end even after the log closes, so the toast still arrives. */
-async function doInstall(): Promise<void> {
-  if (installing.value) return;
-  const status = cloudflared.value;
-  const updating = !!status?.installed && status.source !== "system" && !!status.update_available;
-  const label = updating ? "Updating cloudflared" : "Installing cloudflared";
-  operations.begin({ id: INSTALL_OP, kind: "tool-install", label });
-  installTitle.value = label;
-  installLines.value = [];
-  installPhase.value = "running";
-  installOpen.value = true;
-  try {
-    const jobId = await installCloudflaredStreamed();
-    const final = await pollJobToEnd(
-      jobId,
-      (lines) => {
-        installLines.value = [...installLines.value, ...lines];
-        const latest = lines[lines.length - 1];
-        if (latest) operations.update(INSTALL_OP, { detail: latest });
-      },
-      undefined,
-      500,
-      5,
-    );
-    if (final.state !== "succeeded") throw new IpcError(final.error || `install ${final.state}`);
-    await reload();
-    installPhase.value = "done";
-    const version = cloudflared.value?.version;
-    toast.success(updating ? `Updated cloudflared${version ? ` ${version}` : ""}` : "Installed cloudflared");
-  } catch (e) {
-    installPhase.value = "error";
-    toast.error(updating ? "cloudflared update failed" : "cloudflared install failed", (e as Error).message);
-  } finally {
-    operations.end(INSTALL_OP);
-  }
+// ── cloudflared ──
+/** cloudflared is installed, updated and removed in Tooling; Share only links there. */
+function goToTooling(): void {
+  void router.push("/tooling");
 }
 
 // ── Cloudflare login ──
@@ -417,8 +367,8 @@ function fromSetup(next: () => void): void {
   void nextTick(next);
 }
 
-function onSetupInstall(): void {
-  fromSetup(() => void doInstall());
+function onSetupTooling(): void {
+  fromSetup(goToTooling);
 }
 
 function onSetupLogin(): void {
@@ -483,7 +433,7 @@ function openExternal(url: string): void {
  *  manual reload. Skipped while an action is in flight so optimistic state holds.
  *  Not forced: the first tick lands on mount and joins useResource's own fetch. */
 async function refreshTunnels(): Promise<void> {
-  if (activeBusy.value !== null || tunnels.value.length === 0) return;
+  if (busy.value !== null || tunnels.value.length === 0) return;
   await refresh();
 }
 
@@ -494,7 +444,7 @@ onUnmounted(() => {
 });
 onUnmounted(registerViewActions({ refresh: () => void reload() }));
 
-const shareDisabled = computed(() => !installed.value || connected.value !== true || activeBusy.value !== null);
+const shareDisabled = computed(() => !installed.value || connected.value !== true || busy.value !== null);
 </script>
 
 <template>
@@ -546,12 +496,16 @@ const shareDisabled = computed(() => !installed.value || connected.value !== tru
               </span>
               <p class="mt-4 text-[15px] font-semibold">Sharing needs cloudflared</p>
               <p class="mt-1.5 max-w-sm text-[13px] text-muted-foreground">
-                A small one-time download. No Cloudflare account needed for quick links.
+                Install it from Tooling. No Cloudflare account needed for quick links.
               </p>
-              <Button size="sm" class="mt-5" :disabled="connected !== true || activeBusy !== null" @click="doInstall">
-                <Spinner v-if="installing" class="size-4" />
-                <Download v-else />
-                Install cloudflared
+              <Button
+                size="sm"
+                class="mt-5"
+                :disabled="connected !== true"
+                data-testid="open-tooling"
+                @click="goToTooling"
+              >
+                <Wrench /> Open Tooling
               </Button>
             </template>
             <template v-else>
@@ -591,7 +545,7 @@ const shareDisabled = computed(() => !installed.value || connected.value !== tru
               :cloudflared="cloudflared"
               :can-restart="canStart"
               :logged-in="loggedIn"
-              :busy="activeBusy"
+              :busy="busy"
               :connected="connected === true"
               @close="drawerOpen = false"
               @stop="selected && doStop(selected.site)"
@@ -618,7 +572,7 @@ const shareDisabled = computed(() => !installed.value || connected.value !== tru
       :domain-ready="domainReady"
       :tld="tld"
       :busy="shareInFlight"
-      :locked="activeBusy !== null || connected !== true"
+      :locked="busy !== null || connected !== true"
       @share="onShare"
     />
 
@@ -630,9 +584,8 @@ const shareDisabled = computed(() => !installed.value || connected.value !== tru
       :entry="entry"
       :exposed-count="exposedSites.length"
       :busy="busy"
-      :installing="installing"
       :connected="connected === true"
-      @install="onSetupInstall"
+      @tooling="onSetupTooling"
       @login="onSetupLogin"
       @create="doCreateTunnel"
       @start="doStartNamed"
@@ -645,13 +598,6 @@ const shareDisabled = computed(() => !installed.value || connected.value !== tru
       :url="loginUrl"
       :running="busy === 'login'"
       @open-url="openExternal"
-    />
-
-    <ToolInstallLogDialog
-      v-model:open="installOpen"
-      :title="installTitle"
-      :phase="installPhase"
-      :lines="installLines"
     />
 
     <ConfirmDialog

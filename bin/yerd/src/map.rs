@@ -819,12 +819,10 @@ fn validate_domain(domain: &str) -> Result<(), ClientError> {
     Ok(())
 }
 
-/// Map a `yerd tunnel <action>` to its wire request. `Install` and `Login` are
-/// streamed jobs the CLI intercepts before this point; mapping them here keeps
-/// the match total.
+/// Map a `yerd tunnel <action>` to its wire request. `Login` is a streamed job
+/// the CLI intercepts before this point; mapping it here keeps the match total.
 fn tunnel_request(action: &TunnelAction) -> Request {
     match action {
-        TunnelAction::Install => Request::InstallCloudflaredStreamed,
         TunnelAction::Share { site } => Request::StartQuickTunnel { site: site.clone() },
         TunnelAction::Stop { site } => Request::StopTunnel { site: site.clone() },
         TunnelAction::Status => Request::TunnelStatus,
@@ -1839,7 +1837,7 @@ fn format_tunnels(tunnels: &[TunnelInfo], cloudflared: &CloudflaredStatus) -> St
             |v| format!("cloudflared: {v}"),
         )
     } else {
-        "cloudflared: not installed (run `yerd tunnel install`)".to_owned()
+        "cloudflared: not installed (run `yerd install tool cloudflared`)".to_owned()
     };
     if tunnels.is_empty() {
         return format!("{cf}\nno active tunnels");
@@ -2418,6 +2416,16 @@ mod tests {
             out.contains("\n  warning: Vite dev server is running\n  warning: SESSION_DOMAIN"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn format_tunnels_points_a_missing_cloudflared_at_the_tool_install() {
+        let cf = CloudflaredStatus {
+            installed: false,
+            ..installed_cloudflared()
+        };
+        let out = format_tunnels(&[], &cf);
+        assert!(out.contains("yerd install tool cloudflared"), "{out}");
     }
 
     #[test]

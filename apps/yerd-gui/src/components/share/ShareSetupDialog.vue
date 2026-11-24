@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { Download } from "lucide-vue-next";
 
 import Button from "@/components/ui/Button.vue";
 import DialogFrame from "@/components/ui/DialogFrame.vue";
@@ -12,10 +11,11 @@ import { canStartNamed, tunnelChip } from "@/lib/share";
 import { CHIP_TONE, cn } from "@/lib/utils";
 
 /**
- * Share setup: the cloudflared binary (install, update, or switch from a PATH
- * copy to Yerd's), the Cloudflare account, and the domain tunnel (create,
- * start a stopped or failed one, remove). Actions that open another dialog are
- * handed to the view, which closes this one first so dialogs never stack.
+ * Share setup: which cloudflared binary is in use (installing and updating it
+ * happen in Tooling, linked from here), the Cloudflare account, and the domain
+ * tunnel (create, start a stopped or failed one, remove). Actions that open
+ * another dialog or page are handed to the view, which closes this one first so
+ * dialogs never stack.
  */
 const props = defineProps<{
   open: boolean;
@@ -28,14 +28,12 @@ const props = defineProps<{
   exposedCount: number;
   /** The view's in-flight action key, e.g. `create` or `named`. */
   busy: string | null;
-  /** A cloudflared install or update is running. */
-  installing: boolean;
   connected: boolean;
 }>();
 
 const emit = defineEmits<{
   "update:open": [boolean];
-  install: [];
+  tooling: [];
   login: [];
   create: [name: string];
   start: [];
@@ -55,7 +53,7 @@ const installed = computed(() => props.cloudflared?.installed ?? false);
 const loggedIn = computed(() => props.cloudflared?.logged_in ?? false);
 const system = computed(() => props.cloudflared?.source === "system");
 const update = computed(() => (system.value ? null : (props.cloudflared?.update_available ?? null)));
-const locked = computed(() => props.busy !== null || props.installing || !props.connected);
+const locked = computed(() => props.busy !== null || !props.connected);
 const canStart = computed(() => canStartNamed(props.entry, props.exposedCount));
 const showChip = computed(() => props.entry !== null || props.exposedCount > 0);
 
@@ -84,8 +82,10 @@ const LINK =
               <p class="text-[13px] font-semibold">
                 {{ cloudflared?.version ? `cloudflared ${cloudflared.version}` : "cloudflared" }}
               </p>
-              <p class="text-xs text-muted-foreground">
-                {{ system ? "Found on PATH" : "Yerd's copy" }} · used for every tunnel
+              <p class="text-xs text-muted-foreground" data-testid="cloudflared-source">
+                <template v-if="system">Found on PATH · used for every tunnel</template>
+                <template v-else-if="update">Yerd's copy · update to {{ update }} available in Tooling</template>
+                <template v-else>Yerd's copy · used for every tunnel</template>
               </p>
             </template>
             <template v-else>
@@ -94,19 +94,15 @@ const LINK =
             </template>
           </div>
           <span v-if="installed" :class="cn(CHIP, 'bg-success/15 uppercase text-success')">Installed</span>
-          <Button v-if="!installed" size="sm" :disabled="locked" @click="emit('install')">
-            <Spinner v-if="installing" class="size-4" />
-            <Download v-else />
-            Install
-          </Button>
-          <Button v-else-if="system" size="sm" variant="outline" :disabled="locked" @click="emit('install')">
-            <Spinner v-if="installing" class="size-4" />
-            Use Yerd's copy
-          </Button>
-          <Button v-else-if="update" size="sm" variant="outline" :disabled="locked" @click="emit('install')">
-            <Spinner v-if="installing" class="size-4" />
-            <Download v-else />
-            Update to {{ update }}
+          <Button
+            v-if="!installed || update"
+            size="sm"
+            variant="outline"
+            :disabled="!connected"
+            data-action="tooling"
+            @click="emit('tooling')"
+          >
+            Open Tooling
           </Button>
         </div>
       </section>

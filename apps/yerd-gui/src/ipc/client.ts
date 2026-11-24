@@ -802,14 +802,6 @@ export async function pollJobToEnd(
 
 // ── tunnels (Cloudflare Tunnel integration) ──────────────────────────────────
 
-/** Install the `cloudflared` binary as a streamed job; returns the job id to poll. */
-export async function installCloudflaredStreamed(): Promise<string> {
-  const r = ensureOk(await call<Response>("install_cloudflared_streamed"));
-  if (r.type !== "job_started")
-    throw new IpcError("unexpected response to install_cloudflared_streamed");
-  return r.job_id;
-}
-
 /** Share a site via a Quick Tunnel; returns the refreshed tunnel list. */
 export async function startQuickTunnel(site: string): Promise<TunnelsResponse> {
   return ensureOk(await call<Response>("start_quick_tunnel", { site })) as TunnelsResponse;

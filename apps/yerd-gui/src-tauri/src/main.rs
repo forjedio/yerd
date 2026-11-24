@@ -203,7 +203,6 @@ fn main() {
             commands::node_sites,
             commands::release_notes,
             commands::contributors,
-            commands::install_cloudflared_streamed,
             commands::start_quick_tunnel,
             commands::stop_tunnel,
             commands::tunnel_status,

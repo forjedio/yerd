@@ -99,6 +99,7 @@ describe("toolDescription", () => {
     ["composer", "PHP dependency manager"],
     ["bun", "Fast JavaScript runtime and package manager"],
     ["wp-cli", "The wp command for managing WordPress sites"],
+    ["cloudflared", "Cloudflare Tunnel connector - used by Share"],
     ["unknown", ""],
   ])("%s", (id, expected) => {
     expect(toolDescription(id)).toBe(expected);

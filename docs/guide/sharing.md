@@ -30,23 +30,28 @@ hostnames are whatever you choose.
 
 Sharing needs the `cloudflared` binary. If one is already on your `PATH` (version
 2023.3.0 or newer), Yerd detects and uses it automatically - nothing to install.
-Otherwise Yerd **downloads it on demand** (the official Apache-2.0 static build,
-verified by checksum) and installs it under the daemon's data directory - it
-isn't bundled, and it never touches your system unless you already had one. No
+Otherwise install Yerd's own copy: `cloudflared` is a managed
+[tool](./tooling), so Yerd **downloads it on demand** (the official Apache-2.0
+static build, verified by checksum) into `{data}/tools/cloudflared/` - it isn't
+bundled, and it never touches your system unless you already had one. No
 Cloudflare account is required for quick share.
 
 ```sh
-yerd tunnel install
+yerd install tool cloudflared
 ```
 
 Once installed, `cloudflared` is also available as a command in `{data}/bin`, so
-it is on your `PATH` after `yerd path install`.
+it is on your `PATH` after `yerd path install`. Yerd's copy is used ahead of one
+on your `PATH`. Updates show up in **Tooling** like any other tool (re-run
+`yerd install tool cloudflared` to update from the CLI), and
+`yerd uninstall tool cloudflared` removes it; uninstalling is refused while a
+tunnel is running and keeps your Cloudflare login and tunnels.
 
-In the desktop app, the **Share** page offers an **Install cloudflared** button
-the first time you visit. Its **Setup** dialog shows which `cloudflared` is in
-use: if Yerd found one on your `PATH`, it reads **Found on PATH** and a **Use
-Yerd's copy** button switches to the managed, auto-updating copy; when a newer
-release of Yerd's copy is out, an **Update** button installs it.
+In the desktop app, install, update and uninstall `cloudflared` from
+**Tooling**. The **Share** page links there the first time you visit, and its
+**Setup** dialog shows which `cloudflared` is in use (**Found on PATH** or
+**Yerd's copy**) with an **Open Tooling** link when it is missing or an update
+is available.
 
 <ThemedImage light="/images/share-setup-light.png" dark="/images/share-setup-dark.png" alt="The Share setup dialog: cloudflared installed, the Cloudflare account connected and the domain tunnel live with two sites" />
 
@@ -200,9 +205,9 @@ shows a count.
 
   <ThemedImage light="/images/share-new-light.png" dark="/images/share-new-dark.png" alt="The Share a site dialog sharing portal on your domain, with the public hostname pre-filled" />
 
-- **Setup** holds the rest: the `cloudflared` in use (install, update, or switch
-  to Yerd's copy), connecting your Cloudflare account, and creating, starting or
-  removing the tunnel for your domain. Closing the connect dialog before you
+- **Setup** holds the rest: which `cloudflared` is in use (with a link to
+  Tooling to install or update it), connecting your Cloudflare account, and
+  creating, starting or removing the tunnel for your domain. Closing the connect dialog before you
   authorize in the browser cancels the login.
 - Each site's `⋯` menu on the [Sites page](./sites) also has a **Share
   publicly…** shortcut that jumps straight to sharing that site, without going

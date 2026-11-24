@@ -89,7 +89,11 @@ pub(crate) async fn respond(req: Request, state: &Arc<DaemonState>) -> Response 
             install_node_streamed(version, update, state.clone()).await
         }
         Request::InstallCloudflaredStreamed => {
-            crate::tunnel::install_cloudflared_streamed(state.clone()).await
+            install_tool_streamed(
+                crate::tools::Tool::Cloudflared.id().to_owned(),
+                state.clone(),
+            )
+            .await
         }
         Request::CloudflaredLogin => crate::tunnel::named::login_streamed(state.clone()).await,
         Request::StartQuickTunnel { site } => crate::tunnel::start_quick_tunnel(&site, state).await,
@@ -1693,14 +1697,20 @@ async fn reconcile_shims_now(state: &DaemonState) {
     reconcile_shims_for(state).await;
 }
 
-/// Reconcile the dev-tool shims (`composer`/`node`/`npm`/`npx`/`bun`/`bunx`/`pnpm`/`pnpx`) under
-/// the **shared** `shim_reconcile` mutex (same dir as the PHP reconcile).
+/// Reconcile the dev-tool shims (`composer`/`node`/`npm`/`npx`/`bun`/`bunx`/`pnpm`/`pnpx`/
+/// `laravel`/`wp`, and the `cloudflared` link) under the **shared** `shim_reconcile`
+/// mutex (same dir as the PHP reconcile). The `cloudflared` link needs no `yerd`
+/// binary, so it is reconciled even when the sibling cannot be located.
 /// Best-effort: failures are logged. Used at startup and after install/uninstall,
 /// so it also recounts pending Node updates against the installed set.
 pub(crate) async fn reconcile_tool_shims_now(state: &DaemonState) {
     crate::node_updates::recount(state).await;
     let Some(yerd_bin) = yerd_sibling() else {
         tracing::warn!("cannot locate the `yerd` binary; skipping tool-shim reconcile");
+        let _guard = state.shim_reconcile.lock().await;
+        if let Err(e) = crate::tools::reconcile_cloudflared_shim(&state.dirs) {
+            tracing::warn!(error = %e, "cloudflared shim reconcile failed");
+        }
         return;
     };
     let node_default = state.config.lock().await.node.default.clone();
@@ -1712,17 +1722,13 @@ pub(crate) async fn reconcile_tool_shims_now(state: &DaemonState) {
     }
 }
 
-/// Reconcile the service client shims (`mysql`, `psql`, `valkey-cli`, ...) and
-/// the `cloudflared` link under the **shared** `shim_reconcile` mutex.
-/// Best-effort: failures are logged. The `cloudflared` link needs no `yerd`
-/// binary, so it is reconciled even when the sibling cannot be located. Used at
-/// startup, after every service install/uninstall/version change, and after a
-/// `cloudflared` install.
+/// Reconcile the service client shims (`mysql`, `psql`, `valkey-cli`, ...)
+/// under the **shared** `shim_reconcile` mutex. Best-effort: failures are
+/// logged. Used at startup and after every service install/uninstall/version
+/// change. The `cloudflared` link is a tool shim (see
+/// [`reconcile_tool_shims_now`]).
 pub(crate) async fn reconcile_client_shims_now(state: &DaemonState) {
     let _guard = state.shim_reconcile.lock().await;
-    if let Err(e) = crate::tunnel::install::reconcile_cloudflared_shim(&state.dirs) {
-        tracing::warn!(error = %e, "cloudflared shim reconcile failed");
-    }
     let Some(yerd_bin) = yerd_sibling() else {
         tracing::warn!("cannot locate the `yerd` binary; skipping service-client shim reconcile");
         return;
@@ -1833,6 +1839,9 @@ async fn finish_tool_install(
             }
         }
     }
+    if t == crate::tools::Tool::Cloudflared {
+        crate::tunnel::refresh_cloudflared_cache_after_install(state).await;
+    }
     reconcile_tool_shims_now(state).await;
     Response::Ok
 }
@@ -1910,6 +1919,12 @@ pub(crate) async fn install_tool_streamed(tool: String, state: Arc<DaemonState>)
 }
 
 /// `uninstall tool <id>` - remove the tool's files, then prune its shims.
+///
+/// `cloudflared` is refused while a tunnel operation is in progress or any
+/// tunnel exists; it is removed under the guard from
+/// [`crate::tunnel::lock_for_cloudflared_uninstall`] (lock order `tool_mutate`,
+/// `tunnel_mutate`, `tunnel_manager`), which also covers clearing the resolution
+/// cache, and the guard is released before the shims are reconciled.
 async fn uninstall_tool(tool: &str, state: &DaemonState) -> Response {
     let Some(t) = crate::tools::Tool::parse(tool) else {
         return Response::Error {
@@ -1918,7 +1933,19 @@ async fn uninstall_tool(tool: &str, state: &DaemonState) -> Response {
         };
     };
     let _mutate = state.tool_mutate.lock().await;
-    match crate::tools::uninstall(&state.dirs, t) {
+    let removed = if t == crate::tools::Tool::Cloudflared {
+        let guard = match crate::tunnel::lock_for_cloudflared_uninstall(state).await {
+            Ok(guard) => guard,
+            Err(resp) => return resp,
+        };
+        let removed = crate::tools::uninstall(&state.dirs, t);
+        crate::tunnel::forget_cloudflared(state).await;
+        drop(guard);
+        removed
+    } else {
+        crate::tools::uninstall(&state.dirs, t)
+    };
+    match removed {
         Ok(()) => {
             if t == crate::tools::Tool::Node {
                 let mut guard = state.config.lock().await;
@@ -8217,6 +8244,36 @@ mod node_tests {
             )
             .installed
         );
+    }
+
+    #[tokio::test]
+    async fn uninstall_cloudflared_removes_it_and_forgets_the_resolution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state_in(tmp.path());
+        crate::tools::cloudflared::install_binary_for_test(
+            &state.dirs,
+            "2025.11.1",
+            b"#!/bin/sh\n",
+        );
+        crate::tunnel::refresh_cloudflared_cache_after_install(&state).await;
+        assert!(state.cloudflared_resolution.read().await.is_some());
+
+        assert!(matches!(
+            uninstall_tool("cloudflared", &state).await,
+            Response::Ok
+        ));
+        assert!(!crate::tools::tool_dir(&state.dirs, crate::tools::Tool::Cloudflared).exists());
+        assert!(state.cloudflared_resolution.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn install_cloudflared_streamed_starts_a_tool_job() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(crate::test_support::state_in(tmp.path()));
+        assert!(matches!(
+            respond(Request::InstallCloudflaredStreamed, &state).await,
+            Response::JobStarted { .. }
+        ));
     }
 
     struct NodeDistDl;

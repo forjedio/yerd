@@ -15,6 +15,7 @@ const DESCRIPTIONS: Record<string, string> = {
   laravel: "Scaffolds new Laravel apps — used by New site",
   bun: "Fast JavaScript runtime and package manager",
   "wp-cli": "The wp command for managing WordPress sites",
+  cloudflared: "Cloudflare Tunnel connector - used by Share",
 };
 
 /** The short description shown for a tool, keyed by wire id; empty for unknown ids. */

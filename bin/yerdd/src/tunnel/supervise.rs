@@ -68,6 +68,10 @@ pub enum Settled {
 ///
 /// [`TunnelError::ShuttingDown`] once the manager has been shut down, so a late
 /// start never leaves an unsupervised `cloudflared` behind.
+/// [`TunnelError::NotInstalled`] when `spec.binary` is gone by the time the
+/// manager lock is held: callers resolve the binary before taking it, so a
+/// `cloudflared` uninstall (which holds the manager lock while it removes the
+/// binary) can land in between.
 pub async fn launch(
     state: &Arc<DaemonState>,
     key: &str,
@@ -76,6 +80,9 @@ pub async fn launch(
 ) -> Result<Option<Launched>, TunnelError> {
     let begun = {
         let mut mgr = state.tunnel_manager.lock().await;
+        if !spec.binary.is_file() {
+            return Err(TunnelError::NotInstalled);
+        }
         mgr.begin(key, spec, kind).await?
     };
     Ok(begun.map(|generation| Launched {
@@ -265,13 +272,13 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let site = Site::linked("app", &root, PhpVersion::new(8, 3)).unwrap();
         state.router.write().await.insert(site).unwrap();
-        super::super::install::install_binary_for_test(&state.dirs, "2026.6.1", stub);
+        crate::tools::cloudflared::install_binary_for_test(&state.dirs, "2026.6.1", stub);
         super::super::refresh_cloudflared_cache_after_install(&state).await;
         Arc::new(state)
     }
 
     async fn launch_stub(state: &Arc<DaemonState>, key: &str) -> Launched {
-        let binary = super::super::install::binary_path(&state.dirs);
+        let binary = crate::tools::cloudflared::binary_path(&state.dirs);
         let env = super::super::pinned_home_env(state);
         let spec = super::super::launch_spec(state, key, binary, Vec::new(), env).unwrap();
         launch(state, key, spec, TunnelKind::Quick)
@@ -353,6 +360,56 @@ mod tests {
 
         finished(launched.handle).await;
         teardown(&state).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cloudflared_uninstall_is_refused_while_a_tunnel_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = stub_state(tmp.path(), QUICK_STUB).await;
+        let launched = launch_stub(&state, "app").await;
+
+        assert!(matches!(
+            crate::tunnel::lock_for_cloudflared_uninstall(&state).await,
+            Err(Response::Error {
+                code: yerd_ipc::ErrorCode::InvalidPath,
+                ..
+            })
+        ));
+
+        crate::tunnel::stop_tunnel("app", &state).await;
+        finished(launched.handle).await;
+        assert!(crate::tunnel::lock_for_cloudflared_uninstall(&state)
+            .await
+            .is_ok());
+        teardown(&state).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cloudflared_uninstall_guard_holds_the_manager() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = stub_state(tmp.path(), QUICK_STUB).await;
+
+        let guard = crate::tunnel::lock_for_cloudflared_uninstall(&state)
+            .await
+            .ok()
+            .unwrap();
+        assert!(state.tunnel_manager.try_lock().is_err());
+        drop(guard);
+        assert!(state.tunnel_manager.try_lock().is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_launch_resolved_before_an_uninstall_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = stub_state(tmp.path(), QUICK_STUB).await;
+        let binary = crate::tools::cloudflared::binary_path(&state.dirs);
+        let env = super::super::pinned_home_env(&state);
+        let spec = super::super::launch_spec(&state, "app", binary, Vec::new(), env).unwrap();
+        crate::tools::uninstall(&state.dirs, crate::tools::Tool::Cloudflared).unwrap();
+
+        let result = launch(&state, "app", spec, TunnelKind::Quick).await;
+        assert!(matches!(result, Err(TunnelError::NotInstalled)));
+        assert!(snapshots(&state).await.is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
