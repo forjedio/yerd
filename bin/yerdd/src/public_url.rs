@@ -12,6 +12,18 @@
 
 use crate::state::DaemonState;
 
+/// What pushing a site's URL into its app's own configuration achieved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UrlSyncOutcome {
+    /// The app now points at the site's URL.
+    Done,
+    /// Not that kind of project, or nothing to rewrite.
+    NotApplicable,
+    /// The rewrite was attempted, or was needed but impossible, and did not
+    /// happen.
+    Failed,
+}
+
 /// `scheme://host[:port]` (no trailing slash) for `host` served with `secure`,
 /// from the daemon's bound ports and the live port-redirect state.
 pub async fn site_url(state: &DaemonState, host: &str, secure: bool) -> String {

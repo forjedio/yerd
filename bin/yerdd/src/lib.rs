@@ -371,7 +371,14 @@ async fn run_until_shutdown(
         }))
     });
 
-    let _autostart = tokio::spawn(crate::services::auto_start_installed(daemon.state.clone()));
+    let _autostart = {
+        let state = daemon.state.clone();
+        let renamed = daemon.renamed_sites;
+        tokio::spawn(async move {
+            crate::services::auto_start_installed(state.clone()).await;
+            crate::startup::sync_renamed_site_urls(&state, &renamed).await;
+        })
+    };
     let _tunnel_resume = tokio::spawn(crate::tunnel::supervise::resume(
         daemon.state.clone(),
         daemon

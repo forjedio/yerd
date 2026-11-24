@@ -3065,17 +3065,22 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
         return internal(format!("config validation failed: {e}"));
     }
 
-    let (candidate, candidate_wordpress, candidate_laravel, candidate_framework) =
-        match startup::build_router(&new, &state.dirs, &state.detect_cache) {
+    let mut routing = match rebuild_for_mutation(&new, state) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let renames =
+        startup::live_parked_renames(&*state.router.read().await, &routing.0, &new.parked.claims);
+    if startup::rekey_parked_names(&mut new, &renames) {
+        routing = match rebuild_for_mutation(&new, state) {
             Ok(r) => r,
-            Err(DaemonError::Core(yerd_core::CoreError::DuplicateSite { name })) => {
-                return Response::Error {
-                    code: ErrorCode::AlreadyExists,
-                    message: format!("duplicate site: {name}"),
-                }
-            }
-            Err(e) => return internal(format!("router rebuild failed: {e}")),
+            Err(resp) => return resp,
         };
+    }
+    let (candidate, candidate_wordpress, candidate_laravel, candidate_framework) = routing;
+    let pending: std::collections::HashSet<&str> =
+        renames.iter().map(|r| r.doc_root.as_str()).collect();
+    startup::reconcile_parked_claims(&mut new, &candidate, &pending);
 
     if let Err(e) = new.save(&state.config_path) {
         return internal(format!("config save failed: {e}"));
@@ -3096,9 +3101,33 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
         crate::wordpress_url_sync::sync_site_url(&site, state).await;
         crate::codeigniter_url_sync::sync_base_url(&site, state).await;
     }
+    startup::sync_renamed_site_urls(state, &startup::renamed_sites(&renames)).await;
 
     tracing::info!(summary = %applied.summary, "applied mutation");
     Response::Ok
+}
+
+/// The candidate routing for a mutated config, with a duplicate site name
+/// reported as `AlreadyExists` and any other failure as `Internal`.
+fn rebuild_for_mutation(
+    cfg: &yerd_config::Config,
+    state: &DaemonState,
+) -> Result<
+    (
+        yerd_core::SiteRouter,
+        startup::WordpressSites,
+        startup::LaravelSites,
+        startup::FrameworkSites,
+    ),
+    Response,
+> {
+    startup::build_router(cfg, &state.dirs, &state.detect_cache).map_err(|e| match e {
+        DaemonError::Core(yerd_core::CoreError::DuplicateSite { name }) => Response::Error {
+            code: ErrorCode::AlreadyExists,
+            message: format!("duplicate site: {name}"),
+        },
+        e => internal(format!("router rebuild failed: {e}")),
+    })
 }
 
 /// The post-mutation site to run [`crate::wordpress_url_sync::sync_site_url`]

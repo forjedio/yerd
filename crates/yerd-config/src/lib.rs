@@ -31,7 +31,7 @@ pub use project::{
 };
 pub use schema::{
     Config, DomainDelta, DomainsSection, DumpsSection, ExtEntry, FavouritesSection, GroupsSection,
-    MailSection, NetworkSection, NodeSection, ParkedSection, PhpSection, Ports,
+    MailSection, NetworkSection, NodeSection, ParkedClaim, ParkedSection, PhpSection, Ports,
     ResponseHeadersSection, ServiceInstance, ServicesSection, SiteOverride, TunnelSection,
     DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
 };
@@ -129,8 +129,10 @@ pub use schema::{
 /// the optional `[php.xdebug]` per-version table ([`PhpSection::xdebug`]); it
 /// defaults (empty) when absent, so v28→v29 is a bare bump too. v30 added the
 /// optional `[favourites]` table ([`Config::favourites`]); it defaults (empty)
-/// when absent, so v29→v30 is a bare bump too.
+/// when absent, so v29→v30 is a bare bump too. v31 added the optional
+/// `[parked.claims]` map ([`ParkedSection::claims`]); it defaults (empty) when
+/// absent, so v30→v31 is a bare bump too.
 ///
 /// The per-version detail, including how to hand-edit a file back down for an
 /// older binary, lives in `docs/developer/config-schema-history.md`.
-pub const CURRENT_VERSION: u32 = 30;
+pub const CURRENT_VERSION: u32 = 31;

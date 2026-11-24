@@ -67,5 +67,8 @@ pub use proxy::{match_rule, validate_proxy_name, ProxyRule, ProxySite, UpstreamT
 pub use response_header::ResponseHeader;
 pub use route_rule::RouteRule;
 pub use router::{Route, RouterConfig, SiteRouter};
-pub use site::{normalize_site_name, slugify_site_name, Site, SiteKind};
+pub use site::{
+    folder_site_name, normalize_site_name, parked_folder_site_name, slugify_site_name, Site,
+    SiteKind,
+};
 pub use tld::Tld;

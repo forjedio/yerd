@@ -343,6 +343,13 @@ function projectConfigOf(r: Response, cmd: string): ProjectConfig {
   return { file: r.file, exists: r.exists, site: r.site, name: r.name, contents: r.contents };
 }
 
+/** The site name Yerd derives from a project folder name (public suffix
+ *  stripped, rest slugified), or `null` when nothing valid remains. Computed
+ *  by the same Rust function `yerd link` and the daemon use. */
+export async function suggestSiteName(folder: string): Promise<string | null> {
+  return call<string | null>("suggest_site_name", { folder });
+}
+
 /** The `.yerd.toml` in `path`, or a draft from the site there when the folder
  *  has none (`exists: false`). An invalid file throws `project_file_invalid`. */
 export async function projectConfigDraft(path: string): Promise<ProjectConfig> {

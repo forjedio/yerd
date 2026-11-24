@@ -28,7 +28,28 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v30 (current)
+### v31 (current)
+
+**Added:** the optional `[parked.claims]` map - the suffix-stripped site names held by parked folders, keyed by byte-exact document root, each with the `name` held and a `url_synced` flag. The daemon maintains it after every scan. It defaults to empty when absent, so a file with no domain-named parked folders omits it entirely.
+
+```toml
+[parked.claims."/Users/you/Sites/laravel.com"]
+name = "laravel"
+url_synced = true
+```
+
+**Migration from v30:** bare version bump - the map defaults to empty when absent, so a v30 file needs no other change.
+
+**To downgrade to v30:** change `version = 31` to `version = 30` and delete every `[parked.claims."..."]` table (a v30 daemon rejects the unknown key under `deny_unknown_fields`).
+
+A v30 daemon names domain-named folders by their full slug again (`laravel-com.test` rather than `laravel.test`), so anything that followed a site to its shorter name stays behind:
+
+- **Settings keyed by the short name** do not apply under v30: `[favourites]` entries, `[groups.members]` keys, `[tunnel.sites]` and `[tunnel.passwords]` keys, and per-site `[services."<type>:<site>"]` instances. To keep them, rename each key from the short name to the full slug (`laravel` to `laravel-com`; a per-site service id becomes `"reverb:laravel-com"`, and its `site` field too).
+- **App-side URLs** keep the short host. Point WordPress at the full slug (`wp option update siteurl https://laravel-com.test` and the same for `home`) and set `app.baseURL` in a CodeIgniter site's `.env` to the full-slug URL.
+
+The `[domains.parked]` deltas are keyed by document root, so they carry over; only an apex entry naming the short host needs changing back.
+
+### v30
 
 **Added:** the optional `[favourites]` table - the sites starred in the desktop app, as a list of lowercased site names. Entries are not validated against live sites, like `[groups]` membership. It defaults to empty when absent, so a file with no favourites omits it entirely.
 

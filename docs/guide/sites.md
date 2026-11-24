@@ -176,9 +176,19 @@ yerd park ~/Sites
 #   ~/Sites/blog      ->  http://blog.test
 #   ~/Sites/shop      ->  http://shop.test
 #   ~/Sites/my-app    ->  http://my-app.test
+#   ~/Sites/laravel.com          ->  http://laravel.test
+#   ~/Sites/example.mysite.com   ->  http://example-mysite.test
 ```
 
 Add a folder and its site is live; delete it and the site disappears. The child folder is the document root.
+
+A folder named after a domain drops its public suffix: `.com`, `.co.uk`, `.app`, `.github.io` and every other suffix on the [Public Suffix List](https://publicsuffix.org/) (including hosting suffixes such as `.us.com` or `.netlify.app`). Any dots left over, and other characters a site name can't hold, become `-`. A folder with no known suffix keeps its usual name (`foo.local` is `foo-local.test`), and so does a folder that is nothing but a suffix (`com`).
+
+If the shorter name is already taken, by another folder, a [linked](#linking-a-directory) site, a [proxy](./proxies) or a domain you added to another site, the folder keeps its full name instead. When two or more folders would shorten to the same name, none of them gets it: with both `laravel.com` and `laravel.org` parked, they are `laravel-com.test` and `laravel-org.test`, and the short name comes back once only one is left. Once a folder is served under its shorter name, Yerd remembers that it holds it, so adding a folder later never takes the name away: a new `laravel.app` next to an existing `laravel.com` (served as `laravel.test`) becomes `laravel-app.test`, and a new plain `laravel` folder is hidden (the daemon log says which folder holds the name). Remove or rename the folder that holds the name to release it.
+
+::: info Upgrading from an earlier version
+Parked sites in domain-named folders change name the first time the new version starts (`laravel-com.test` becomes `laravel.test`). Yerd moves their favourite star, group, sharing hostname and password, per-site services and domain settings to the new name, and points a WordPress site's address and a CodeIgniter `app.baseURL` at the new URL once its services are running. Update bookmarks and any other URL your app stores, such as Laravel's `APP_URL`. A [proxy](./proxies) that a folder like this used to hide (a `laravel-com` proxy next to a `laravel.com` folder) starts being served once the folder takes its shorter name.
+:::
 
 ::: tip
 You can park multiple roots. They all contribute children to one flat namespace of `.test` names.
@@ -219,7 +229,8 @@ yerd link my-app       # same, with an explicit name
 yerd link ../other-app # links a relative path, named "other-app" after its folder
 ```
 
-A single positional argument is treated as a directory (and the name derived from its
+A folder-derived name follows the same rule as parking, so `~/code/laravel.com` links as
+`laravel`. A single positional argument is treated as a directory (and the name derived from its
 folder) when it contains a path separator or is `.`/`..`; otherwise it's treated as a
 bare name and the current directory is linked. Web-root detection (`public/` for
 Laravel, etc. - see [Web root](#web-root-the-served-directory)) runs automatically the

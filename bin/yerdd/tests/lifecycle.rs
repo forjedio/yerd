@@ -190,6 +190,111 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(10), daemon_task).await;
     }
 
+    /// Parked folders ending in a public suffix are served under the stripped
+    /// name, with the cross-root duplicate rule, and boot moves the name-keyed
+    /// settings of a renamed site to its new name (persisted to disk, and
+    /// reflected in the first router: the migrated suppressed apex applies)
+    /// while leaving a still-live legacy name alone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn boot_strips_public_suffixes_and_migrates_name_keyed_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = make_dirs(tmp.path());
+        let cfg_path = dirs.config.join("yerd.toml");
+
+        let first_root = tmp.path().join("a-sites");
+        let second_root = tmp.path().join("b-sites");
+        for folder in ["laravel.com", "acme.org", "example.mysite.com", "shop.com"] {
+            std::fs::create_dir_all(first_root.join(folder)).unwrap();
+        }
+        std::fs::create_dir_all(second_root.join("laravel.com")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("shop-linked")).unwrap();
+
+        let mut cfg = valid_config();
+        for root in [&first_root, &second_root] {
+            cfg.parked.paths.insert(root.to_string_lossy().into_owned());
+        }
+        cfg.linked.push(
+            yerd_core::Site::linked(
+                "shop-com",
+                tmp.path().join("shop-linked"),
+                yerd_core::PhpVersion::new(8, 3),
+            )
+            .unwrap(),
+        );
+        cfg.favourites.sites.insert("laravel-com".to_owned());
+        cfg.favourites.sites.insert("shop-com".to_owned());
+        cfg.groups.order.push("Work".to_owned());
+        cfg.groups
+            .members
+            .insert("laravel-com".to_owned(), "Work".to_owned());
+        cfg.domains.parked.insert(
+            first_root
+                .join("laravel.com")
+                .to_string_lossy()
+                .into_owned(),
+            yerd_config::DomainDelta {
+                added: vec![yerd_core::Domain::parse_subpart("www.laravel").unwrap()],
+                suppressed: vec![yerd_core::Domain::apex("laravel-com")],
+                primary: None,
+            },
+        );
+        cfg.save(&cfg_path).unwrap();
+
+        let daemon = yerdd::startup::bring_up_with_dirs(dirs.clone(), cfg, cfg_path.clone())
+            .await
+            .expect("bring_up_with_dirs");
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let daemon_task = tokio::spawn(async move { drive_subsystems(daemon, shutdown_rx).await });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let ipc_sock = dirs.runtime.join("yerd.sock");
+
+        match round_trip(&ipc_sock, &Request::ListSites).await {
+            Response::Sites { sites } => {
+                let mut names: Vec<&str> = sites.iter().map(|s| s.site.name()).collect();
+                names.sort_unstable();
+                assert_eq!(
+                    names,
+                    ["acme", "example-mysite", "laravel", "shop", "shop-com"]
+                );
+                let laravel = sites
+                    .iter()
+                    .find(|s| s.site.name() == "laravel")
+                    .expect("laravel present");
+                assert_eq!(
+                    laravel.site.document_root(),
+                    first_root.join("laravel.com").as_path()
+                );
+                assert_eq!(laravel.domains, ["www.laravel.test"]);
+            }
+            other => panic!("expected Sites, got {other:?}"),
+        }
+
+        let on_disk = yerd_config::Config::load(&cfg_path).unwrap();
+        assert!(on_disk.favourites.sites.contains("laravel"));
+        assert!(!on_disk.favourites.sites.contains("laravel-com"));
+        assert!(on_disk.favourites.sites.contains("shop-com"));
+        assert_eq!(
+            on_disk.groups.members.get("laravel").map(String::as_str),
+            Some("Work")
+        );
+        let claim_of = |folder: &str| {
+            on_disk
+                .parked
+                .claims
+                .get(&first_root.join(folder).to_string_lossy().into_owned())
+                .map(|c| (c.name.as_str(), c.url_synced))
+        };
+        assert_eq!(claim_of("laravel.com"), Some(("laravel", false)));
+        assert_eq!(claim_of("acme.org"), Some(("acme", false)));
+        assert_eq!(claim_of("shop.com"), Some(("shop", true)));
+        assert_eq!(on_disk.parked.claims.len(), 4);
+
+        shutdown_tx.send_replace(true);
+        let _ = tokio::time::timeout(Duration::from_secs(10), daemon_task).await;
+    }
+
     /// The loopback tunnel origin listener routes by public `Host` through the
     /// route map the daemon rebuilds on `SetSiteTunnel`/`SetTunnelPassword`: a
     /// protected mapped host challenges for the share password, an unmapped

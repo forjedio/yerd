@@ -93,6 +93,14 @@ pub async fn link(name: String, path: String) -> Result<Response, GuiError> {
     )
 }
 
+/// Suggest a site name for a project folder name (its public suffix stripped,
+/// the rest slugified), so the Link dialog names folders exactly as `yerd link`
+/// and the daemon do. `None` when the folder yields no valid name.
+#[tauri::command]
+pub fn suggest_site_name(folder: String) -> Option<String> {
+    yerd_core::folder_site_name(&folder)
+}
+
 #[tauri::command]
 pub async fn unlink(name: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::Unlink { name }).await?)

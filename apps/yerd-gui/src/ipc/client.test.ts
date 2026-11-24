@@ -16,6 +16,7 @@ import {
   applyProjectConfig,
   exportProjectConfig,
   projectConfigDraft,
+  suggestSiteName,
   availableNode,
   clearMails,
   clearNodeVersion,
@@ -424,6 +425,12 @@ describe("project file commands", () => {
     invokeMock.mockResolvedValue({ type: "project_config", ...config });
     await expect(projectConfigDraft("/code/acme")).resolves.toEqual(config);
     expect(invokeMock).toHaveBeenCalledWith("project_config_draft", { path: "/code/acme" });
+  });
+
+  it("suggestSiteName sends the folder name and returns the reply", async () => {
+    invokeMock.mockResolvedValue("laravel");
+    await expect(suggestSiteName("laravel.com")).resolves.toBe("laravel");
+    expect(invokeMock).toHaveBeenCalledWith("suggest_site_name", { folder: "laravel.com" });
   });
 
   it("applyProjectConfig returns the job id", async () => {

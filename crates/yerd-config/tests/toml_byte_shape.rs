@@ -54,8 +54,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 30\n"),
-        "expected first line `version = 30`; got: {s}"
+        s.starts_with("version = 31\n"),
+        "expected first line `version = 31`; got: {s}"
     );
 }
 
@@ -838,6 +838,33 @@ fn populated_favourites_section_emits_last_and_round_trips() {
     assert!(network_at < favourites_at, "got: {s}");
     assert!(
         s.ends_with("\n[favourites]\nsites = [\"blog\"]\n"),
+        "got: {s}"
+    );
+    assert_eq!(Config::from_toml(&s).unwrap(), c);
+}
+
+#[test]
+fn default_config_emits_no_parked_claims() {
+    let s = Config::default().to_toml().unwrap();
+    assert!(!s.contains("claims"), "got: {s}");
+}
+
+#[test]
+fn populated_parked_claims_emit_under_parked_and_round_trip() {
+    let mut c = Config::default();
+    c.parked.paths.insert("/srv".to_string());
+    c.parked.claims.insert(
+        "/srv/laravel.com".to_string(),
+        yerd_config::ParkedClaim {
+            name: "laravel".to_string(),
+            url_synced: false,
+        },
+    );
+    let s = c.to_toml().unwrap();
+    assert!(
+        s.contains(
+            "[parked]\npaths = [\"/srv\"]\n\n[parked.claims.\"/srv/laravel.com\"]\nname = \"laravel\"\nurl_synced = false\n"
+        ),
         "got: {s}"
     );
     assert_eq!(Config::from_toml(&s).unwrap(), c);
