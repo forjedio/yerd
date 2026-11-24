@@ -22,7 +22,8 @@ use crate::state::DaemonState;
 /// `Request::SetSecure` handler's post-mutation hook (also run once for a site
 /// renamed on upgrade): if `site` is a `WordPress` install, update its
 /// `siteurl`/`home` options to the site's URL, including the bound port on a
-/// rootless fallback (see [`crate::public_url::site_url`]).
+/// rootless fallback (see [`crate::public_url::site_url`]). The scheme and host
+/// come from the live router, not `site`.
 pub async fn sync_site_url(site: &Site, state: &DaemonState) -> UrlSyncOutcome {
     let served_root = site.served_root();
     let is_wordpress = state
@@ -45,8 +46,11 @@ pub async fn sync_site_url(site: &Site, state: &DaemonState) -> UrlSyncOutcome {
         return UrlSyncOutcome::Failed;
     }
 
-    let host = state.router.read().await.primary_fqdn(site.name());
-    let url = crate::public_url::site_url(state, &host, site.secure()).await;
+    let _serial = state.url_sync.lock().await;
+    let Some((host, secure)) = live_host(&*state.router.read().await, site.name()) else {
+        return UrlSyncOutcome::Failed;
+    };
+    let url = crate::public_url::site_url(state, &host, secure).await;
 
     for option in ["siteurl", "home"] {
         if let Err(e) = run_option_update(
@@ -70,6 +74,14 @@ pub async fn sync_site_url(site: &Site, state: &DaemonState) -> UrlSyncOutcome {
         }
     }
     UrlSyncOutcome::Done
+}
+
+/// The primary host and secure flag the live router serves `name` with, read
+/// under [`DaemonState::url_sync`] so the last sync to run writes the newest
+/// scheme even when it was handed an older site snapshot.
+fn live_host(router: &yerd_core::SiteRouter, name: &str) -> Option<(String, bool)> {
+    let secure = router.get(name)?.secure();
+    Some((router.primary_fqdn(name), secure))
 }
 
 /// Pure - splits `boot_fs` into its own directory and bare file name, and

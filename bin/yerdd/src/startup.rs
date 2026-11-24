@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use interprocess::local_socket::tokio::Listener as IpcListener;
@@ -462,6 +462,7 @@ pub async fn bring_up_with_dirs(
         jobs: crate::jobs::JobRegistry::default(),
         reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         project_file_mutate: Mutex::new(()),
+        url_sync: Mutex::new(()),
         wordpress_versions: tokio::sync::RwLock::new(None),
         wordpress_login_tokens: Arc::new(crate::wordpress_login::LoginTokenRegistry::new()),
         wordpress_login_prepend_script,
@@ -1059,10 +1060,10 @@ fn held_claims(
 /// document-root key, the same `to_string_lossy` string the overrides and
 /// per-site maps use.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ParkedRename {
+pub(crate) struct ParkedRename {
     legacy: String,
     new: String,
-    doc_root: String,
+    pub(crate) doc_root: String,
 }
 
 /// Every parked site in `router` served under a name other than its legacy
@@ -1094,10 +1095,43 @@ fn parked_renames(
         .collect()
 }
 
+/// The parked sites renamed while the daemon runs: those [`parked_renames`]
+/// finds in `router` that `previous` served from the same folder under their
+/// legacy name (a contested name was freed, or a linked site or proxy holding
+/// it went away). A folder that is new to `router` inherits nothing.
+pub(crate) fn live_parked_renames(
+    previous: &SiteRouter,
+    router: &SiteRouter,
+    claims: &BTreeMap<String, yerd_config::ParkedClaim>,
+) -> Vec<ParkedRename> {
+    parked_renames(router, claims)
+        .into_iter()
+        .filter(|rename| {
+            previous.get(&rename.legacy).is_some_and(|site| {
+                site.kind() == yerd_core::SiteKind::Parked
+                    && site.document_root().to_string_lossy() == rename.doc_root.as_str()
+            })
+        })
+        .collect()
+}
+
+/// The URL syncs `renames` need, for [`sync_renamed_site_urls`].
+pub(crate) fn renamed_sites(renames: &[ParkedRename]) -> Vec<RenamedSite> {
+    renames
+        .iter()
+        .map(|rename| RenamedSite {
+            name: rename.new.clone(),
+            doc_root: rename.doc_root.clone(),
+        })
+        .collect()
+}
+
 /// Bring [`yerd_config::ParkedSection::claims`] in line with `router`: every
 /// parked site served under a name other than its legacy folder name holds a
 /// claim for it, and every other claim is dropped (its folder is gone, or the
-/// site is no longer served under that name). A new claim is created with
+/// site is no longer served under that name), except a claim whose URL sync is
+/// still pending while its folder is missing (an unmounted drive), which is
+/// kept so the sync resumes when the folder returns. A new claim is created with
 /// `url_synced = false` when its document root is in `pending_url_sync` (a site
 /// renamed on upgrade) and `true` otherwise. Returns whether the claims
 /// changed, so the caller knows to save.
@@ -1121,9 +1155,10 @@ pub(crate) fn reconcile_parked_claims(
         })
         .collect();
     let before = cfg.parked.claims.clone();
-    cfg.parked
-        .claims
-        .retain(|doc_root, claim| served.get(doc_root) == Some(&claim.name));
+    cfg.parked.claims.retain(|doc_root, claim| {
+        served.get(doc_root) == Some(&claim.name)
+            || (!claim.url_synced && !Path::new(doc_root).is_dir())
+    });
     for (doc_root, name) in served {
         let url_synced = !pending_url_sync.contains(doc_root.as_str());
         cfg.parked
@@ -1141,7 +1176,7 @@ pub(crate) fn reconcile_parked_claims(
 /// held in the site's parked domain delta (`suppressed` and `primary`; `added`
 /// domains are left so those hosts keep routing). Returns whether anything
 /// changed, so a second run is a no-op.
-fn rekey_parked_names(cfg: &mut yerd_config::Config, renames: &[ParkedRename]) -> bool {
+pub(crate) fn rekey_parked_names(cfg: &mut yerd_config::Config, renames: &[ParkedRename]) -> bool {
     let mut changed = false;
     for rename in renames {
         if rekey_parked_name(cfg, rename) {
@@ -1283,8 +1318,13 @@ fn pending_url_syncs(cfg: &yerd_config::Config) -> Vec<RenamedSite> {
 /// folder, and is marked done (`url_synced = true`, saved) only when no hook
 /// failed; anything else stays pending and is retried on the next start, which
 /// is safe because it re-sets the same URL. Stops as soon as shutdown is
-/// requested.
+/// requested, and skipped while the web ports are unbound (a URL written then
+/// would lack the listener's port).
 pub(crate) async fn sync_renamed_site_urls(state: &DaemonState, renamed: &[RenamedSite]) {
+    if state.web_unbound.is_some() {
+        tracing::debug!("web ports unbound; renamed sites' URL sync stays pending");
+        return;
+    }
     let shutdown = state.shutdown_tx.subscribe();
     for renamed_site in renamed {
         if *shutdown.borrow() {
@@ -2301,6 +2341,10 @@ mod tests {
         cfg.parked
             .claims
             .insert("/srv/acme.io".to_owned(), claim("acme", false));
+        cfg.parked.claims.insert(
+            "/nonexistent-yerd-test/unmounted.com".to_owned(),
+            claim("unmounted", false),
+        );
         let pending: HashSet<&str> = ["/srv/laravel.com"].into_iter().collect();
 
         assert!(reconcile_parked_claims(&mut cfg, &router, &pending));
@@ -2314,6 +2358,7 @@ mod tests {
         assert_eq!(
             got,
             [
+                ("/nonexistent-yerd-test/unmounted.com", "unmounted", false),
                 ("/srv/acme.io", "acme", false),
                 ("/srv/laravel.com", "laravel", false),
             ]
@@ -2336,6 +2381,56 @@ mod tests {
             renames,
             [rename("laravel-com", "laravel", "/srv/laravel.com")]
         );
+    }
+
+    #[test]
+    fn live_parked_renames_need_the_folder_served_under_its_legacy_name_before() {
+        let router = parked_router(&[
+            ("laravel", "/srv/laravel.com"),
+            ("acme", "/srv/acme.io"),
+            ("shop", "/srv/shop.com"),
+        ]);
+        let previous = parked_router(&[
+            ("laravel-com", "/srv/laravel.com"),
+            ("acme-io", "/srv/other/acme-io"),
+        ]);
+        assert_eq!(
+            live_parked_renames(&previous, &router, &BTreeMap::new()),
+            [rename("laravel-com", "laravel", "/srv/laravel.com")]
+        );
+        assert_eq!(
+            renamed_sites(&[rename("laravel-com", "laravel", "/srv/laravel.com")]),
+            [RenamedSite {
+                name: "laravel".to_owned(),
+                doc_root: "/srv/laravel.com".to_owned(),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn url_sync_stays_pending_while_the_web_ports_are_unbound() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut state = crate::test_support::state_in(tmp.path());
+        state.web_unbound = Some(yerd_ipc::UnboundWeb {
+            http: 8080,
+            https: 8443,
+        });
+        let root = tmp.path().join("laravel.com");
+        std::fs::create_dir_all(&root).unwrap();
+        let key = root.to_string_lossy().into_owned();
+        state
+            .config
+            .lock()
+            .await
+            .parked
+            .claims
+            .insert(key.clone(), claim("laravel", false));
+        *state.router.write().await = parked_router(&[("laravel", key.as_str())]);
+        let pending = pending_url_syncs(&*state.config.lock().await);
+
+        sync_renamed_site_urls(&state, &pending).await;
+
+        assert!(!state.config.lock().await.parked.claims[&key].url_synced);
     }
 
     #[test]

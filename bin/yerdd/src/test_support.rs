@@ -174,6 +174,7 @@ pub fn state_in(tmp: &Path) -> DaemonState {
         jobs: crate::jobs::JobRegistry::default(),
         reserved_names: Mutex::new(std::collections::HashSet::new()),
         project_file_mutate: Mutex::new(()),
+        url_sync: Mutex::new(()),
         wordpress_versions: RwLock::new(None),
         wordpress_login_tokens: Arc::new(crate::wordpress_login::LoginTokenRegistry::new()),
         wordpress_login_prepend_script: None,

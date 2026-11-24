@@ -238,6 +238,10 @@ pub struct DaemonState {
     /// Serializes every read-modify-write of a project's `.yerd.toml` (the
     /// write-back sync, export, and the `yerd init` wizard's first write).
     pub project_file_mutate: Mutex<()>,
+    /// Serializes the app-side URL syncs (`WordPress` `siteurl`/`home`,
+    /// `CodeIgniter` `app.baseURL`), so a startup rename sync and a
+    /// post-mutation sync can't interleave their reads and writes.
+    pub url_sync: Mutex<()>,
     /// WordPress core-version availability cache (the WordPress wizard's
     /// version dropdown): the last successful `meta/wordpress-versions.json`
     /// fetch, plus when it happened so a request can decide whether to

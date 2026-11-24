@@ -40,7 +40,14 @@ url_synced = true
 
 **Migration from v30:** bare version bump - the map defaults to empty when absent, so a v30 file needs no other change.
 
-**To downgrade to v30:** change `version = 31` to `version = 30` and delete every `[parked.claims."..."]` table (a v30 daemon rejects the unknown key under `deny_unknown_fields`). Nothing is lost beyond the claims themselves; note that a v30 daemon names domain-named folders by their full slug again.
+**To downgrade to v30:** change `version = 31` to `version = 30` and delete every `[parked.claims."..."]` table (a v30 daemon rejects the unknown key under `deny_unknown_fields`).
+
+A v30 daemon names domain-named folders by their full slug again (`laravel-com.test` rather than `laravel.test`), so anything that followed a site to its shorter name stays behind:
+
+- **Settings keyed by the short name** do not apply under v30: `[favourites]` entries, `[groups.members]` keys, `[tunnel.sites]` and `[tunnel.passwords]` keys, and per-site `[services."<type>:<site>"]` instances. To keep them, rename each key from the short name to the full slug (`laravel` to `laravel-com`; a per-site service id becomes `"reverb:laravel-com"`, and its `site` field too).
+- **App-side URLs** keep the short host. Point WordPress at the full slug (`wp option update siteurl https://laravel-com.test` and the same for `home`) and set `app.baseURL` in a CodeIgniter site's `.env` to the full-slug URL.
+
+The `[domains.parked]` deltas are keyed by document root, so they carry over; only an apex entry naming the short host needs changing back.
 
 ### v30
 
