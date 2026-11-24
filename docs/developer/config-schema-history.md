@@ -28,7 +28,21 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v30 (current)
+### v31 (current)
+
+**Added:** the optional `[parked.claims]` map - the suffix-stripped site names held by parked folders, keyed by byte-exact document root, each with the `name` held and a `url_synced` flag. The daemon maintains it after every scan. It defaults to empty when absent, so a file with no domain-named parked folders omits it entirely.
+
+```toml
+[parked.claims."/Users/you/Sites/laravel.com"]
+name = "laravel"
+url_synced = true
+```
+
+**Migration from v30:** bare version bump - the map defaults to empty when absent, so a v30 file needs no other change.
+
+**To downgrade to v30:** change `version = 31` to `version = 30` and delete every `[parked.claims."..."]` table (a v30 daemon rejects the unknown key under `deny_unknown_fields`). Nothing is lost beyond the claims themselves; note that a v30 daemon names domain-named folders by their full slug again.
+
+### v30
 
 **Added:** the optional `[favourites]` table - the sites starred in the desktop app, as a list of lowercased site names. Entries are not validated against live sites, like `[groups]` membership. It defaults to empty when absent, so a file with no favourites omits it entirely.
 

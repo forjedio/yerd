@@ -16,12 +16,14 @@ use std::process::Stdio;
 
 use yerd_core::{PhpVersion, Site};
 
+use crate::public_url::UrlSyncOutcome;
 use crate::state::DaemonState;
 
-/// `Request::SetSecure` handler's post-mutation hook: if `site` is a
-/// `WordPress` install, update its `siteurl`/`home` options to match
-/// `site.secure()`'s new value.
-pub async fn sync_site_url(site: &Site, state: &DaemonState) {
+/// `Request::SetSecure` handler's post-mutation hook (also run once for a site
+/// renamed on upgrade): if `site` is a `WordPress` install, update its
+/// `siteurl`/`home` options to the site's URL, including the bound port on a
+/// rootless fallback (see [`crate::public_url::site_url`]).
+pub async fn sync_site_url(site: &Site, state: &DaemonState) -> UrlSyncOutcome {
     let served_root = site.served_root();
     let is_wordpress = state
         .wordpress_sites
@@ -31,20 +33,20 @@ pub async fn sync_site_url(site: &Site, state: &DaemonState) {
         .copied()
         .unwrap_or(false);
     if !is_wordpress {
-        return;
+        return UrlSyncOutcome::NotApplicable;
     }
 
     let boot_fs = crate::tools::wp_cli::boot_path(&state.dirs);
     if !boot_fs.is_file() {
-        return;
+        return UrlSyncOutcome::Failed;
     }
     let php_cli = crate::php_install::cli_binary_path(&state.dirs, site.php());
     if !php_cli.is_file() {
-        return;
+        return UrlSyncOutcome::Failed;
     }
 
     let host = state.router.read().await.primary_fqdn(site.name());
-    let url = target_url(&host, site.secure());
+    let url = crate::public_url::site_url(state, &host, site.secure()).await;
 
     for option in ["siteurl", "home"] {
         if let Err(e) = run_option_update(
@@ -62,21 +64,12 @@ pub async fn sync_site_url(site: &Site, state: &DaemonState) {
                 site = %site.name(),
                 option,
                 error = %e,
-                "couldn't sync WordPress site URL after toggling secure"
+                "couldn't sync WordPress site URL"
             );
-            return;
+            return UrlSyncOutcome::Failed;
         }
     }
-}
-
-/// Pure - the target `siteurl`/`home` value for a site's primary `host` (its
-/// primary domain FQDN, e.g. `corp.test`), given the desired secure state. The
-/// caller resolves the host from the router's primary domain, falling back to
-/// `{name}.{tld}` on the *configured* TLD (yerd's TLD is user-settable), never a
-/// hardcoded `.test`.
-fn target_url(host: &str, secure: bool) -> String {
-    let scheme = if secure { "https" } else { "http" };
-    format!("{scheme}://{host}")
+    UrlSyncOutcome::Done
 }
 
 /// Pure - splits `boot_fs` into its own directory and bare file name, and
@@ -151,18 +144,6 @@ async fn run_option_update(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn target_url_uses_primary_host() {
-        assert_eq!(target_url("blog.dev.local", true), "https://blog.dev.local");
-        assert_eq!(target_url("corp.test", true), "https://corp.test");
-    }
-
-    #[test]
-    fn target_url_reflects_secure_flag() {
-        assert_eq!(target_url("blog.test", false), "http://blog.test");
-        assert_eq!(target_url("blog.test", true), "https://blog.test");
-    }
 
     #[test]
     fn option_update_invocation_splits_boot_fs_and_builds_args() {

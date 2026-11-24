@@ -3076,6 +3076,7 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
             }
             Err(e) => return internal(format!("router rebuild failed: {e}")),
         };
+    startup::reconcile_parked_claims(&mut new, &candidate, &std::collections::HashSet::new());
 
     if let Err(e) = new.save(&state.config_path) {
         return internal(format!("config save failed: {e}"));

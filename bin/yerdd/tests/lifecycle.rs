@@ -279,6 +279,17 @@ mod tests {
             on_disk.groups.members.get("laravel").map(String::as_str),
             Some("Work")
         );
+        let claim_of = |folder: &str| {
+            on_disk
+                .parked
+                .claims
+                .get(&first_root.join(folder).to_string_lossy().into_owned())
+                .map(|c| (c.name.as_str(), c.url_synced))
+        };
+        assert_eq!(claim_of("laravel.com"), Some(("laravel", false)));
+        assert_eq!(claim_of("acme.org"), Some(("acme", false)));
+        assert_eq!(claim_of("shop.com"), Some(("shop", true)));
+        assert_eq!(on_disk.parked.claims.len(), 4);
 
         shutdown_tx.send_replace(true);
         let _ = tokio::time::timeout(Duration::from_secs(10), daemon_task).await;

@@ -422,6 +422,18 @@ struct ExtEntryWire {
 struct ParkedSectionWire {
     #[serde(default)]
     paths: BTreeSet<String>,
+    // v31: optional `[parked.claims."<docroot>"]` tables; absent → empty.
+    #[serde(default)]
+    claims: BTreeMap<String, ParkedClaimWire>,
+}
+
+/// One `[parked.claims."<docroot>"]` table.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ParkedClaimWire {
+    name: String,
+    #[serde(default = "default_true")]
+    url_synced: bool,
 }
 
 /// One `[services.<id>]` table. `enabled` defaults to `true` (a configured
@@ -598,6 +610,7 @@ impl TryFrom<Wire> for Config {
         };
         let parked = ParkedSection {
             paths: w.parked.paths,
+            claims: convert_parked_claims(w.parked.claims),
         };
         let mut overrides = BTreeMap::new();
         for o in w.overrides {
@@ -797,6 +810,35 @@ fn convert_response_headers(
                 .map(|h| Ok(yerd_core::ResponseHeader::new(&h.name, &h.value)?))
                 .collect::<Result<Vec<_>, ConfigError>>()?;
             Ok((key, headers))
+        })
+        .collect()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Convert the raw `[parked.claims]` map, dropping any entry with an empty key
+/// or a name that is not a valid site name. Claims are daemon-maintained state
+/// rebuilt after every scan, so a bad entry is discarded rather than failing
+/// the whole config.
+fn convert_parked_claims(
+    wire: BTreeMap<String, ParkedClaimWire>,
+) -> BTreeMap<String, crate::schema::ParkedClaim> {
+    wire.into_iter()
+        .filter(|(doc_root, claim)| {
+            !doc_root.is_empty()
+                && yerd_core::normalize_site_name(&claim.name).as_deref()
+                    == Some(claim.name.as_str())
+        })
+        .map(|(doc_root, claim)| {
+            (
+                doc_root,
+                crate::schema::ParkedClaim {
+                    name: claim.name,
+                    url_synced: claim.url_synced,
+                },
+            )
         })
         .collect()
 }
@@ -1587,7 +1629,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 30,
+                current: 31,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -1701,6 +1743,32 @@ mod tests {
     fn groups_absent_table_is_empty_and_migrates() {
         let c = Config::from_toml("version = 8\n").unwrap();
         assert!(c.groups.is_empty());
+    }
+
+    #[test]
+    fn parked_claims_absent_is_empty_and_v30_migrates() {
+        let c = Config::from_toml("version = 30\n[parked]\npaths = [\"/srv\"]\n").unwrap();
+        assert!(c.parked.claims.is_empty());
+    }
+
+    #[test]
+    fn parked_claims_parse_and_round_trip() {
+        let s = "version = 31\n[parked]\npaths = [\"/srv\"]\n\n[parked.claims.\"/srv/laravel.com\"]\nname = \"laravel\"\nurl_synced = false\n";
+        let c = Config::from_toml(s).unwrap();
+        let claim = c.parked.claims.get("/srv/laravel.com").unwrap();
+        assert_eq!(claim.name, "laravel");
+        assert!(!claim.url_synced);
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn parked_claims_drop_invalid_entries() {
+        let s = "version = 31\n[parked.claims.\"/srv/a.com\"]\nname = \"Not Valid\"\n\n[parked.claims.\"\"]\nname = \"x\"\n\n[parked.claims.\"/srv/b.com\"]\nname = \"b\"\n";
+        let c = Config::from_toml(s).unwrap();
+        let keys: Vec<&str> = c.parked.claims.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["/srv/b.com"]);
+        assert!(c.parked.claims.get("/srv/b.com").unwrap().url_synced);
     }
 
     #[test]

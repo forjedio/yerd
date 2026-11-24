@@ -11,26 +11,30 @@
 
 use yerd_core::{Site, SiteRouter};
 
+use crate::public_url::UrlSyncOutcome;
 use crate::state::DaemonState;
 
-/// Post-mutation hook: if `site` is a `CodeIgniter` 4 project with an active
-/// `app.baseURL` in its `.env`, point it at the site's current URL.
-pub async fn sync_base_url(site: &Site, state: &DaemonState) {
+/// Post-mutation hook (also run once for a site renamed on upgrade): if `site`
+/// is a `CodeIgniter` 4 project with an active `app.baseURL` in its `.env`,
+/// point it at the site's current URL. `Failed` when the site has no concrete
+/// host right now or the write failed; `NotApplicable` when it is not such a
+/// project or the line already matches.
+pub async fn sync_base_url(site: &Site, state: &DaemonState) -> UrlSyncOutcome {
     let root = site.document_root();
     if !root.join("spark").is_file() {
-        return;
+        return UrlSyncOutcome::NotApplicable;
     }
     let dotenv = root.join(".env");
     let Ok(current) = tokio::fs::read_to_string(&dotenv).await else {
-        return;
+        return UrlSyncOutcome::NotApplicable;
     };
 
     let Some((host, secure)) = advertised_host(&*state.router.read().await, site.name()) else {
-        return;
+        return UrlSyncOutcome::Failed;
     };
     let url = crate::public_url::site_url(state, &host, secure).await;
     let Some(updated) = rewrite_base_url(&current, &format!("{url}/")) else {
-        return;
+        return UrlSyncOutcome::NotApplicable;
     };
     if let Err(e) = tokio::fs::write(&dotenv, updated).await {
         tracing::warn!(
@@ -38,7 +42,9 @@ pub async fn sync_base_url(site: &Site, state: &DaemonState) {
             error = %e,
             "couldn't sync CodeIgniter app.baseURL after a site change"
         );
+        return UrlSyncOutcome::Failed;
     }
+    UrlSyncOutcome::Done
 }
 
 /// The host and secure flag to advertise for `name`, read from the live router

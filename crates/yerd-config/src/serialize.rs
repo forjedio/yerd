@@ -296,6 +296,16 @@ fn map_is_empty(m: &&BTreeMap<String, String>) -> bool {
 #[derive(Serialize)]
 struct ParkedSectionSer<'a> {
     paths: &'a BTreeSet<String>,
+    // v31: `[parked.claims."<docroot>"]` sub-tables, skipped when empty so an
+    // existing config's byte shape is untouched.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    claims: BTreeMap<&'a str, ParkedClaimSer<'a>>,
+}
+
+#[derive(Serialize)]
+struct ParkedClaimSer<'a> {
+    name: &'a str,
+    url_synced: bool,
 }
 
 #[derive(Serialize)]
@@ -404,6 +414,20 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
         },
         parked: ParkedSectionSer {
             paths: &c.parked.paths,
+            claims: c
+                .parked
+                .claims
+                .iter()
+                .map(|(doc_root, claim)| {
+                    (
+                        doc_root.as_str(),
+                        ParkedClaimSer {
+                            name: &claim.name,
+                            url_synced: claim.url_synced,
+                        },
+                    )
+                })
+                .collect(),
         },
         linked: &c.linked,
         overrides: c
@@ -661,8 +685,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 30\n"),
-            "expected `version = 30` first line; got: {s}"
+            s.starts_with("version = 31\n"),
+            "expected `version = 31` first line; got: {s}"
         );
     }
 

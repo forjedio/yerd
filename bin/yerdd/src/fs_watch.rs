@@ -83,13 +83,14 @@ pub async fn run(state: Arc<DaemonState>, mut shutdown_rx: watch::Receiver<bool>
     }
 }
 
-/// Rebuild the router from the current config and return the desired watch set
+/// Rebuild the router from the current config, bring the parked name claims
+/// in line with it (saving when they changed), and return the desired watch set
 /// (every parked root + every unresolved project root). The tunnel route map is
 /// then rebuilt (after the config lock is released), so a shared site that just
 /// appeared becomes routable. Returns `None` if the rebuild failed (the
 /// previous router is left in place).
 async fn recompute(state: &DaemonState) -> Option<HashSet<PathBuf>> {
-    let guard = state.config.lock().await;
+    let mut guard = state.config.lock().await;
     let (router, wordpress_sites, laravel_sites, framework_sites, watch_roots) =
         match startup::build_routing(&guard, &state.dirs, &state.detect_cache) {
             Ok(r) => r,
@@ -98,6 +99,11 @@ async fn recompute(state: &DaemonState) -> Option<HashSet<PathBuf>> {
                 return None;
             }
         };
+    if startup::reconcile_parked_claims(&mut guard, &router, &HashSet::new()) {
+        if let Err(e) = guard.save(&state.config_path) {
+            tracing::warn!(error = %e, "could not persist parked site name claims");
+        }
+    }
     *state.router.write().await = router;
     *state.wordpress_sites.write().await = wordpress_sites;
     *state.laravel_sites.write().await = laravel_sites;

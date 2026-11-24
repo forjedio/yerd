@@ -612,6 +612,28 @@ pub struct ParkedSection {
     /// `BTreeSet` so the serialiser yields stable lexicographic order and
     /// duplicates are structurally impossible.
     pub paths: BTreeSet<String>,
+    /// Suffix-stripped names held by parked folders, keyed by the folder's
+    /// document-root string (byte-exact, the same key as [`Config::overrides`]).
+    ///
+    /// A parked folder named after a domain (`laravel.com`) is served under its
+    /// stripped name (`laravel`). Recording that here lets the daemon keep the
+    /// name stable when another folder later wants it (a new `laravel` or
+    /// `laravel.app` folder), so a site's settings never move to a different
+    /// project. The daemon adds and prunes entries after each scan. Empty by
+    /// default; `BTreeMap` for stable serialisation order.
+    pub claims: BTreeMap<String, ParkedClaim>,
+}
+
+/// A parked folder's hold on its suffix-stripped site name (see
+/// [`ParkedSection::claims`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParkedClaim {
+    /// The site name the folder is served under.
+    pub name: String,
+    /// Whether the site's app-side URL (`WordPress` `siteurl`/`home`,
+    /// `CodeIgniter` `app.baseURL`) has been pointed at `name`. `false` only for
+    /// a site renamed on upgrade whose one-time URL sync is still pending.
+    pub url_synced: bool,
 }
 
 /// A per-site override applied to a **parked** site (see [`Config::overrides`]).
