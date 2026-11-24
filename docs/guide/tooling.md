@@ -146,7 +146,9 @@ The model mirrors [PHP versions](./php-versions) and [services](./services):
   `PATH` once (see below) and `composer`, `node`, `npm`, `bun`, … just work.
 - **Proxy-aware.** Each command runs through Yerd, which fills in the
   [outbound proxy](./corporate-networks) when your shell doesn't name a proxy
-  of its own.
+  of its own. `cloudflared` is the exception: Yerd downloads it through the
+  proxy, but its command links straight to the binary and tunnels run without
+  proxy settings.
 - **Rootless.** Everything runs as your user, no elevation.
 
 ## Put Yerd's bin directory on your PATH

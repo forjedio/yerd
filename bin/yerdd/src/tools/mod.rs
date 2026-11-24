@@ -466,9 +466,10 @@ pub fn reconcile_cloudflared_shim(_dirs: &PlatformDirs) -> Result<(), ToolError>
 /// Reconcile `{data}/bin` tool shims against what's installed: (re)create the
 /// commands of installed tools, prune those of uninstalled tools. **Prunes by
 /// name-ownership** (gated on `is_symlink`, never `target.exists()`), so a
-/// dangling link after uninstall is still removed. Callers must hold the shared
-/// `shim_reconcile` mutex (this writes the same dir as `php_install::reconcile_shims`).
-/// Unix-only; no-op elsewhere.
+/// dangling link after uninstall is still removed. Every tool is attempted even
+/// when an earlier one fails; the first error is returned. Callers must hold the
+/// shared `shim_reconcile` mutex (this writes the same dir as
+/// `php_install::reconcile_shims`). Unix-only; no-op elsewhere.
 #[cfg(unix)]
 pub fn reconcile_tool_shims(
     dirs: &PlatformDirs,
@@ -478,12 +479,16 @@ pub fn reconcile_tool_shims(
     let bin = bin_dir(dirs);
     std::fs::create_dir_all(&bin).map_err(|e| ToolError::Io(format!("{}: {e}", bin.display())))?;
 
+    let mut first_err = None;
     for &tool in &Tool::ALL {
-        reconcile_tool(dirs, &bin, tool, node_default, || {
+        let result = reconcile_tool(dirs, &bin, tool, node_default, || {
             shim_links(dirs, tool, yerd_bin, node_default)
-        })?;
+        });
+        if let Err(e) = result {
+            first_err.get_or_insert(e);
+        }
     }
-    Ok(())
+    first_err.map_or(Ok(()), Err)
 }
 
 #[cfg(not(unix))]
@@ -1009,6 +1014,27 @@ mod tests {
         uninstall(&dirs, Tool::Cloudflared).unwrap();
         reconcile_tool_shims(&dirs, &yerd_bin, None).unwrap();
         assert!(std::fs::symlink_metadata(bin.join("cloudflared")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_tries_every_tool_when_one_link_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let yerd_bin = tmp.path().join("yerd");
+        std::fs::write(&yerd_bin, b"#!fake").unwrap();
+        let bin = bin_dir(&dirs);
+        let composer_dir = tool_dir(&dirs, Tool::Composer);
+        std::fs::create_dir_all(&composer_dir).unwrap();
+        std::fs::write(composer_dir.join(VERSION_MARKER), "2.10.1").unwrap();
+        std::fs::create_dir_all(bin.join("composer").join("blocker")).unwrap();
+        cloudflared::install_binary_for_test(&dirs, "2025.11.1", b"#!/bin/sh\n");
+
+        assert!(reconcile_tool_shims(&dirs, &yerd_bin, None).is_err());
+        assert_eq!(
+            std::fs::read_link(bin.join("cloudflared")).unwrap(),
+            cloudflared::binary_path(&dirs)
+        );
     }
 
     #[cfg(unix)]

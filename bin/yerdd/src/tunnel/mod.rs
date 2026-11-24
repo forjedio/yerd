@@ -201,6 +201,16 @@ pub(super) async fn resolved_cloudflared(state: &DaemonState) -> Option<install:
     fresh
 }
 
+/// The `PATH` `cloudflared` tunnels would use when no managed copy is
+/// installed: one that passed the minimum-version gate. Tooling tags only this
+/// copy as external, so an unsupported `PATH` copy is never shown as usable.
+pub(crate) async fn system_cloudflared(state: &DaemonState) -> Option<PathBuf> {
+    resolved_cloudflared(state)
+        .await
+        .filter(|r| r.source == install::CloudflaredSource::System)
+        .map(|r| r.binary)
+}
+
 /// The cached resolution, if present and (for a `System` entry) still
 /// pointing at an existing executable file.
 async fn cached_cloudflared_if_valid(state: &DaemonState) -> Option<install::Resolved> {
@@ -1137,6 +1147,29 @@ mod tests {
             cached_cloudflared_if_valid(&state).await.is_none(),
             "a System entry whose binary has disappeared must not be served from cache"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn system_cloudflared_reports_only_a_qualified_path_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let candidate = tmp.path().join("cloudflared");
+        std::fs::write(&candidate, b"#!/bin/sh\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        *state.cloudflared_resolution.write().await = Some(install::Resolved {
+            binary: candidate.clone(),
+            source: install::CloudflaredSource::System,
+            version: Some("2024.6.1".into()),
+        });
+        assert_eq!(system_cloudflared(&state).await, Some(candidate));
+
+        crate::tools::cloudflared::install_binary_for_test(&state.dirs, "2026.6.1", b"#!/bin/sh\n");
+        refresh_cloudflared_cache_after_install(&state).await;
+        assert_eq!(system_cloudflared(&state).await, None);
     }
 
     #[tokio::test]

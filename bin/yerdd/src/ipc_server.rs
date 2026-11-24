@@ -1766,7 +1766,11 @@ async fn list_tools_with_external(state: &DaemonState) -> Vec<yerd_ipc::ToolStat
             continue;
         }
         if let Some(tool) = crate::tools::Tool::parse(&t.id) {
-            let found = crate::tools::external::external_tool(&dirs, tool, &data_bin, data_root);
+            let found = if tool == crate::tools::Tool::Cloudflared {
+                crate::tunnel::system_cloudflared(state).await
+            } else {
+                crate::tools::external::external_tool(&dirs, tool, &data_bin, data_root)
+            };
             t.external = found.is_some();
             t.external_path = found.map(|p| p.display().to_string());
         }

@@ -338,7 +338,9 @@ fn set_executable(_path: &Path) -> Result<(), CloudflaredInstallError> {
 /// `{data}/tunnel/bin/cloudflared` into `{data}/tools/cloudflared/`, so an
 /// upgrade never sees an existing install as missing. `Ok(true)` when a copy was
 /// migrated, `Ok(false)` when there was nothing to do (no legacy binary, or a
-/// managed install already exists, in which case the legacy files are dropped).
+/// usable managed install already exists, in which case the legacy files are
+/// dropped). A managed dir with a version marker but no binary is not usable, so
+/// the legacy copy replaces it.
 ///
 /// Must run once at startup before the IPC server opens and before named
 /// tunnels resume, the tool shims are reconciled, or the update poll runs: then
@@ -362,7 +364,7 @@ pub fn migrate_legacy(dirs: &PlatformDirs) -> Result<bool, ToolError> {
     if !legacy.is_file() {
         return Ok(false);
     }
-    if installed_version(dirs, Tool::Cloudflared, None).is_some() {
+    if installed_version(dirs, Tool::Cloudflared, None).is_some() && binary_path(dirs).is_file() {
         remove_legacy(dirs);
         return Ok(false);
     }
@@ -613,6 +615,7 @@ mod tests {
             name: &'static str,
             legacy: Legacy,
             managed: Option<&'static str>,
+            broken_managed: bool,
             want_migrated: bool,
             want_version: Option<&'static str>,
             want_binary: &'static [u8],
@@ -622,6 +625,7 @@ mod tests {
                 name: "legacy with marker",
                 legacy: Legacy::Marked("2025.4.0\n"),
                 managed: None,
+                broken_managed: false,
                 want_migrated: true,
                 want_version: Some("2025.4.0"),
                 want_binary: b"#!/bin/sh\nlegacy\n",
@@ -630,6 +634,7 @@ mod tests {
                 name: "legacy without marker",
                 legacy: Legacy::Unmarked,
                 managed: None,
+                broken_managed: false,
                 want_migrated: true,
                 want_version: Some(UNKNOWN_VERSION),
                 want_binary: b"#!/bin/sh\nlegacy\n",
@@ -638,14 +643,25 @@ mod tests {
                 name: "legacy and managed",
                 legacy: Legacy::Marked("2025.4.0"),
                 managed: Some("2025.11.1"),
+                broken_managed: false,
                 want_migrated: false,
                 want_version: Some("2025.11.1"),
                 want_binary: b"managed",
             },
             Case {
+                name: "legacy and a marker-only managed dir",
+                legacy: Legacy::Marked("2025.4.0"),
+                managed: Some("2025.11.1"),
+                broken_managed: true,
+                want_migrated: true,
+                want_version: Some("2025.4.0"),
+                want_binary: b"#!/bin/sh\nlegacy\n",
+            },
+            Case {
                 name: "nothing",
                 legacy: Legacy::Absent,
                 managed: None,
+                broken_managed: false,
                 want_migrated: false,
                 want_version: None,
                 want_binary: b"",
@@ -662,6 +678,9 @@ mod tests {
             }
             if let Some(v) = case.managed {
                 install_binary_for_test(&dirs, v, b"managed");
+            }
+            if case.broken_managed {
+                std::fs::remove_file(binary_path(&dirs)).unwrap();
             }
 
             assert_eq!(
