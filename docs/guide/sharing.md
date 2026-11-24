@@ -53,7 +53,7 @@ In the desktop app, install, update and uninstall `cloudflared` from
 **Yerd's copy**) with an **Open Tooling** link when it is missing or an update
 is available.
 
-<ThemedImage light="/images/share-setup-light.png" dark="/images/share-setup-dark.png" alt="The Share setup dialog: cloudflared installed, the Cloudflare account connected and the domain tunnel live with two sites" />
+<ThemedImage light="/images/share-setup-light.png" dark="/images/share-setup-dark.png" alt="The Share setup dialog: Yerd's cloudflared installed, the Cloudflare account connected and the domain tunnel live with two sites" />
 
 ## Quick share
 

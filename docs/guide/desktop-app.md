@@ -113,7 +113,7 @@ The **Editor** submenu defaults to the Preferred editor set in [Settings](#setti
 
 ### Tooling
 
-<ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="The Tooling page: installed Composer (update available), Laravel installer and WP-CLI, with Bun (external) and pnpm available" />
+<ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="The Tooling page: installed Composer (update available), Laravel installer, WP-CLI and cloudflared, with Bun (external) and pnpm available" />
 
 Installs self-contained developer tools - Composer, Bun, pnpm, the Laravel installer, WP-CLI, and cloudflared (used by [Share](#share)) - onto your PATH alongside PHP, each managed by Yerd (install / update / uninstall) so they don't collide with system installs. Node.js isn't listed here: it has its own [Node](#node) page. See [Tooling](./tooling).
 
