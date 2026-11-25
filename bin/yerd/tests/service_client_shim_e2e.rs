@@ -74,7 +74,8 @@ mod tests {
              printf 'args=%s\\n' \"$*\"\n\
              printf 'unixport=%s\\n' \"$MYSQL_UNIX_PORT\"\n\
              printf 'pghost=%s\\n' \"$PGHOST\"\n\
-             printf 'pgport=%s\\n' \"$PGPORT\"\n"
+             printf 'pgport=%s\\n' \"$PGPORT\"\n\
+             printf 'pguser=%s\\n' \"$PGUSER\"\n"
         );
         for c in clients {
             write_exec(&bin.join(c), &stub);
@@ -190,6 +191,27 @@ mod tests {
         let kept = run(&h, "psql", &[], &[("PGPORT", "6000")]);
         assert_eq!(field(&kept, "pghost"), "127.0.0.1");
         assert_eq!(field(&kept, "pgport"), "6000");
+    }
+
+    #[test]
+    fn psql_defaults_the_user_to_postgres_unless_set_or_targeted() {
+        let h = new_home();
+        install(&h, "postgres", "postgres", "17.0", &["psql", "pg_dump"]);
+        configure(&h, "postgres", None, Some(5433));
+
+        let out = run(&h, "psql", &["my_app"], &[]);
+        assert_eq!(field(&out, "pguser"), "postgres");
+        assert_eq!(field(&out, "args"), "my_app");
+
+        let kept = run(&h, "psql", &["my_app"], &[("PGUSER", "alice")]);
+        assert_eq!(field(&kept, "pguser"), "alice");
+
+        let remote = run(&h, "psql", &["-h", "db.example.com", "my_app"], &[]);
+        assert_eq!(field(&remote, "pguser"), "");
+        assert_eq!(field(&remote, "pghost"), "");
+
+        let dump = run(&h, "pg_dump", &["my_app"], &[]);
+        assert_eq!(field(&dump, "pguser"), "postgres");
     }
 
     #[test]

@@ -26,12 +26,17 @@ const VALKEY_TARGET_FLAGS: [&str; 4] = ["-h", "-p", "-s", "-u"];
 /// URI schemes libpq accepts as a connection string.
 const POSTGRES_URI_SCHEMES: [&str; 2] = ["postgresql://", "postgres://"];
 
+/// Connection parameters that point libpq at a server: a host, or a service
+/// file entry that may name one.
+const POSTGRES_TARGET_KEYS: [&str; 3] = ["host", "hostaddr", "service"];
+
 /// How a client shim points an engine's clients at Yerd's instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientDefaults {
     /// `MySQL`/`MariaDB`: export `MYSQL_UNIX_PORT` as Yerd's socket when unset.
     MySqlSocket,
-    /// Postgres: export `PGHOST`/`PGPORT` when unset and no argument or env var names a host.
+    /// Postgres: export `PGHOST`, `PGPORT` and `PGUSER` (as `postgres`) when each is
+    /// unset and no argument or env var names a host.
     Postgres,
     /// Valkey: prepend `-p <port>` on a non-default port when no target flag is given.
     Valkey,
@@ -92,8 +97,10 @@ pub fn select_version(
 }
 
 /// The connection defaults for one client invocation. A default is added only
-/// when the user has not already set the matching variable or flag, so the
-/// user's own configuration always wins.
+/// when the user has not already set the matching variable, or a flag naming the
+/// target. Postgres `PGUSER` is added even alongside `-U` or a connection string
+/// with a user, because libpq ranks those above environment variables. Either
+/// way the user's own configuration always wins.
 #[must_use]
 pub fn connection_plan(
     defaults: ClientDefaults,
@@ -111,13 +118,17 @@ pub fn connection_plan(
             }
         }
         ClientDefaults::Postgres => {
-            let env_host = env_is_set("PGHOST") || env_is_set("PGHOSTADDR");
+            let env_host =
+                env_is_set("PGHOST") || env_is_set("PGHOSTADDR") || env_is_set("PGSERVICE");
             if env_host || args.iter().any(names_postgres_host) {
                 return plan;
             }
             plan.env.push(("PGHOST", OsString::from("127.0.0.1")));
             if !env_is_set("PGPORT") {
                 plan.env.push(("PGPORT", OsString::from(port.to_string())));
+            }
+            if !env_is_set("PGUSER") {
+                plan.env.push(("PGUSER", OsString::from("postgres")));
             }
         }
         ClientDefaults::Valkey => {
@@ -133,9 +144,10 @@ pub fn connection_plan(
 }
 
 /// Whether a Postgres client argument names the server host: `-h`/`--host`, a
-/// `host=`/`hostaddr=` connection string, or a URI with a host. The shim then
-/// adds neither `PGHOST` nor `PGPORT`, since libpq would apply Yerd's port to
-/// the user's host.
+/// `host=`/`hostaddr=`/`service=` connection string (bare, or after `--dbname=`
+/// or an attached `-d`), or a URI with a host or one of those query keys. The
+/// shim then adds none of `PGHOST`, `PGPORT` or `PGUSER`, since libpq would
+/// apply Yerd's port and user to the user's host.
 fn names_postgres_host(arg: &OsString) -> bool {
     let Some(arg) = arg.to_str() else {
         return false;
@@ -143,11 +155,69 @@ fn names_postgres_host(arg: &OsString) -> bool {
     if arg == "--host" || arg.starts_with("--host=") || arg.starts_with("-h") {
         return true;
     }
-    let value = arg.strip_prefix("--dbname=").unwrap_or(arg);
-    let conninfo_host = value
-        .split_whitespace()
-        .any(|kv| kv.starts_with("host=") || kv.starts_with("hostaddr="));
-    conninfo_host || uri_names_host(value)
+    let value = arg
+        .strip_prefix("--dbname=")
+        .or_else(|| arg.strip_prefix("-d"))
+        .unwrap_or(arg);
+    conninfo_names_target(value) || uri_names_host(value)
+}
+
+/// Whether a `key=value` conninfo string sets a [`POSTGRES_TARGET_KEYS`] key.
+/// Follows libpq's grammar: whitespace may surround `=`, and a value may be
+/// single-quoted with backslash escapes, so `application_name='a host=b'` does
+/// not count. Input that is not a conninfo string (no `=` after the first
+/// word) yields `false`.
+fn conninfo_names_target(value: &str) -> bool {
+    let mut chars = value.chars().peekable();
+    loop {
+        skip_whitespace(&mut chars);
+        if chars.peek().is_none() {
+            return false;
+        }
+        let mut key = String::new();
+        while let Some(c) = chars.next_if(|c| *c != '=' && !c.is_whitespace()) {
+            key.push(c);
+        }
+        skip_whitespace(&mut chars);
+        if chars.next_if_eq(&'=').is_none() {
+            return false;
+        }
+        if POSTGRES_TARGET_KEYS.contains(&key.as_str()) {
+            return true;
+        }
+        skip_whitespace(&mut chars);
+        skip_conninfo_value(&mut chars);
+    }
+}
+
+fn skip_whitespace(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    while chars.next_if(|c| c.is_whitespace()).is_some() {}
+}
+
+fn skip_conninfo_value(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    if chars.next_if_eq(&'\'').is_some() {
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => {
+                    chars.next();
+                }
+                '\'' => return,
+                _ => {}
+            }
+        }
+        return;
+    }
+    while let Some(c) = chars.next_if(|c| !c.is_whitespace()) {
+        if c == '\\' {
+            chars.next();
+        }
+    }
+}
+
+/// Whether a URI query `key=value` pair sets a [`POSTGRES_TARGET_KEYS`] key.
+fn is_target_key(kv: &str) -> bool {
+    kv.split_once('=')
+        .is_some_and(|(key, _)| POSTGRES_TARGET_KEYS.contains(&key))
 }
 
 fn uri_names_host(value: &str) -> bool {
@@ -160,11 +230,9 @@ fn uri_names_host(value: &str) -> bool {
     let authority = rest.split(['/', '?']).next().unwrap_or_default();
     let host_port = authority.rsplit('@').next().unwrap_or_default();
     let has_host = !host_port.is_empty() && !host_port.starts_with(':');
-    let query_host = rest.split_once('?').is_some_and(|(_, query)| {
-        query
-            .split('&')
-            .any(|kv| kv.starts_with("host=") || kv.starts_with("hostaddr="))
-    });
+    let query_host = rest
+        .split_once('?')
+        .is_some_and(|(_, query)| query.split('&').any(is_target_key));
     has_host || query_host
 }
 
@@ -266,15 +334,20 @@ mod tests {
     }
 
     #[test]
-    fn postgres_env_host_suppresses_both_defaults() {
+    fn postgres_env_host_suppresses_all_defaults() {
         let host = ("PGHOST", OsString::from("127.0.0.1"));
         let port = ("PGPORT", OsString::from("5433"));
+        let user = ("PGUSER", OsString::from("postgres"));
         let cases: &[PostgresCase] = &[
-            (&[], vec![host.clone(), port.clone()]),
+            (&[], vec![host.clone(), port.clone(), user.clone()]),
             (&["PGHOST"], vec![]),
             (&["PGHOSTADDR"], vec![]),
-            (&["PGPORT"], vec![host.clone()]),
+            (&["PGPORT"], vec![host.clone(), user.clone()]),
             (&["PGHOST", "PGPORT"], vec![]),
+            (&["PGUSER"], vec![host.clone(), port.clone()]),
+            (&["PGPORT", "PGUSER"], vec![host.clone()]),
+            (&["PGHOST", "PGUSER"], vec![]),
+            (&["PGSERVICE"], vec![]),
         ];
         for (set, want) in cases {
             let plan = connection_plan(
@@ -387,6 +460,33 @@ mod tests {
     }
 
     #[test]
+    fn postgres_exports_user_even_when_an_argument_names_one() {
+        let user = ("PGUSER", OsString::from("postgres"));
+        let cases: &[&[&str]] = &[
+            &[],
+            &["my_app"],
+            &["-U", "alice", "app"],
+            &["-Ualice"],
+            &["--username=alice"],
+            &["app", "alice"],
+            &["postgresql://alice@/app"],
+            &["postgresql://alice@:5433/app"],
+            &["user=alice dbname=app"],
+        ];
+        for a in cases {
+            let plan = connection_plan(
+                ClientDefaults::Postgres,
+                5433,
+                &sock(),
+                &args(a),
+                &env_of(&[]),
+            );
+            assert!(plan.leading_args.is_empty(), "args {a:?}");
+            assert!(plan.env.contains(&user), "args {a:?}");
+        }
+    }
+
+    #[test]
     fn postgres_adds_nothing_when_an_argument_names_a_host() {
         let cases: &[(&[&str], bool)] = &[
             (&["-h", "db.example.com"], true),
@@ -403,6 +503,19 @@ mod tests {
                 &["postgresql:///app?sslmode=disable&host=db.example.com"],
                 true,
             ),
+            (&["service=prod"], true),
+            (&["--dbname=service=prod dbname=app"], true),
+            (&["postgresql:///app?service=prod"], true),
+            (&["-dpostgresql://db.example.com/app"], true),
+            (&["-dhost=db.example.com dbname=app"], true),
+            (&["-dmy_app"], false),
+            (&["host = db.example.com dbname=app"], true),
+            (&["dbname = app"], false),
+            (&["dbname='my app' host=db.example.com"], true),
+            (&["application_name='x service=nightly' dbname=app"], false),
+            (&["application_name='x' service=nightly"], true),
+            (&["application_name='it\\'s host=x' dbname=app"], false),
+            (&["application_name=a\\ host=x dbname=app"], false),
             (&["postgresql:///hostaddr=archive"], false),
             (&["postgresql:///host=archive"], false),
             (&["postgresql:///app"], false),
