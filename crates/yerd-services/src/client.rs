@@ -26,6 +26,10 @@ const VALKEY_TARGET_FLAGS: [&str; 4] = ["-h", "-p", "-s", "-u"];
 /// URI schemes libpq accepts as a connection string.
 const POSTGRES_URI_SCHEMES: [&str; 2] = ["postgresql://", "postgres://"];
 
+/// Connection parameters that point libpq at a server: a host, or a service
+/// file entry that may name one.
+const POSTGRES_TARGET_KEYS: [&str; 3] = ["host", "hostaddr", "service"];
+
 /// How a client shim points an engine's clients at Yerd's instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientDefaults {
@@ -155,16 +159,65 @@ fn names_postgres_host(arg: &OsString) -> bool {
         .strip_prefix("--dbname=")
         .or_else(|| arg.strip_prefix("-d"))
         .unwrap_or(arg);
-    let conninfo_host = value.split_whitespace().any(is_target_key);
-    conninfo_host || uri_names_host(value)
+    conninfo_names_target(value) || uri_names_host(value)
 }
 
-/// A conninfo key that points libpq at a server: a host, or a service file entry
-/// that may name one.
+/// Whether a `key=value` conninfo string sets a [`POSTGRES_TARGET_KEYS`] key.
+/// Follows libpq's grammar: whitespace may surround `=`, and a value may be
+/// single-quoted with backslash escapes, so `application_name='a host=b'` does
+/// not count. Input that is not a conninfo string (no `=` after the first
+/// word) yields `false`.
+fn conninfo_names_target(value: &str) -> bool {
+    let mut chars = value.chars().peekable();
+    loop {
+        skip_whitespace(&mut chars);
+        if chars.peek().is_none() {
+            return false;
+        }
+        let mut key = String::new();
+        while let Some(c) = chars.next_if(|c| *c != '=' && !c.is_whitespace()) {
+            key.push(c);
+        }
+        skip_whitespace(&mut chars);
+        if chars.next_if_eq(&'=').is_none() {
+            return false;
+        }
+        if POSTGRES_TARGET_KEYS.contains(&key.as_str()) {
+            return true;
+        }
+        skip_whitespace(&mut chars);
+        skip_conninfo_value(&mut chars);
+    }
+}
+
+fn skip_whitespace(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    while chars.next_if(|c| c.is_whitespace()).is_some() {}
+}
+
+fn skip_conninfo_value(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    if chars.next_if_eq(&'\'').is_some() {
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => {
+                    chars.next();
+                }
+                '\'' => return,
+                _ => {}
+            }
+        }
+        return;
+    }
+    while let Some(c) = chars.next_if(|c| !c.is_whitespace()) {
+        if c == '\\' {
+            chars.next();
+        }
+    }
+}
+
+/// Whether a URI query `key=value` pair sets a [`POSTGRES_TARGET_KEYS`] key.
 fn is_target_key(kv: &str) -> bool {
-    ["host=", "hostaddr=", "service="]
-        .iter()
-        .any(|key| kv.starts_with(key))
+    kv.split_once('=')
+        .is_some_and(|(key, _)| POSTGRES_TARGET_KEYS.contains(&key))
 }
 
 fn uri_names_host(value: &str) -> bool {
@@ -456,6 +509,13 @@ mod tests {
             (&["-dpostgresql://db.example.com/app"], true),
             (&["-dhost=db.example.com dbname=app"], true),
             (&["-dmy_app"], false),
+            (&["host = db.example.com dbname=app"], true),
+            (&["dbname = app"], false),
+            (&["dbname='my app' host=db.example.com"], true),
+            (&["application_name='x service=nightly' dbname=app"], false),
+            (&["application_name='x' service=nightly"], true),
+            (&["application_name='it\\'s host=x' dbname=app"], false),
+            (&["application_name=a\\ host=x dbname=app"], false),
             (&["postgresql:///hostaddr=archive"], false),
             (&["postgresql:///host=archive"], false),
             (&["postgresql:///app"], false),
