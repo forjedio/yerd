@@ -478,6 +478,62 @@ describe("SitesView inspector wiring", () => {
     expect(calls("unlink")).toEqual([{ name: "lnk" }]);
   });
 
+  function toastFor(title: string) {
+    return useToast().toasts.value.find((t) => t.title === title);
+  }
+
+  const providersRoute = (provider: string): Handler => () => ({
+    type: "tunnel_providers",
+    providers: [],
+    default_provider: provider,
+  });
+
+  it("reports an old daemon that shared through Cloudflare instead of the default provider", async () => {
+    serve({
+      sites: [site("alpha")],
+      parked: ["/srv"],
+      routes: {
+        list_tunnel_providers: providersRoute("ngrok"),
+        tunnel_status: () => ({ type: "tunnels", tunnels: [], cloudflared: { installed: true, logged_in: false } }),
+        start_quick_tunnel: () => ({
+          type: "tunnels",
+          tunnels: [{ site: "alpha", kind: "quick", state: "running", url: "https://a.trycloudflare.com" }],
+        }),
+        stop_tunnel: () => ({ type: "tunnels", tunnels: [] }),
+      },
+    });
+    const w = await mountSites();
+    const inspector = await openDrawer(w, "alpha");
+    inspector.vm.$emit("share", site("alpha"));
+    await flushPromises();
+    expect(calls("stop_tunnel")).toEqual([{ site: "alpha", provider: "cloudflare" }]);
+    expect(toastFor("Couldn't share alpha")?.detail).toBe(
+      "The running Yerd daemon doesn't support ngrok sharing yet - restart Yerd and try again",
+    );
+    expect(toastFor("Sharing alpha")).toBeUndefined();
+  });
+
+  it("shares through the default provider when the daemon honours it", async () => {
+    serve({
+      sites: [site("alpha")],
+      parked: ["/srv"],
+      routes: {
+        list_tunnel_providers: providersRoute("ngrok"),
+        tunnel_status: () => ({ type: "tunnels", tunnels: [], cloudflared: { installed: true, logged_in: false } }),
+        start_quick_tunnel: () => ({
+          type: "tunnels",
+          tunnels: [{ site: "alpha", kind: "quick", state: "running", url: "https://a.ngrok.app", provider: "ngrok" }],
+        }),
+      },
+    });
+    const w = await mountSites();
+    const inspector = await openDrawer(w, "alpha");
+    inspector.vm.$emit("share", site("alpha"));
+    await flushPromises();
+    expect(calls("stop_tunnel")).toEqual([]);
+    expect(toastFor("Sharing alpha")?.detail).toContain("https://a.ngrok.app");
+  });
+
   it("stars a site", async () => {
     serve({ sites: [site("alpha")], parked: ["/srv"], routes: { set_site_favourite: () => ({ type: "ok" }) } });
     const w = await mountSites();

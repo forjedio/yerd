@@ -186,4 +186,40 @@ describe("TunnelProvidersDialog", () => {
     expect(setDefaultTunnelProvider).toHaveBeenCalledWith("ngrok");
     expect(listTunnelProviders).toHaveBeenCalledTimes(2);
   });
+
+  it("applies only the latest providers reply when loads overlap", async () => {
+    let resolveFirst: (r: TunnelProvidersResponse) => void = () => {};
+    listTunnelProviders.mockReset().mockReturnValueOnce(
+      new Promise<TunnelProvidersResponse>((r) => {
+        resolveFirst = r;
+      }),
+    );
+    listTunnelProviders.mockResolvedValueOnce({ ...reply(), default_provider: "zrok" });
+    const w = await mountDialog();
+    await w.setProps({ open: false });
+    await w.setProps({ open: true });
+    await flushPromises();
+    resolveFirst({ ...reply(), default_provider: "ngrok" });
+    await flushPromises();
+    expect(el<HTMLSelectElement>('select[aria-label="Default for new shares"]').value).toBe("zrok");
+  });
+
+  it("keeps the action busy until the refetch settles, even after a failure", async () => {
+    let resolveRefetch: (r: TunnelProvidersResponse) => void = () => {};
+    await mountDialog();
+    listTunnelProviders.mockReturnValueOnce(
+      new Promise<TunnelProvidersResponse>((r) => {
+        resolveRefetch = r;
+      }),
+    );
+    setDefaultTunnelProvider.mockRejectedValue(new Error("daemon unavailable"));
+    const sel = el<HTMLSelectElement>('select[aria-label="Default for new shares"]');
+    sel.value = "ngrok";
+    sel.dispatchEvent(new Event("change"));
+    await flushPromises();
+    expect(sel.disabled).toBe(true);
+    resolveRefetch(reply());
+    await flushPromises();
+    expect(sel.disabled).toBe(false);
+  });
 });

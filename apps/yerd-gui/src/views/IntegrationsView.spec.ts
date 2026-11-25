@@ -51,6 +51,8 @@ interface StubOpts {
   stop?: () => Promise<unknown>;
   jobStates?: ("running" | "succeeded")[];
   providers?: TunnelProviderStatus[];
+  providersFail?: number;
+  startQuick?: (args: Record<string, unknown>) => Promise<unknown>;
 }
 
 const NGROK_READY: TunnelProviderStatus = { provider: "ngrok", readiness: "ready", configured: true };
@@ -63,6 +65,7 @@ function stubIpc(opts: StubOpts = {}) {
   const named = opts.named ?? [];
   const cloudflared = opts.cloudflared ?? MANAGED;
   const jobStates = [...(opts.jobStates ?? ["succeeded"])];
+  let providerFailures = opts.providersFail ?? 0;
   invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
     switch (cmd) {
       case "status":
@@ -81,6 +84,7 @@ function stubIpc(opts: StubOpts = {}) {
       case "start_named_tunnel":
         return Promise.resolve({ type: "tunnels", tunnels, cloudflared });
       case "start_quick_tunnel": {
+        if (opts.startQuick) return opts.startQuick(args ?? {});
         const provider = (args?.provider as string | null) ?? "cloudflare";
         const url = provider === "ngrok" ? "https://x.ngrok-free.app" : "https://x.trycloudflare.com";
         return Promise.resolve({
@@ -111,6 +115,10 @@ function stubIpc(opts: StubOpts = {}) {
       case "delete_named_tunnel":
         return Promise.resolve({ type: "ok" });
       case "list_tunnel_providers":
+        if (providerFailures > 0) {
+          providerFailures -= 1;
+          return Promise.reject(new Error("providers unavailable"));
+        }
         return Promise.resolve({
           type: "tunnel_providers",
           providers: opts.providers ?? [
@@ -391,6 +399,79 @@ describe("IntegrationsView providers", () => {
     const ngrok = Array.from(document.querySelectorAll('[role="radio"]')).find((b) => b.textContent?.trim() === "ngrok");
     await click(ngrok ?? null);
     expect(rowKeys()).toEqual(["ngrok:quick:app"]);
+  });
+
+  it("moves the selection off a share the filter hides", async () => {
+    stubIpc({ tunnels: both(), providers: providers() });
+    await mountView();
+    expect(inspector()?.querySelector('[data-testid="share-chip"]')?.textContent?.trim()).toBe("CLOUDFLARE");
+    const ngrok = Array.from(document.querySelectorAll('[role="radio"]')).find((b) => b.textContent?.trim() === "ngrok");
+    await click(ngrok ?? null);
+    expect(inspector()?.querySelector('[data-testid="share-chip"]')?.textContent?.trim()).toBe("NGROK");
+    const zrok = Array.from(document.querySelectorAll('[role="radio"]')).find((b) => b.textContent?.trim() === "zrok");
+    await click(zrok ?? null);
+    expect(inspector()).toBeNull();
+  });
+
+  it("shows a new share hidden by the filter after sharing it", async () => {
+    stubIpc({ tunnels: [quick("running", { site: "blog" })], providers: providers() });
+    await mountView();
+    const zrok = Array.from(document.querySelectorAll('[role="radio"]')).find((b) => b.textContent?.trim() === "zrok");
+    await click(zrok ?? null);
+    await openShareDialog();
+    await click(document.querySelector('[data-provider="ngrok"]'));
+    await click(document.querySelector('[data-option="app"]'));
+    await click(document.querySelector('[data-testid="share-submit"]'));
+    expect(rowKeys()).toContain("ngrok:quick:app");
+    expect(document.querySelector('[aria-current="true"]')?.getAttribute("data-key")).toBe("ngrok:quick:app");
+    expect(inspector()?.querySelector('[data-testid="share-chip"]')?.textContent?.trim()).toBe("NGROK");
+  });
+
+  it("reports an old daemon that shared through Cloudflare instead, and stops that share", async () => {
+    stubIpc({
+      providers: providers(),
+      startQuick: (args) =>
+        Promise.resolve({ type: "tunnels", tunnels: [quick("running", { site: args.site as string })], cloudflared: MANAGED }),
+    });
+    await mountView();
+    await openShareDialog();
+    await click(document.querySelector('[data-provider="ngrok"]'));
+    await click(document.querySelector('[data-option="app"]'));
+    await click(document.querySelector('[data-testid="share-submit"]'));
+    expect(calls("stop_tunnel")).toEqual([{ site: "app", provider: "cloudflare" }]);
+    expect(useToast().toasts.value.find((t) => t.title === "Couldn't share app")?.detail).toBe(
+      "The running Yerd daemon doesn't support ngrok sharing yet - restart Yerd and try again",
+    );
+    expect(toastTitles()).not.toContain("Sharing app");
+    expect(dialogTitles()).toContain("Share a site");
+  });
+
+  it("keeps a Cloudflare share that existed before an old daemon ignored the provider", async () => {
+    stubIpc({
+      tunnels: [quick("running")],
+      providers: providers(),
+      startQuick: () => Promise.resolve({ type: "tunnels", tunnels: [quick("running")], cloudflared: MANAGED }),
+    });
+    await mountView();
+    await openShareDialog();
+    await click(document.querySelector('[data-provider="ngrok"]'));
+    await click(document.querySelector('[data-option="app"]'));
+    await click(document.querySelector('[data-testid="share-submit"]'));
+    expect(calls("stop_tunnel")).toEqual([]);
+    expect(toastTitles()).toContain("Couldn't share app");
+  });
+
+  it("shows a provider load failure with a Retry instead of setup prompts", async () => {
+    stubIpc({ tunnels: both(), providersFail: 1 });
+    await mountView();
+    expect(document.querySelector('[data-testid="provider-cards"] [data-testid="providers-error"]')).not.toBeNull();
+    await openShareDialog();
+    expect(document.querySelector('[role="dialog"] [data-testid="providers-error"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="provider-not-ready"]')).toBeNull();
+    await click(document.querySelector('[role="dialog"] [data-testid="providers-retry"]'));
+    expect(calls("list_tunnel_providers")).toHaveLength(2);
+    expect(document.querySelector('[data-testid="providers-error"]')).toBeNull();
+    expect(document.querySelector('[data-testid="provider-not-ready"]')).toBeNull();
   });
 
   it("stops only the ngrok share from its row", async () => {

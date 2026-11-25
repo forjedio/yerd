@@ -49,6 +49,8 @@ import type {
 } from "@/ipc/types";
 import {
   canStartNamed,
+  checkProviderStart,
+  filterShares,
   loginUrlFrom,
   namedEntry,
   removeTunnelCopy,
@@ -58,6 +60,7 @@ import {
   shareKey,
   siblingShares,
   unsharedProviders,
+  unsupportedProviderMessage,
 } from "@/lib/share";
 import { copyUrlWithToast } from "@/lib/toastActions";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
@@ -102,13 +105,23 @@ const authorizedDomain = computed(() => data.value?.named.zone ?? null);
 /** Provider readiness for the cards, the dialog and the inspector. Not part of
  *  the 5 s poll, since a PATH copy's version probe runs on every fetch; it is
  *  refreshed after the providers sheet closes and after each share or stop. */
-const { data: providerData, refresh: refreshProviderData } = useResource("tunnel-providers", listTunnelProviders);
+const {
+  data: providerData,
+  refresh: refreshProviderData,
+  error: providerFetchError,
+} = useResource("tunnel-providers", listTunnelProviders);
 const providers = computed<TunnelProviderStatus[]>(() => providerData.value?.providers ?? []);
 const defaultProvider = computed<TunnelProvider>(() => providerData.value?.default_provider ?? "cloudflare");
 
 function refreshProviders(): void {
   void refreshProviderData({ force: true });
 }
+
+/** Why the provider list couldn't load, while there is no list to show. A
+ *  failed revalidation over a loaded list keeps the list. */
+const providersError = computed(() =>
+  providerData.value ? null : (providerFetchError.value?.message ?? null),
+);
 
 const installed = computed(() => cloudflared.value?.installed ?? false);
 /** Whether any provider's binary is available; cloudflared alone until the
@@ -155,7 +168,9 @@ const filter = ref<ShareFilter>("all");
 // ── selection ──
 const selectedKey = ref<string | null>(null);
 const drawerOpen = ref(false);
-const selected = computed(() => items.value.find((i) => i.key === selectedKey.value) ?? null);
+/** The shares the list shows; only these can be selected. */
+const visible = computed(() => filterShares(items.value, filter.value));
+const selected = computed(() => visible.value.find((i) => i.key === selectedKey.value) ?? null);
 const selectedSite = computed(() => sites.value.find((s) => s.name === selected.value?.site));
 const selectedProvider = computed(
   () => providers.value.find((p) => p.provider === selected.value?.provider) ?? null,
@@ -165,13 +180,13 @@ const unshared = computed(() =>
   selected.value ? unsharedProviders(items.value, selected.value.site, providers.value) : [],
 );
 
+/** Keep the selection on a share the list shows: the wide layout falls back
+ *  to the first visible share, the compact one clears it. */
 watch(
-  [items, wide],
+  [visible, wide],
   ([list, isWide]) => {
-    if (!isWide) return;
-    if (!selectedKey.value || !list.some((i) => i.key === selectedKey.value)) {
-      selectedKey.value = list[0]?.key ?? null;
-    }
+    if (selectedKey.value && list.some((i) => i.key === selectedKey.value)) return;
+    selectedKey.value = isWide ? (list[0]?.key ?? null) : null;
   },
   { immediate: true },
 );
@@ -341,11 +356,18 @@ async function doDisableSite(site: string): Promise<void> {
 // ── per-site shares ──
 async function doShare(site: string, provider: TunnelProvider, randomUrl: boolean): Promise<boolean> {
   busy.value = `share:${provider}:${site}`;
+  const before = tunnels.value;
   try {
     const r = await startQuickTunnel(site, provider, randomUrl);
-    applyTunnelStatus(r);
+    const check = checkProviderStart(site, provider, before, r.tunnels);
+    const stopped = check.stopCloudflare ? await stopTunnel(site, "cloudflare").catch(() => null) : null;
+    applyTunnelStatus(stopped ?? r);
     void refreshDaemon();
     refreshProviders();
+    if (check.unsupported) {
+      toast.error(`Couldn't share ${site}`, unsupportedProviderMessage(provider));
+      return false;
+    }
     const started = r.tunnels.find(
       (t) => t.kind === "quick" && t.site === site && (t.provider ?? "cloudflare") === provider,
     );
@@ -412,6 +434,7 @@ async function onShare(request: ShareRequest): Promise<void> {
       : await doShare(request.site, request.provider, request.randomUrl);
   if (!ok) return;
   shareOpen.value = false;
+  if (filter.value !== "all" && filter.value !== request.provider) filter.value = "all";
   await nextTick();
   select(shareKey(request.provider, request.kind, request.site));
 }
@@ -604,7 +627,12 @@ const shareDisabled = computed(() => connected.value !== true || busy.value !== 
 
         <div class="flex h-full min-h-0" :data-layout="wide ? 'wide' : 'compact'">
           <div :class="wide ? 'flex w-[360px] shrink-0 flex-col pl-4 pt-4' : 'flex min-w-0 flex-1 flex-col pl-4 pt-4'">
-            <ShareProviderCards :providers="providers" @manage="toProviders()" />
+            <ShareProviderCards
+              :providers="providers"
+              :error="providersError"
+              @manage="toProviders()"
+              @retry="refreshProviders"
+            />
             <ShareList
               v-model:filter="filter"
               class="min-h-0 flex-1"
@@ -654,6 +682,7 @@ const shareDisabled = computed(() => connected.value !== true || busy.value !== 
       :sites="sites"
       :items="items"
       :providers="providers"
+      :providers-error="providersError"
       :default-provider="defaultProvider"
       :initial-site="shareInitialSite"
       :initial-provider="shareInitialProvider"
@@ -664,6 +693,7 @@ const shareDisabled = computed(() => connected.value !== true || busy.value !== 
       :locked="busy !== null || connected !== true"
       @share="onShare"
       @setup="toProviders"
+      @retry-providers="refreshProviders"
     />
 
     <TunnelProvidersDialog

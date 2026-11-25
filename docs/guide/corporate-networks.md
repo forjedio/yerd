@@ -76,7 +76,9 @@ KDE proxy settings are not read; set the proxy manually instead.
 
 Running the ngrok agent through a proxy is a paid ngrok feature: on a free
 plan, `ngrok` refuses to start (`ERR_NGROK_9009`) once Yerd fills in a proxy.
-Set the proxy mode to Off, or set your own proxy variables in that shell.
+The free plan needs a direct connection to ngrok: set the proxy mode to Off on a
+network that lets ngrok out without a proxy. Setting your own proxy variables
+in the shell doesn't help, since ngrok still goes through a proxy.
 
 Your sites' own PHP code (requests made by the app you are developing) is not
 changed.

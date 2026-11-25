@@ -69,16 +69,22 @@ const items = computed(() => PROVIDER_ORDER.map((provider) => ({ provider, statu
 const ngrok = computed(() => statusOf("ngrok"));
 const zrok = computed(() => statusOf("zrok"));
 
+let loadSeq = 0;
+
+/** Fetch the providers; only the most recent request's reply is applied. */
 async function load(): Promise<void> {
+  const seq = ++loadSeq;
   loading.value = true;
   try {
     const reply = await listTunnelProviders();
+    if (seq !== loadSeq) return;
     providers.value = reply.providers;
     defaultProvider.value = reply.default_provider;
   } catch (e) {
+    if (seq !== loadSeq) return;
     toast.error("Couldn't load tunnel providers", (e as IpcError).message);
   } finally {
-    loading.value = false;
+    if (seq === loadSeq) loading.value = false;
   }
 }
 
@@ -92,18 +98,24 @@ watch(
   { immediate: true },
 );
 
-/** Run one provider action under `key`, toast the outcome, then refetch. */
+/**
+ * Run one provider action under `key`, toast the outcome, then refetch. The
+ * action stays busy until the refetch settles so the panes never act on stale
+ * state.
+ */
 async function run(key: string, action: () => Promise<void>, done: string, failed: string): Promise<void> {
   actionBusy.value = key;
   try {
-    await action();
-    toast.success(done);
-  } catch (e) {
-    toast.error(failed, (e as IpcError).message);
+    try {
+      await action();
+      toast.success(done);
+    } catch (e) {
+      toast.error(failed, (e as IpcError).message);
+    }
+    await load();
   } finally {
     actionBusy.value = null;
   }
-  await load();
 }
 
 function saveToken(token: string): void {

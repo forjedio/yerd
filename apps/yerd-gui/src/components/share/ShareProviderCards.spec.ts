@@ -25,4 +25,12 @@ describe("ShareProviderCards", () => {
     const w = mount(ShareProviderCards, { props: { providers: [] } });
     expect(w.find('[data-testid="provider-card-cloudflare"]').exists()).toBe(false);
   });
+
+  it("shows a load failure with a Retry instead of the cards", async () => {
+    const w = mount(ShareProviderCards, { props: { providers: [], error: "daemon unreachable" } });
+    expect(w.get('[data-testid="providers-error"]').text()).toContain("daemon unreachable");
+    expect(w.find('[data-testid="provider-card-cloudflare"]').exists()).toBe(false);
+    await w.get('[data-testid="providers-retry"]').trigger("click");
+    expect(w.emitted("retry")).toHaveLength(1);
+  });
 });

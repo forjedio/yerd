@@ -268,6 +268,22 @@ describe("ShareSiteDialog", () => {
     ]);
   });
 
+  it("falls back to a random URL when the static domain is taken while open", async () => {
+    const w = mountDialog();
+    await flushPromises();
+    await pickProvider("ngrok");
+    await pickSite("blog");
+    expect(document.querySelector('[data-url="static"]')?.getAttribute("aria-checked")).toBe("true");
+    const holder = share({ key: "ngrok:quick:legacy", provider: "ngrok", site: "legacy", url: "https://demo.ngrok-free.app" });
+    await w.setProps({ items: [...ITEMS, holder] });
+    await flushPromises();
+    expect(document.querySelector('[data-url="random"]')?.getAttribute("aria-checked")).toBe("true");
+    submit().click();
+    expect(w.emitted("share")).toEqual([
+      [{ site: "blog", provider: "ngrok", kind: "quick", hostname: null, randomUrl: true }],
+    ]);
+  });
+
   it("notes when the site is already shared through another provider", async () => {
     mountDialog();
     await flushPromises();

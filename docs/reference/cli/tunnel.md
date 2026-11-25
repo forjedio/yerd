@@ -77,9 +77,11 @@ ngrok share for <site>: <reason>`. Through zrok, the machine must be enabled
 first (`yerd tunnel zrok enable`). A provider that isn't ready is an error that
 says what to set up; there is no fallback to another provider.
 
-The URL is temporary - it changes on the next share and is torn down on `stop`
-or daemon shutdown. Once online, a crashed quick tunnel is restarted
-automatically, but with a **new** URL; quick tunnels are never resumed after a
+Every share is torn down on `stop` or daemon shutdown. A temporary URL (a
+Cloudflare quick link, zrok, or ngrok without a saved static domain or with
+`--random-url`) changes on the next share, and a crashed share is restarted
+automatically, but with a **new** URL. An ngrok share on the saved static domain
+keeps that domain across shares and restarts. Shares are never resumed after a
 daemon restart. Sharing a site that is already shared (even one that is
 retrying) keeps the existing tunnel.
 
@@ -239,7 +241,7 @@ default for new shares: Cloudflare
 
 Saves the ngrok authtoken in Yerd's config, where it is handed to ngrok as
 `NGROK_AUTHTOKEN`. Omit the token to read it from stdin, which keeps it out of
-your shell history (on a terminal, Yerd prompts for it):
+your shell history (on a terminal, Yerd prompts for it without echoing what you type):
 
 ```sh
 pbpaste | yerd tunnel ngrok token

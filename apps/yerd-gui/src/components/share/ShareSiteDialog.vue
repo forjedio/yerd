@@ -40,7 +40,8 @@ export interface ShareRequest {
  * which follows the site until edited). ngrok offers its static domain, when
  * one is configured and free, or a random URL. zrok gives a new public URL
  * each start. A provider that is not ready replaces the URL choice with a
- * "Set up" call to action. While the share is in flight the dialog stays open
+ * "Set up" call to action, or with a Retry when the provider list failed to
+ * load. While the share is in flight the dialog stays open
  * and locked; the view closes it on success.
  */
 const props = defineProps<{
@@ -49,6 +50,8 @@ const props = defineProps<{
   /** Every current share, for the taken sites and the already-shared note. */
   items: ShareItem[];
   providers: TunnelProviderStatus[];
+  /** Why the provider list failed to load, when it did. */
+  providersError?: string | null;
   defaultProvider: TunnelProvider;
   initialSite?: string | null;
   initialProvider?: TunnelProvider | null;
@@ -66,6 +69,7 @@ const emit = defineEmits<{
   "update:open": [boolean];
   share: [request: ShareRequest];
   setup: [provider: TunnelProvider];
+  "retry-providers": [];
 }>();
 
 const provider = ref<TunnelProvider>("cloudflare");
@@ -120,6 +124,10 @@ watch([kind, provider], () => {
 watch(provider, (next) => {
   if (next !== "cloudflare") kind.value = "quick";
   resetUrlChoice();
+});
+
+watch(staticFree, (free) => {
+  if (!free && urlChoice.value === "static") urlChoice.value = "random";
 });
 
 watch([site, () => props.zone], ([name, zone]) => {
@@ -217,7 +225,8 @@ const OPTION_BTN =
           >
             <ProviderTile :provider="p" />
             <span class="text-[13px] font-semibold">{{ providerName(p) }}</span>
-            <span class="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span v-if="providersError" class="text-xs text-muted-foreground">Status unknown</span>
+            <span v-else class="flex items-center gap-1.5 text-xs text-muted-foreground">
               <span
                 :class="cn('size-1.5 shrink-0 rounded-full', readinessDot(statusOf(p)?.readiness ?? 'not_installed'))"
                 aria-hidden="true"
@@ -229,7 +238,21 @@ const OPTION_BTN =
       </div>
 
       <div
-        v-if="!providerReady"
+        v-if="providersError"
+        class="flex items-center gap-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3.5 py-3"
+        data-testid="providers-error"
+      >
+        <div class="min-w-0 flex-1">
+          <p class="text-[13px] font-semibold">Couldn't load tunnel providers</p>
+          <p class="mt-0.5 text-xs text-muted-foreground">{{ providersError }}</p>
+        </div>
+        <Button variant="outline" size="sm" :disabled="busy" data-testid="providers-retry" @click="emit('retry-providers')">
+          Retry
+        </Button>
+      </div>
+
+      <div
+        v-else-if="!providerReady"
         class="flex items-center gap-3 rounded-lg border border-warning/40 bg-warning/10 px-3.5 py-3"
         data-testid="provider-not-ready"
       >

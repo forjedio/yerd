@@ -62,6 +62,39 @@ export function siteShare(
   );
 }
 
+/** What a client does when a per-site start reply lacks the share it asked for. */
+export interface ProviderStartCheck {
+  /** The daemon ignored the requested provider: report an error, not success. */
+  unsupported: boolean;
+  /** Stop the site's Cloudflare share, since this start created it. */
+  stopCloudflare: boolean;
+}
+
+/**
+ * Check a `start_quick_tunnel` reply against the provider that was asked for.
+ * An older daemon ignores `provider` and starts a Cloudflare quick link, so a
+ * reply with no share of `site` through a non-Cloudflare `provider` is
+ * unsupported. The stray Cloudflare share is stopped only when `before` (the
+ * tunnel list ahead of the start, or null when unknown) shows it didn't exist.
+ */
+export function checkProviderStart(
+  site: string,
+  provider: TunnelProvider | undefined,
+  before: readonly TunnelInfo[] | null,
+  after: readonly TunnelInfo[],
+): ProviderStartCheck {
+  if (!provider || provider === "cloudflare" || siteShare(after, site, provider)) {
+    return { unsupported: false, stopCloudflare: false };
+  }
+  const created = before !== null && !siteShare(before, site, "cloudflare") && !!siteShare(after, site, "cloudflare");
+  return { unsupported: true, stopCloudflare: created };
+}
+
+/** The error a client shows when the daemon can't share through `provider`. */
+export function unsupportedProviderMessage(provider: TunnelProvider): string {
+  return `The running Yerd daemon doesn't support ${providerName(provider)} sharing yet - restart Yerd and try again`;
+}
+
 /** The single named tunnel instance the daemon supervises, in any state. */
 export function namedEntry(tunnels: readonly TunnelInfo[]): TunnelInfo | null {
   return tunnels.find((t) => t.kind === "named") ?? null;

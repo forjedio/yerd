@@ -7,11 +7,12 @@
 
 use std::fmt::Write as _;
 
+use yerd_core::tunnel_provider::TunnelProvider;
 use yerd_core::{PhpVersion, Site, SiteKind};
 use yerd_ipc::{
     Channel, CloudflaredStatus, Diagnosis, FixReport, PhpPoolStatus, PoolRunState, PortStatus,
     Request, Response, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteEntry,
-    StatusReport, ToolStatus, TunnelInfo, TunnelRunState, UpdateSource,
+    StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState, UpdateSource,
 };
 
 use crate::cli::{
@@ -896,6 +897,71 @@ fn tunnel_request(action: &TunnelAction) -> Result<Request, ClientError> {
         },
     };
     Ok(req)
+}
+
+/// What the CLI does when a `StartQuickTunnel` reply lacks the share it asked
+/// for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderStartCheck {
+    /// The daemon ignored the requested provider: report an error, not success.
+    pub unsupported: bool,
+    /// The site whose Cloudflare share this start created and must be stopped.
+    pub stop_cloudflare: Option<String>,
+}
+
+/// Whether `input` (a site name or `.test` host, as typed) names the site
+/// `name` the daemon reported.
+fn names_site(input: &str, name: &str) -> bool {
+    input == name
+        || input
+            .strip_prefix(name)
+            .is_some_and(|rest| rest.starts_with('.'))
+}
+
+fn has_share(tunnels: &[TunnelInfo], input: &str, provider: TunnelProvider) -> Option<String> {
+    tunnels
+        .iter()
+        .find(|t| {
+            t.kind == TunnelKind::Quick && t.provider == provider && names_site(input, &t.site)
+        })
+        .map(|t| t.site.clone())
+}
+
+/// Check a `StartQuickTunnel` reply against the provider that was asked for.
+/// An older daemon ignores `provider` and starts a Cloudflare quick link, so a
+/// reply with no share of `site` through a non-Cloudflare `provider` is
+/// unsupported. The stray Cloudflare share is stopped only when `before` (the
+/// `TunnelStatus` ahead of the start, or `None` when unknown) shows it didn't
+/// exist.
+#[must_use]
+pub fn check_provider_start(
+    site: &str,
+    provider: TunnelProvider,
+    before: Option<&[TunnelInfo]>,
+    after: &[TunnelInfo],
+) -> ProviderStartCheck {
+    if provider == TunnelProvider::Cloudflare || has_share(after, site, provider).is_some() {
+        return ProviderStartCheck {
+            unsupported: false,
+            stop_cloudflare: None,
+        };
+    }
+    let stop_cloudflare = before
+        .filter(|prior| has_share(prior, site, TunnelProvider::Cloudflare).is_none())
+        .and_then(|_| has_share(after, site, TunnelProvider::Cloudflare));
+    ProviderStartCheck {
+        unsupported: true,
+        stop_cloudflare,
+    }
+}
+
+/// The error shown when the running daemon can't share through `provider`.
+#[must_use]
+pub fn unsupported_provider_message(provider: TunnelProvider) -> String {
+    format!(
+        "The running Yerd daemon doesn't support {} sharing yet - restart Yerd and try again",
+        provider.display_name()
+    )
 }
 
 /// The stderr prompt for a token-taking tunnel action whose token was
@@ -2771,6 +2837,127 @@ mod tests {
             Request::EnableZrok { token: "zt".into() }
         );
         assert!(tunnel_secret_request(&TunnelAction::Providers, "x".into()).is_err());
+    }
+
+    fn share(site: &str, provider: TunnelProvider) -> TunnelInfo {
+        TunnelInfo {
+            site: site.into(),
+            provider,
+            hostname: None,
+            ..tunnel_info(yerd_ipc::TunnelKind::Quick, TunnelRunState::Running)
+        }
+    }
+
+    #[test]
+    fn check_provider_start_spots_a_daemon_that_ignored_the_provider() {
+        type Case = (
+            &'static str,
+            &'static str,
+            TunnelProvider,
+            Option<Vec<TunnelInfo>>,
+            Vec<TunnelInfo>,
+            ProviderStartCheck,
+        );
+        let cf = || share("app", TunnelProvider::Cloudflare);
+        let ngrok = || share("app", TunnelProvider::Ngrok);
+        let other = || share("blog", TunnelProvider::Cloudflare);
+        let ok = ProviderStartCheck {
+            unsupported: false,
+            stop_cloudflare: None,
+        };
+        let unsupported = |stop: Option<&str>| ProviderStartCheck {
+            unsupported: true,
+            stop_cloudflare: stop.map(str::to_owned),
+        };
+        let cases: Vec<Case> = vec![
+            (
+                "cloudflare asked",
+                "app",
+                TunnelProvider::Cloudflare,
+                Some(vec![]),
+                vec![cf()],
+                ok.clone(),
+            ),
+            (
+                "share present",
+                "app",
+                TunnelProvider::Ngrok,
+                Some(vec![]),
+                vec![cf(), ngrok()],
+                ok.clone(),
+            ),
+            (
+                "share present for a host",
+                "app.test",
+                TunnelProvider::Ngrok,
+                None,
+                vec![ngrok()],
+                ok.clone(),
+            ),
+            (
+                "old daemon created cloudflare",
+                "app",
+                TunnelProvider::Ngrok,
+                Some(vec![other()]),
+                vec![other(), cf()],
+                unsupported(Some("app")),
+            ),
+            (
+                "old daemon, host typed",
+                "app.test",
+                TunnelProvider::Zrok,
+                Some(vec![]),
+                vec![cf()],
+                unsupported(Some("app")),
+            ),
+            (
+                "cloudflare existed",
+                "app",
+                TunnelProvider::Ngrok,
+                Some(vec![cf()]),
+                vec![cf()],
+                unsupported(None),
+            ),
+            (
+                "prior list unknown",
+                "app",
+                TunnelProvider::Ngrok,
+                None,
+                vec![cf()],
+                unsupported(None),
+            ),
+            (
+                "nothing came back",
+                "app",
+                TunnelProvider::Zrok,
+                Some(vec![]),
+                vec![other()],
+                unsupported(None),
+            ),
+            (
+                "similar name is another site",
+                "application",
+                TunnelProvider::Ngrok,
+                Some(vec![]),
+                vec![ngrok()],
+                unsupported(None),
+            ),
+        ];
+        for (label, site, provider, before, after, want) in cases {
+            assert_eq!(
+                check_provider_start(site, provider, before.as_deref(), &after),
+                want,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_provider_message_names_the_provider() {
+        assert_eq!(
+            unsupported_provider_message(TunnelProvider::Zrok),
+            "The running Yerd daemon doesn't support zrok sharing yet - restart Yerd and try again"
+        );
     }
 
     fn provider_status(

@@ -31,6 +31,7 @@ pub mod mcp_cmd;
 #[cfg(unix)]
 pub mod node_cmd;
 pub mod path_cmd;
+pub mod secret;
 #[cfg(unix)]
 pub mod service_client_shim;
 #[cfg(unix)]
@@ -127,6 +128,16 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Tunnel {
             action: crate::cli::TunnelAction::Login,
         } if !cli.json => return stream_tunnel_job(yerd_ipc::Request::CloudflaredLogin).await,
+        Command::Tunnel {
+            action:
+                crate::cli::TunnelAction::Share {
+                    site,
+                    provider: Some(provider),
+                    ..
+                },
+        } if provider.provider() != yerd_core::tunnel_provider::TunnelProvider::Cloudflare => {
+            return run_provider_share(&cli.command, site, provider.provider(), cli.json).await;
+        }
         Command::Update {
             target: None,
             yes: true,
@@ -151,7 +162,7 @@ pub async fn run(cli: Cli) -> ExitCode {
             resolve_link(name_or_path.as_deref(), path.as_deref())
         }
         Command::Tunnel { action } if map::stdin_secret_prompt(action).is_some() => {
-            read_secret_line(map::stdin_secret_prompt(action).unwrap_or_default())
+            secret::read_secret_line(map::stdin_secret_prompt(action).unwrap_or_default())
                 .and_then(|token| map::tunnel_secret_request(action, token))
         }
         _ => map::to_request(&cli.command)
@@ -894,27 +905,61 @@ async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
     }
 }
 
-/// Read one secret line from stdin, prompting on stderr only when stdin is a
-/// terminal. The value is trimmed; EOF or an empty line is a usage error.
-fn read_secret_line(prompt: &str) -> Result<String, ClientError> {
-    use std::io::{BufRead as _, IsTerminal as _, Write as _};
-    let stdin = std::io::stdin();
-    if stdin.is_terminal() {
-        eprint!("{prompt}");
-        let _ = std::io::stderr().flush();
+/// `yerd tunnel share --provider ngrok|zrok`: start the share, guarding against
+/// an older daemon that ignores `provider` and starts Cloudflare instead. The
+/// tunnel list is read first so a Cloudflare share that start created can be
+/// stopped again, leaving one the user already had alone.
+async fn run_provider_share(
+    command: &Command,
+    site: &str,
+    provider: yerd_core::tunnel_provider::TunnelProvider,
+    json: bool,
+) -> ExitCode {
+    use yerd_ipc::{Request, Response};
+    let before = match transport::exchange(&Request::TunnelStatus).await {
+        Ok(Response::Tunnels { tunnels, .. }) => Some(tunnels),
+        _ => None,
+    };
+    let req = match map::to_request(command) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let resp = match transport::exchange(&req).await {
+        Ok(resp) => resp,
+        Err(e) if e.is_daemon_down() => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(69);
+        }
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(74);
+        }
+    };
+    if let Response::Tunnels { tunnels, .. } = &resp {
+        let check = map::check_provider_start(site, provider, before.as_deref(), tunnels);
+        if check.unsupported {
+            if let Some(name) = check.stop_cloudflare {
+                let stop = Request::StopTunnel {
+                    site: name,
+                    provider: Some(yerd_core::tunnel_provider::TunnelProvider::Cloudflare),
+                };
+                let _ = transport::exchange(&stop).await;
+            }
+            eprintln!("yerd: {}", map::unsupported_provider_message(provider));
+            return ExitCode::from(1);
+        }
     }
-    let mut line = String::new();
-    stdin
-        .lock()
-        .read_line(&mut line)
-        .map_err(|e| ClientError::Usage(format!("could not read the token from stdin: {e}")))?;
-    let token = line.trim();
-    if token.is_empty() {
-        return Err(ClientError::Usage(
-            "no token given - pass it as an argument or on stdin".to_owned(),
-        ));
+    let r = render_for(command, &resp, json);
+    if !r.stdout.is_empty() {
+        println!("{}", r.stdout);
     }
-    Ok(token.to_owned())
+    if !r.stderr.is_empty() {
+        eprintln!("{}", r.stderr);
+    }
+    ExitCode::from(r.code)
 }
 
 /// Best-effort: rewrite an `Unpark` request's path to its canonical form so a

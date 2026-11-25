@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   siteShare,
   canStartNamed,
+  checkProviderStart,
   cloudflaredLine,
   filterShares,
   hostPlaceholder,
@@ -23,6 +24,7 @@ import {
   suggestedHost,
   tunnelChip,
   unsharedProviders,
+  unsupportedProviderMessage,
 } from "./share";
 import type { CloudflaredStatus, TunnelInfo, TunnelProviderStatus } from "@/ipc/types";
 
@@ -159,6 +161,30 @@ describe("siteShare", () => {
     ["zrok", null],
   ] as const)("picks the %s share of the site", (provider, url) => {
     expect(siteShare(tunnels, "app", provider)?.url ?? null).toBe(url);
+  });
+});
+
+describe("checkProviderStart", () => {
+  const cf = quick("app");
+  const ngrok = quick("app", { provider: "ngrok" });
+  const other = quick("blog");
+
+  it.each([
+    ["cloudflare asked", "cloudflare", [], [cf], false, false],
+    ["no provider asked", undefined, [], [cf], false, false],
+    ["the asked share is present", "ngrok", [], [cf, ngrok], false, false],
+    ["an old daemon started a new Cloudflare share", "ngrok", [other], [other, cf], true, true],
+    ["the Cloudflare share already existed", "ngrok", [cf], [cf], true, false],
+    ["the prior list is unknown", "ngrok", null, [cf], true, false],
+    ["no Cloudflare share came back either", "zrok", [], [], true, false],
+  ] as const)("%s", (_label, provider, before, after, unsupported, stopCloudflare) => {
+    expect(checkProviderStart("app", provider, before, after)).toEqual({ unsupported, stopCloudflare });
+  });
+
+  it("names the provider in the error", () => {
+    expect(unsupportedProviderMessage("ngrok")).toBe(
+      "The running Yerd daemon doesn't support ngrok sharing yet - restart Yerd and try again",
+    );
   });
 });
 

@@ -69,11 +69,13 @@ import {
   sitesAndParked,
   listTunnelProviders,
   startQuickTunnel,
+  stopTunnel,
+  tunnelStatus,
   unlink,
   unpark,
 } from "@/ipc/client";
 import type { GroupsState, Site, SiteEntry } from "@/ipc/types";
-import { siteShare } from "@/lib/share";
+import { checkProviderStart, siteShare, unsupportedProviderMessage } from "@/lib/share";
 
 const toast = useToast();
 const operations = useOperations();
@@ -789,7 +791,9 @@ watch(sitesIntent, consumeIntent);
  * Publish a site over a Cloudflare Quick Tunnel. The tunnel is then managed
  * (and stopped) from the Integrations page; here we just kick it off and surface
  * the public URL. A missing `cloudflared` surfaces as a daemon error toast that
- * points at Integrations.
+ * points at Integrations. An older daemon that ignores the default provider and
+ * starts Cloudflare instead is reported as an error, and a Cloudflare share it
+ * created is stopped again.
  */
 const sharing = ref<string | null>(null);
 async function shareSitePublicly(s: Site): Promise<void> {
@@ -798,7 +802,19 @@ async function shareSitePublicly(s: Site): Promise<void> {
     const provider = await listTunnelProviders()
       .then((p) => p.default_provider)
       .catch(() => undefined);
+    const before =
+      provider && provider !== "cloudflare"
+        ? await tunnelStatus()
+            .then((t) => t.tunnels)
+            .catch(() => null)
+        : [];
     const r = await startQuickTunnel(s.name, provider);
+    const check = checkProviderStart(s.name, provider, before, r.tunnels);
+    if (check.stopCloudflare) await stopTunnel(s.name, "cloudflare").catch(() => undefined);
+    if (check.unsupported && provider) {
+      toast.error(`Couldn't share ${s.name}`, unsupportedProviderMessage(provider));
+      return;
+    }
     const entry = provider
       ? siteShare(r.tunnels, s.name, provider)
       : (r.tunnels.find((t) => t.site === s.name && t.kind === "quick") ?? null);
