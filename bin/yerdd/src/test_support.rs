@@ -169,6 +169,7 @@ pub fn state_in(tmp: &Path) -> DaemonState {
         tunnel_metrics_addr: Arc::new(crate::tunnel::pick_metrics_addr),
         tool_mutate: Mutex::new(()),
         tunnel_mutate: Mutex::new(()),
+        zrok_mutate: Mutex::new(()),
         php_mutate: Mutex::new(()),
         php_settings_mutate: Mutex::new(()),
         jobs: crate::jobs::JobRegistry::default(),

@@ -1,28 +1,29 @@
 # yerd-tunnel
 
-`yerd-tunnel` is the **Cloudflare Tunnel** support crate: it generates the
-`cloudflared` argument vectors and `config.yml`, parses `cloudflared`'s log
-output, probes its edge health, computes share preflight warnings, and
-supervises the long-running `cloudflared` child. It powers the user-facing
-[Sharing Sites](../../guide/sharing) feature.
+`yerd-tunnel` is the **tunnel provider** crate for Cloudflare
+(`cloudflared`), ngrok and zrok: it generates each agent's argument vectors and
+config, parses their log output, probes `cloudflared`'s edge health, computes
+share preflight warnings, and supervises the long-running tunnel children. It
+powers the user-facing [Sharing Sites](../../guide/sharing) feature.
 
 The crate is modeled on [`yerd-php`](./yerd-php) (not on the strictly-pure
-[`yerd-core`](./yerd-core)): the `origin`, `args`, `parse`, `config`, and
-`preflight` submodules are **pure** (sync, I/O-free, table-tested), while
+[`yerd-core`](./yerd-core)): the `origin`, `args`, `parse`, `config`,
+`providers` and `preflight` submodules are **pure** (sync, I/O-free, table-tested), while
 `manager` and `probe` are the **async I/O edge** that spawns, supervises, and
 health-checks the child behind injected traits. This keeps the supervised
 driver in a *library* (so the binaries stay thin) while the logic stays
 unit-testable.
 
 ::: info Crate metadata
-`description`: *Cloudflare Tunnel argument/config generation and supervised
-cloudflared lifecycle for Yerd.* `#![forbid(unsafe_code)]`. Depends only on
+`description`: *Tunnel provider (Cloudflare, ngrok, zrok) argument/config
+generation and supervised tunnel lifecycle for Yerd.* `#![forbid(unsafe_code)]`. Depends only on
 [`yerd-supervise`](./yerd-supervise) (the restart/health state machine and its
 `ProcessSpawner` / `ChildHandle` / `Clock` / `HealthProbe` traits),
 `async-trait`, and `thiserror`; the only async runtime is `tokio` (`time`,
 `macros`, `net`, `io-util`). It does **not** depend on any binary - the
-`cloudflared` installer (a regular tool in `yerdd`'s [tools subsystem](../dev-tools)),
-the Cloudflare-account flows, the per-instance driver task, and the tunnel origin
+`cloudflared`, `ngrok` and `zrok2` installers (regular tools in `yerdd`'s
+[tools subsystem](../dev-tools)), the Cloudflare-account flows, the zrok
+enable/disable commands, the provider readiness report, the per-instance driver task, and the tunnel origin
 listener live in [`yerdd`](../binaries/yerdd) and [`yerd-proxy`](./yerd-proxy),
 which call into this crate.
 :::
@@ -41,12 +42,13 @@ which preflight warnings apply) is synchronous and I/O-free; the only *effects*
 
 ```text
 src/
-├── lib.rs        # re-exports + TunnelKind
+├── lib.rs        # re-exports + TunnelKind (Quick, Named, Ngrok, Zrok)
 ├── origin.rs     # origin_url - http://127.0.0.1:<port>, the daemon's tunnel listener
 ├── args.rs       # cloudflared argv builders (quick_tunnel/named_run/login/create/route/delete/...)
 ├── config.rs     # render_ingress_config (one catch-all rule) + render_quick_config
 ├── parse.rs      # log scanners: parse_quick_url / last_error_line / find_auth_url / find_tunnel_id
-├── preflight.rs  # preflight(&ShareFacts) - share warnings (Vite hot file, SESSION_DOMAIN)
+├── providers.rs  # ngrok/zrok argv + ngrok.yml, URL and error parsers, version gate, redaction
+├── preflight.rs  # preflight(&ShareFacts) - share warnings (Vite hot file or no build, SESSION_DOMAIN)
 ├── probe.rs      # CloudflaredReadyProbe - GET /ready on the metrics server (io)
 ├── error.rs      # TunnelError
 └── manager.rs    # TunnelManager - the async supervised driver (the I/O edge)
@@ -56,7 +58,7 @@ src/
 
 ## Routing: a dedicated origin, no Host rewrite
 
-Every tunnel, quick or named, points `cloudflared` at the daemon's **tunnel
+Every tunnel, whatever the provider, points its agent at the daemon's **tunnel
 origin listener**: a loopback-only, plain-HTTP listener served by
 [`yerd-proxy`](./yerd-proxy)'s `serve_tunnel`, at the URL from
 `origin_url(port)`. That listener routes by the **public** `Host` through a
@@ -74,8 +76,22 @@ rewrite, no SNI, and no origin TLS options, and the tunnel doesn't depend on the
   the daemon, exposing or unexposing a site only changes DNS and the route map;
   the `cloudflared` process is never restarted for it.
 
+- **ngrok** - `ngrok_share_args(origin, config_path, static_domain)` runs
+  `ngrok http <origin> --config <path>`, adding `--url https://<domain>` for a
+  static domain. The `--config` file is Yerd's own `render_ngrok_config()`
+  (JSON logs to stdout; no web inspector, update check or console UI), so the user's `ngrok.yml`
+  is never read. The authtoken is never in argv: the daemon puts it in the
+  child's env as `NGROK_AUTHTOKEN` (`NGROK_AUTHTOKEN_ENV`).
+  `ngrok_version_supported` gates `--url` on `NGROK_MIN_VERSION` (3.16.0).
+- **zrok** - `zrok_share_args(origin)` runs `zrok2 share public <origin>
+  --headless --backend-mode proxy --force-local`, an ephemeral public share. The daemon pins `HOME` to its own zrok environment, which
+  `zrok_enable_args` / `zrok_disable_args` set up and tear down.
+
+ngrok and zrok forward the public `Host` unchanged, so the same origin listener
+and share passwords apply to them.
+
 The metrics address is not in argv: the manager sets `TUNNEL_METRICS=<addr>` in
-the child's environment on every spawn.
+a `cloudflared` child's environment on every spawn.
 
 ## The supervised driver
 
@@ -93,20 +109,30 @@ driver (a per-instance task in `yerdd`) calls `advance(key, generation)`,
 Every lock-hold is bounded (an FSM step plus a log read, or one stop grace), and
 no network I/O ever happens under the lock:
 
-- While **starting**, `advance` checks the child and, for a quick tunnel, scans
-  the log for the `*.trycloudflare.com` URL. When a health check is due it
+- While **starting**, `advance` checks the child and, for every kind but the
+  named tunnel, scans the log for the public URL: `parse_quick_url` for a quick
+  tunnel, `parse_ngrok_url` for ngrok (the `url` of a log record whose host is
+  the static domain or an ngrok domain) and `parse_zrok_url` for zrok (the URLs after
+  its headless banner). When a health check is due it
   returns `Step::Probe(addr)` without probing.
 - The driver runs `CloudflaredReadyProbe` against that address with no lock held
   (a `GET /ready` with a 500ms total timeout; `cloudflared` answers `200` while an
   edge connection is registered), then reports the outcome with
   `record_probe(key, generation, ok)`.
-- A starting tunnel becomes ready once the probe is OK (and, for quick, the URL
-  is known). `Step::Ready` is returned only on that transition.
+- A Cloudflare tunnel becomes ready once the probe is OK (and, for quick, the
+  URL is known). ngrok and zrok expose no health endpoint, so they are ready as
+  soon as their URL is logged (`TunnelKind::uses_ready_probe` /
+  `needs_url`). `Step::Ready` is returned only on that transition.
 - While **running**, every tick checks the child and probes again every
   `MONITOR_INTERVAL` (2s). A failed probe marks the edge down without a respawn;
   an exit feeds `Crashed` to the FSM (Failed, then a backoff respawn) and records
-  `last_error` from the exit reason plus the log's last `ERR` line
-  (`parse::last_error_line`).
+  `last_error` from the exit reason plus the log's last error in that agent's
+  format (`parse::last_error_line`, `last_ngrok_error`, `last_zrok_error`).
+
+For an ngrok instance the authtoken from its env is redacted (`redact`) from
+`last_error`, and its logfile is rewritten without the token on a crash, a
+readiness timeout and a stop. A logfile over 1 MiB is removed rather than
+rewritten.
 
 `snapshots()` reports a `TunnelState` through a pure `report_state(PoolState,
 ever_ready, edge_up)`:
@@ -143,9 +169,11 @@ monotonic counter and returns it as `Ok(Some(generation))`. `advance`,
 
 ## Preflight
 
-`preflight(&ShareFacts { vite_hot, dotenv, tld })` returns human-readable,
-non-blocking warnings, in a stable order: Vite's `hot` file in the served root,
-and a `SESSION_DOMAIN` in `.env` equal to or under the local TLD (handles
+`preflight(&ShareFacts { vite_hot, vite_unbuilt, dotenv, tld })` returns
+human-readable, non-blocking warnings, in a stable order: Vite's `hot` file in
+the served root (`VITE_HOT_WARNING`), otherwise a Laravel site (an `artisan`
+file) with a `vite.config.*` but no `build/manifest.json` in the served root
+(`VITE_UNBUILT_WARNING`), and a `SESSION_DOMAIN` in `.env` equal to or under the local TLD (handles
 `export `, quotes, inline comments, and blank/`null` as unset). The daemon
 gathers the facts when a share starts and caches the result per site.
 
@@ -169,11 +197,12 @@ pub use probe::CloudflaredReadyProbe;
 | `args::*` | pure | One argv builder per `cloudflared` invocation. |
 | `config::render_ingress_config(...)` / `render_quick_config()` | pure | The named catch-all `config.yml` and the ingress-free quick config. |
 | `parse::*` | pure | Log scanners (quick URL, last `ERR` line, auth URL, tunnel id). |
+| `providers::*` | pure | ngrok and zrok argv, `render_ngrok_config`, URL and error parsers, version parsing and the ngrok minimum, token redaction. |
 | `preflight(...)` / `ShareFacts` | pure | Share warnings from facts the daemon gathers. |
 | `probe::is_ok_status_line` | pure | Whether a status line is `HTTP/1.x 200`. |
 | `CloudflaredReadyProbe` | io | The `/ready` health probe (`yerd_supervise::HealthProbe`). |
 | `LaunchSpec` | - | Binary, args, pinned env, logfile, per-spawn metrics source, pidfile. |
-| `TunnelManager` | io | Supervise one `cloudflared` child per key via the shared FSM, generation-fenced. |
+| `TunnelManager` | io | Supervise one tunnel child per key (`<site>`, `@named`, `<site>@ngrok`, `<site>@zrok`) via the shared FSM, generation-fenced. |
 | `TunnelSnapshot` / `TunnelState` | - | Reported health, URL/hostname, generation, and `last_error`. |
-| `TunnelKind` | - | `Quick` vs `Named`. |
+| `TunnelKind` | - | `Quick`, `Named`, `Ngrok { static_domain }` or `Zrok`. |
 | `TunnelError` | - | The crate's error type (`thiserror`), including `ShuttingDown`. |

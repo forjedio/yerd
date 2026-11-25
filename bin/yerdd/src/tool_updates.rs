@@ -105,6 +105,14 @@ mod tests {
                 "https://api.github.com/repos/cloudflare/cloudflared/releases/latest",
                 CLOUDFLARED_RELEASE,
             )
+            .with(
+                "https://ngrok.com/download/archive/ngrok/ngrok-v3/stable/ngrok_archive",
+                crate::tools::ngrok::ARCHIVE_FIXTURE,
+            )
+            .with(
+                "https://api.github.com/repos/openziti/zrok/releases?per_page=30",
+                crate::tools::zrok::RELEASES_FIXTURE,
+            )
     }
 
     async fn listed(state: &DaemonState) -> Vec<yerd_ipc::ToolStatus> {
@@ -126,6 +134,8 @@ mod tests {
 
         assert_eq!(cached(&state, "composer").await.as_deref(), Some("2.8.12"));
         assert_eq!(cached(&state, "laravel").await, None);
+        assert_eq!(cached(&state, "ngrok").await, None);
+        assert_eq!(cached(&state, "zrok").await, None);
         let tools = listed(&state).await;
         assert_eq!(
             by_id(&tools, "composer").update_available.as_deref(),
@@ -205,6 +215,24 @@ mod tests {
         );
         let status = crate::tunnel::cloudflared_status(&state).await;
         assert_eq!(status.update_available.as_deref(), Some("2025.11.1"));
+    }
+
+    #[tokio::test]
+    async fn managed_ngrok_and_zrok_report_newer_releases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        mark_installed(&state, Tool::Ngrok, "3.39.12");
+        mark_installed(&state, Tool::Zrok, "v2.0.10");
+        poll_and_refresh(&state, &online()).await;
+        let tools = listed(&state).await;
+        for (id, want) in [("ngrok", "3.39.13"), ("zrok", "v2.0.11")] {
+            assert_eq!(cached(&state, id).await.as_deref(), Some(want), "{id}");
+            assert_eq!(
+                by_id(&tools, id).update_available.as_deref(),
+                Some(want),
+                "{id}"
+            );
+        }
     }
 
     #[tokio::test]

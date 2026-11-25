@@ -1,22 +1,34 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  siteShare,
   canStartNamed,
+  checkProviderStart,
+  CLEANUP_UNKNOWN_MESSAGE,
+  cleanupFailedMessage,
   cloudflaredLine,
+  filterShares,
   hostPlaceholder,
   isShareHostname,
+  kindDetail,
+  kindLabel,
   loginUrlFrom,
   namedWarningsFor,
+  ngrokDomainHolder,
   removeTunnelCopy,
   type ShareItem,
-  shareSections,
+  shareItems,
+  siblingShares,
   stateDotClass,
   stateLabel,
   statusDetail,
+  subtitle,
   suggestedHost,
   tunnelChip,
+  unsharedProviders,
+  unsupportedProviderMessage,
 } from "./share";
-import type { CloudflaredStatus, TunnelInfo } from "@/ipc/types";
+import type { CloudflaredStatus, TunnelInfo, TunnelProviderStatus } from "@/ipc/types";
 
 function quick(site: string, extra: Partial<TunnelInfo> = {}): TunnelInfo {
   return { site, kind: "quick", state: "running", url: `https://${site}-x.trycloudflare.com`, ...extra };
@@ -28,9 +40,11 @@ function named(state: TunnelInfo["state"], extra: Partial<TunnelInfo> = {}): Tun
 
 function item(overrides: Partial<ShareItem> = {}): ShareItem {
   return {
-    key: "quick:app",
+    key: "cloudflare:quick:app",
+    provider: "cloudflare",
     kind: "quick",
     site: "app",
+    staticDomain: false,
     url: null,
     host: null,
     state: "running",
@@ -43,36 +57,42 @@ function item(overrides: Partial<ShareItem> = {}): ShareItem {
 
 const managed: CloudflaredStatus = { installed: true, version: "2026.6.1", source: "managed", logged_in: true };
 
-describe("shareSections", () => {
-  it("groups quick links before the domain shares and omits empty groups", () => {
-    expect(shareSections([quick("app")], [], null).map((s) => s.kind)).toEqual(["quick"]);
-    expect(shareSections([], [{ site: "blog", hostname: "blog.dev" }], "dev").map((s) => s.kind)).toEqual([
-      "domain",
-    ]);
-    expect(shareSections([], [], "dev")).toEqual([]);
-    const both = shareSections([quick("app")], [{ site: "app", hostname: "app.dev" }], "dev");
-    expect(both.map((s) => s.items[0]?.key)).toEqual(["quick:app", "domain:app"]);
-  });
-
-  it.each([
-    ["forjed.io", "Your domain · forjed.io"],
-    [null, "Your domain"],
-  ])("labels the domain group for zone %s", (zone, label) => {
-    const [section] = shareSections([], [{ site: "a", hostname: "a.x" }], zone);
-    expect(section?.label).toBe(label);
-  });
-
-  it("builds quick items from the tunnel and never lists the named entry", () => {
-    const [section] = shareSections(
-      [quick("app", { protected: true, last_error: "edge", warnings: ["vite"] }), named("running")],
-      [],
-      null,
+describe("shareItems", () => {
+  it("orders by site, then provider, then quick before domain", () => {
+    const items = shareItems(
+      [
+        quick("zed", { provider: "zrok", url: "https://z.share.zrok.io" }),
+        quick("app", { provider: "ngrok", url: "https://a.ngrok-free.app" }),
+        quick("app"),
+        named("running"),
+      ],
+      [{ site: "app", hostname: "app.dev" }],
     );
-    expect(section?.items).toEqual([
+    expect(items.map((i) => i.key)).toEqual([
+      "cloudflare:quick:app",
+      "cloudflare:domain:app",
+      "ngrok:quick:app",
+      "zrok:quick:zed",
+    ]);
+    expect(shareItems([], [])).toEqual([]);
+  });
+
+  it("builds per-site items from the tunnel and never lists the named entry", () => {
+    const items = shareItems(
+      [
+        quick("app", { protected: true, last_error: "edge", warnings: ["vite"] }),
+        quick("shop", { provider: "ngrok", static_domain: true, url: "https://demo.ngrok-free.app" }),
+        named("running"),
+      ],
+      [],
+    );
+    expect(items).toEqual([
       {
-        key: "quick:app",
+        key: "cloudflare:quick:app",
+        provider: "cloudflare",
         kind: "quick",
         site: "app",
+        staticDomain: false,
         url: "https://app-x.trycloudflare.com",
         host: "app-x.trycloudflare.com",
         state: "running",
@@ -80,23 +100,27 @@ describe("shareSections", () => {
         lastError: "edge",
         warnings: ["vite"],
       },
+      expect.objectContaining({
+        key: "ngrok:quick:shop",
+        provider: "ngrok",
+        staticDomain: true,
+        host: "demo.ngrok-free.app",
+      }),
     ]);
-    const [waiting] = shareSections([quick("app", { url: undefined, state: "connecting" })], [], null);
-    expect(waiting?.items[0]).toMatchObject({ url: null, host: null, state: "connecting" });
+    const [waiting] = shareItems([quick("app", { url: undefined, state: "connecting" })], []);
+    expect(waiting).toMatchObject({ url: null, host: null, state: "connecting" });
   });
 
-  it("builds domain items by site name with the named entry's state", () => {
+  it("builds domain items with the named entry's state", () => {
     const sites = [
       { site: "zed", hostname: "zed.dev" },
       { site: "blog", hostname: "blog.dev", protected: true },
     ];
-    const [live] = shareSections(
-      [named("failed", { last_error: "boom", warnings: ["blog: pinned", "zed: other"] })],
-      sites,
-      "dev",
-    );
-    expect(live?.items.map((i) => i.site)).toEqual(["blog", "zed"]);
-    expect(live?.items[0]).toMatchObject({
+    const live = shareItems([named("failed", { last_error: "boom", warnings: ["blog: pinned", "zed: other"] })], sites);
+    expect(live.map((i) => i.site)).toEqual(["blog", "zed"]);
+    expect(live[0]).toMatchObject({
+      provider: "cloudflare",
+      kind: "domain",
       url: "https://blog.dev",
       host: "blog.dev",
       state: "failed",
@@ -104,8 +128,162 @@ describe("shareSections", () => {
       lastError: "boom",
       warnings: ["pinned"],
     });
-    const [offline] = shareSections([], sites, "dev");
-    expect(offline?.items[0]).toMatchObject({ state: "offline", lastError: null });
+    const [offline] = shareItems([], sites);
+    expect(offline).toMatchObject({ state: "offline", lastError: null });
+  });
+
+  it.each([
+    ["all", ["cloudflare:quick:app", "ngrok:quick:app", "zrok:quick:b"]],
+    ["ngrok", ["ngrok:quick:app"]],
+    ["zrok", ["zrok:quick:b"]],
+    ["cloudflare", ["cloudflare:quick:app"]],
+  ] as const)("filters by %s", (filter, keys) => {
+    const items = shareItems(
+      [quick("app"), quick("app", { provider: "ngrok" }), quick("b", { provider: "zrok" })],
+      [],
+    );
+    expect(filterShares(items, filter).map((i) => i.key)).toEqual(keys);
+  });
+});
+
+describe("siteShare", () => {
+  const quick = (site: string, provider?: "ngrok" | "zrok"): TunnelInfo => ({
+    site,
+    kind: "quick",
+    state: "running",
+    url: `https://${site}-${provider ?? "cf"}.example`,
+    ...(provider ? { provider } : {}),
+  });
+  const tunnels = [quick("app"), quick("app", "ngrok"), quick("blog", "ngrok")];
+
+  it.each([
+    ["ngrok", "https://app-ngrok.example"],
+    ["cloudflare", "https://app-cf.example"],
+    [undefined, "https://app-cf.example"],
+    ["zrok", null],
+  ] as const)("picks the %s share of the site", (provider, url) => {
+    expect(siteShare(tunnels, "app", provider)?.url ?? null).toBe(url);
+  });
+});
+
+describe("checkProviderStart", () => {
+  const cf = quick("app");
+  const ngrok = quick("app", { provider: "ngrok" });
+  const other = quick("blog");
+
+  const zrokBlog = quick("blog", { provider: "zrok" });
+  const shop = quick("shop");
+
+  it.each([
+    ["cloudflare asked", "cloudflare", [], [cf], false, null, false],
+    ["no provider asked", undefined, [], [cf], false, null, false],
+    ["the asked share is present", "ngrok", [], [cf, ngrok], false, null, false],
+    ["the share is present without a prior list", "ngrok", null, [ngrok], false, null, false],
+    ["another site shares through the provider", "zrok", [], [zrokBlog], false, null, false],
+    ["an old daemon started a new Cloudflare share", "ngrok", [other], [other, cf], true, "app", false],
+    ["the Cloudflare share already existed", "ngrok", [cf], [cf], true, null, false],
+    ["the prior list is unknown", "ngrok", null, [cf], true, null, true],
+    ["no Cloudflare share came back either", "zrok", [other], [other], true, null, false],
+    ["two new Cloudflare shares are ambiguous", "ngrok", [], [cf, shop], true, null, true],
+  ] as const)("%s", (_label, provider, before, after, unsupported, stopCloudflare, cleanupUnknown) => {
+    expect(checkProviderStart(provider, before, after)).toEqual({ unsupported, stopCloudflare, cleanupUnknown });
+  });
+
+  it("points at the Share page when the stray share is unknown", () => {
+    expect(CLEANUP_UNKNOWN_MESSAGE).toContain("check the Share page");
+  });
+
+  it("points at the Share page when cleanup fails", () => {
+    expect(cleanupFailedMessage("app")).toBe(
+      "app may still be public through its Cloudflare quick link - stop it on the Share page",
+    );
+  });
+
+  it("names the provider in the error", () => {
+    expect(unsupportedProviderMessage("ngrok")).toBe(
+      "The running Yerd daemon doesn't support ngrok sharing yet - restart Yerd and try again",
+    );
+  });
+});
+
+describe("provider-aware share helpers", () => {
+  it.each([
+    [item(), "Quick link", "Temporary trycloudflare.com URL"],
+    [item({ kind: "domain" }), "Your domain", "Stable hostname, survives restarts"],
+    [item({ provider: "ngrok", staticDomain: true }), "Reserved domain", "Your static ngrok domain"],
+    [item({ provider: "ngrok" }), "Account URL", "The address ngrok assigns to your account"],
+    [item({ provider: "zrok" }), "Public share", "New zrok URL each start"],
+  ])("labels %#", (share, label, detail) => {
+    expect(kindLabel(share)).toBe(label);
+    expect(kindDetail(share)).toBe(detail);
+  });
+
+  it("lists a site's siblings without the share itself", () => {
+    const a = item({ key: "cloudflare:quick:app" });
+    const b = item({ key: "ngrok:quick:app", provider: "ngrok" });
+    const c = item({ key: "zrok:quick:other", provider: "zrok", site: "other" });
+    expect(siblingShares([a, b, c], b)).toEqual([a]);
+    expect(siblingShares([c], c)).toEqual([]);
+  });
+
+  it("offers the providers a site isn't shared through, with readiness", () => {
+    const providers: TunnelProviderStatus[] = [
+      { provider: "cloudflare", readiness: "ready", configured: false },
+      { provider: "ngrok", readiness: "ready", configured: true },
+      { provider: "zrok", readiness: "needs_setup", configured: false },
+    ];
+    const items = [
+      item({ key: "ngrok:quick:app", provider: "ngrok" }),
+      item({ key: "cloudflare:domain:app", kind: "domain" }),
+    ];
+    expect(unsharedProviders(items, "app", providers)).toEqual([
+      { provider: "cloudflare", ready: true },
+      { provider: "zrok", ready: false },
+    ]);
+    expect(unsharedProviders([item()], "app", [])).toEqual([
+      { provider: "ngrok", ready: false },
+      { provider: "zrok", ready: false },
+    ]);
+  });
+
+  it.each([
+    ["demo.ngrok-free.app", "shop"],
+    ["Demo.Ngrok-Free.app", "shop"],
+    ["other.ngrok-free.app", null],
+    [null, null],
+  ])("finds who holds the static domain %s", (domain, holder) => {
+    const items = [
+      item({ provider: "ngrok", site: "shop", staticDomain: true, url: "https://demo.ngrok-free.app" }),
+      item({ provider: "ngrok", site: "blog", staticDomain: false, url: "https://other.ngrok-free.app" }),
+      item({ site: "app", url: "https://other.ngrok-free.app" }),
+    ];
+    expect(ngrokDomainHolder(items, domain)).toBe(holder);
+  });
+
+  it("counts a static-domain share whose URL isn't known yet as the holder", () => {
+    const items = [item({ provider: "ngrok", site: "shop", staticDomain: true, url: null, state: "connecting" })];
+    expect(ngrokDomainHolder(items, "demo.ngrok-free.app")).toBe("shop");
+  });
+
+  it.each([
+    [item(), "Sharing app.test over HTTPS · anyone with the link can reach it"],
+    [item({ kind: "domain" }), "Exposed through tunnel yerd · app.test over HTTPS"],
+    [
+      item({ provider: "ngrok", staticDomain: true }),
+      "Sharing app.test over HTTPS through ngrok · reserved domain",
+    ],
+    [item({ provider: "zrok" }), "Sharing app.test over HTTPS through zrok · public share"],
+  ])("subtitle %#", (share, text) => {
+    expect(subtitle(share, "app.test", "HTTPS", "yerd")).toBe(text);
+  });
+
+  it.each([
+    [item({ provider: "ngrok" }), { provider: "ngrok", readiness: "ready", configured: true, version: "3.18.4", source: "system" }, "ngrok 3.18.4 · Found on PATH"],
+    [item({ provider: "zrok" }), { provider: "zrok", readiness: "ready", configured: true, source: "managed" }, "zrok · Yerd's copy"],
+    [item({ provider: "zrok" }), null, "zrok"],
+    [item({ provider: "ngrok", lastError: "ngrok exited" }), null, "ngrok exited"],
+  ] as const)("statusDetail for ngrok and zrok %#", (share, status, detail) => {
+    expect(statusDetail(share, managed, true, status)).toBe(detail);
   });
 });
 

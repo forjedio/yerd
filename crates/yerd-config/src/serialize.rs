@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 use yerd_core::network::ProxyUrl;
+use yerd_core::tunnel_provider::TunnelProvider;
 
 use crate::{Config, ConfigError, CURRENT_VERSION};
 
@@ -198,12 +199,31 @@ struct DomainDeltaSer<'a> {
 
 #[derive(Serialize)]
 struct TunnelSectionSer<'a> {
+    // v32: scalar, so it must stay above the sub-tables.
+    #[serde(skip_serializing_if = "is_cloudflare")]
+    default_provider: TunnelProvider,
     #[serde(skip_serializing_if = "map_is_empty")]
     named: &'a BTreeMap<String, String>,
     #[serde(skip_serializing_if = "map_is_empty")]
     sites: &'a BTreeMap<String, String>,
     #[serde(skip_serializing_if = "map_is_empty")]
     passwords: &'a BTreeMap<String, String>,
+    // v32: `[tunnel.ngrok]`, skipped when neither key is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ngrok: Option<NgrokSer<'a>>,
+}
+
+#[derive(Serialize)]
+struct NgrokSer<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    authtoken: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    domain: Option<&'a str>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_cloudflare(p: &TunnelProvider) -> bool {
+    *p == TunnelProvider::Cloudflare
 }
 
 #[derive(Serialize)]
@@ -482,9 +502,18 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
             None
         } else {
             Some(TunnelSectionSer {
+                default_provider: c.tunnel.default_provider,
                 named: &c.tunnel.named,
                 sites: &c.tunnel.sites,
                 passwords: &c.tunnel.passwords,
+                ngrok: if c.tunnel.ngrok.is_empty() {
+                    None
+                } else {
+                    Some(NgrokSer {
+                        authtoken: c.tunnel.ngrok.authtoken.as_deref(),
+                        domain: c.tunnel.ngrok.domain.as_deref(),
+                    })
+                },
             })
         },
         groups: if c.groups.is_empty() {
@@ -685,8 +714,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 31\n"),
-            "expected `version = 31` first line; got: {s}"
+            s.starts_with("version = 32\n"),
+            "expected `version = 32` first line; got: {s}"
         );
     }
 
@@ -737,9 +766,15 @@ mod tests {
             named: BTreeMap::from([("mysite".to_owned(), "uuid-123".to_owned())]),
             sites: BTreeMap::from([("app".to_owned(), "app.example.com".to_owned())]),
             passwords: BTreeMap::from([("app".to_owned(), "secret".to_owned())]),
+            default_provider: TunnelProvider::Zrok,
+            ngrok: crate::NgrokSettings {
+                authtoken: Some("tok_123".to_owned()),
+                domain: Some("demo.ngrok-free.app".to_owned()),
+            },
         };
         let s = to_toml(&c).unwrap();
         assert!(s.contains("[tunnel.named]"), "must emit named table: {s}");
+        assert!(s.contains("[tunnel.ngrok]"), "must emit ngrok table: {s}");
         assert!(s.contains("[tunnel.sites]"), "must emit sites table: {s}");
         assert!(
             s.contains("[tunnel.passwords]"),
@@ -747,6 +782,37 @@ mod tests {
         );
         let back = Config::from_toml(&s).unwrap();
         assert_eq!(back, c);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn only_default_provider_emits_a_bare_tunnel_table() {
+        let mut c = Config::default();
+        c.tunnel.default_provider = TunnelProvider::Ngrok;
+        let s = to_toml(&c).unwrap();
+        assert!(
+            s.contains("[tunnel]\ndefault_provider = \"ngrok\"\n"),
+            "must emit the scalar under [tunnel]: {s}"
+        );
+        assert!(!s.contains("[tunnel.ngrok]"), "no ngrok table: {s}");
+        assert_eq!(Config::from_toml(&s).unwrap(), c);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn ngrok_settings_round_trip() {
+        let mut c = Config::default();
+        c.tunnel.ngrok.authtoken = Some("tok_123".to_owned());
+        let s = to_toml(&c).unwrap();
+        assert!(
+            s.contains("[tunnel.ngrok]\nauthtoken = \"tok_123\"\n"),
+            "must emit the ngrok table: {s}"
+        );
+        assert!(
+            !s.contains("default_provider"),
+            "cloudflare is omitted: {s}"
+        );
+        assert_eq!(Config::from_toml(&s).unwrap(), c);
     }
 
     #[test]

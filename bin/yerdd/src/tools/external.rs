@@ -379,6 +379,20 @@ mod tests {
     }
 
     #[test]
+    fn external_tool_resolves_tunnel_agents() {
+        for (tool, bin) in [(Tool::Ngrok, "ngrok"), (Tool::Zrok, "zrok2")] {
+            let tmp = tempfile::tempdir().unwrap();
+            let data = tmp.path().join("data");
+            let dir = tmp.path().join("opt");
+            std::fs::create_dir_all(&data).unwrap();
+            std::fs::create_dir_all(&dir).unwrap();
+            let want = touch_exec(&dir, bin);
+            let found = external_tool(&[dir], tool, &data.join("bin"), &data);
+            assert_eq!(found, Some(want), "{tool:?}");
+        }
+    }
+
+    #[test]
     fn shell_invocation_picks_interactive_login_flags() {
         assert_eq!(shell_invocation("/bin/zsh")[0], "-ilc");
         assert_eq!(shell_invocation("/usr/bin/bash")[0], "-ilc");

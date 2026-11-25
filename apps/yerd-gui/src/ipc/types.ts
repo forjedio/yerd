@@ -797,6 +797,11 @@ export type Response =
       cloudflared: CloudflaredStatus;
     }
   | {
+      type: "tunnel_providers";
+      providers: TunnelProviderStatus[];
+      default_provider: TunnelProvider;
+    }
+  | {
       type: "named_tunnels";
       tunnels: NamedTunnelMeta[];
       sites: SiteHostname[];
@@ -958,7 +963,7 @@ export interface TunnelInfo {
   site: string;
   kind: TunnelKind;
   state: TunnelRunState;
-  /** Public URL of a Quick tunnel once captured; absent otherwise. */
+  /** Public URL of a per-site share once captured; absent otherwise. */
   url?: string;
   /** Configured public hostname of a Named tunnel; absent otherwise. */
   hostname?: string;
@@ -968,6 +973,11 @@ export interface TunnelInfo {
   protected?: boolean;
   /** Preflight warnings computed when the share started; absent when none. */
   warnings?: string[];
+  /** The provider serving this share; absent means Cloudflare. ngrok and zrok
+   *  shares report kind `quick`. */
+  provider?: TunnelProvider;
+  /** Whether an ngrok share serves the configured static domain; absent means false. */
+  static_domain?: boolean;
 }
 
 /** crates/yerd-ipc/src/status.rs - CloudflaredSource. */
@@ -984,6 +994,32 @@ export interface CloudflaredStatus {
   logged_in: boolean;
   /** Newer published release of the Yerd-managed binary; absent for a PATH binary. */
   update_available?: string;
+}
+
+/** crates/yerd-core/src/tunnel_provider.rs - TunnelProvider. */
+export type TunnelProvider = "cloudflare" | "ngrok" | "zrok";
+
+/** crates/yerd-core/src/tunnel_provider.rs - ProviderReadiness. */
+export type ProviderReadiness = "not_installed" | "needs_setup" | "ready";
+
+/** crates/yerd-ipc/src/status.rs - TunnelProviderStatus. */
+export interface TunnelProviderStatus {
+  provider: TunnelProvider;
+  readiness: ProviderReadiness;
+  /** Binary version without a leading `v`, when known. */
+  version?: string;
+  /** Where the binary came from; absent when not installed. */
+  source?: CloudflaredSource;
+  /** Binary path, only for a copy found on PATH. */
+  path?: string;
+  /** Newer release of the Yerd-managed binary. */
+  update_available?: string;
+  /** Cloudflare: logged in; ngrok: token saved; zrok: enabled. */
+  configured: boolean;
+  /** ngrok only: the saved authtoken, masked. */
+  authtoken_hint?: string;
+  /** ngrok only: the saved static domain. */
+  domain?: string;
 }
 
 /** crates/yerd-ipc/src/status.rs - NamedTunnelMeta. */
@@ -1071,6 +1107,7 @@ export type JobStartedResponse = Extract<Response, { type: "job_started" }>;
 export type JobProgressResponse = Extract<Response, { type: "job_progress" }>;
 export type TunnelsResponse = Extract<Response, { type: "tunnels" }>;
 export type NamedTunnelsResponse = Extract<Response, { type: "named_tunnels" }>;
+export type TunnelProvidersResponse = Extract<Response, { type: "tunnel_providers" }>;
 export type GroupsResponse = Extract<Response, { type: "groups" }>;
 
 /** Privilege targets for the OS-elevated `yerd elevate` host command. */

@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use yerd_core::tunnel_provider::TunnelProvider;
 use yerd_core::{PhpVersion, XdebugMode, XdebugStart};
 
 // IMPORTANT: per-field serde renames are forbidden in this crate. Add
@@ -741,18 +742,32 @@ pub enum Request {
     /// [`super::Response::JobStarted`] immediately; progress is polled via
     /// [`Self::JobStatus`].
     InstallCloudflaredStreamed,
-    /// Start a Quick Tunnel for a site, publishing it at a random
-    /// `*.trycloudflare.com` URL. Replies [`super::Response::Tunnels`] with the
-    /// live tunnel (including its URL once captured). Requires `cloudflared` to be
-    /// installed.
+    /// Share a site through a tunnel provider: a Cloudflare Quick Tunnel at a
+    /// random `*.trycloudflare.com` URL, an ngrok share, or a zrok public
+    /// share. Replies [`super::Response::Tunnels`] with the live tunnels
+    /// (including this share's URL once captured). Requires the provider to be
+    /// installed and set up.
     StartQuickTunnel {
         /// The site name to share.
         site: String,
+        /// The provider to share through; absent means the configured default
+        /// provider.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<TunnelProvider>,
+        /// ngrok only: don't use the configured static domain; the share gets
+        /// the URL ngrok assigns to the account instead.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        random_url: bool,
     },
-    /// Stop and tear down the tunnel for a site. No-op if none is running.
+    /// Stop and tear down a site's share. No-op if none is running.
     StopTunnel {
-        /// The site whose tunnel to stop.
+        /// The site whose share to stop.
         site: String,
+        /// The provider whose share to stop; absent stops every per-site share
+        /// of the site (Cloudflare quick link, ngrok, zrok). The site's
+        /// named-tunnel mapping is never touched.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<TunnelProvider>,
     },
     /// Fetch the live tunnel state plus `cloudflared` install status. Returns
     /// [`super::Response::Tunnels`].
@@ -812,6 +827,39 @@ pub enum Request {
         site: String,
         /// The share password, or `None` to remove it.
         password: Option<String>,
+    },
+    /// List the tunnel providers with their readiness and settings. Returns
+    /// [`super::Response::TunnelProviders`].
+    ListTunnelProviders,
+    /// Save or clear the ngrok authtoken (`None` clears it). The token is
+    /// stored in the config and never echoed back. Replies
+    /// [`super::Response::Ok`].
+    SetNgrokAuthtoken {
+        /// The authtoken, or `None` to remove it.
+        authtoken: Option<String>,
+    },
+    /// Save or clear the ngrok static domain (`None` or an empty value clears
+    /// it). A scheme and trailing slash are stripped. Replies
+    /// [`super::Response::Ok`].
+    SetNgrokDomain {
+        /// The static domain, or `None` to remove it.
+        domain: Option<String>,
+    },
+    /// Enable this machine with a zrok account token in Yerd's own zrok
+    /// environment. The token is handed to zrok and never echoed back.
+    /// Replies [`super::Response::Ok`].
+    EnableZrok {
+        /// The zrok account token.
+        token: String,
+    },
+    /// Disable Yerd's zrok environment, releasing this machine from the zrok
+    /// account. Replies [`super::Response::Ok`].
+    DisableZrok,
+    /// Set the provider new shares use by default. Replies
+    /// [`super::Response::Ok`].
+    SetDefaultTunnelProvider {
+        /// The provider to use.
+        provider: TunnelProvider,
     },
     /// List the user-defined site groups (ordered) and per-site membership.
     /// Returns [`super::Response::Groups`]. Groups are a GUI organisational
@@ -1141,6 +1189,12 @@ mod variant_name_pinning {
             Request::StopNamedTunnel => {}
             Request::DeleteNamedTunnel { .. } => {}
             Request::SetTunnelPassword { .. } => {}
+            Request::ListTunnelProviders => {}
+            Request::SetNgrokAuthtoken { .. } => {}
+            Request::SetNgrokDomain { .. } => {}
+            Request::EnableZrok { .. } => {}
+            Request::DisableZrok => {}
+            Request::SetDefaultTunnelProvider { .. } => {}
             Request::ListGroups => {}
             Request::CreateGroup { .. } => {}
             Request::DeleteGroup { .. } => {}
@@ -1417,8 +1471,24 @@ mod variant_name_pinning {
         });
         pin(Request::StageUpdate { channel: None });
         pin(Request::InstallCloudflaredStreamed);
-        pin(Request::StartQuickTunnel { site: "app".into() });
-        pin(Request::StopTunnel { site: "app".into() });
+        pin(Request::StartQuickTunnel {
+            site: "app".into(),
+            provider: None,
+            random_url: false,
+        });
+        pin(Request::StartQuickTunnel {
+            site: "app".into(),
+            provider: Some(TunnelProvider::Ngrok),
+            random_url: true,
+        });
+        pin(Request::StopTunnel {
+            site: "app".into(),
+            provider: None,
+        });
+        pin(Request::StopTunnel {
+            site: "app".into(),
+            provider: Some(TunnelProvider::Zrok),
+        });
         pin(Request::TunnelStatus);
         pin(Request::CloudflaredLogin);
         pin(Request::CreateNamedTunnel {
@@ -1441,6 +1511,18 @@ mod variant_name_pinning {
         pin(Request::SetTunnelPassword {
             site: "app".into(),
             password: Some("secret".into()),
+        });
+        pin(Request::ListTunnelProviders);
+        pin(Request::SetNgrokAuthtoken {
+            authtoken: Some("tok".into()),
+        });
+        pin(Request::SetNgrokDomain {
+            domain: Some("demo.ngrok-free.app".into()),
+        });
+        pin(Request::EnableZrok { token: "t".into() });
+        pin(Request::DisableZrok);
+        pin(Request::SetDefaultTunnelProvider {
+            provider: TunnelProvider::Zrok,
         });
         pin(Request::ListGroups);
         pin(Request::CreateGroup {

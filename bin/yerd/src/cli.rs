@@ -136,7 +136,7 @@ pub enum Command {
     /// List local managed services and their status.
     Services,
     /// List installable dev tools (Composer, Node, Bun, pnpm, Laravel, WP-CLI,
-    /// cloudflared) and their install status.
+    /// cloudflared, ngrok, zrok) and their install status.
     Tools,
     /// Manage installed Node versions and defaults.
     Node {
@@ -784,16 +784,28 @@ pub enum ServiceAction {
 /// Action of `yerd tunnel`.
 #[derive(clap::Subcommand, Debug, Clone)]
 pub enum TunnelAction {
-    /// Share a site publicly via a Quick Tunnel (a random `*.trycloudflare.com`
-    /// URL). Requires `cloudflared` (`yerd install tool cloudflared`).
+    /// Share a site publicly through a tunnel provider: a Cloudflare quick
+    /// link (a random `*.trycloudflare.com` URL), ngrok, or zrok. Without
+    /// `--provider` the default provider is used (`yerd tunnel default`).
     Share {
         /// Site name (e.g. `app` or `app.test`).
         site: String,
+        /// The provider to share through.
+        #[arg(long, value_enum)]
+        provider: Option<TunnelProviderArg>,
+        /// ngrok only: don't use the configured static domain; the share gets
+        /// the URL ngrok assigns to the account instead.
+        #[arg(long)]
+        random_url: bool,
     },
-    /// Stop sharing a site.
+    /// Stop sharing a site. Without `--provider` every share of the site is
+    /// stopped, except its own-domain (named tunnel) mapping.
     Stop {
-        /// Site name whose tunnel to stop.
+        /// Site name whose share to stop.
         site: String,
+        /// Stop only the share through this provider.
+        #[arg(long, value_enum)]
+        provider: Option<TunnelProviderArg>,
     },
     /// Show live tunnels and `cloudflared` install status.
     Status,
@@ -850,6 +862,88 @@ pub enum TunnelAction {
     /// Stop the named tunnel until the daemon next starts (takes every named
     /// site offline). Clear every hostname to keep it offline across restarts.
     Unpublish,
+    /// Show tunnel providers, their readiness and settings.
+    Providers,
+    /// Configure ngrok (authtoken and static domain).
+    Ngrok {
+        /// The ngrok setting to change.
+        #[command(subcommand)]
+        action: NgrokAction,
+    },
+    /// Enable or disable this machine for zrok.
+    Zrok {
+        /// The zrok action.
+        #[command(subcommand)]
+        action: ZrokAction,
+    },
+    /// Set the provider new shares use by default.
+    Default {
+        /// The provider.
+        provider: TunnelProviderArg,
+    },
+}
+
+/// Action of `yerd tunnel ngrok`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum NgrokAction {
+    /// Save (or clear, with `--clear`) the ngrok authtoken. When the token is
+    /// omitted it is read from stdin, which keeps it out of shell history.
+    Token {
+        /// The authtoken. Read from stdin when omitted.
+        token: Option<String>,
+        /// Remove the saved authtoken instead of setting one.
+        #[arg(long, conflicts_with = "token")]
+        clear: bool,
+    },
+    /// Save (or clear, with `--clear`) the ngrok static domain.
+    Domain {
+        /// The static domain (`name.ngrok-free.app`). Required unless `--clear`
+        /// is given.
+        #[arg(required_unless_present = "clear")]
+        domain: Option<String>,
+        /// Remove the saved static domain instead of setting one.
+        #[arg(long, conflicts_with = "domain")]
+        clear: bool,
+    },
+}
+
+/// Action of `yerd tunnel zrok`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum ZrokAction {
+    /// Enable this machine with a zrok account token, in Yerd's own zrok
+    /// environment. When the token is omitted it is read from stdin.
+    Enable {
+        /// The zrok account token. Read from stdin when omitted.
+        token: Option<String>,
+    },
+    /// Disable Yerd's zrok environment, releasing this machine from the
+    /// account.
+    Disable,
+}
+
+/// A tunnel provider argument (`yerd tunnel default <provider>`,
+/// `--provider`).
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunnelProviderArg {
+    /// Cloudflare Tunnel.
+    Cloudflare,
+    /// ngrok.
+    Ngrok,
+    /// zrok.
+    Zrok,
+}
+
+impl TunnelProviderArg {
+    /// The wire provider.
+    #[must_use]
+    pub fn provider(self) -> yerd_core::tunnel_provider::TunnelProvider {
+        use yerd_core::tunnel_provider::TunnelProvider;
+        match self {
+            Self::Cloudflare => TunnelProvider::Cloudflare,
+            Self::Ngrok => TunnelProvider::Ngrok,
+            Self::Zrok => TunnelProvider::Zrok,
+        }
+    }
 }
 
 /// Action of `yerd db`.
@@ -1074,10 +1168,10 @@ pub enum UninstallTarget {
         version: String,
     },
     /// Uninstall a dev tool (`composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`,
-    /// `cloudflared`).
+    /// `cloudflared`, `ngrok`, `zrok`).
     Tool {
-        /// Tool id: `composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`, or
-        /// `cloudflared`.
+        /// Tool id: `composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`,
+        /// `cloudflared`, `ngrok`, or `zrok`.
         id: String,
     },
 }
@@ -1096,10 +1190,10 @@ pub enum InstallTarget {
         legacy: bool,
     },
     /// Install a dev tool (`composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`,
-    /// `cloudflared`) at its latest release.
+    /// `cloudflared`, `ngrok`, `zrok`) at its latest release.
     Tool {
-        /// Tool id: `composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`, or
-        /// `cloudflared`.
+        /// Tool id: `composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`,
+        /// `cloudflared`, `ngrok`, or `zrok`.
         id: String,
         /// Optional Node release selector, e.g. 24, v24.1.0, lts/* or lts/iron.
         version: Option<String>,
@@ -1320,5 +1414,117 @@ mod tests {
         assert!(
             Cli::try_parse_from(["yerd", "tunnel", "password", "app", "x", "--clear"]).is_err()
         );
+    }
+
+    #[test]
+    fn tunnel_provider_commands_parse() {
+        let cli = parse(&["yerd", "tunnel", "ngrok", "token", "--clear"]);
+        assert!(matches!(
+            cli.command,
+            Command::Tunnel {
+                action: TunnelAction::Ngrok {
+                    action: NgrokAction::Token {
+                        token: None,
+                        clear: true
+                    }
+                }
+            }
+        ));
+        let cli = parse(&["yerd", "tunnel", "ngrok", "token"]);
+        assert!(matches!(
+            cli.command,
+            Command::Tunnel {
+                action: TunnelAction::Ngrok {
+                    action: NgrokAction::Token {
+                        token: None,
+                        clear: false
+                    }
+                }
+            }
+        ));
+        let cli = parse(&["yerd", "tunnel", "default", "zrok"]);
+        assert!(matches!(
+            cli.command,
+            Command::Tunnel {
+                action: TunnelAction::Default {
+                    provider: TunnelProviderArg::Zrok
+                }
+            }
+        ));
+        let cli = parse(&["yerd", "tunnel", "zrok", "enable"]);
+        assert!(matches!(
+            cli.command,
+            Command::Tunnel {
+                action: TunnelAction::Zrok {
+                    action: ZrokAction::Enable { token: None }
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn tunnel_share_and_stop_take_a_provider() {
+        let cli = parse(&[
+            "yerd",
+            "tunnel",
+            "share",
+            "app",
+            "--provider",
+            "ngrok",
+            "--random-url",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Command::Tunnel {
+                action: TunnelAction::Share {
+                    provider: Some(TunnelProviderArg::Ngrok),
+                    random_url: true,
+                    ..
+                }
+            }
+        ));
+        let cli = parse(&["yerd", "tunnel", "stop", "app", "--provider", "zrok"]);
+        assert!(matches!(
+            cli.command,
+            Command::Tunnel {
+                action: TunnelAction::Stop {
+                    provider: Some(TunnelProviderArg::Zrok),
+                    ..
+                }
+            }
+        ));
+        let cli = parse(&["yerd", "tunnel", "share", "app"]);
+        assert!(matches!(
+            cli.command,
+            Command::Tunnel {
+                action: TunnelAction::Share {
+                    provider: None,
+                    random_url: false,
+                    ..
+                }
+            }
+        ));
+        assert!(
+            Cli::try_parse_from(["yerd", "tunnel", "share", "app", "--provider", "bogus"]).is_err()
+        );
+    }
+
+    #[test]
+    fn tunnel_provider_commands_reject_bad_input() {
+        for args in [
+            &["yerd", "tunnel", "ngrok", "domain"][..],
+            &[
+                "yerd",
+                "tunnel",
+                "ngrok",
+                "domain",
+                "x.ngrok.app",
+                "--clear",
+            ][..],
+            &["yerd", "tunnel", "ngrok", "token", "tok", "--clear"][..],
+            &["yerd", "tunnel", "default", "bogus"][..],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
+        }
     }
 }

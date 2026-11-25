@@ -33,7 +33,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 
 | Key         | TOML type            | Meaning                                                            | Default        |
 | ----------- | -------------------- | ----------------------------------------------------------------- | -------------- |
-| `version`   | integer              | On-disk schema version. **Mandatory**; written as `31` by this release. | `n/a (required)` |
+| `version`   | integer              | On-disk schema version. **Mandatory**; written as `32` by this release. | `n/a (required)` |
 | `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
 | `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
 | `update_channel` | string          | Self-update channel: `"stable"` or `"edge"`.                      | `"stable"`     |
@@ -49,7 +49,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 | `services`  | table                | Per-service `[services.<id>]` tables; every installed engine auto-starts on boot. | empty          |
 | `mail`      | table                | Built-in mail-capture SMTP server.                                | on / `2525`    |
 | `dumps`     | table                | Laravel ▸ Dumps telemetry settings.                               | off / `2304`   |
-| `tunnel`    | table                | Cloudflare Named Tunnel persistence.                              | empty          |
+| `tunnel`    | table                | Site sharing: Cloudflare named tunnels, share passwords, tunnel providers. | empty          |
 | `groups`    | table                | User-defined site groups and per-site membership.                 | empty          |
 | `domains`   | table                | Per-site and per-proxy domain sets (primary, aliases, subdomains, wildcards). | empty |
 | `proxies`   | array of tables      | Whole-host reverse proxies (`reverb.test` → an upstream URL).      | empty          |
@@ -67,7 +67,7 @@ The free-form maps are the exception, because their keys *are* the data. `[servi
 
 ### `version`
 
-The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `31`, and Yerd always writes `version = 31`. Older `version = 1` through `version = 30` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `32`, and Yerd always writes `version = 32`. Older `version = 1` through `version = 31` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
 
 ### `tld`
 
@@ -479,17 +479,22 @@ queries = false   # absent keys default to on; only the off ones need listing
 
 ### `[tunnel]`
 
-Persisted state for [sharing sites](../guide/sharing) through Cloudflare Tunnel. Three maps, all **empty by default** - the whole `[tunnel]` table is omitted from the file until you create a named tunnel, expose a site, or set a share password. Quick-tunnel state is never persisted (it lives only in the running daemon).
+Persisted state for [sharing sites](../guide/sharing): Cloudflare named tunnels, share passwords and the [tunnel providers](../guide/sharing#tunnel-providers). Everything is **empty or default by default** - the whole `[tunnel]` table is omitted from the file until you create a named tunnel, expose a site, set a share password, pick a default provider or configure ngrok. Quick-tunnel state is never persisted (it lives only in the running daemon).
 
-| Sub-table        | Shape                     | Meaning                                                        |
+| Key / sub-table  | Shape                     | Meaning                                                        |
 | ---------------- | ------------------------- | ------------------------------------------------------------- |
+| `default_provider` | `cloudflare` \| `ngrok` \| `zrok` | The provider new shares use. Default `cloudflare` (omitted from the file while it is). |
 | `[tunnel.named]` | map `name → uuid`         | The named tunnels created on your Cloudflare account.         |
 | `[tunnel.sites]` | map `site → hostname`     | Per-site public hostnames exposed through the named tunnel.   |
 | `[tunnel.passwords]` | map `site → password` | Per-site share passwords (HTTP basic auth, any username) for every tunnel kind. |
+| `[tunnel.ngrok]` | `authtoken`, `domain` (both optional strings) | The ngrok agent authtoken and an optional static domain as a bare hostname (`name.ngrok-free.app`). |
 
-Validation rejects empty keys/values (`TunnelEntryEmpty`), a `[tunnel.sites]` hostname that isn't a plausible DNS name (`TunnelHostnameInvalid`), any key or UUID containing path- or YAML-unsafe characters (`TunnelKeyInvalid`), and a password that is empty, longer than 128 bytes, or contains a control character (`TunnelPasswordInvalid`). Passwords are stored as plain text in the `0600` config file and are never returned over IPC; set them with `yerd tunnel password` rather than by hand. The account certificate and per-tunnel credentials are **not** stored here - they live in a daemon-owned `0700` directory, never in the config file.
+Validation rejects empty keys/values (`TunnelEntryEmpty`), a `[tunnel.sites]` hostname that isn't a plausible DNS name (`TunnelHostnameInvalid`), any key or UUID containing path- or YAML-unsafe characters (`TunnelKeyInvalid`), and a password that is empty, longer than 128 bytes, or contains a control character (`TunnelPasswordInvalid`). Passwords are stored as plain text in the `0600` config file and are never returned over IPC; set them with `yerd tunnel password` rather than by hand. A `[tunnel.ngrok]` authtoken must be 1-256 visible ASCII characters with no whitespace and not starting with `-` (`TunnelNgrokAuthtokenInvalid`), and its domain must be a plausible DNS name (`TunnelNgrokDomainInvalid`). The authtoken is plain text in the `0600` config file and only ever returned masked over IPC; set it with `yerd tunnel ngrok token` rather than by hand. The zrok account token is not stored here: zrok keeps it in its own environment under the data directory. The account certificate and per-tunnel credentials are **not** stored here - they live in a daemon-owned `0700` directory, never in the config file.
 
 ```toml
+[tunnel]
+default_provider = "ngrok"
+
 [tunnel.named]
 my-tunnel = "6ff42ae2-765d-4adf-8112-31c55c1551ef"
 
@@ -498,6 +503,10 @@ app = "app.example.com"
 
 [tunnel.passwords]
 app = "let-me-in"
+
+[tunnel.ngrok]
+authtoken = "2fXk..."
+domain = "demo.ngrok-free.app"
 ```
 
 While at least one `[tunnel.sites]` entry exists (and you are logged in with a tunnel created), the daemon starts the named tunnel on every launch. Clearing the last hostname stops it and keeps it off across restarts.
@@ -733,14 +742,14 @@ the desktop app's General settings.
 
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `31`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `32`.
 
 When the daemon loads a file, it routes on the version it finds:
 
 ```text
-found  > CURRENT (31)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (31)   →  parse directly
-found  < CURRENT (31)   →  walk forward migration steps, then parse
+found  > CURRENT (32)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (32)   →  parse directly
+found  < CURRENT (32)   →  walk forward migration steps, then parse
 ```
 
 A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
@@ -775,6 +784,7 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v28 → v29`** is a bare version bump: v29 only **added** the optional `[php.xdebug]` table (per-version bundled Xdebug settings), which defaults to empty when absent.
 - **`v29 → v30`** is a bare version bump: v30 only **added** the optional `[favourites]` table (starred sites), which defaults to empty when absent.
 - **`v30 → v31`** is a bare version bump: v31 only **added** the optional `[parked.claims]` map (suffix-stripped names held by parked folders), which defaults to empty when absent.
+- **`v31 → v32`** is a bare version bump: v32 only **added** `[tunnel] default_provider` and the optional `[tunnel.ngrok]` table, both of which default when absent.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 

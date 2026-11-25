@@ -220,7 +220,7 @@ pub async fn resume(state: Arc<DaemonState>, epoch: u64) {
     clippy::panic,
     clippy::indexing_slicing
 )]
-mod tests {
+pub(super) mod tests {
     use super::super::named::NAMED_KEY;
     use super::*;
     use crate::test_support::state_in;
@@ -232,7 +232,7 @@ mod tests {
 
     const STUB_HOST: &str = "stub-tunnel.trycloudflare.com";
 
-    const QUICK_STUB: &[u8] =
+    pub(crate) const QUICK_STUB: &[u8] =
         b"#!/bin/sh\necho 'INF |  https://stub-tunnel.trycloudflare.com  |' >&2\nexec sleep 60\n";
 
     const SILENT_STUB: &[u8] = b"#!/bin/sh\nexec sleep 60\n";
@@ -244,7 +244,7 @@ mod tests {
 
     const RESHARE_STUB: &[u8] = b"#!/bin/sh\nif [ -f \"$HOME/ran\" ]; then exit 1; fi\ntouch \"$HOME/ran\"\necho 'INF |  https://stub-tunnel.trycloudflare.com  |' >&2\nexec sleep 60\n";
 
-    async fn ready_listener() -> SocketAddr {
+    pub(crate) async fn ready_listener() -> SocketAddr {
         let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .await
             .unwrap();
@@ -263,7 +263,7 @@ mod tests {
         addr
     }
 
-    async fn stub_state(tmp: &std::path::Path, stub: &[u8]) -> Arc<DaemonState> {
+    pub(crate) async fn stub_state(tmp: &std::path::Path, stub: &[u8]) -> Arc<DaemonState> {
         let ready = ready_listener().await;
         let mut state = state_in(tmp);
         state.tunnel_origin_port = Some(1);
@@ -287,11 +287,11 @@ mod tests {
             .unwrap()
     }
 
-    async fn snapshots(state: &DaemonState) -> Vec<TunnelSnapshot> {
+    pub(crate) async fn snapshots(state: &DaemonState) -> Vec<TunnelSnapshot> {
         state.tunnel_manager.lock().await.snapshots()
     }
 
-    async fn poll_until(
+    pub(crate) async fn poll_until(
         state: &DaemonState,
         done: impl Fn(&[TunnelSnapshot]) -> bool,
     ) -> Vec<TunnelSnapshot> {
@@ -312,7 +312,7 @@ mod tests {
             .unwrap();
     }
 
-    async fn teardown(state: &DaemonState) {
+    pub(crate) async fn teardown(state: &DaemonState) {
         let _ = state.tunnel_manager.lock().await.shutdown().await;
     }
 
@@ -338,7 +338,7 @@ mod tests {
             yerd_tunnel::config::render_quick_config()
         );
 
-        let stopped = crate::tunnel::stop_tunnel("app", &state).await;
+        let stopped = crate::tunnel::stop_tunnel("app", None, &state).await;
 
         assert!(matches!(stopped, Response::Tunnels { .. }), "{stopped:?}");
         assert!(!state.tunnel_routes.read().await.contains_key(STUB_HOST));
@@ -356,9 +356,25 @@ mod tests {
         assert_eq!(settled, Settled::Running);
         assert!(state.tunnel_routes.read().await.contains_key(STUB_HOST));
 
-        crate::tunnel::stop_tunnel("app", &state).await;
+        crate::tunnel::stop_tunnel("app", None, &state).await;
 
         finished(launched.handle).await;
+        teardown(&state).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stopping_the_named_key_as_a_site_leaves_the_named_tunnel_running() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = stub_state(tmp.path(), QUICK_STUB).await;
+        launch_stub(&state, NAMED_KEY).await;
+
+        for provider in [
+            None,
+            Some(yerd_core::tunnel_provider::TunnelProvider::Cloudflare),
+        ] {
+            crate::tunnel::stop_tunnel(NAMED_KEY, provider, &state).await;
+            assert!(snapshots(&state).await.iter().any(|s| s.site == NAMED_KEY));
+        }
         teardown(&state).await;
     }
 
@@ -376,7 +392,7 @@ mod tests {
             })
         ));
 
-        crate::tunnel::stop_tunnel("app", &state).await;
+        crate::tunnel::stop_tunnel("app", None, &state).await;
         finished(launched.handle).await;
         assert!(crate::tunnel::lock_for_cloudflared_uninstall(&state)
             .await
@@ -469,7 +485,7 @@ mod tests {
         };
         poll_until(&state, |s| s.iter().any(|t| t.site == "app")).await;
 
-        crate::tunnel::stop_tunnel("app", &state).await;
+        crate::tunnel::stop_tunnel("app", None, &state).await;
 
         let resp = tokio::time::timeout(Duration::from_secs(10), starter)
             .await

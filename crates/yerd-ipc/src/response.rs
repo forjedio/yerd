@@ -8,13 +8,14 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use yerd_core::tunnel_provider::TunnelProvider;
 use yerd_core::{PhpVersion, Site, SiteFramework, XdebugSettings};
 
 use crate::dump::{DumpCounts, DumpEvent, DumpExtStatus};
 use crate::status::{
     AddableServiceType, CloudflaredStatus, DatabaseSummary, Diagnosis, FixReport, MailDetail,
     MailSummary, NamedTunnelMeta, ServiceAvailability, ServiceStatus, SiteHostname, StatusReport,
-    ToolStatus, TunnelInfo, WordPressVersionInfo,
+    ToolStatus, TunnelInfo, TunnelProviderStatus, WordPressVersionInfo,
 };
 
 // Same rule: no per-field serde renames.
@@ -474,6 +475,14 @@ pub enum Response {
         /// `cloudflared` install / account status.
         cloudflared: CloudflaredStatus,
     },
+    /// Reply to [`crate::Request::ListTunnelProviders`] - every tunnel
+    /// provider's readiness and settings, plus the default for new shares.
+    TunnelProviders {
+        /// One entry per provider, in display order.
+        providers: Vec<TunnelProviderStatus>,
+        /// The provider new shares use by default.
+        default_provider: TunnelProvider,
+    },
     /// Reply to [`crate::Request::ListNamedTunnels`] - the account's named
     /// tunnels recorded locally, plus the per-site hostname mappings that are
     /// enabled in the consolidated tunnel.
@@ -868,6 +877,7 @@ mod variant_name_pinning {
             Response::Staged { .. } => {}
             Response::Tunnels { .. } => {}
             Response::NamedTunnels { .. } => {}
+            Response::TunnelProviders { .. } => {}
             Response::Groups { .. } => {}
             Response::BrowserTrust { .. } => {}
             Response::Proxies { .. } => {}
@@ -1210,6 +1220,8 @@ mod variant_name_pinning {
                 last_error: None,
                 protected: false,
                 warnings: Vec::new(),
+                provider: yerd_core::tunnel_provider::TunnelProvider::Cloudflare,
+                static_domain: false,
             }],
             cloudflared: crate::status::CloudflaredStatus {
                 installed: true,
@@ -1218,6 +1230,20 @@ mod variant_name_pinning {
                 logged_in: false,
                 update_available: None,
             },
+        });
+        pin_response(Response::TunnelProviders {
+            providers: vec![crate::status::TunnelProviderStatus {
+                provider: TunnelProvider::Ngrok,
+                readiness: yerd_core::tunnel_provider::ProviderReadiness::Ready,
+                version: Some("3.18.4".into()),
+                source: Some(crate::status::CloudflaredSource::Managed),
+                path: None,
+                update_available: None,
+                configured: true,
+                authtoken_hint: Some("2fXk••••••••Qa".into()),
+                domain: None,
+            }],
+            default_provider: TunnelProvider::Cloudflare,
         });
         pin_response(Response::NamedTunnels {
             tunnels: vec![crate::status::NamedTunnelMeta {

@@ -7,8 +7,9 @@ import PageHeader from "@/components/PageHeader.vue";
 import CloudflareLoginDialog from "@/components/share/CloudflareLoginDialog.vue";
 import ShareInspector from "@/components/share/ShareInspector.vue";
 import ShareList from "@/components/share/ShareList.vue";
-import ShareSetupDialog from "@/components/share/ShareSetupDialog.vue";
+import ShareProviderCards from "@/components/share/ShareProviderCards.vue";
 import ShareSiteDialog, { type ShareRequest } from "@/components/share/ShareSiteDialog.vue";
+import TunnelProvidersDialog from "@/components/share/providers/TunnelProvidersDialog.vue";
 import AsyncState from "@/components/ui/AsyncState.vue";
 import Button from "@/components/ui/Button.vue";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
@@ -27,6 +28,7 @@ import {
   jobCancel,
   listNamedTunnels,
   listSites,
+  listTunnelProviders,
   openInBrowser,
   pollJobToEnd,
   routeTunnelDns,
@@ -37,14 +39,30 @@ import {
   stopTunnel,
   tunnelStatus,
 } from "@/ipc/client";
-import type { CloudflaredStatus, NamedTunnelMeta, Site, TunnelInfo } from "@/ipc/types";
+import type {
+  CloudflaredStatus,
+  NamedTunnelMeta,
+  Site,
+  TunnelInfo,
+  TunnelProvider,
+  TunnelProviderStatus,
+} from "@/ipc/types";
 import {
   canStartNamed,
+  checkProviderStart,
+  CLEANUP_UNKNOWN_MESSAGE,
+  cleanupFailedMessage,
+  filterShares,
   loginUrlFrom,
   namedEntry,
   removeTunnelCopy,
+  type ShareFilter,
+  type ShareItem,
+  shareItems,
   shareKey,
-  shareSections,
+  siblingShares,
+  unsharedProviders,
+  unsupportedProviderMessage,
 } from "@/lib/share";
 import { copyUrlWithToast } from "@/lib/toastActions";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
@@ -54,7 +72,8 @@ const { connected, report, refresh: refreshDaemon } = useDaemon();
 const router = useRouter();
 const wide = useWideLayout();
 
-/** A long-running action in flight, e.g. `share:app`, `stop:app` or `create`. */
+/** A long-running action in flight, e.g. `share:ngrok:app`, `stop:ngrok:app`,
+ *  `enable:app` or `create`. */
 const busy = ref<string | null>(null);
 
 const tld = computed(() => report.value?.tld ?? "test");
@@ -85,7 +104,33 @@ const namedSites = computed(() => data.value?.named.sites ?? []);
 /** The authorized Cloudflare zone, once resolved from the account cert. */
 const authorizedDomain = computed(() => data.value?.named.zone ?? null);
 
+/** Provider readiness for the cards, the dialog and the inspector. Not part of
+ *  the 5 s poll, since a PATH copy's version probe runs on every fetch; it is
+ *  refreshed after the providers sheet closes and after each share or stop. */
+const {
+  data: providerData,
+  refresh: refreshProviderData,
+  error: providerFetchError,
+} = useResource("tunnel-providers", listTunnelProviders);
+const providers = computed<TunnelProviderStatus[]>(() => providerData.value?.providers ?? []);
+const defaultProvider = computed<TunnelProvider>(() => providerData.value?.default_provider ?? "cloudflare");
+
+function refreshProviders(): void {
+  void refreshProviderData({ force: true });
+}
+
+/** Why the provider list couldn't load, while there is no list to show. A
+ *  failed revalidation over a loaded list keeps the list. */
+const providersError = computed(() =>
+  providerData.value ? null : (providerFetchError.value?.message ?? null),
+);
+
 const installed = computed(() => cloudflared.value?.installed ?? false);
+/** Whether any provider's binary is available; cloudflared alone until the
+ *  provider list has loaded. */
+const anyInstalled = computed(() =>
+  providers.value.length ? providers.value.some((p) => p.readiness !== "not_installed") : installed.value,
+);
 const loggedIn = computed(() => cloudflared.value?.logged_in ?? false);
 const entry = computed(() => namedEntry(tunnels.value));
 const exposedSites = computed(() => namedSites.value.map((s) => s.site));
@@ -119,23 +164,31 @@ async function reload(): Promise<void> {
   await refresh({ force: true });
 }
 
-const sections = computed(() => shareSections(tunnels.value, namedSites.value, authorizedDomain.value));
-const items = computed(() => sections.value.flatMap((s) => s.items));
-const quickSites = computed(() => tunnels.value.filter((t) => t.kind === "quick").map((t) => t.site));
+const items = computed(() => shareItems(tunnels.value, namedSites.value));
+const filter = ref<ShareFilter>("all");
 
 // ── selection ──
 const selectedKey = ref<string | null>(null);
 const drawerOpen = ref(false);
-const selected = computed(() => items.value.find((i) => i.key === selectedKey.value) ?? null);
+/** The shares the list shows; only these can be selected. */
+const visible = computed(() => filterShares(items.value, filter.value));
+const selected = computed(() => visible.value.find((i) => i.key === selectedKey.value) ?? null);
 const selectedSite = computed(() => sites.value.find((s) => s.name === selected.value?.site));
+const selectedProvider = computed(
+  () => providers.value.find((p) => p.provider === selected.value?.provider) ?? null,
+);
+const siblings = computed(() => (selected.value ? siblingShares(items.value, selected.value) : []));
+const unshared = computed(() =>
+  selected.value ? unsharedProviders(items.value, selected.value.site, providers.value) : [],
+);
 
+/** Keep the selection on a share the list shows: the wide layout falls back
+ *  to the first visible share, the compact one clears it. */
 watch(
-  [items, wide],
+  [visible, wide],
   ([list, isWide]) => {
-    if (!isWide) return;
-    if (!selectedKey.value || !list.some((i) => i.key === selectedKey.value)) {
-      selectedKey.value = list[0]?.key ?? null;
-    }
+    if (selectedKey.value && list.some((i) => i.key === selectedKey.value)) return;
+    selectedKey.value = isWide ? (list[0]?.key ?? null) : null;
   },
   { immediate: true },
 );
@@ -302,20 +355,36 @@ async function doDisableSite(site: string): Promise<void> {
   }
 }
 
-// ── quick links ──
-async function doShare(site: string): Promise<boolean> {
-  busy.value = `share:${site}`;
+// ── per-site shares ──
+async function doShare(site: string, provider: TunnelProvider, randomUrl: boolean): Promise<boolean> {
+  busy.value = `share:${provider}:${site}`;
+  const before = tunnels.value;
   try {
-    const r = await startQuickTunnel(site);
-    applyTunnelStatus(r);
+    const r = await startQuickTunnel(site, provider, randomUrl);
+    const check = checkProviderStart(provider, before, r.tunnels);
+    const stray = check.stopCloudflare;
+    const stopped = stray ? await stopTunnel(stray, "cloudflare").catch(() => null) : null;
+    applyTunnelStatus(stopped ?? r);
     void refreshDaemon();
-    const started = r.tunnels.find((t) => t.kind === "quick" && t.site === site);
+    refreshProviders();
+    if (check.unsupported) {
+      toast.error(`Couldn't share ${site}`, unsupportedProviderMessage(provider));
+      if (stray && !stopped) toast.error(`Couldn't stop the Cloudflare share of ${stray}`, cleanupFailedMessage(stray));
+      if (check.cleanupUnknown) toast.error("Check your Cloudflare shares", CLEANUP_UNKNOWN_MESSAGE);
+      return false;
+    }
+    const started = r.tunnels.find(
+      (t) => t.kind === "quick" && t.site === site && (t.provider ?? "cloudflare") === provider,
+    );
     if (started?.url) {
       toast.success(`Sharing ${site}`, started.url);
     } else if (started?.state === "failed") {
       toast.info(`Sharing ${site}`, started.last_error ?? "Retrying");
     } else {
       toast.success(`Sharing ${site}`, "Connecting - the URL appears once it's online");
+    }
+    if (started?.warnings?.length) {
+      toast.info(`Check ${site} while it's shared`, started.warnings.join("\n"), 10000);
     }
     return true;
   } catch (e) {
@@ -326,12 +395,14 @@ async function doShare(site: string): Promise<boolean> {
   }
 }
 
-async function doStop(site: string): Promise<void> {
-  busy.value = `stop:${site}`;
+async function doStop(item: ShareItem): Promise<void> {
+  const { site, provider } = item;
+  busy.value = `stop:${provider}:${site}`;
   try {
-    const r = await stopTunnel(site);
+    const r = await stopTunnel(site, provider);
     applyTunnelStatus(r);
     void refreshDaemon();
+    refreshProviders();
     toast.success(`Stopped sharing ${site}`);
   } catch (e) {
     toast.error(`Couldn't stop ${site}`, (e as IpcError).message);
@@ -342,6 +413,23 @@ async function doStop(site: string): Promise<void> {
 
 // ── Share a site ──
 const shareOpen = ref(false);
+const shareInitialSite = ref<string | null>(null);
+const shareInitialProvider = ref<TunnelProvider | null>(null);
+
+/** Open Share a site, preselecting a site and provider when given. */
+function openShare(site: string | null = null, provider: TunnelProvider | null = null): void {
+  shareInitialSite.value = site;
+  shareInitialProvider.value = provider;
+  shareOpen.value = true;
+}
+
+/** "Also share through <provider>" from the inspector: close the drawer, then
+ *  open the dialog on the selected site and that provider. */
+function alsoShare(provider: TunnelProvider): void {
+  const site = selected.value?.site ?? null;
+  drawerOpen.value = false;
+  void nextTick(() => openShare(site, provider));
+}
 const shareInFlight = computed(
   () => !!busy.value && (busy.value.startsWith("share:") || busy.value.startsWith("enable:")),
 );
@@ -349,37 +437,59 @@ const shareInFlight = computed(
 /** Run the dialog's share; on success close it and select the new share. */
 async function onShare(request: ShareRequest): Promise<void> {
   const ok =
-    request.kind === "quick"
-      ? await doShare(request.site)
-      : await doEnableSite(request.site, request.hostname ?? "");
+    request.provider === "cloudflare" && request.kind === "domain"
+      ? await doEnableSite(request.site, request.hostname ?? "")
+      : await doShare(request.site, request.provider, request.randomUrl);
   if (!ok) return;
   shareOpen.value = false;
+  if (filter.value !== "all" && filter.value !== request.provider) filter.value = "all";
   await nextTick();
-  select(shareKey(request.kind, request.site));
+  select(shareKey(request.provider, request.kind, request.site));
 }
 
-// ── Setup ──
-const setupOpen = ref(false);
+// ── Providers ──
+const providersOpen = ref(false);
+const providersInitial = ref<TunnelProvider | null>(null);
 
-/** Close Setup, then open the next dialog, so two dialogs never stack. */
-function fromSetup(next: () => void): void {
-  setupOpen.value = false;
+function openProviders(initial: TunnelProvider | null = null): void {
+  providersInitial.value = initial;
+  providersOpen.value = true;
+}
+
+/** Close any open dialog or drawer, then open the Providers sheet on `initial`,
+ *  so two dialogs never stack (the sibling of `fromProviders`). */
+function toProviders(initial: TunnelProvider | null = null): void {
+  shareOpen.value = false;
+  drawerOpen.value = false;
+  void nextTick(() => openProviders(initial));
+}
+
+/** Close the Providers sheet, then open the next dialog, so two dialogs never stack. */
+function fromProviders(next: () => void): void {
+  providersOpen.value = false;
   void nextTick(next);
 }
 
-function onSetupTooling(): void {
-  fromSetup(goToTooling);
+function onProvidersTooling(): void {
+  fromProviders(goToTooling);
 }
 
-function onSetupLogin(): void {
-  fromSetup(() => void doLogin());
+function onProvidersLogin(): void {
+  fromProviders(() => void doLogin());
 }
 
-function onSetupRemove(): void {
-  fromSetup(() => {
+function onProvidersRemove(): void {
+  fromProviders(() => {
     deleteOpen.value = true;
   });
 }
+
+/** Reload once the sheet closes, so the page reflects provider changes. */
+watch(providersOpen, (open) => {
+  if (open) return;
+  void reload();
+  refreshProviders();
+});
 
 // ── share passwords ──
 const passwordOpen = ref(false);
@@ -444,7 +554,7 @@ onUnmounted(() => {
 });
 onUnmounted(registerViewActions({ refresh: () => void reload() }));
 
-const shareDisabled = computed(() => !installed.value || connected.value !== true || busy.value !== null);
+const shareDisabled = computed(() => connected.value !== true || busy.value !== null);
 </script>
 
 <template>
@@ -456,25 +566,25 @@ const shareDisabled = computed(() => !installed.value || connected.value !== tru
           variant="outline"
           size="sm"
           :disabled="!data"
-          data-testid="open-setup"
-          @click="setupOpen = true"
+          data-testid="open-providers"
+          @click="openProviders()"
         >
-          <SlidersHorizontal /> Setup
+          <SlidersHorizontal /> Providers
         </Button>
         <Button
           v-else
           variant="outline"
           size="icon"
           class="size-8"
-          aria-label="Setup"
-          title="Setup"
+          aria-label="Providers"
+          title="Providers"
           :disabled="!data"
-          data-testid="open-setup"
-          @click="setupOpen = true"
+          data-testid="open-providers"
+          @click="openProviders()"
         >
           <SlidersHorizontal />
         </Button>
-        <Button size="sm" :disabled="shareDisabled" data-testid="open-share" @click="shareOpen = true">
+        <Button size="sm" :disabled="shareDisabled" data-testid="open-share" @click="openShare()">
           <Plus /> Share a site
         </Button>
       </template>
@@ -484,19 +594,19 @@ const shareDisabled = computed(() => !installed.value || connected.value !== tru
       <AsyncState
         :loading="loading && !data"
         :error="error"
-        :empty="!installed || !sections.length"
+        :empty="!anyInstalled || !items.length"
         pad="py-16"
         @retry="reload"
       >
         <template #empty>
           <div class="flex h-full flex-col items-center justify-center px-6 py-16 text-center" data-testid="share-empty">
-            <template v-if="!installed">
+            <template v-if="!anyInstalled">
               <span class="flex size-11 items-center justify-center rounded-xl border bg-card text-muted-foreground">
                 <CloudDownload class="size-5" aria-hidden="true" />
               </span>
-              <p class="mt-4 text-[15px] font-semibold">Sharing needs cloudflared</p>
+              <p class="mt-4 text-[15px] font-semibold">Sharing needs a tunnel provider</p>
               <p class="mt-1.5 max-w-sm text-[13px] text-muted-foreground">
-                Install it from Tooling. No Cloudflare account needed for quick links.
+                Install cloudflared, ngrok or zrok from Tooling.
               </p>
               <Button
                 size="sm"
@@ -516,7 +626,7 @@ const shareDisabled = computed(() => !installed.value || connected.value !== tru
               <p class="mt-1.5 max-w-sm text-[13px] text-muted-foreground">
                 Share a site to get a public URL you can send to anyone.
               </p>
-              <Button size="sm" class="mt-5" :disabled="shareDisabled" @click="shareOpen = true">
+              <Button size="sm" class="mt-5" :disabled="shareDisabled" @click="openShare()">
                 <Plus /> Share a site
               </Button>
             </template>
@@ -525,10 +635,17 @@ const shareDisabled = computed(() => !installed.value || connected.value !== tru
 
         <div class="flex h-full min-h-0" :data-layout="wide ? 'wide' : 'compact'">
           <div :class="wide ? 'flex w-[360px] shrink-0 flex-col pl-4 pt-4' : 'flex min-w-0 flex-1 flex-col pl-4 pt-4'">
+            <ShareProviderCards
+              :providers="providers"
+              :error="providersError"
+              @manage="toProviders()"
+              @retry="refreshProviders"
+            />
             <ShareList
-              class="flex-1"
+              v-model:filter="filter"
+              class="min-h-0 flex-1"
               :layout="wide ? 'list' : 'table'"
-              :sections="sections"
+              :items="items"
               :selected="selectedKey"
               @select="select"
             />
@@ -543,12 +660,17 @@ const shareDisabled = computed(() => !installed.value || connected.value !== tru
               :tld="tld"
               :tunnel-name="tunnel?.name ?? null"
               :cloudflared="cloudflared"
+              :provider-status="selectedProvider"
+              :siblings="siblings"
+              :unshared="unshared"
               :can-restart="canStart"
               :logged-in="loggedIn"
               :busy="busy"
               :connected="connected === true"
               @close="drawerOpen = false"
-              @stop="selected && doStop(selected.site)"
+              @stop="selected && doStop(selected)"
+              @also-share="alsoShare"
+              @open-sibling="openExternal"
               @remove-from-domain="selected && doDisableSite(selected.site)"
               @restart="doStartNamed"
               @password="selected && askPassword(selected.site, selected.protected)"
@@ -566,18 +688,24 @@ const shareDisabled = computed(() => !installed.value || connected.value !== tru
     <ShareSiteDialog
       v-model:open="shareOpen"
       :sites="sites"
-      :quick-sites="quickSites"
-      :domain-sites="exposedSites"
+      :items="items"
+      :providers="providers"
+      :providers-error="providersError"
+      :default-provider="defaultProvider"
+      :initial-site="shareInitialSite"
+      :initial-provider="shareInitialProvider"
       :zone="authorizedDomain"
       :domain-ready="domainReady"
       :tld="tld"
       :busy="shareInFlight"
       :locked="busy !== null || connected !== true"
       @share="onShare"
+      @setup="toProviders"
+      @retry-providers="refreshProviders"
     />
 
-    <ShareSetupDialog
-      v-model:open="setupOpen"
+    <TunnelProvidersDialog
+      v-model:open="providersOpen"
       :cloudflared="cloudflared"
       :zone="authorizedDomain"
       :tunnel="tunnel"
@@ -585,11 +713,13 @@ const shareDisabled = computed(() => !installed.value || connected.value !== tru
       :exposed-count="exposedSites.length"
       :busy="busy"
       :connected="connected === true"
-      @tooling="onSetupTooling"
-      @login="onSetupLogin"
+      :initial="providersInitial"
+      @tooling="onProvidersTooling"
+      @login="onProvidersLogin"
       @create="doCreateTunnel"
       @start="doStartNamed"
-      @remove="onSetupRemove"
+      @remove="onProvidersRemove"
+      @open-url="openExternal"
     />
 
     <CloudflareLoginDialog

@@ -67,11 +67,15 @@ import {
   setWordpressAutoLogin,
   setFrontController,
   sitesAndParked,
+  listTunnelProviders,
   startQuickTunnel,
+  stopTunnel,
+  tunnelStatus,
   unlink,
   unpark,
 } from "@/ipc/client";
 import type { GroupsState, Site, SiteEntry } from "@/ipc/types";
+import { CLEANUP_UNKNOWN_MESSAGE, checkProviderStart, cleanupFailedMessage, siteShare, unsupportedProviderMessage } from "@/lib/share";
 
 const toast = useToast();
 const operations = useOperations();
@@ -787,14 +791,40 @@ watch(sitesIntent, consumeIntent);
  * Publish a site over a Cloudflare Quick Tunnel. The tunnel is then managed
  * (and stopped) from the Integrations page; here we just kick it off and surface
  * the public URL. A missing `cloudflared` surfaces as a daemon error toast that
- * points at Integrations.
+ * points at Integrations. An older daemon that ignores the default provider and
+ * starts Cloudflare instead is reported as an error, and a Cloudflare share it
+ * created is stopped again.
  */
 const sharing = ref<string | null>(null);
 async function shareSitePublicly(s: Site): Promise<void> {
   sharing.value = s.name;
   try {
-    const r = await startQuickTunnel(s.name);
-    const entry = r.tunnels.find((t) => t.site === s.name);
+    const provider = await listTunnelProviders()
+      .then((p) => p.default_provider)
+      .catch(() => undefined);
+    const before =
+      provider && provider !== "cloudflare"
+        ? await tunnelStatus()
+            .then((t) => t.tunnels)
+            .catch(() => null)
+        : [];
+    const r = await startQuickTunnel(s.name, provider);
+    const check = checkProviderStart(provider, before, r.tunnels);
+    const stray = check.stopCloudflare;
+    const cleaned = stray
+      ? await stopTunnel(stray, "cloudflare")
+          .then(() => true)
+          .catch(() => false)
+      : true;
+    if (check.unsupported && provider) {
+      toast.error(`Couldn't share ${s.name}`, unsupportedProviderMessage(provider));
+      if (stray && !cleaned) toast.error(`Couldn't stop the Cloudflare share of ${stray}`, cleanupFailedMessage(stray));
+      if (check.cleanupUnknown) toast.error("Check your Cloudflare shares", CLEANUP_UNKNOWN_MESSAGE);
+      return;
+    }
+    const entry = provider
+      ? siteShare(r.tunnels, s.name, provider)
+      : (r.tunnels.find((t) => t.site === s.name && t.kind === "quick") ?? null);
     const url = entry?.url;
     if (url) {
       const copied = await navigator.clipboard
@@ -816,7 +846,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
       toast.success(`Sharing ${s.name}`, "Connecting - see Share for the URL");
     }
     if (entry?.warnings?.length) {
-      toast.info(`Check ${s.name} before sharing`, entry.warnings.join(" "), 10000);
+      toast.info(`Check ${s.name} while it's shared`, entry.warnings.join("\n"), 10000);
     }
   } catch (e) {
     toast.error(`Couldn't share ${s.name}`, (e as IpcError).message);

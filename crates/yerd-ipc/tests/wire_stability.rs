@@ -25,7 +25,7 @@ use yerd_ipc::{
     PhpPoolStatus, PoolRunState, PortRedirectTargets, PortStatus, ProxyEntry, ProxyRuleEntry,
     ReleaseNoteItem, ReleaseNotesEntry, Request, Response, ServiceAvailability, ServiceRunState,
     ServiceStatus, Severity, SiteCounts, SiteHostname, StagedArtifact, StatusReport, ToolStatus,
-    TunnelInfo, TunnelKind, TunnelRunState, UpdateSource,
+    TunnelInfo, TunnelKind, TunnelProviderStatus, TunnelRunState, UpdateSource,
 };
 
 // ---------- Request ----------
@@ -3571,7 +3571,11 @@ fn request_install_cloudflared_streamed_byte_shape() {
 
 #[test]
 fn request_start_quick_tunnel_byte_shape() {
-    let r = Request::StartQuickTunnel { site: "app".into() };
+    let r = Request::StartQuickTunnel {
+        site: "app".into(),
+        provider: None,
+        random_url: false,
+    };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(s, r#"{"type":"start_quick_tunnel","site":"app"}"#);
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
@@ -3579,10 +3583,59 @@ fn request_start_quick_tunnel_byte_shape() {
 
 #[test]
 fn request_stop_tunnel_byte_shape() {
-    let r = Request::StopTunnel { site: "app".into() };
+    let r = Request::StopTunnel {
+        site: "app".into(),
+        provider: None,
+    };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(s, r#"{"type":"stop_tunnel","site":"app"}"#);
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_start_and_stop_tunnel_with_provider_byte_shape() {
+    use yerd_core::tunnel_provider::TunnelProvider;
+    let start = Request::StartQuickTunnel {
+        site: "app".into(),
+        provider: Some(TunnelProvider::Ngrok),
+        random_url: true,
+    };
+    let json = r#"{"type":"start_quick_tunnel","site":"app","provider":"ngrok","random_url":true}"#;
+    assert_eq!(serde_json::to_string(&start).unwrap(), json);
+    assert_eq!(serde_json::from_str::<Request>(json).unwrap(), start);
+
+    let stop = Request::StopTunnel {
+        site: "app".into(),
+        provider: Some(TunnelProvider::Zrok),
+    };
+    let json = r#"{"type":"stop_tunnel","site":"app","provider":"zrok"}"#;
+    assert_eq!(serde_json::to_string(&stop).unwrap(), json);
+    assert_eq!(serde_json::from_str::<Request>(json).unwrap(), stop);
+}
+
+#[test]
+fn tunnel_info_provider_and_static_domain_byte_shape() {
+    use yerd_core::tunnel_provider::TunnelProvider;
+    let info = TunnelInfo {
+        site: "app".into(),
+        kind: TunnelKind::Quick,
+        state: TunnelRunState::Running,
+        url: Some("https://demo.ngrok-free.app".into()),
+        hostname: None,
+        last_error: None,
+        protected: false,
+        warnings: Vec::new(),
+        provider: TunnelProvider::Ngrok,
+        static_domain: true,
+    };
+    let json = r#"{"site":"app","kind":"quick","state":"running","url":"https://demo.ngrok-free.app","provider":"ngrok","static_domain":true}"#;
+    assert_eq!(serde_json::to_string(&info).unwrap(), json);
+    assert_eq!(serde_json::from_str::<TunnelInfo>(json).unwrap(), info);
+
+    let old: TunnelInfo =
+        serde_json::from_str(r#"{"site":"app","kind":"quick","state":"running"}"#).unwrap();
+    assert_eq!(old.provider, TunnelProvider::Cloudflare);
+    assert!(!old.static_domain);
 }
 
 #[test]
@@ -3607,6 +3660,8 @@ fn response_tunnels_byte_shape() {
             last_error: None,
             protected: false,
             warnings: Vec::new(),
+            provider: yerd_core::tunnel_provider::TunnelProvider::Cloudflare,
+            static_domain: false,
         }],
         cloudflared: CloudflaredStatus {
             installed: true,
@@ -3636,6 +3691,8 @@ fn response_tunnels_named_and_empty_byte_shape() {
             last_error: None,
             protected: false,
             warnings: Vec::new(),
+            provider: yerd_core::tunnel_provider::TunnelProvider::Cloudflare,
+            static_domain: false,
         }],
         cloudflared: CloudflaredStatus {
             installed: true,
@@ -3718,6 +3775,8 @@ fn response_tunnels_with_error_protected_and_warnings_byte_shape() {
             last_error: Some("process exited: exit status: 1".into()),
             protected: true,
             warnings: vec!["Vite dev server is running".into()],
+            provider: yerd_core::tunnel_provider::TunnelProvider::Cloudflare,
+            static_domain: false,
         }],
         cloudflared: CloudflaredStatus {
             installed: true,
@@ -3775,6 +3834,88 @@ fn request_set_tunnel_password_byte_shape() {
         r#"{"type":"set_tunnel_password","site":"app","password":null}"#
     );
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), clear);
+}
+
+#[test]
+fn tunnel_provider_requests_byte_shape() {
+    use yerd_core::tunnel_provider::TunnelProvider;
+    for (req, expected) in [
+        (
+            Request::ListTunnelProviders,
+            r#"{"type":"list_tunnel_providers"}"#,
+        ),
+        (
+            Request::SetNgrokAuthtoken {
+                authtoken: Some("tok".into()),
+            },
+            r#"{"type":"set_ngrok_authtoken","authtoken":"tok"}"#,
+        ),
+        (
+            Request::SetNgrokAuthtoken { authtoken: None },
+            r#"{"type":"set_ngrok_authtoken","authtoken":null}"#,
+        ),
+        (
+            Request::SetNgrokDomain {
+                domain: Some("demo.ngrok-free.app".into()),
+            },
+            r#"{"type":"set_ngrok_domain","domain":"demo.ngrok-free.app"}"#,
+        ),
+        (
+            Request::SetNgrokDomain { domain: None },
+            r#"{"type":"set_ngrok_domain","domain":null}"#,
+        ),
+        (
+            Request::EnableZrok { token: "t".into() },
+            r#"{"type":"enable_zrok","token":"t"}"#,
+        ),
+        (Request::DisableZrok, r#"{"type":"disable_zrok"}"#),
+        (
+            Request::SetDefaultTunnelProvider {
+                provider: TunnelProvider::Zrok,
+            },
+            r#"{"type":"set_default_tunnel_provider","provider":"zrok"}"#,
+        ),
+    ] {
+        let s = serde_json::to_string(&req).unwrap();
+        assert_eq!(s, expected);
+        assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), req);
+    }
+}
+
+#[test]
+fn response_tunnel_providers_byte_shape() {
+    use yerd_core::tunnel_provider::{ProviderReadiness, TunnelProvider};
+    let r = Response::TunnelProviders {
+        providers: vec![
+            TunnelProviderStatus {
+                provider: TunnelProvider::Ngrok,
+                readiness: ProviderReadiness::Ready,
+                version: Some("3.18.4".into()),
+                source: Some(CloudflaredSource::System),
+                path: Some("/opt/homebrew/bin/ngrok".into()),
+                update_available: Some("3.19.0".into()),
+                configured: true,
+                authtoken_hint: Some("2fXk••••••••Qa".into()),
+                domain: Some("demo.ngrok-free.app".into()),
+            },
+            TunnelProviderStatus {
+                provider: TunnelProvider::Zrok,
+                readiness: ProviderReadiness::NotInstalled,
+                version: None,
+                source: None,
+                path: None,
+                update_available: None,
+                configured: false,
+                authtoken_hint: None,
+                domain: None,
+            },
+        ],
+        default_provider: TunnelProvider::Ngrok,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"tunnel_providers","providers":[{"provider":"ngrok","readiness":"ready","version":"3.18.4","source":"system","path":"/opt/homebrew/bin/ngrok","update_available":"3.19.0","configured":true,"authtoken_hint":"2fXk••••••••Qa","domain":"demo.ngrok-free.app"},{"provider":"zrok","readiness":"not_installed","configured":false}],"default_provider":"ngrok"}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
 
 #[test]

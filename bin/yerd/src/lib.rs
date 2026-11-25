@@ -31,6 +31,7 @@ pub mod mcp_cmd;
 #[cfg(unix)]
 pub mod node_cmd;
 pub mod path_cmd;
+pub mod secret;
 #[cfg(unix)]
 pub mod service_client_shim;
 #[cfg(unix)]
@@ -127,6 +128,15 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Tunnel {
             action: crate::cli::TunnelAction::Login,
         } if !cli.json => return stream_tunnel_job(yerd_ipc::Request::CloudflaredLogin).await,
+        Command::Tunnel {
+            action:
+                crate::cli::TunnelAction::Share {
+                    provider: Some(provider),
+                    ..
+                },
+        } if provider.provider() != yerd_core::tunnel_provider::TunnelProvider::Cloudflare => {
+            return run_provider_share(&cli.command, provider.provider(), cli.json).await;
+        }
         Command::Update {
             target: None,
             yes: true,
@@ -149,6 +159,10 @@ pub async fn run(cli: Cli) -> ExitCode {
     let req = match &cli.command {
         Command::Link { name_or_path, path } => {
             resolve_link(name_or_path.as_deref(), path.as_deref())
+        }
+        Command::Tunnel { action } if map::stdin_secret_prompt(action).is_some() => {
+            secret::read_secret_line(map::stdin_secret_prompt(action).unwrap_or_default())
+                .and_then(|token| map::tunnel_secret_request(action, token))
         }
         _ => map::to_request(&cli.command)
             .map(canonicalize_unpark)
@@ -888,6 +902,70 @@ async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
             }
         }
     }
+}
+
+/// `yerd tunnel share --provider ngrok|zrok`: start the share, guarding against
+/// an older daemon that ignores `provider` and starts Cloudflare instead. The
+/// tunnel list is read first so a Cloudflare share that start created can be
+/// stopped again, leaving one the user already had alone. A failed stop is
+/// reported, since that site may still be public.
+async fn run_provider_share(
+    command: &Command,
+    provider: yerd_core::tunnel_provider::TunnelProvider,
+    json: bool,
+) -> ExitCode {
+    use yerd_ipc::{Request, Response};
+    let before = match transport::exchange(&Request::TunnelStatus).await {
+        Ok(Response::Tunnels { tunnels, .. }) => Some(tunnels),
+        _ => None,
+    };
+    let req = match map::to_request(command) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let resp = match transport::exchange(&req).await {
+        Ok(resp) => resp,
+        Err(e) if e.is_daemon_down() => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(69);
+        }
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(74);
+        }
+    };
+    if let Response::Tunnels { tunnels, .. } = &resp {
+        let check = map::check_provider_start(provider, before.as_deref(), tunnels);
+        if check.unsupported {
+            if let Some(name) = check.stop_cloudflare {
+                let stop = Request::StopTunnel {
+                    site: name.clone(),
+                    provider: Some(yerd_core::tunnel_provider::TunnelProvider::Cloudflare),
+                };
+                if matches!(
+                    transport::exchange(&stop).await,
+                    Err(_) | Ok(Response::Error { .. })
+                ) {
+                    eprintln!("yerd: warning: {}", map::cleanup_failed_message(&name));
+                }
+            } else if check.cleanup_unknown {
+                eprintln!("yerd: warning: {}", map::cleanup_unknown_message());
+            }
+            eprintln!("yerd: {}", map::unsupported_provider_message(provider));
+            return ExitCode::from(1);
+        }
+    }
+    let r = render_for(command, &resp, json);
+    if !r.stdout.is_empty() {
+        println!("{}", r.stdout);
+    }
+    if !r.stderr.is_empty() {
+        eprintln!("{}", r.stderr);
+    }
+    ExitCode::from(r.code)
 }
 
 /// Best-effort: rewrite an `Unpark` request's path to its canonical form so a

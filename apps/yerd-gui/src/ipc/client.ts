@@ -56,6 +56,8 @@ import type {
   TitleBarStyle,
   ToolStatus,
   TrayIconVariant,
+  TunnelProvider,
+  TunnelProvidersResponse,
   TunnelsResponse,
   UpdateChannel,
   UpdateStatusResponse,
@@ -802,14 +804,23 @@ export async function pollJobToEnd(
 
 // ── tunnels (Cloudflare Tunnel integration) ──────────────────────────────────
 
-/** Share a site via a Quick Tunnel; returns the refreshed tunnel list. */
-export async function startQuickTunnel(site: string): Promise<TunnelsResponse> {
-  return ensureOk(await call<Response>("start_quick_tunnel", { site })) as TunnelsResponse;
+/** Share a site through `provider` (the configured default when omitted);
+ *  `randomUrl` makes an ngrok share ignore the static domain. Returns the
+ *  refreshed tunnel list. */
+export async function startQuickTunnel(
+  site: string,
+  provider?: TunnelProvider,
+  randomUrl = false,
+): Promise<TunnelsResponse> {
+  return ensureOk(
+    await call<Response>("start_quick_tunnel", { site, provider: provider ?? null, randomUrl }),
+  ) as TunnelsResponse;
 }
 
-/** Stop a site's tunnel; returns the refreshed tunnel list. */
-export async function stopTunnel(site: string): Promise<TunnelsResponse> {
-  return ensureOk(await call<Response>("stop_tunnel", { site })) as TunnelsResponse;
+/** Stop a site's share through `provider`, or every per-site share of it when
+ *  omitted; returns the refreshed tunnel list. */
+export async function stopTunnel(site: string, provider?: TunnelProvider): Promise<TunnelsResponse> {
+  return ensureOk(await call<Response>("stop_tunnel", { site, provider: provider ?? null })) as TunnelsResponse;
 }
 
 /** Live tunnels plus `cloudflared` install status. */
@@ -852,6 +863,36 @@ export async function setSiteTunnel(site: string, hostname: string | null): Prom
 /** Set (or clear, with `null`) a site's share password. */
 export async function setTunnelPassword(site: string, password: string | null): Promise<void> {
   ensureOk(await call<Response>("set_tunnel_password", { site, password }));
+}
+
+/** Every tunnel provider's readiness and settings, plus the default for new shares. */
+export async function listTunnelProviders(): Promise<TunnelProvidersResponse> {
+  return ensureOk(await call<Response>("list_tunnel_providers")) as TunnelProvidersResponse;
+}
+
+/** Save (or clear, with `null`) the ngrok authtoken. */
+export async function setNgrokAuthtoken(authtoken: string | null): Promise<void> {
+  ensureOk(await call<Response>("set_ngrok_authtoken", { authtoken }));
+}
+
+/** Save (or clear, with `null`) the ngrok static domain. */
+export async function setNgrokDomain(domain: string | null): Promise<void> {
+  ensureOk(await call<Response>("set_ngrok_domain", { domain }));
+}
+
+/** Enable Yerd's zrok environment with an account token. */
+export async function enableZrok(token: string): Promise<void> {
+  ensureOk(await call<Response>("enable_zrok", { token }));
+}
+
+/** Disable Yerd's zrok environment. */
+export async function disableZrok(): Promise<void> {
+  ensureOk(await call<Response>("disable_zrok"));
+}
+
+/** Set the provider new shares use by default. */
+export async function setDefaultTunnelProvider(provider: TunnelProvider): Promise<void> {
+  ensureOk(await call<Response>("set_default_tunnel_provider", { provider }));
 }
 
 /** Start the consolidated Named Tunnel if it is not running (idempotent). */

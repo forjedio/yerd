@@ -1,10 +1,9 @@
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, describe, expect, it } from "vitest";
 
-import ShareSetupDialog from "./ShareSetupDialog.vue";
+import CloudflarePane from "./CloudflarePane.vue";
 import type { CloudflaredStatus, TunnelInfo } from "@/ipc/types";
 
-const Pass = { template: "<div><slot /></div>" };
 const mounted: VueWrapper[] = [];
 
 const managed: CloudflaredStatus = { installed: true, version: "2026.6.1", source: "managed", logged_in: true };
@@ -14,11 +13,10 @@ function named(state: TunnelInfo["state"], extra: Partial<TunnelInfo> = {}): Tun
   return { site: "@named", kind: "named", state, ...extra };
 }
 
-function mountDialog(props: Partial<InstanceType<typeof ShareSetupDialog>["$props"]> = {}) {
-  const wrapper = mount(ShareSetupDialog, {
+function mountDialog(props: Partial<InstanceType<typeof CloudflarePane>["$props"]> = {}) {
+  const wrapper = mount(CloudflarePane, {
     attachTo: document.body,
     props: {
-      open: true,
       cloudflared: managed,
       zone: "forjed.io",
       tunnel,
@@ -28,7 +26,6 @@ function mountDialog(props: Partial<InstanceType<typeof ShareSetupDialog>["$prop
       connected: true,
       ...props,
     },
-    global: { stubs: { DialogPortal: Pass } },
   });
   mounted.push(wrapper);
   return wrapper;
@@ -52,7 +49,7 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-describe("ShareSetupDialog", () => {
+describe("CloudflarePane", () => {
   it("points to Tooling when cloudflared is missing", async () => {
     const w = mountDialog({ cloudflared: { installed: false, logged_in: false }, tunnel: null, entry: null, exposedCount: 0 });
     await flushPromises();
@@ -68,7 +65,7 @@ describe("ShareSetupDialog", () => {
     const w = mountDialog({ cloudflared: status });
     await flushPromises();
     const buttons = section("cloudflared").querySelectorAll("button");
-    expect(Array.from(buttons).map((b) => b.textContent?.trim())).toEqual(linked ? ["Open Tooling"] : []);
+    expect(Array.from(buttons).map((b) => b.textContent?.trim())).toEqual(linked ? ["Update"] : []);
     expect(document.querySelector('[data-testid="cloudflared-source"]')?.textContent?.trim()).toBe(subline);
     if (linked) {
       buttons[0]?.click();
@@ -129,6 +126,24 @@ describe("ShareSetupDialog", () => {
     mountDialog({ entry: null, cloudflared: { ...managed, logged_in: false } });
     await flushPromises();
     expect(act("start")?.disabled).toBe(true);
+  });
+
+  it.each([
+    [managed, "Ready"],
+    [{ installed: false, logged_in: false }, "Not installed"],
+  ])("shows the readiness chip %#", async (status, label) => {
+    mountDialog({ cloudflared: status });
+    await flushPromises();
+    expect(document.querySelector('[data-testid="pane-readiness"]')?.textContent?.trim()).toBe(label);
+  });
+
+  it("opens the Cloudflare dashboard through the view", async () => {
+    const w = mountDialog();
+    await flushPromises();
+    Array.from(document.querySelectorAll("button"))
+      .find((b) => b.textContent?.includes("dash.cloudflare.com"))
+      ?.click();
+    expect(w.emitted("open-url")).toEqual([["https://dash.cloudflare.com"]]);
   });
 
   it("asks to remove the tunnel", async () => {

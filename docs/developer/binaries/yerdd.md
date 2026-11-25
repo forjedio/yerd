@@ -113,7 +113,7 @@ The daemon's modules (`src/lib.rs` re-exports each as `pub mod`):
 | `self_update` | Yerd self-update poller: fetches the GitHub Releases API, decides via the pure `yerd-update` crate, and persists a snapshot (`checked_at` + decision) both to disk and in `DaemonState` (notify-only). |
 | `dump_server` | Loopback TCP server reading newline-delimited JSON dump frames from the native `yerd-dump` extension into a bounded ring buffer; serves the ring to the GUI over IPC (`ListDumps`/`DumpsStatus`/…). |
 | `ext_install` | Downloads + SHA-256-verifies native PHP extension `.so`s per installed PHP version (from the `forjedio/yerd-php-ext` releases) into `{data}/php-ext/php-<ver>/`. An `ExtSpec` abstraction drives one fetch loop for **both** `yerd-dump` (`DUMP_SPEC`, gated on dumps) and `pcov` (`PCOV_SPEC`, ungated) - two manifests, one release. |
-| `tools` | Dev-tool installers (Composer, Node, Bun, pnpm, the Laravel installer, WP-CLI): download/build + verify into `{data}/tools/<id>/` and reconcile their `{data}/bin` shims. See [Dev-tool installers](../dev-tools). |
+| `tools` | Dev-tool installers (Composer, Node, Bun, pnpm, the Laravel installer, WP-CLI, cloudflared, ngrok, zrok): download/build + verify into `{data}/tools/<id>/` and reconcile their `{data}/bin` shims. See [Dev-tool installers](../dev-tools). |
 | `create_site` | Site-scaffolding job bodies for the GUI wizards (`laravel.rs`, `wordpress.rs`, and `composer_project.rs` for the CodeIgniter/CakePHP/Slim `composer create-project` templates) - see [WordPress support](#wordpress-support) below. |
 | `wordpress_detect` | Narrow marker-file check for whether a site is a `WordPress` install (`wp-config.php`/`wp-load.php`). |
 | `wordpress_login` | One-click `WordPress` admin login: token registry + the `auto_prepend_file` bootstrap script. |
@@ -402,8 +402,8 @@ that lock. cloudflared is the documented exception: its tunnel edge traffic
 can't use an HTTP proxy, and its management commands don't get the proxy
 environment yet.
 
-The `{data}/bin` links for `node`, `npm`, `npx`, `pnpm`, `pnpx`, `bun` and
-`bunx` point at the `yerd` multi-call binary (like `composer`, `laravel` and
+The `{data}/bin` links for `node`, `npm`, `npx`, `pnpm`, `pnpx`, `bun`,
+`bunx`, `ngrok` and `zrok2` point at the `yerd` multi-call binary (like `composer`, `laravel` and
 `wp`), so the CLI can add the proxy environment before it execs the real tool.
 One edge: a user symlink such as `~/.local/bin/pnpm → {data}/bin/pnpm` now
 canonicalises to the `yerd` binary outside `{data}`, so external-tool detection

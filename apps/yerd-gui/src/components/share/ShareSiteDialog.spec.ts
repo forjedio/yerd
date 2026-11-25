@@ -2,7 +2,8 @@ import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, describe, expect, it } from "vitest";
 
 import ShareSiteDialog from "./ShareSiteDialog.vue";
-import type { Site } from "@/ipc/types";
+import type { Site, TunnelProviderStatus } from "@/ipc/types";
+import type { ShareItem } from "@/lib/share";
 
 const Pass = { template: "<div><slot /></div>" };
 const ComboboxStub = {
@@ -19,14 +20,40 @@ function site(name: string, secure = true): Site {
   return { name, document_root: `/srv/${name}`, php: "8.4", secure } as Site;
 }
 
+function share(overrides: Partial<ShareItem>): ShareItem {
+  return {
+    key: "cloudflare:quick:app",
+    provider: "cloudflare",
+    kind: "quick",
+    site: "app",
+    staticDomain: false,
+    url: null,
+    host: null,
+    state: "running",
+    protected: false,
+    lastError: null,
+    warnings: [],
+    ...overrides,
+  };
+}
+
+const ITEMS: ShareItem[] = [share({}), share({ key: "cloudflare:domain:blog", kind: "domain", site: "blog" })];
+
+const PROVIDERS: TunnelProviderStatus[] = [
+  { provider: "cloudflare", readiness: "ready", configured: true },
+  { provider: "ngrok", readiness: "ready", configured: true, domain: "demo.ngrok-free.app" },
+  { provider: "zrok", readiness: "needs_setup", configured: false },
+];
+
 function mountDialog(props: Partial<InstanceType<typeof ShareSiteDialog>["$props"]> = {}) {
   const wrapper = mount(ShareSiteDialog, {
     attachTo: document.body,
     props: {
       open: true,
       sites: [site("app"), site("blog"), site("legacy", false)],
-      quickSites: ["app"],
-      domainSites: ["blog"],
+      items: ITEMS,
+      providers: PROVIDERS,
+      defaultProvider: "cloudflare",
       zone: "forjed.io",
       domainReady: true,
       tld: "test",
@@ -54,6 +81,16 @@ async function pickKind(kind: "quick" | "domain") {
   await flushPromises();
 }
 
+async function pickProvider(provider: string) {
+  (document.querySelector(`[data-provider="${provider}"]`) as HTMLElement).click();
+  await flushPromises();
+}
+
+async function pickUrl(choice: "static" | "random") {
+  (document.querySelector(`[data-url="${choice}"]`) as HTMLElement).click();
+  await flushPromises();
+}
+
 function submit(): HTMLButtonElement {
   return document.querySelector('[data-testid="share-submit"]') as HTMLButtonElement;
 }
@@ -76,7 +113,9 @@ describe("ShareSiteDialog", () => {
     expect(submit().disabled).toBe(true);
     await pickSite("blog");
     submit().click();
-    expect(w.emitted("share")).toEqual([[{ site: "blog", kind: "quick", hostname: null }]]);
+    expect(w.emitted("share")).toEqual([
+      [{ site: "blog", provider: "cloudflare", kind: "quick", hostname: null, randomUrl: false }],
+    ]);
   });
 
   it("offers sites not on the domain and prefills the hostname until it is edited", async () => {
@@ -91,7 +130,9 @@ describe("ShareSiteDialog", () => {
     await pickSite("legacy");
     expect(hostInput()?.value).toBe("shop.forjed.io");
     submit().click();
-    expect(w.emitted("share")).toEqual([[{ site: "legacy", kind: "domain", hostname: "shop.forjed.io" }]]);
+    expect(w.emitted("share")).toEqual([
+      [{ site: "legacy", provider: "cloudflare", kind: "domain", hostname: "shop.forjed.io", randomUrl: false }],
+    ]);
   });
 
   it("prefills nothing and blocks Share until the zone resolves", async () => {
@@ -150,7 +191,9 @@ describe("ShareSiteDialog", () => {
     mountDialog();
     await flushPromises();
     await pickSite("legacy");
-    expect(document.querySelector('[data-testid="share-publishes"]')?.textContent).toContain("legacy.test over HTTP.");
+    expect(document.querySelector('[data-testid="share-publishes"]')?.textContent).toContain(
+      "legacy.test over HTTP through Cloudflare.",
+    );
   });
 
   it("disables Share while another action holds the lock", async () => {
@@ -168,5 +211,90 @@ describe("ShareSiteDialog", () => {
     const cancel = Array.from(document.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Cancel");
     expect(cancel?.disabled).toBe(true);
     expect(w.emitted("update:open")).toBeUndefined();
+  });
+
+  it("preselects the default provider, or the one it was opened for", async () => {
+    mountDialog({ defaultProvider: "ngrok" });
+    await flushPromises();
+    expect(document.querySelector('[data-provider="ngrok"]')?.getAttribute("aria-checked")).toBe("true");
+    mounted.forEach((m) => m.unmount());
+    document.body.innerHTML = "";
+    mountDialog({ defaultProvider: "ngrok", initialProvider: "zrok", initialSite: "app" });
+    await flushPromises();
+    expect(document.querySelector('[data-provider="zrok"]')?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("blocks a provider that is not ready and offers to set it up", async () => {
+    const w = mountDialog();
+    await flushPromises();
+    await pickSite("blog");
+    await pickProvider("zrok");
+    expect(document.querySelector('[data-testid="provider-not-ready"]')?.textContent).toContain(
+      "zrok needs setting up first",
+    );
+    expect(submit().disabled).toBe(true);
+    (document.querySelector('[data-testid="provider-setup"]') as HTMLElement).click();
+    expect(w.emitted("setup")).toEqual([["zrok"]]);
+  });
+
+  it("preselects ngrok's static domain and lets the account URL replace it", async () => {
+    const w = mountDialog();
+    await flushPromises();
+    await pickProvider("ngrok");
+    await pickSite("blog");
+    expect(document.querySelector('[data-url="static"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(document.querySelector('[data-url="random"]')?.textContent).toContain("Account URL");
+    expect(document.querySelector('[data-url="random"]')?.textContent).toContain(
+      "The address ngrok assigns to your account",
+    );
+    submit().click();
+    await pickUrl("random");
+    submit().click();
+    expect(w.emitted("share")).toEqual([
+      [{ site: "blog", provider: "ngrok", kind: "quick", hostname: null, randomUrl: false }],
+      [{ site: "blog", provider: "ngrok", kind: "quick", hostname: null, randomUrl: true }],
+    ]);
+  });
+
+  it("disables the static domain while another site's share holds it", async () => {
+    const holder = share({ key: "ngrok:quick:legacy", provider: "ngrok", site: "legacy", staticDomain: true, url: "https://demo.ngrok-free.app" });
+    const w = mountDialog({ items: [...ITEMS, holder] });
+    await flushPromises();
+    await pickProvider("ngrok");
+    const staticBtn = document.querySelector('[data-url="static"]') as HTMLButtonElement;
+    expect(staticBtn.disabled).toBe(true);
+    expect(document.querySelector('[data-testid="static-in-use"]')?.textContent).toContain("In use by legacy's share");
+    expect(document.querySelector('[data-url="random"]')?.getAttribute("aria-checked")).toBe("true");
+    await pickSite("blog");
+    submit().click();
+    expect(w.emitted("share")).toEqual([
+      [{ site: "blog", provider: "ngrok", kind: "quick", hostname: null, randomUrl: true }],
+    ]);
+  });
+
+  it("falls back to the account URL when the static domain is taken while open", async () => {
+    const w = mountDialog();
+    await flushPromises();
+    await pickProvider("ngrok");
+    await pickSite("blog");
+    expect(document.querySelector('[data-url="static"]')?.getAttribute("aria-checked")).toBe("true");
+    const holder = share({ key: "ngrok:quick:legacy", provider: "ngrok", site: "legacy", staticDomain: true, url: "https://demo.ngrok-free.app" });
+    await w.setProps({ items: [...ITEMS, holder] });
+    await flushPromises();
+    expect(document.querySelector('[data-url="random"]')?.getAttribute("aria-checked")).toBe("true");
+    submit().click();
+    expect(w.emitted("share")).toEqual([
+      [{ site: "blog", provider: "ngrok", kind: "quick", hostname: null, randomUrl: true }],
+    ]);
+  });
+
+  it("notes when the site is already shared through another provider", async () => {
+    mountDialog();
+    await flushPromises();
+    await pickProvider("ngrok");
+    await pickSite("app");
+    expect(document.querySelector('[data-testid="shared-elsewhere"]')?.textContent).toContain(
+      "app is already shared through Cloudflare.",
+    );
   });
 });

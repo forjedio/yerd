@@ -370,6 +370,18 @@ pub fn apply_plan(cmd: &mut tokio::process::Command, plan: &ChildEnvPlan) {
     }
 }
 
+/// The `LaunchSpec` counterpart of [`apply_plan`]: the variables `plan` sets,
+/// as env pairs for a tunnel child. The `remove` list does not apply, since
+/// the tunnel manager clears a child's inherited environment before applying
+/// its env. Get the plan from [`child_env_plan`] with no config lock held.
+#[must_use]
+pub fn plan_env_pairs(plan: &ChildEnvPlan) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    plan.set
+        .iter()
+        .map(|(key, value)| (key.into(), value.into()))
+        .collect()
+}
+
 /// Apply the current proxy environment to a network subprocess.
 ///
 /// Do not call while holding `state.config`; a refresh takes that lock.
@@ -650,6 +662,24 @@ mod tests {
     use yerd_core::network::{OutboundProxyMode, ProxySource};
 
     use super::*;
+
+    #[test]
+    fn plan_env_pairs_yields_only_the_set_entries() {
+        let plan = ChildEnvPlan {
+            set: vec![
+                ("http_proxy".to_owned(), "http://p:1".to_owned()),
+                ("HTTPS_PROXY".to_owned(), "http://p:2".to_owned()),
+            ],
+            remove: vec!["all_proxy".to_owned()],
+        };
+        assert_eq!(
+            plan_env_pairs(&plan),
+            vec![
+                ("http_proxy".into(), "http://p:1".into()),
+                ("HTTPS_PROXY".into(), "http://p:2".into()),
+            ]
+        );
+    }
 
     struct SwitchSource(StdMutex<Option<SystemProxy>>);
 

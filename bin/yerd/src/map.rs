@@ -7,14 +7,18 @@
 
 use std::fmt::Write as _;
 
+use yerd_core::tunnel_provider::TunnelProvider;
 use yerd_core::{PhpVersion, Site, SiteKind};
 use yerd_ipc::{
     Channel, CloudflaredStatus, Diagnosis, FixReport, PhpPoolStatus, PoolRunState, PortStatus,
     Request, Response, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteEntry,
-    StatusReport, ToolStatus, TunnelInfo, TunnelRunState, UpdateSource,
+    StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState, UpdateSource,
 };
 
-use crate::cli::{Command, DbAction, MailAction, ServiceAction, TunnelAction};
+use crate::cli::{
+    Command, DbAction, MailAction, NgrokAction, ServiceAction, TunnelAction, TunnelProviderArg,
+    ZrokAction,
+};
 use crate::error::ClientError;
 
 /// Map a parsed [`Command`] to the wire [`Request`], validating site names and
@@ -239,7 +243,7 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         Command::Proxy { action } => proxy_request(action)?,
         Command::Route { action } => route_request(action)?,
         Command::Header { action } => header_request(action)?,
-        Command::Tunnel { action } => tunnel_request(action),
+        Command::Tunnel { action } => tunnel_request(action)?,
         Command::Db { action } => db_request(action),
         Command::Mail { action } => match action {
             MailAction::List => Request::ListMails,
@@ -821,10 +825,23 @@ fn validate_domain(domain: &str) -> Result<(), ClientError> {
 
 /// Map a `yerd tunnel <action>` to its wire request. `Login` is a streamed job
 /// the CLI intercepts before this point; mapping it here keeps the match total.
-fn tunnel_request(action: &TunnelAction) -> Request {
-    match action {
-        TunnelAction::Share { site } => Request::StartQuickTunnel { site: site.clone() },
-        TunnelAction::Stop { site } => Request::StopTunnel { site: site.clone() },
+/// A token-taking action with the token omitted is a usage error here: the CLI
+/// reads that token from stdin first (see [`stdin_secret_prompt`]).
+fn tunnel_request(action: &TunnelAction) -> Result<Request, ClientError> {
+    let req = match action {
+        TunnelAction::Share {
+            site,
+            provider,
+            random_url,
+        } => Request::StartQuickTunnel {
+            site: site.clone(),
+            provider: provider.map(TunnelProviderArg::provider),
+            random_url: *random_url,
+        },
+        TunnelAction::Stop { site, provider } => Request::StopTunnel {
+            site: site.clone(),
+            provider: provider.map(TunnelProviderArg::provider),
+        },
         TunnelAction::Status => Request::TunnelStatus,
         TunnelAction::Login => Request::CloudflaredLogin,
         TunnelAction::Create { name } => Request::CreateNamedTunnel { name: name.clone() },
@@ -852,6 +869,161 @@ fn tunnel_request(action: &TunnelAction) -> Request {
         },
         TunnelAction::Publish => Request::StartNamedTunnel,
         TunnelAction::Unpublish => Request::StopNamedTunnel,
+        TunnelAction::Providers => Request::ListTunnelProviders,
+        TunnelAction::Ngrok {
+            action: NgrokAction::Token { clear: true, .. },
+        } => Request::SetNgrokAuthtoken { authtoken: None },
+        TunnelAction::Ngrok {
+            action: NgrokAction::Token { token, .. },
+        }
+        | TunnelAction::Zrok {
+            action: ZrokAction::Enable { token },
+        } => {
+            let token = token
+                .clone()
+                .ok_or_else(|| ClientError::Usage("token required".to_owned()))?;
+            return tunnel_secret_request(action, token);
+        }
+        TunnelAction::Ngrok {
+            action: NgrokAction::Domain { domain, clear },
+        } => Request::SetNgrokDomain {
+            domain: if *clear { None } else { domain.clone() },
+        },
+        TunnelAction::Zrok {
+            action: ZrokAction::Disable,
+        } => Request::DisableZrok,
+        TunnelAction::Default { provider } => Request::SetDefaultTunnelProvider {
+            provider: provider.provider(),
+        },
+    };
+    Ok(req)
+}
+
+/// What the CLI does when a `StartQuickTunnel` reply lacks the share it asked
+/// for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderStartCheck {
+    /// The daemon ignored the requested provider: report an error, not success.
+    pub unsupported: bool,
+    /// The site whose Cloudflare share this start created and must be stopped.
+    pub stop_cloudflare: Option<String>,
+    /// Whether this start may have created a Cloudflare share that couldn't be
+    /// identified, so the user must check and stop it by hand.
+    pub cleanup_unknown: bool,
+}
+
+fn cloudflare_quick_sites(tunnels: &[TunnelInfo]) -> impl Iterator<Item = &str> {
+    tunnels
+        .iter()
+        .filter(|t| t.kind == TunnelKind::Quick && t.provider == TunnelProvider::Cloudflare)
+        .map(|t| t.site.as_str())
+}
+
+/// Check a `StartQuickTunnel` reply against the provider that was asked for.
+/// A daemon that predates ngrok and zrok ignores `provider` and starts a
+/// Cloudflare quick link, so a reply holding no share at all through a
+/// non-Cloudflare `provider` is unsupported. The stray Cloudflare share is the
+/// one Cloudflare quick share in `after` that `before` (the `TunnelStatus`
+/// ahead of the start, or `None` when unknown) lacks; it is left alone when
+/// that can't be told for certain.
+#[must_use]
+pub fn check_provider_start(
+    provider: TunnelProvider,
+    before: Option<&[TunnelInfo]>,
+    after: &[TunnelInfo],
+) -> ProviderStartCheck {
+    if provider == TunnelProvider::Cloudflare || after.iter().any(|t| t.provider == provider) {
+        return ProviderStartCheck {
+            unsupported: false,
+            stop_cloudflare: None,
+            cleanup_unknown: false,
+        };
+    }
+    let Some(prior) = before else {
+        return ProviderStartCheck {
+            unsupported: true,
+            stop_cloudflare: None,
+            cleanup_unknown: true,
+        };
+    };
+    let existing: std::collections::BTreeSet<&str> = cloudflare_quick_sites(prior).collect();
+    let created: Vec<&str> = cloudflare_quick_sites(after)
+        .filter(|s| !existing.contains(s))
+        .collect();
+    let stop_cloudflare = match created.as_slice() {
+        [site] => Some((*site).to_owned()),
+        _ => None,
+    };
+    ProviderStartCheck {
+        unsupported: true,
+        stop_cloudflare,
+        cleanup_unknown: created.len() > 1,
+    }
+}
+
+/// The warning shown when a start may have left a Cloudflare quick link
+/// running that couldn't be identified.
+#[must_use]
+pub fn cleanup_unknown_message() -> String {
+    "a Cloudflare quick link may have been started and still be public - check `yerd tunnel status` and stop it with `yerd tunnel stop <site> --provider cloudflare`".to_owned()
+}
+
+/// The error shown when the running daemon can't share through `provider`.
+#[must_use]
+pub fn unsupported_provider_message(provider: TunnelProvider) -> String {
+    format!(
+        "The running Yerd daemon doesn't support {} sharing yet - restart Yerd and try again",
+        provider.display_name()
+    )
+}
+
+/// The warning shown when the stray Cloudflare share of `site` couldn't be
+/// stopped, naming the command that stops it by hand.
+#[must_use]
+pub fn cleanup_failed_message(site: &str) -> String {
+    format!(
+        "{site} may still be public through its Cloudflare quick link - stop it with `yerd tunnel stop {site} --provider cloudflare`"
+    )
+}
+
+/// The stderr prompt for a token-taking tunnel action whose token was
+/// omitted, so the CLI reads it from stdin; `None` for every other action.
+#[must_use]
+pub fn stdin_secret_prompt(action: &TunnelAction) -> Option<&'static str> {
+    match action {
+        TunnelAction::Ngrok {
+            action:
+                NgrokAction::Token {
+                    token: None,
+                    clear: false,
+                },
+        } => Some("Paste your ngrok authtoken: "),
+        TunnelAction::Zrok {
+            action: ZrokAction::Enable { token: None },
+        } => Some("Paste your zrok account token: "),
+        _ => None,
+    }
+}
+
+/// The request for a token-taking tunnel action given its token, whether it
+/// came from argv or stdin.
+///
+/// # Errors
+///
+/// [`ClientError::Usage`] when `action` does not take a token.
+pub fn tunnel_secret_request(action: &TunnelAction, token: String) -> Result<Request, ClientError> {
+    match action {
+        TunnelAction::Ngrok {
+            action: NgrokAction::Token { .. },
+        } => Ok(Request::SetNgrokAuthtoken {
+            authtoken: Some(token),
+        }),
+        TunnelAction::Zrok {
+            action: ZrokAction::Enable { .. },
+        } => Ok(Request::EnableZrok { token }),
+        _ => Err(ClientError::Usage(
+            "this tunnel action takes no token".to_owned(),
+        )),
     }
 }
 
@@ -1366,6 +1538,10 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             sites,
             zone,
         } => Rendered::ok(format_named_tunnels(tunnels, sites, zone.as_deref())),
+        Response::TunnelProviders {
+            providers,
+            default_provider,
+        } => Rendered::ok(format_tunnel_providers(providers, *default_provider)),
         Response::UpdateStatus {
             current,
             latest_stable,
@@ -1842,14 +2018,21 @@ fn format_tunnels(tunnels: &[TunnelInfo], cloudflared: &CloudflaredStatus) -> St
     if tunnels.is_empty() {
         return format!("{cf}\nno active tunnels");
     }
-    let mut out = format!("{cf}\n\nSITE\tSTATE\tURL");
+    let mut out = format!("{cf}\n\nSITE\tPROVIDER\tSTATE\tURL");
     for t in tunnels {
         let target = t.url.as_deref().or(t.hostname.as_deref()).unwrap_or("-");
         let protected = if t.protected { "\t(password)" } else { "" };
+        let static_domain = if t.static_domain {
+            " (static domain)"
+        } else {
+            ""
+        };
         let _ = write!(
             out,
-            "\n{}\t{}\t{}{}",
+            "\n{}\t{}{}\t{}\t{}{}",
             t.site,
+            t.provider.display_name(),
+            static_domain,
             tunnel_state_label(t),
             target,
             protected
@@ -1861,6 +2044,69 @@ fn format_tunnels(tunnels: &[TunnelInfo], cloudflared: &CloudflaredStatus) -> St
             let _ = write!(out, "\n  warning: {warning}");
         }
     }
+    out
+}
+
+fn format_tunnel_providers(
+    providers: &[yerd_ipc::TunnelProviderStatus],
+    default_provider: yerd_core::tunnel_provider::TunnelProvider,
+) -> String {
+    use yerd_core::tunnel_provider::{ProviderReadiness, TunnelProvider};
+    let mut out = String::from("PROVIDER\tSTATUS\tBINARY\tSETTINGS");
+    for p in providers {
+        let status = match p.readiness {
+            ProviderReadiness::Ready => "ready",
+            ProviderReadiness::NeedsSetup => "needs setup",
+            ProviderReadiness::NotInstalled => "not installed",
+        };
+        let bin_name = match p.provider {
+            TunnelProvider::Cloudflare => "cloudflared",
+            TunnelProvider::Ngrok => "ngrok",
+            TunnelProvider::Zrok => "zrok2",
+        };
+        let mut binary = match (&p.source, &p.version) {
+            (None, _) => "-".to_owned(),
+            (Some(_), Some(v)) => format!("{bin_name} {v}"),
+            (Some(_), None) => bin_name.to_owned(),
+        };
+        match (&p.source, &p.path) {
+            (Some(yerd_ipc::CloudflaredSource::System), Some(path)) => {
+                let _ = write!(binary, " (PATH {path})");
+            }
+            (Some(yerd_ipc::CloudflaredSource::System), None) => binary.push_str(" (PATH)"),
+            (Some(_), _) => binary.push_str(" (Yerd)"),
+            (None, _) => {}
+        }
+        if let Some(update) = &p.update_available {
+            let _ = write!(binary, " - update {update} in Tooling");
+        }
+        let settings = match p.provider {
+            TunnelProvider::Cloudflare if p.configured => "account connected".to_owned(),
+            TunnelProvider::Cloudflare => "no account".to_owned(),
+            TunnelProvider::Ngrok => {
+                let token = p
+                    .authtoken_hint
+                    .as_deref()
+                    .map_or_else(|| "no token".to_owned(), |h| format!("token {h}"));
+                match &p.domain {
+                    Some(domain) => format!("{token}, domain {domain}"),
+                    None => token,
+                }
+            }
+            TunnelProvider::Zrok if p.configured => "enabled".to_owned(),
+            TunnelProvider::Zrok => "not enabled".to_owned(),
+        };
+        let _ = write!(
+            out,
+            "\n{}\t{status}\t{binary}\t{settings}",
+            p.provider.display_name()
+        );
+    }
+    let _ = write!(
+        out,
+        "\n\ndefault for new shares: {}",
+        default_provider.display_name()
+    );
     out
 }
 
@@ -2353,10 +2599,14 @@ mod tests {
                 last_error: None,
                 protected: false,
                 warnings: Vec::new(),
+                provider: yerd_core::tunnel_provider::TunnelProvider::Cloudflare,
+                static_domain: false,
             };
             let out = format_tunnels(&[tunnel], &cf);
             assert!(
-                out.contains(&format!("\napp\t{label}\thttps://x.trycloudflare.com")),
+                out.contains(&format!(
+                    "\napp\tCloudflare\t{label}\thttps://x.trycloudflare.com"
+                )),
                 "{out}"
             );
         }
@@ -2372,6 +2622,8 @@ mod tests {
             last_error: None,
             protected: false,
             warnings: Vec::new(),
+            provider: yerd_core::tunnel_provider::TunnelProvider::Cloudflare,
+            static_domain: false,
         }
     }
 
@@ -2394,7 +2646,7 @@ mod tests {
         ] {
             let out = format_tunnels(&[tunnel_info(kind, TunnelRunState::Failed)], &cf);
             assert!(
-                out.contains(&format!("\napp\t{label}\tapp.example.com")),
+                out.contains(&format!("\napp\tCloudflare\t{label}\tapp.example.com")),
                 "{out}"
             );
         }
@@ -2408,7 +2660,7 @@ mod tests {
         tunnel.warnings = vec!["Vite dev server is running".into(), "SESSION_DOMAIN".into()];
         let out = format_tunnels(&[tunnel], &installed_cloudflared());
         assert!(
-            out.contains("\napp\treconnecting\tapp.example.com\t(password)"),
+            out.contains("\napp\tCloudflare\treconnecting\tapp.example.com\t(password)"),
             "{out}"
         );
         assert!(out.contains("\n  error: connection refused"), "{out}");
@@ -2432,10 +2684,397 @@ mod tests {
     fn format_tunnels_omits_extras_when_absent() {
         let tunnel = tunnel_info(yerd_ipc::TunnelKind::Named, TunnelRunState::Running);
         let out = format_tunnels(&[tunnel], &installed_cloudflared());
-        assert!(out.ends_with("\napp\tonline\tapp.example.com"), "{out}");
+        assert!(
+            out.ends_with("\napp\tCloudflare\tonline\tapp.example.com"),
+            "{out}"
+        );
         assert!(!out.contains("error:"), "{out}");
         assert!(!out.contains("warning:"), "{out}");
         assert!(!out.contains("(password)"), "{out}");
+    }
+
+    #[test]
+    fn format_tunnels_renders_the_provider_column() {
+        use yerd_core::tunnel_provider::TunnelProvider;
+        let mut ngrok = tunnel_info(yerd_ipc::TunnelKind::Quick, TunnelRunState::Running);
+        ngrok.provider = TunnelProvider::Ngrok;
+        ngrok.static_domain = true;
+        ngrok.hostname = None;
+        ngrok.url = Some("https://demo.ngrok-free.app".into());
+        let mut zrok = tunnel_info(yerd_ipc::TunnelKind::Quick, TunnelRunState::Connecting);
+        zrok.provider = TunnelProvider::Zrok;
+        zrok.hostname = None;
+        let out = format_tunnels(&[ngrok, zrok], &installed_cloudflared());
+        assert!(out.contains("\n\nSITE\tPROVIDER\tSTATE\tURL\n"), "{out}");
+        assert!(
+            out.contains("\napp\tngrok (static domain)\tonline\thttps://demo.ngrok-free.app"),
+            "{out}"
+        );
+        assert!(out.ends_with("\napp\tzrok\tconnecting\t-"), "{out}");
+    }
+
+    #[test]
+    fn tunnel_share_and_stop_map_their_provider() {
+        use crate::cli::TunnelProviderArg;
+        use yerd_core::tunnel_provider::TunnelProvider;
+        for (action, expected) in [
+            (
+                TunnelAction::Share {
+                    site: "app".into(),
+                    provider: None,
+                    random_url: false,
+                },
+                Request::StartQuickTunnel {
+                    site: "app".into(),
+                    provider: None,
+                    random_url: false,
+                },
+            ),
+            (
+                TunnelAction::Share {
+                    site: "app".into(),
+                    provider: Some(TunnelProviderArg::Ngrok),
+                    random_url: true,
+                },
+                Request::StartQuickTunnel {
+                    site: "app".into(),
+                    provider: Some(TunnelProvider::Ngrok),
+                    random_url: true,
+                },
+            ),
+            (
+                TunnelAction::Stop {
+                    site: "app".into(),
+                    provider: None,
+                },
+                Request::StopTunnel {
+                    site: "app".into(),
+                    provider: None,
+                },
+            ),
+            (
+                TunnelAction::Stop {
+                    site: "app".into(),
+                    provider: Some(TunnelProviderArg::Zrok),
+                },
+                Request::StopTunnel {
+                    site: "app".into(),
+                    provider: Some(TunnelProvider::Zrok),
+                },
+            ),
+        ] {
+            assert_eq!(tunnel_request(&action).unwrap(), expected, "{action:?}");
+        }
+    }
+
+    #[test]
+    fn tunnel_provider_actions_map_to_requests() {
+        use crate::cli::TunnelProviderArg;
+        use yerd_core::tunnel_provider::TunnelProvider;
+        let token = |t: Option<&str>, clear: bool| TunnelAction::Ngrok {
+            action: NgrokAction::Token {
+                token: t.map(str::to_owned),
+                clear,
+            },
+        };
+        let domain = |d: Option<&str>, clear: bool| TunnelAction::Ngrok {
+            action: NgrokAction::Domain {
+                domain: d.map(str::to_owned),
+                clear,
+            },
+        };
+        for (action, expected) in [
+            (TunnelAction::Providers, Request::ListTunnelProviders),
+            (
+                token(Some("tok"), false),
+                Request::SetNgrokAuthtoken {
+                    authtoken: Some("tok".into()),
+                },
+            ),
+            (
+                token(None, true),
+                Request::SetNgrokAuthtoken { authtoken: None },
+            ),
+            (
+                domain(Some("x.ngrok-free.app"), false),
+                Request::SetNgrokDomain {
+                    domain: Some("x.ngrok-free.app".into()),
+                },
+            ),
+            (domain(None, true), Request::SetNgrokDomain { domain: None }),
+            (
+                TunnelAction::Zrok {
+                    action: ZrokAction::Enable {
+                        token: Some("zt".into()),
+                    },
+                },
+                Request::EnableZrok { token: "zt".into() },
+            ),
+            (
+                TunnelAction::Zrok {
+                    action: ZrokAction::Disable,
+                },
+                Request::DisableZrok,
+            ),
+            (
+                TunnelAction::Default {
+                    provider: TunnelProviderArg::Ngrok,
+                },
+                Request::SetDefaultTunnelProvider {
+                    provider: TunnelProvider::Ngrok,
+                },
+            ),
+        ] {
+            assert_eq!(tunnel_request(&action).unwrap(), expected, "{action:?}");
+            assert_eq!(stdin_secret_prompt(&action), None, "{action:?}");
+        }
+    }
+
+    #[test]
+    fn omitted_tokens_are_read_from_stdin() {
+        let ngrok = TunnelAction::Ngrok {
+            action: NgrokAction::Token {
+                token: None,
+                clear: false,
+            },
+        };
+        let zrok = TunnelAction::Zrok {
+            action: ZrokAction::Enable { token: None },
+        };
+        for action in [&ngrok, &zrok] {
+            assert!(matches!(
+                tunnel_request(action),
+                Err(ClientError::Usage(m)) if m == "token required"
+            ));
+            assert!(stdin_secret_prompt(action).is_some());
+        }
+        assert_eq!(
+            tunnel_secret_request(&ngrok, "tok".into()).unwrap(),
+            Request::SetNgrokAuthtoken {
+                authtoken: Some("tok".into())
+            }
+        );
+        assert_eq!(
+            tunnel_secret_request(&zrok, "zt".into()).unwrap(),
+            Request::EnableZrok { token: "zt".into() }
+        );
+        assert!(tunnel_secret_request(&TunnelAction::Providers, "x".into()).is_err());
+    }
+
+    fn share(site: &str, provider: TunnelProvider) -> TunnelInfo {
+        TunnelInfo {
+            site: site.into(),
+            provider,
+            hostname: None,
+            ..tunnel_info(yerd_ipc::TunnelKind::Quick, TunnelRunState::Running)
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn check_provider_start_spots_a_daemon_that_ignored_the_provider() {
+        type Case = (
+            &'static str,
+            TunnelProvider,
+            Option<Vec<TunnelInfo>>,
+            Vec<TunnelInfo>,
+            ProviderStartCheck,
+        );
+        let cf = || share("app", TunnelProvider::Cloudflare);
+        let ngrok = || share("app", TunnelProvider::Ngrok);
+        let zrok_blog = || share("blog", TunnelProvider::Zrok);
+        let other = || share("blog", TunnelProvider::Cloudflare);
+        let third = || share("shop", TunnelProvider::Cloudflare);
+        let ok = ProviderStartCheck {
+            unsupported: false,
+            stop_cloudflare: None,
+            cleanup_unknown: false,
+        };
+        let unsupported = |stop: Option<&str>| ProviderStartCheck {
+            unsupported: true,
+            stop_cloudflare: stop.map(str::to_owned),
+            cleanup_unknown: false,
+        };
+        let unknown = ProviderStartCheck {
+            unsupported: true,
+            stop_cloudflare: None,
+            cleanup_unknown: true,
+        };
+        let cases: Vec<Case> = vec![
+            (
+                "cloudflare asked",
+                TunnelProvider::Cloudflare,
+                Some(vec![]),
+                vec![cf()],
+                ok.clone(),
+            ),
+            (
+                "share present",
+                TunnelProvider::Ngrok,
+                Some(vec![]),
+                vec![cf(), ngrok()],
+                ok.clone(),
+            ),
+            (
+                "share present under the daemon's canonical name",
+                TunnelProvider::Ngrok,
+                None,
+                vec![ngrok()],
+                ok.clone(),
+            ),
+            (
+                "another site shares through the provider",
+                TunnelProvider::Zrok,
+                Some(vec![]),
+                vec![zrok_blog()],
+                ok.clone(),
+            ),
+            (
+                "old daemon created cloudflare",
+                TunnelProvider::Ngrok,
+                Some(vec![other()]),
+                vec![other(), cf()],
+                unsupported(Some("app")),
+            ),
+            (
+                "old daemon, created share found by diff alone",
+                TunnelProvider::Zrok,
+                Some(vec![]),
+                vec![cf()],
+                unsupported(Some("app")),
+            ),
+            (
+                "cloudflare existed",
+                TunnelProvider::Ngrok,
+                Some(vec![cf()]),
+                vec![cf()],
+                unsupported(None),
+            ),
+            (
+                "prior list unknown",
+                TunnelProvider::Ngrok,
+                None,
+                vec![cf()],
+                unknown.clone(),
+            ),
+            (
+                "nothing came back",
+                TunnelProvider::Zrok,
+                Some(vec![other()]),
+                vec![other()],
+                unsupported(None),
+            ),
+            (
+                "two new cloudflare shares are ambiguous",
+                TunnelProvider::Ngrok,
+                Some(vec![]),
+                vec![cf(), third()],
+                unknown,
+            ),
+        ];
+        for (label, provider, before, after, want) in cases {
+            assert_eq!(
+                check_provider_start(provider, before.as_deref(), &after),
+                want,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn cleanup_failed_message_names_the_manual_stop() {
+        assert_eq!(
+            cleanup_failed_message("app"),
+            "app may still be public through its Cloudflare quick link - stop it with `yerd tunnel stop app --provider cloudflare`"
+        );
+    }
+
+    #[test]
+    fn cleanup_unknown_message_names_status_and_the_manual_stop() {
+        let m = cleanup_unknown_message();
+        assert!(m.contains("`yerd tunnel status`"), "{m}");
+        assert!(
+            m.contains("`yerd tunnel stop <site> --provider cloudflare`"),
+            "{m}"
+        );
+    }
+
+    #[test]
+    fn unsupported_provider_message_names_the_provider() {
+        assert_eq!(
+            unsupported_provider_message(TunnelProvider::Zrok),
+            "The running Yerd daemon doesn't support zrok sharing yet - restart Yerd and try again"
+        );
+    }
+
+    fn provider_status(
+        provider: yerd_core::tunnel_provider::TunnelProvider,
+        readiness: yerd_core::tunnel_provider::ProviderReadiness,
+    ) -> yerd_ipc::TunnelProviderStatus {
+        yerd_ipc::TunnelProviderStatus {
+            provider,
+            readiness,
+            version: None,
+            source: None,
+            path: None,
+            update_available: None,
+            configured: false,
+            authtoken_hint: None,
+            domain: None,
+        }
+    }
+
+    #[test]
+    fn format_tunnel_providers_cases() {
+        use yerd_core::tunnel_provider::{ProviderReadiness, TunnelProvider};
+        let cloudflare = yerd_ipc::TunnelProviderStatus {
+            version: Some("2026.6.1".into()),
+            source: Some(yerd_ipc::CloudflaredSource::Managed),
+            configured: true,
+            ..provider_status(TunnelProvider::Cloudflare, ProviderReadiness::Ready)
+        };
+        let ngrok = yerd_ipc::TunnelProviderStatus {
+            version: Some("3.18.4".into()),
+            source: Some(yerd_ipc::CloudflaredSource::Managed),
+            update_available: Some("3.19.0".into()),
+            configured: true,
+            authtoken_hint: Some("2fXk••••••••Qa".into()),
+            domain: Some("x.ngrok-free.app".into()),
+            ..provider_status(TunnelProvider::Ngrok, ProviderReadiness::Ready)
+        };
+        let zrok = yerd_ipc::TunnelProviderStatus {
+            version: Some("2.0.11".into()),
+            source: Some(yerd_ipc::CloudflaredSource::System),
+            path: Some("/opt/bin/zrok2".into()),
+            configured: true,
+            ..provider_status(TunnelProvider::Zrok, ProviderReadiness::Ready)
+        };
+        let out = format_tunnel_providers(&[cloudflare, ngrok, zrok], TunnelProvider::Ngrok);
+        assert_eq!(
+            out,
+            "PROVIDER\tSTATUS\tBINARY\tSETTINGS\n\
+             Cloudflare\tready\tcloudflared 2026.6.1 (Yerd)\taccount connected\n\
+             ngrok\tready\tngrok 3.18.4 (Yerd) - update 3.19.0 in Tooling\ttoken 2fXk••••••••Qa, domain x.ngrok-free.app\n\
+             zrok\tready\tzrok2 2.0.11 (PATH /opt/bin/zrok2)\tenabled\n\n\
+             default for new shares: ngrok"
+        );
+
+        let missing = [
+            provider_status(TunnelProvider::Cloudflare, ProviderReadiness::NotInstalled),
+            provider_status(TunnelProvider::Ngrok, ProviderReadiness::NotInstalled),
+            provider_status(TunnelProvider::Zrok, ProviderReadiness::NotInstalled),
+        ];
+        let out = format_tunnel_providers(&missing, TunnelProvider::Cloudflare);
+        assert!(
+            out.contains("\nCloudflare\tnot installed\t-\tno account"),
+            "{out}"
+        );
+        assert!(out.contains("\nngrok\tnot installed\t-\tno token"), "{out}");
+        assert!(
+            out.contains("\nzrok\tnot installed\t-\tnot enabled"),
+            "{out}"
+        );
+        assert!(out.ends_with("default for new shares: Cloudflare"), "{out}");
     }
 
     #[test]

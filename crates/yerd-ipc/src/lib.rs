@@ -61,8 +61,8 @@ pub use status::{
     DatabaseSummary, Diagnosis, DiagnosisCode, DomainShadow, FixReport, FixResult, MailAttachment,
     MailDetail, MailHeader, MailStatus, MailSummary, NamedTunnelMeta, PhpPoolStatus, PoolRunState,
     PortRedirectTargets, PortStatus, ServiceAvailability, ServiceRunState, ServiceStatus, Severity,
-    SiteCounts, SiteHostname, StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState,
-    UnboundWeb, WordPressVersionInfo,
+    SiteCounts, SiteHostname, StatusReport, ToolStatus, TunnelInfo, TunnelKind,
+    TunnelProviderStatus, TunnelRunState, UnboundWeb, WordPressVersionInfo,
 };
 pub use update::{Channel, StagedArtifact, UpdateSource};
 

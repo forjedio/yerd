@@ -1,4 +1,5 @@
-//! Reap `cloudflared` processes a previous daemon run left behind.
+//! Reap tunnel processes (`cloudflared`, ngrok, zrok) a previous daemon run
+//! left behind.
 //!
 //! The tunnel manager writes `{state}/tunnel/<key>.pid` for every spawn and
 //! removes it on stop, so after a clean exit the directory holds no pidfiles. A
@@ -7,10 +8,13 @@
 //! [`reap`] runs before the IPC server opens, so no pidfile of this run can be
 //! mistaken for an orphan.
 //!
-//! A PID is only signalled when its command line provably belongs to Yerd's
-//! `cloudflared` ([`is_owned_cloudflared`]): every Yerd-spawned `cloudflared`
-//! carries a `{data}/tunnel/...` path through `--config`, which guards against
-//! the PID having been reused by an unrelated process.
+//! A PID is only signalled when its command line belongs to one of Yerd's
+//! tunnel children ([`is_owned_tunnel_process`]): every Yerd-spawned
+//! `cloudflared` and ngrok carries a `{data}/tunnel/...` path through
+//! `--config`, which guards against the PID having been reused by an unrelated
+//! process. A zrok share's argv carries no Yerd path, so it is matched by its
+//! exact share signature instead; a reused PID would have to be running that
+//! same command for it to be signalled.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -23,25 +27,38 @@ const REAP_GRACE: Duration = Duration::from_secs(5);
 /// Poll interval while waiting for signalled orphans to exit.
 const REAP_POLL: Duration = Duration::from_millis(100);
 
-/// The executable name a Yerd tunnel process runs as.
-const CLOUDFLARED: &str = "cloudflared";
+/// Executables that always run with a `--config` inside `{data}/tunnel`.
+const CONFIGURED_AGENTS: [&str; 2] = ["cloudflared", "ngrok"];
 
-/// Whether `cmdline` is a `cloudflared` started by this Yerd install: it names a
-/// `cloudflared` executable (the word bounded by a path separator or a space)
-/// and references a path inside `tunnel_dir` (`{data}/tunnel`).
+/// The zrok executable, matched by its share signature instead of a path.
+const ZROK: &str = "zrok2";
+
+/// Whether `cmdline` is a tunnel process started by this Yerd install: a
+/// `cloudflared` or `ngrok` executable (the word bounded by a path separator
+/// or a space) referencing a path inside `tunnel_dir` (`{data}/tunnel`), or a
+/// `zrok2` executable running Yerd's exact share command (`share public
+/// http://127.0.0.1:<port>` with `--force-local`).
 #[must_use]
-pub fn is_owned_cloudflared(cmdline: &str, tunnel_dir: &Path) -> bool {
+pub fn is_owned_tunnel_process(cmdline: &str, tunnel_dir: &Path) -> bool {
     let dir = tunnel_dir.to_string_lossy();
     let dir = dir.trim_end_matches('/');
-    !dir.is_empty() && names_cloudflared(cmdline) && cmdline.contains(&format!("{dir}/"))
+    let configured = !dir.is_empty()
+        && CONFIGURED_AGENTS
+            .iter()
+            .any(|name| names_executable(cmdline, name))
+        && cmdline.contains(&format!("{dir}/"));
+    let zrok_share = names_executable(cmdline, ZROK)
+        && cmdline.contains(" share public http://127.0.0.1:")
+        && cmdline.contains("--force-local");
+    configured || zrok_share
 }
 
-/// Whether `cmdline` contains `cloudflared` as a whole executable name.
-fn names_cloudflared(cmdline: &str) -> bool {
-    cmdline.match_indices(CLOUDFLARED).any(|(at, _)| {
+/// Whether `cmdline` contains `name` as a whole executable name.
+fn names_executable(cmdline: &str, name: &str) -> bool {
+    cmdline.match_indices(name).any(|(at, _)| {
         let before = cmdline.get(..at).and_then(|s| s.chars().next_back());
         let after = cmdline
-            .get(at + CLOUDFLARED.len()..)
+            .get(at + name.len()..)
             .and_then(|s| s.chars().next());
         matches!(before, None | Some('/' | ' ')) && matches!(after, None | Some(' '))
     })
@@ -53,9 +70,9 @@ fn pid_dir(dirs: &PlatformDirs) -> PathBuf {
 }
 
 /// Reap orphans through `table`: read every `{state}/tunnel/*.pid`, SIGTERM the
-/// process group of each PID whose command line is an owned `cloudflared`, wait
-/// up to `grace` for them to exit, SIGKILL any survivor whose command line is
-/// still an owned `cloudflared`, and remove every pidfile. Blocking. Returns
+/// process group of each PID whose command line is an owned tunnel process,
+/// wait up to `grace` for them to exit, SIGKILL any survivor whose command line
+/// is still an owned tunnel process, and remove every pidfile. Blocking. Returns
 /// the PIDs that were signalled.
 ///
 /// The ownership recheck before SIGKILL guards against the PID being reused
@@ -80,7 +97,7 @@ pub fn reap_with(table: &dyn ProcessTable, dirs: &PlatformDirs, grace: Duration)
             yerd_platform::pure::process_signal::signal_target(*pid).is_some()
                 && table
                     .command_line(*pid)
-                    .is_some_and(|cmdline| is_owned_cloudflared(&cmdline, &tunnel_dir))
+                    .is_some_and(|cmdline| is_owned_tunnel_process(&cmdline, &tunnel_dir))
         }) {
             if !owned.contains(&pid) {
                 owned.push(pid);
@@ -91,7 +108,7 @@ pub fn reap_with(table: &dyn ProcessTable, dirs: &PlatformDirs, grace: Duration)
     for pid in &owned {
         tracing::info!(
             pid,
-            "stopping orphaned cloudflared from a previous daemon run"
+            "stopping orphaned tunnel process from a previous daemon run"
         );
         table.signal_group(*pid, false);
     }
@@ -102,10 +119,10 @@ pub fn reap_with(table: &dyn ProcessTable, dirs: &PlatformDirs, grace: Duration)
     let still_owned = |pid: u32| {
         table
             .command_line(pid)
-            .is_some_and(|cmdline| is_owned_cloudflared(&cmdline, &tunnel_dir))
+            .is_some_and(|cmdline| is_owned_tunnel_process(&cmdline, &tunnel_dir))
     };
     for pid in owned.iter().filter(|pid| still_owned(**pid)) {
-        tracing::warn!(pid, "orphaned cloudflared ignored SIGTERM; killing it");
+        tracing::warn!(pid, "orphaned tunnel process ignored SIGTERM; killing it");
         table.signal_group(*pid, true);
     }
     owned
@@ -120,7 +137,7 @@ pub async fn reap(dirs: &PlatformDirs) {
     })
     .await;
     if let Err(e) = reaped {
-        tracing::warn!(error = %e, "orphaned cloudflared reaping did not complete");
+        tracing::warn!(error = %e, "orphaned tunnel process reaping did not complete");
     }
 }
 
@@ -134,7 +151,7 @@ mod tests {
     const TUNNEL: &str = "/home/u/.local/share/yerd/tunnel";
 
     #[test]
-    fn is_owned_cloudflared_table() {
+    fn is_owned_tunnel_process_table() {
         let dir = Path::new(TUNNEL);
         let cases: &[(&str, bool)] = &[
             (
@@ -164,21 +181,46 @@ mod tests {
                 false,
             ),
             ("", false),
+            (
+                "/home/u/.local/share/yerd/tools/ngrok/ngrok http http://127.0.0.1:1 \
+                 --config /home/u/.local/share/yerd/tunnel/ngrok.yml",
+                true,
+            ),
+            ("/usr/local/bin/ngrok http http://127.0.0.1:1", false),
+            (
+                "/usr/local/bin/ngrokx http --config /home/u/.local/share/yerd/tunnel/ngrok.yml",
+                false,
+            ),
+            (
+                "/home/u/.local/share/yerd/tools/zrok/zrok2 share public http://127.0.0.1:4410 \
+                 --headless --backend-mode proxy --force-local",
+                true,
+            ),
+            ("/usr/local/bin/zrok2 share public localhost:3000", false),
+            ("/usr/local/bin/zrok2 enable --headless tok", false),
+            (
+                "/usr/local/bin/zrok2 share public http://127.0.0.1:3000 --headless",
+                false,
+            ),
         ];
         for (cmdline, expected) in cases {
-            assert_eq!(is_owned_cloudflared(cmdline, dir), *expected, "{cmdline}");
+            assert_eq!(
+                is_owned_tunnel_process(cmdline, dir),
+                *expected,
+                "{cmdline}"
+            );
         }
     }
 
     #[test]
-    fn is_owned_cloudflared_handles_spaces_and_a_trailing_slash() {
+    fn is_owned_tunnel_process_handles_spaces_and_a_trailing_slash() {
         let dir = Path::new("/Users/u/Library/Application Support/yerd/tunnel/");
-        assert!(is_owned_cloudflared(
+        assert!(is_owned_tunnel_process(
             "/Users/u/Library/Application Support/yerd/tunnel/bin/cloudflared --config \
              /Users/u/Library/Application Support/yerd/tunnel/quick.yml",
             dir
         ));
-        assert!(!is_owned_cloudflared(
+        assert!(!is_owned_tunnel_process(
             "cloudflared --config /tunnel/x",
             Path::new("/")
         ));

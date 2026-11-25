@@ -58,7 +58,7 @@ fn host_is_trusted(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://") else {
         return false;
     };
-    let authority = rest.split('/').next().unwrap_or(rest);
+    let authority = rest.split(['/', '?', '#', '\\']).next().unwrap_or(rest);
     let hostport = authority.rsplit('@').next().unwrap_or(authority);
     let host = hostport.split(':').next().unwrap_or(hostport);
     host.eq_ignore_ascii_case("github.com")
@@ -496,6 +496,9 @@ mod tests {
         assert!(!host_is_trusted("http://github.com/x"));
         assert!(!host_is_trusted("https://github.com.evil.example.com/x"));
         assert!(!host_is_trusted("https://evil.example.com/?u=github.com"));
+        assert!(!host_is_trusted("https://evil.example#@github.com/x"));
+        assert!(!host_is_trusted("https://evil.example?@github.com/x"));
+        assert!(!host_is_trusted("https://evil.example\\@github.com/x"));
     }
 
     #[test]

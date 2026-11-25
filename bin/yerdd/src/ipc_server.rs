@@ -96,7 +96,11 @@ pub(crate) async fn respond(req: Request, state: &Arc<DaemonState>) -> Response 
             .await
         }
         Request::CloudflaredLogin => crate::tunnel::named::login_streamed(state.clone()).await,
-        Request::StartQuickTunnel { site } => crate::tunnel::start_quick_tunnel(&site, state).await,
+        Request::StartQuickTunnel {
+            site,
+            provider,
+            random_url,
+        } => crate::tunnel::shares::start_share(&site, provider, random_url, state).await,
         Request::StartNamedTunnel => crate::tunnel::named::start(state).await,
         Request::SetSiteTunnel { site, hostname } => {
             crate::tunnel::named::set_site_hostname(&site, hostname.as_deref(), state).await
@@ -512,7 +516,9 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             )
             .await
         }
-        Request::StopTunnel { site } => crate::tunnel::stop_tunnel(&site, state).await,
+        Request::StopTunnel { site, provider } => {
+            crate::tunnel::stop_tunnel(&site, provider, state).await
+        }
         Request::TunnelStatus => crate::tunnel::tunnel_status(state).await,
         Request::CreateNamedTunnel { name } => crate::tunnel::named::create(&name, state).await,
         Request::ListNamedTunnels => crate::tunnel::named::list(state).await,
@@ -523,6 +529,18 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::DeleteNamedTunnel { name } => crate::tunnel::named::delete(&name, state).await,
         Request::SetTunnelPassword { site, password } => {
             crate::tunnel::named::set_password(&site, password.as_deref(), state).await
+        }
+        Request::ListTunnelProviders => crate::tunnel::providers::list(state).await,
+        Request::SetNgrokAuthtoken { authtoken } => {
+            crate::tunnel::providers::set_ngrok_authtoken(state, authtoken.as_deref()).await
+        }
+        Request::SetNgrokDomain { domain } => {
+            crate::tunnel::providers::set_ngrok_domain(state, domain.as_deref()).await
+        }
+        Request::EnableZrok { token } => crate::tunnel::providers::enable_zrok(state, &token).await,
+        Request::DisableZrok => crate::tunnel::providers::disable_zrok(state).await,
+        Request::SetDefaultTunnelProvider { provider } => {
+            crate::tunnel::providers::set_default(state, provider).await
         }
         Request::ProjectConfigDraft { path } => crate::project_file::draft(&path, state).await,
         Request::ExportProjectConfig { site } => crate::project_file::export(&site, state).await,
@@ -1932,11 +1950,14 @@ pub(crate) async fn install_tool_streamed(tool: String, state: Arc<DaemonState>)
 /// `uninstall tool <id>` - remove the tool's files, then prune its shims.
 ///
 /// `cloudflared` is refused while a tunnel operation is in progress or any
-/// tunnel exists; it is removed under the guard from
+/// Cloudflare tunnel exists; it is removed under the guard from
 /// [`crate::tunnel::lock_for_cloudflared_uninstall`] (lock order `tool_mutate`,
 /// `tunnel_mutate`, `tunnel_manager`), which also covers clearing the resolution
-/// cache, and the guard is released before the shims are reconciled.
-async fn uninstall_tool(tool: &str, state: &DaemonState) -> Response {
+/// cache, and the guard is released before the shims are reconciled. ngrok and
+/// zrok are refused while a share of theirs exists and are removed under
+/// [`crate::tunnel::lock_for_provider_uninstall`] (`tool_mutate`, then
+/// `tunnel_manager`).
+pub(crate) async fn uninstall_tool(tool: &str, state: &DaemonState) -> Response {
     let Some(t) = crate::tools::Tool::parse(tool) else {
         return Response::Error {
             code: ErrorCode::NotFound,
@@ -1944,6 +1965,11 @@ async fn uninstall_tool(tool: &str, state: &DaemonState) -> Response {
         };
     };
     let _mutate = state.tool_mutate.lock().await;
+    let share_provider = match t {
+        crate::tools::Tool::Ngrok => Some(yerd_core::tunnel_provider::TunnelProvider::Ngrok),
+        crate::tools::Tool::Zrok => Some(yerd_core::tunnel_provider::TunnelProvider::Zrok),
+        _ => None,
+    };
     let removed = if t == crate::tools::Tool::Cloudflared {
         let guard = match crate::tunnel::lock_for_cloudflared_uninstall(state).await {
             Ok(guard) => guard,
@@ -1951,6 +1977,14 @@ async fn uninstall_tool(tool: &str, state: &DaemonState) -> Response {
         };
         let removed = crate::tools::uninstall(&state.dirs, t);
         crate::tunnel::forget_cloudflared(state).await;
+        drop(guard);
+        removed
+    } else if let Some(provider) = share_provider {
+        let guard = match crate::tunnel::lock_for_provider_uninstall(state, provider).await {
+            Ok(guard) => guard,
+            Err(resp) => return resp,
+        };
+        let removed = crate::tools::uninstall(&state.dirs, t);
         drop(guard);
         removed
     } else {
