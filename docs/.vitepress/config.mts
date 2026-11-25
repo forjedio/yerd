@@ -162,6 +162,7 @@ export default withMermaid({
       {
         text: 'v2.1.x',
         items: [
+          { text: "What's new in 2.1", link: '/releases/v2-1-0' },
           {
             text: 'Changelog',
             link: 'https://github.com/forjedio/yerd/releases',

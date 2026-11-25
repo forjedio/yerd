@@ -9,6 +9,7 @@ export interface HeroAction {
 
 defineProps<{
   pill: string
+  announce?: { badge: string; text: string; link: string }
   lines: string[]
   accent: string
   tagline: string
@@ -22,7 +23,11 @@ defineProps<{
   <section class="y-hero y-glow y-glow--hero">
     <div class="y-hero__inner">
       <div class="y-hero__copy">
-        <p class="y-pill"><span class="y-pill__dot" />{{ pill }}</p>
+        <a v-if="announce" class="y-pill y-pill--link" :href="announce.link">
+          <span class="y-pill__badge">{{ announce.badge }}</span>{{ announce.text }}
+          <span class="y-pill__arrow" aria-hidden="true">→</span>
+        </a>
+        <p v-else class="y-pill"><span class="y-pill__dot" />{{ pill }}</p>
 
         <h1 class="y-hero__title">
           <span v-for="line in lines.slice(0, -1)" :key="line">{{ line }}</span>

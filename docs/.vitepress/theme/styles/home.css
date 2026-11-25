@@ -54,6 +54,35 @@
   letter-spacing: 0.145em;
   color: var(--vp-c-text-2);
 }
+/* The pill as a link, used to announce a release. */
+.y-pill--link {
+  padding-left: 5px;
+  color: var(--vp-c-text-1);
+  transition:
+    border-color 0.2s,
+    transform 0.2s;
+}
+.y-pill--link:hover {
+  border-color: var(--y-blue);
+  transform: translateY(-1px);
+}
+.y-pill__badge {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background-color: var(--y-blue);
+  font-weight: 600;
+  color: #fff;
+}
+.y-pill__arrow {
+  color: var(--y-blue-bright);
+  transition: transform 0.2s;
+}
+.y-pill--link:hover .y-pill__arrow {
+  transform: translateX(3px);
+}
 .y-pill__dot {
   width: 6px;
   height: 6px;

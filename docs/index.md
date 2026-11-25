@@ -9,6 +9,11 @@ description: Serve every project in a folder on its own .test domain over HTTPS,
 
 hero:
   pill: OPEN SOURCE · ROOTLESS · MIT
+  # Shown in place of the pill while set; remove to bring the pill back.
+  announce:
+    badge: NEW
+    text: YERD 2.1 · SEE WHAT'S NEW
+    link: /releases/v2-1-0
   lines:
     - LOCAL PHP,
     - WITHOUT THE
