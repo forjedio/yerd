@@ -315,6 +315,28 @@ pub fn parse_version_token(text: &str) -> Option<String> {
     })
 }
 
+/// Oldest ngrok agent that understands `--url` and the v3 agent config Yerd
+/// writes.
+pub const NGROK_MIN_VERSION: (u32, u32, u32) = (3, 16, 0);
+
+/// Whether an ngrok `version` (`3.39.13`, with or without a leading `v`) is at
+/// least [`NGROK_MIN_VERSION`]. An unparseable version counts as supported, so
+/// the agent's own error is what the user sees.
+#[must_use]
+pub fn ngrok_version_supported(version: &str) -> bool {
+    let mut parts = display_version(version)
+        .split('.')
+        .map(|p| p.parse::<u32>().ok());
+    match (
+        parts.next().flatten(),
+        parts.next().flatten(),
+        parts.next().flatten(),
+    ) {
+        (Some(major), Some(minor), Some(patch)) => (major, minor, patch) >= NGROK_MIN_VERSION,
+        _ => true,
+    }
+}
+
 /// Strips one leading `v`, so a zrok tag (`v2.0.11`) and a probed version
 /// (`2.0.11`) display the same.
 #[must_use]
@@ -366,6 +388,21 @@ fn strip_error_label(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ngrok_version_supported_cases() {
+        let cases = [
+            ("3.16.0", true),
+            ("v3.39.13", true),
+            ("4.0.0", true),
+            ("3.15.9", false),
+            ("2.3.41", false),
+            ("dev", true),
+        ];
+        for (version, want) in cases {
+            assert_eq!(ngrok_version_supported(version), want, "{version}");
+        }
+    }
 
     fn strings(args: &[OsString]) -> Vec<&str> {
         args.iter().filter_map(|a| a.to_str()).collect()

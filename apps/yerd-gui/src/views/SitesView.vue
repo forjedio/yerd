@@ -799,7 +799,9 @@ async function shareSitePublicly(s: Site): Promise<void> {
       .then((p) => p.default_provider)
       .catch(() => undefined);
     const r = await startQuickTunnel(s.name, provider);
-    const entry = siteShare(r.tunnels, s.name, provider);
+    const entry = provider
+      ? siteShare(r.tunnels, s.name, provider)
+      : (r.tunnels.find((t) => t.site === s.name && t.kind === "quick") ?? null);
     const url = entry?.url;
     if (url) {
       const copied = await navigator.clipboard

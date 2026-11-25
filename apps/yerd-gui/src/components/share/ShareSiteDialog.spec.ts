@@ -254,13 +254,18 @@ describe("ShareSiteDialog", () => {
 
   it("disables the static domain while another site's share holds it", async () => {
     const holder = share({ key: "ngrok:quick:legacy", provider: "ngrok", site: "legacy", url: "https://demo.ngrok-free.app" });
-    mountDialog({ items: [...ITEMS, holder] });
+    const w = mountDialog({ items: [...ITEMS, holder] });
     await flushPromises();
     await pickProvider("ngrok");
     const staticBtn = document.querySelector('[data-url="static"]') as HTMLButtonElement;
     expect(staticBtn.disabled).toBe(true);
     expect(document.querySelector('[data-testid="static-in-use"]')?.textContent).toContain("In use by legacy's share");
     expect(document.querySelector('[data-url="random"]')?.getAttribute("aria-checked")).toBe("true");
+    await pickSite("blog");
+    submit().click();
+    expect(w.emitted("share")).toEqual([
+      [{ site: "blog", provider: "ngrok", kind: "quick", hostname: null, randomUrl: true }],
+    ]);
   });
 
   it("notes when the site is already shared through another provider", async () => {

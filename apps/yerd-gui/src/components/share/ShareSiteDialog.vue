@@ -174,7 +174,7 @@ function submit(): void {
     provider: provider.value,
     kind: kind.value,
     hostname: domain ? hostname.value.trim() : null,
-    randomUrl: provider.value === "ngrok" && staticFree.value && urlChoice.value === "random",
+    randomUrl: provider.value === "ngrok" && !!ngrokDomain.value && urlChoice.value === "random",
   });
 }
 

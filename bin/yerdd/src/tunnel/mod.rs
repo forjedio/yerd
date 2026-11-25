@@ -448,13 +448,15 @@ pub async fn stop_tunnel(
     let name = canonical_site_name(state, site)
         .await
         .unwrap_or_else(|| site.to_owned());
-    let keys: Vec<String> = match provider {
-        Some(provider) => vec![share_key(provider, &name)],
-        None => TunnelProvider::ALL
-            .iter()
-            .map(|provider| share_key(*provider, &name))
-            .collect(),
+    let providers = match provider {
+        Some(provider) => vec![provider],
+        None => TunnelProvider::ALL.to_vec(),
     };
+    let keys: Vec<String> = providers
+        .into_iter()
+        .map(|provider| share_key(provider, &name))
+        .filter(|key| key != named::NAMED_KEY)
+        .collect();
     let stopped = {
         let mut mgr = state.tunnel_manager.lock().await;
         let mut first_err = None;

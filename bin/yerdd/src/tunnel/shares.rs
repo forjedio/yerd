@@ -24,7 +24,8 @@ use yerd_ipc::{ErrorCode, Response};
 use yerd_platform::PlatformDirs;
 use yerd_tunnel::manager::TunnelSnapshot;
 use yerd_tunnel::providers::{
-    ngrok_share_args, render_ngrok_config, zrok_share_args, NGROK_AUTHTOKEN_ENV,
+    ngrok_share_args, ngrok_version_supported, render_ngrok_config, zrok_share_args,
+    NGROK_AUTHTOKEN_ENV, NGROK_MIN_VERSION,
 };
 use yerd_tunnel::TunnelKind;
 
@@ -177,6 +178,19 @@ async fn start_ngrok(
     let Some(binary) = resolve_binary_in(&state.dirs, Tool::Ngrok, user_path).await else {
         return not_installed(TunnelProvider::Ngrok);
     };
+    if let Some(version) = binary
+        .version
+        .as_deref()
+        .filter(|v| !ngrok_version_supported(v))
+    {
+        let (major, minor, patch) = NGROK_MIN_VERSION;
+        return error(
+            ErrorCode::InvalidPath,
+            format!(
+                "ngrok {version} is too old to share through Yerd (needs {major}.{minor}.{patch} or newer) - install Yerd's copy from Tooling"
+            ),
+        );
+    }
     let (token, domain) = {
         let cfg = state.config.lock().await;
         (
@@ -195,6 +209,17 @@ async fn start_ngrok(
         Err(resp) => return resp,
     };
     let static_domain = domain.filter(|_| !random_url);
+    let key = share_key(TunnelProvider::Ngrok, &name);
+    if let Some(domain) = static_domain.as_deref() {
+        if let Some(holder) = static_domain_holder(state, &key).await {
+            return error(
+                ErrorCode::AlreadyExists,
+                format!(
+                    "the ngrok static domain {domain} is already in use by {holder}'s share - stop it or share with a random URL"
+                ),
+            );
+        }
+    }
     let config_path = match write_ngrok_config(&state.dirs) {
         Ok(path) => path,
         Err(message) => return error(ErrorCode::Internal, message),
@@ -207,7 +232,6 @@ async fn start_ngrok(
     env.push((NGROK_AUTHTOKEN_ENV.into(), token.into()));
     env.extend(proxy_env(state).await);
     let args = ngrok_share_args(&origin, &config_path, static_domain.as_deref());
-    let key = share_key(TunnelProvider::Ngrok, &name);
     let spec = match super::launch_spec(state, &key, binary.path, args, env) {
         Ok(spec) => spec,
         Err(resp) => return resp,
@@ -217,6 +241,25 @@ async fn start_ngrok(
         static_domain: static_domain.is_some(),
     };
     super::launch_and_settle(state, &key, &name, spec, kind).await
+}
+
+/// The site of another ngrok share (any key but `key`) serving the static
+/// domain, in any state. ngrok refuses a second agent on an online endpoint
+/// (`ERR_NGROK_334`), so a new static-domain share would only fail.
+async fn static_domain_holder(state: &DaemonState, key: &str) -> Option<String> {
+    let mut mgr = state.tunnel_manager.lock().await;
+    mgr.snapshots()
+        .iter()
+        .find(|s| {
+            s.site != key
+                && matches!(
+                    s.kind,
+                    TunnelKind::Ngrok {
+                        static_domain: true
+                    }
+                )
+        })
+        .map(|s| site_of(s).to_owned())
 }
 
 /// Start a zrok share. The enabled check and the launch happen under
@@ -384,6 +427,22 @@ mod stub_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_ngrok_older_than_the_minimum_is_refused_before_spawning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = stub_state(tmp.path(), QUICK_STUB).await;
+        install(&state, Tool::Ngrok, "3.15.0", NGROK_STUB);
+        state.config.lock().await.tunnel.ngrok.authtoken = Some(TOKEN.to_owned());
+
+        let resp = start_share_in("app", TunnelProvider::Ngrok, false, &state, None).await;
+
+        let (code, message) = error_of(&resp);
+        assert_eq!(code, ErrorCode::InvalidPath);
+        assert!(message.contains("3.15.0 is too old"), "{message}");
+        assert!(snapshots(&state).await.is_empty());
+        teardown(&state).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_ngrok_random_share_runs_with_the_token_only_in_its_env() {
         let tmp = tempfile::tempdir().unwrap();
         let state = ngrok_state(tmp.path(), NGROK_STUB).await;
@@ -433,6 +492,37 @@ mod stub_tests {
         assert!(!info.static_domain);
         assert_eq!(info.url.as_deref(), Some("https://stub.ngrok-free.app"));
         assert!(!tunnel_file(&state, "ngrok.args").contains("--url"));
+        teardown(&state).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_second_static_domain_share_is_refused_but_a_random_one_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = ngrok_state(tmp.path(), NGROK_STUB).await;
+        state.config.lock().await.tunnel.ngrok.domain = Some("demo.ngrok-free.app".to_owned());
+        let root = tmp.path().join("blog");
+        std::fs::create_dir_all(&root).unwrap();
+        let blog =
+            yerd_core::Site::linked("blog", &root, yerd_core::PhpVersion::new(8, 3)).unwrap();
+        state.router.write().await.insert(blog).unwrap();
+        start_share_in("app", TunnelProvider::Ngrok, false, &state, None).await;
+
+        let resp = start_share_in("blog", TunnelProvider::Ngrok, false, &state, None).await;
+
+        let (code, message) = error_of(&resp);
+        assert_eq!(code, ErrorCode::AlreadyExists);
+        assert!(message.contains("in use by app's share"), "{message}");
+        assert!(!snapshots(&state)
+            .await
+            .iter()
+            .any(|s| s.site == "blog@ngrok"));
+        let resp = start_share_in("blog", TunnelProvider::Ngrok, true, &state, None).await;
+        let info = tunnels(&resp)
+            .iter()
+            .find(|t| t.site == "blog" && t.provider == TunnelProvider::Ngrok)
+            .cloned()
+            .unwrap();
+        assert!(!info.static_domain);
         teardown(&state).await;
     }
 

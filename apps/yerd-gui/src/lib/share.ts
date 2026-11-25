@@ -49,7 +49,6 @@ export function shareKey(provider: TunnelProvider, kind: ShareKind, site: string
   return `${provider}:${kind}:${site}`;
 }
 
-/** The single named tunnel instance the daemon supervises, in any state. */
 /** The per-site share of `site` through `provider` (Cloudflare when `provider`
  *  is unknown), never the named-tunnel entry. */
 export function siteShare(
@@ -63,6 +62,7 @@ export function siteShare(
   );
 }
 
+/** The single named tunnel instance the daemon supervises, in any state. */
 export function namedEntry(tunnels: readonly TunnelInfo[]): TunnelInfo | null {
   return tunnels.find((t) => t.kind === "named") ?? null;
 }

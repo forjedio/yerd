@@ -363,6 +363,22 @@ pub(super) mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stopping_the_named_key_as_a_site_leaves_the_named_tunnel_running() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = stub_state(tmp.path(), QUICK_STUB).await;
+        launch_stub(&state, NAMED_KEY).await;
+
+        for provider in [
+            None,
+            Some(yerd_core::tunnel_provider::TunnelProvider::Cloudflare),
+        ] {
+            crate::tunnel::stop_tunnel(NAMED_KEY, provider, &state).await;
+            assert!(snapshots(&state).await.iter().any(|s| s.site == NAMED_KEY));
+        }
+        teardown(&state).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cloudflared_uninstall_is_refused_while_a_tunnel_runs() {
         let tmp = tempfile::tempdir().unwrap();
         let state = stub_state(tmp.path(), QUICK_STUB).await;
