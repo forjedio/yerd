@@ -29,38 +29,41 @@ the tunnel when you're done. Quick-tunnel URLs are unguessable but public; named
 hostnames are whatever you choose.
 :::
 
-## Prerequisite: cloudflared
+## Before you share
 
-Sharing needs the `cloudflared` binary. If one is already on your `PATH` (version
-2023.3.0 or newer), Yerd detects and uses it automatically - nothing to install.
-Otherwise install Yerd's own copy: `cloudflared` is a managed
-[tool](./tooling), so Yerd **downloads it on demand** (the official Apache-2.0
-static build, verified by checksum) into `{data}/tools/cloudflared/` - it isn't
-bundled, and it never touches your system unless you already had one. No
-Cloudflare account is required for quick share.
+Each provider runs its own agent binary, and a share needs only the one for the
+provider it goes through:
+
+| Provider | Binary | Account needed |
+| --- | --- | --- |
+| Cloudflare | `cloudflared` (2023.3.0 or newer) | None for a quick link; a Cloudflare account for [your own domain](#named-tunnels) |
+| ngrok | `ngrok` (3.16.0 or newer for a static domain) | An ngrok authtoken |
+| zrok | `zrok2` (zrok v2) | A zrok account token, used once to enable this machine |
+
+All three are managed [tools](./tooling): Yerd **downloads them on demand**
+(official builds, verified by checksum) into `{data}/tools/` - none is bundled,
+and nothing touches your system. A copy already on your `PATH` is detected and
+used instead; once you install Yerd's own copy, that one is used ahead of it.
 
 ```sh
 yerd install tool cloudflared
+yerd install tool ngrok
+yerd install tool zrok
 ```
 
-Once installed, `cloudflared` is also available as a command in `{data}/bin`, so
-it is on your `PATH` after `yerd path install`. Yerd's copy is used ahead of one
-on your `PATH`. Updates show up in **Tooling** like any other tool (re-run
-`yerd install tool cloudflared` to update from the CLI), and
-`yerd uninstall tool cloudflared` removes it; uninstalling is refused while a
-Cloudflare tunnel is running and keeps your Cloudflare login and tunnels.
+Installed tools are also commands in `{data}/bin`, so they are on your `PATH`
+after `yerd path install`. Updates show up in **Tooling** like any other tool
+(re-run `yerd install tool <name>` to update from the CLI). Uninstalling a tool
+is refused while a share through it is running.
 
-In the desktop app, install, update and uninstall `cloudflared` from
-**Tooling**. The **Share** page links there the first time you visit, and the
-Cloudflare pane of its **Providers** sheet shows which `cloudflared` is in use
-(**Found on PATH** or **Yerd's copy**) with an **Open Tooling** link when it is
-missing or an update is available.
-
-<ThemedImage light="/images/share-setup-light.png" dark="/images/share-setup-dark.png" alt="The Cloudflare pane of the Providers sheet: Yerd's cloudflared installed, the Cloudflare account connected and the domain tunnel live with two sites" />
+In the desktop app, install, update and uninstall them from **Tooling**. The
+**Share** page's [Providers](#tunnel-providers) sheet shows which binary each
+provider uses (**Yerd's copy** or **Found on PATH**), with **Open Tooling**
+when it is missing and **Update** when an update is available.
 
 ## Tunnel providers
 
-Besides Cloudflare, Yerd can be set up for two more tunnel providers,
+Yerd shares through three tunnel providers: Cloudflare,
 [ngrok](https://ngrok.com) and [zrok](https://zrok.io). Each keeps its own
 account and its own URLs. On the **Share** page, **Providers** opens the
 **Tunnel providers** sheet: the providers are listed on the left with a status,
@@ -73,18 +76,21 @@ shares** sits underneath the list.
 | **Needs setup** | The binary is there, but the account step is not done yet (ngrok: no authtoken saved; zrok: this machine is not enabled). |
 | **Not installed** | No binary was found. Install it from **Tooling** (or `yerd install tool ngrok` / `yerd install tool zrok`). |
 
-Each pane shows which binary is in use: **Yerd's copy** (installed from
-Tooling) or **Found on PATH** (with its path), with **Re-check** and, when
-there is something to install or update, **Open Tooling**.
+Each pane starts with the binary in use (see [Before you share](#before-you-share))
+and a **Re-check** for after you install one.
 
 From the CLI, `yerd tunnel providers` prints the same overview.
 
 ### Cloudflare
 
-The Cloudflare pane holds everything that used to be in the Share page's setup
-dialog: the `cloudflared` binary, connecting your Cloudflare account, and the
-tunnel for your domain (see [Named tunnels](#named-tunnels)). Quick links need
+The Cloudflare pane shows the `cloudflared` binary, connects your Cloudflare
+account, and creates, restarts or removes the tunnel for your domain (see
+[Named tunnels](#named-tunnels)). Quick links need
 no account, so Cloudflare is ready as soon as `cloudflared` is installed.
+
+Uninstalling `cloudflared` keeps your Cloudflare login and tunnels.
+
+<ThemedImage light="/images/share-setup-light.png" dark="/images/share-setup-dark.png" alt="The Cloudflare pane of the Providers sheet: Yerd's cloudflared installed, the Cloudflare account connected and the domain tunnel live with two sites" />
 
 ### ngrok
 
@@ -235,10 +241,17 @@ Shares through ngrok and zrok are torn down when the daemon exits and are not
 resumed when it starts again. A changed [outbound proxy](./corporate-networks)
 applies to shares started after the change; restart a share to pick it up.
 
-## Named tunnels
+## Cloudflare named tunnels (your own domain) {#named-tunnels}
 
 Named tunnels publish a site at a **stable hostname on a domain you already manage
 in Cloudflare**. They need a one-time browser login to your Cloudflare account.
+
+::: tip Cloudflare only
+Named tunnels exist only for Cloudflare. ngrok's closest equivalent is a
+[static domain](#ngrok): every ngrok share uses that same address, but it is on
+ngrok's domain (such as `name.ngrok-free.app`), not yours, and only one site can
+hold it at a time. zrok shares get a new URL each time they start.
+:::
 
 Yerd uses a single consolidated tunnel that serves every site you expose (one
 process, one config), so you create the tunnel once and then just toggle which
@@ -410,6 +423,55 @@ share URL. Disable those tools (or set a [share
 password](#password-protection)) while a site is shared.
 :::
 
+### Laravel
+
+A Laravel site mostly works over a share as-is: Yerd hands it the public host,
+`HTTPS=on` and port 443, so `url()`, `route()`, redirects and `asset()` point at
+the public address with no `TrustProxies` setup, and Livewire, Inertia and
+ordinary forms keep working. A few things need attention first.
+
+::: warning Build your Vite assets
+Vite's dev server (`npm run dev`) runs on your machine at `localhost:5173`, which
+visitors can't reach through a share, so pages load without their CSS and JS.
+Stop the dev server and run `npm run build` before sharing, and build again
+after changing front-end code. Yerd warns when a share starts if the dev server
+is running (the web root has a `hot` file), or when a Laravel site has a Vite
+config but no production build (`public/build/manifest.json` is missing). A
+site whose pages don't use `@vite` (a fresh app's welcome page, say) can ignore
+that second warning.
+:::
+
+::: warning Don't pin SESSION_DOMAIN to .test
+If `.env` sets `SESSION_DOMAIN` to `.app.test`, browsers reject the session
+cookie on the public hostname, so logins and CSRF-protected forms fail. Unset
+it, or set it to `null`, while sharing. Yerd warns about this when a share
+starts.
+:::
+
+::: info Things that read APP_URL still point at .test
+Anything that builds a URL from `APP_URL` instead of the current request keeps
+using the `.test` address: links in queued mail and notifications, scheduled
+jobs and `artisan` commands, `Storage::url()` on the `public` disk, an
+`ASSET_URL` you have set, and signed URLs generated in a queue. Set `APP_URL`
+(and `ASSET_URL`, if used) to the share's URL while you test those, then put it
+back.
+:::
+
+::: info Websockets and SPA auth need their own config
+Laravel Reverb and other websocket servers aren't carried by the share: Echo
+connects to the host built into your JS bundle (such as `VITE_REVERB_HOST`), so
+real-time features only work locally. Sanctum's cookie-based SPA
+authentication needs the share's hostname in `SANCTUM_STATEFUL_DOMAINS`.
+:::
+
+::: info Local-only tools become public
+Debugbar, Telescope, Horizon's local gate, Clockwork and IP-restricted pages
+treat every tunnelled visitor as `127.0.0.1` (see the warning above). Turn them
+off or set a [share password](#password-protection) while the site is shared.
+While a share is password-protected, your app's own Basic or bearer-token auth
+won't receive its `Authorization` header.
+:::
+
 ### WordPress
 
 WordPress builds links from its stored `home` and `siteurl` options, so a site
@@ -468,11 +530,17 @@ yerd tunnel password app --clear    # remove it
 
 When a share starts (`share`, `set-host`, `publish`, or the daemon resuming the
 named tunnel), Yerd checks the site for setups that break for public visitors
-and shows a warning. Warnings never block the share.
+and shows a warning: as `warning:` lines in the CLI's share and status output,
+and in the desktop app as a notification when the share starts and in amber
+on the share's details. Warnings never block the share.
 
 - **Vite dev server running.** The web root has a `hot` file, so visitors'
   browsers try to load assets from `localhost` on their own machine. Stop
-  `npm run dev` or run a production build before sharing.
+  `npm run dev` and run `npm run build` before sharing.
+- **No Vite production build.** A Laravel site (it has an `artisan` file) with a
+  `vite.config.*` but no `public/build/manifest.json`. Pages that load assets
+  with `@vite` would be missing their CSS and JS, so run `npm run build` before
+  sharing.
 - **`SESSION_DOMAIN` pinned to the local TLD.** If `.env` sets `SESSION_DOMAIN`
   to `.app.test` (or anything under your TLD), session cookies are rejected on
   the public hostname and logins fail. Unset it, or set it to `null`, while

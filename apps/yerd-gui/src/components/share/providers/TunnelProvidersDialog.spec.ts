@@ -105,6 +105,19 @@ describe("TunnelProvidersDialog", () => {
     expect(el('[data-testid="setup-account"]')).not.toBeNull();
   });
 
+  it("offers Retry and Done when the providers can't be loaded", async () => {
+    listTunnelProviders.mockReset().mockRejectedValueOnce(new Error("daemon busy")).mockResolvedValue(reply());
+    const w = await mountDialog();
+    await select("ngrok");
+    expect(el('[data-testid="providers-unavailable"]').textContent).toContain("Couldn't load ngrok's status");
+    buttonWith("Retry")?.click();
+    await flushPromises();
+    expect(el('[data-testid="providers-unavailable"]')).toBeNull();
+    expect(el('[data-testid="ngrok-token"]')).not.toBeNull();
+    buttonWith("Done")?.click();
+    expect(w.emitted("update:open")).toEqual([[false]]);
+  });
+
   it("opens on the provider it was asked for", async () => {
     await mountDialog({ initial: "zrok" });
     expect(el('[data-testid="provider-zrok"]').getAttribute("aria-pressed")).toBe("true");

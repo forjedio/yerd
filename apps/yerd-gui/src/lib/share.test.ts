@@ -253,10 +253,16 @@ describe("provider-aware share helpers", () => {
     [null, null],
   ])("finds who holds the static domain %s", (domain, holder) => {
     const items = [
-      item({ provider: "ngrok", site: "shop", url: "https://demo.ngrok-free.app" }),
+      item({ provider: "ngrok", site: "shop", staticDomain: true, url: "https://demo.ngrok-free.app" }),
+      item({ provider: "ngrok", site: "blog", staticDomain: false, url: "https://other.ngrok-free.app" }),
       item({ site: "app", url: "https://other.ngrok-free.app" }),
     ];
     expect(ngrokDomainHolder(items, domain)).toBe(holder);
+  });
+
+  it("counts a static-domain share whose URL isn't known yet as the holder", () => {
+    const items = [item({ provider: "ngrok", site: "shop", staticDomain: true, url: null, state: "connecting" })];
+    expect(ngrokDomainHolder(items, "demo.ngrok-free.app")).toBe("shop");
   });
 
   it.each([

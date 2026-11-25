@@ -13,10 +13,10 @@ withDefaults(defineProps<{ provider: TunnelProvider; size?: "sm" | "md" }>(), { 
     aria-hidden="true"
     :class="
       cn(
-        'inline-flex shrink-0 items-center justify-center rounded-md text-[10px] font-bold',
-        size === 'sm' ? 'size-6' : 'size-7',
-        provider === 'cloudflare' && 'bg-orange-500 text-white',
-        provider === 'ngrok' && 'bg-muted text-foreground',
+        'inline-flex shrink-0 items-center justify-center font-mono font-bold',
+        size === 'sm' ? 'size-[26px] rounded-md text-[10px]' : 'size-[30px] rounded-[7px] text-xs',
+        provider === 'cloudflare' && 'bg-[#F38020] text-white',
+        provider === 'ngrok' && 'border bg-secondary text-foreground',
         provider === 'zrok' && 'bg-violet-600 text-white',
       )
     "

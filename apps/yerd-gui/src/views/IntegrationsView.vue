@@ -383,6 +383,9 @@ async function doShare(site: string, provider: TunnelProvider, randomUrl: boolea
     } else {
       toast.success(`Sharing ${site}`, "Connecting - the URL appears once it's online");
     }
+    if (started?.warnings?.length) {
+      toast.info(`Check ${site} while it's shared`, started.warnings.join("\n"), 10000);
+    }
     return true;
   } catch (e) {
     toast.error(`Couldn't share ${site}`, (e as IpcError).message);

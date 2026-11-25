@@ -65,7 +65,7 @@ describe("CloudflarePane", () => {
     const w = mountDialog({ cloudflared: status });
     await flushPromises();
     const buttons = section("cloudflared").querySelectorAll("button");
-    expect(Array.from(buttons).map((b) => b.textContent?.trim())).toEqual(linked ? ["Open Tooling"] : []);
+    expect(Array.from(buttons).map((b) => b.textContent?.trim())).toEqual(linked ? ["Update"] : []);
     expect(document.querySelector('[data-testid="cloudflared-source"]')?.textContent?.trim()).toBe(subline);
     if (linked) {
       buttons[0]?.click();

@@ -257,7 +257,7 @@ describe("ShareSiteDialog", () => {
   });
 
   it("disables the static domain while another site's share holds it", async () => {
-    const holder = share({ key: "ngrok:quick:legacy", provider: "ngrok", site: "legacy", url: "https://demo.ngrok-free.app" });
+    const holder = share({ key: "ngrok:quick:legacy", provider: "ngrok", site: "legacy", staticDomain: true, url: "https://demo.ngrok-free.app" });
     const w = mountDialog({ items: [...ITEMS, holder] });
     await flushPromises();
     await pickProvider("ngrok");
@@ -278,7 +278,7 @@ describe("ShareSiteDialog", () => {
     await pickProvider("ngrok");
     await pickSite("blog");
     expect(document.querySelector('[data-url="static"]')?.getAttribute("aria-checked")).toBe("true");
-    const holder = share({ key: "ngrok:quick:legacy", provider: "ngrok", site: "legacy", url: "https://demo.ngrok-free.app" });
+    const holder = share({ key: "ngrok:quick:legacy", provider: "ngrok", site: "legacy", staticDomain: true, url: "https://demo.ngrok-free.app" });
     await w.setProps({ items: [...ITEMS, holder] });
     await flushPromises();
     expect(document.querySelector('[data-url="random"]')?.getAttribute("aria-checked")).toBe("true");

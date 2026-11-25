@@ -5,7 +5,7 @@ edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
 publish.workspace      = true
-description            = "Cloudflare Tunnel argument/config generation and supervised cloudflared lifecycle for Yerd."
+description            = "Tunnel provider (Cloudflare, ngrok, zrok) argument/config generation and supervised tunnel lifecycle for Yerd."
 
 [dependencies]
 yerd-supervise = { path = "../yerd-supervise" }

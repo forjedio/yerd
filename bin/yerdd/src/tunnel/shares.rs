@@ -211,7 +211,7 @@ async fn start_ngrok(
     let static_domain = domain.filter(|_| !random_url);
     let key = share_key(TunnelProvider::Ngrok, &name);
     if let Some(domain) = static_domain.as_deref() {
-        if let Some(holder) = static_domain_holder(state, &key).await {
+        if let Some(holder) = static_domain_holder(state, &key, domain).await {
             return error(
                 ErrorCode::AlreadyExists,
                 format!(
@@ -244,9 +244,12 @@ async fn start_ngrok(
 }
 
 /// The site of another ngrok share (any key but `key`) serving the static
-/// domain, in any state. ngrok refuses a second agent on an online endpoint
-/// (`ERR_NGROK_334`), so a new static-domain share would only fail.
-async fn static_domain_holder(state: &DaemonState, key: &str) -> Option<String> {
+/// `domain`, in any state. ngrok refuses a second agent on an online endpoint
+/// (`ERR_NGROK_334`), so a new static-domain share would only fail. A
+/// static-domain share whose URL isn't known yet counts as holding it, since
+/// it may be serving it; one on a different domain does not.
+async fn static_domain_holder(state: &DaemonState, key: &str, domain: &str) -> Option<String> {
+    let wanted = format!("https://{}", domain.to_ascii_lowercase());
     let mut mgr = state.tunnel_manager.lock().await;
     mgr.snapshots()
         .iter()
@@ -258,6 +261,7 @@ async fn static_domain_holder(state: &DaemonState, key: &str) -> Option<String> 
                         static_domain: true
                     }
                 )
+                && s.url.as_deref().map_or(true, |url| url == wanted)
         })
         .map(|s| site_of(s).to_owned())
 }
@@ -523,6 +527,16 @@ mod stub_tests {
             .cloned()
             .unwrap();
         assert!(!info.static_domain);
+
+        super::super::stop_tunnel("blog", Some(TunnelProvider::Ngrok), &state).await;
+        state.config.lock().await.tunnel.ngrok.domain = Some("other.ngrok-free.app".to_owned());
+        let resp = start_share_in("blog", TunnelProvider::Ngrok, false, &state, None).await;
+        let info = tunnels(&resp)
+            .iter()
+            .find(|t| t.site == "blog" && t.provider == TunnelProvider::Ngrok)
+            .cloned()
+            .unwrap_or_else(|| panic!("no blog ngrok share in {resp:?}"));
+        assert_eq!(info.url.as_deref(), Some("https://other.ngrok-free.app"));
         teardown(&state).await;
     }
 

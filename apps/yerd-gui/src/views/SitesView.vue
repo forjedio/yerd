@@ -846,7 +846,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
       toast.success(`Sharing ${s.name}`, "Connecting - see Share for the URL");
     }
     if (entry?.warnings?.length) {
-      toast.info(`Check ${s.name} before sharing`, entry.warnings.join(" "), 10000);
+      toast.info(`Check ${s.name} while it's shared`, entry.warnings.join("\n"), 10000);
     }
   } catch (e) {
     toast.error(`Couldn't share ${s.name}`, (e as IpcError).message);

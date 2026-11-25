@@ -45,7 +45,7 @@ const accent = {
           <p class="text-sm font-medium">{{ t.title }}</p>
           <p
             v-if="t.detail"
-            class="mt-0.5 break-words text-xs text-muted-foreground"
+            class="mt-0.5 whitespace-pre-line break-words text-xs text-muted-foreground"
           >
             {{ t.detail }}
           </p>

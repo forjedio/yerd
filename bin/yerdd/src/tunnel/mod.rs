@@ -41,7 +41,7 @@ pub mod supervise;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use yerd_core::tunnel_provider::TunnelProvider;
@@ -575,8 +575,8 @@ fn share_extras(
 }
 
 /// Compute `site`'s share preflight warnings: the router facts are read under a
-/// brief read guard, then the `hot` file check and the `.env` read run on the
-/// blocking pool. An unknown site, or a failed read task, yields no warnings.
+/// brief read guard, then the file checks (Vite's `hot` file, a Laravel site's
+/// Vite config and build manifest) and the `.env` read run on the blocking pool. An unknown site, or a failed read task, yields no warnings.
 pub(super) async fn compute_share_warnings(state: &DaemonState, site: &str) -> Vec<String> {
     let facts = {
         let router = state.router.read().await;
@@ -593,18 +593,37 @@ pub(super) async fn compute_share_warnings(state: &DaemonState, site: &str) -> V
     };
     let read = tokio::task::spawn_blocking(move || {
         let vite_hot = served_root.join("hot").is_file();
+        let vite_unbuilt = laravel_vite_unbuilt(&document_root, &served_root);
         let dotenv = std::fs::read_to_string(document_root.join(".env")).ok();
-        (vite_hot, dotenv)
+        (vite_hot, vite_unbuilt, dotenv)
     })
     .await;
-    let Ok((vite_hot, dotenv)) = read else {
+    let Ok((vite_hot, vite_unbuilt, dotenv)) = read else {
         return Vec::new();
     };
     yerd_tunnel::preflight(&yerd_tunnel::ShareFacts {
         vite_hot,
+        vite_unbuilt,
         dotenv: dotenv.as_deref(),
         tld: &tld,
     })
+}
+
+const VITE_CONFIGS: [&str; 4] = [
+    "vite.config.js",
+    "vite.config.ts",
+    "vite.config.mjs",
+    "vite.config.mts",
+];
+
+/// Whether `document_root` holds a Laravel app (an `artisan` file) with a Vite
+/// config but no `build/manifest.json` under `served_root`.
+fn laravel_vite_unbuilt(document_root: &Path, served_root: &Path) -> bool {
+    document_root.join("artisan").is_file()
+        && VITE_CONFIGS
+            .iter()
+            .any(|name| document_root.join(name).is_file())
+        && !served_root.join("build/manifest.json").is_file()
 }
 
 /// Recompute and cache `site`'s share warnings. Called only when a share
@@ -1084,6 +1103,24 @@ mod tests {
         assert_eq!(warnings[0], yerd_tunnel::preflight::VITE_HOT_WARNING);
         assert!(warnings[1].contains("SESSION_DOMAIN"), "{warnings:?}");
         assert!(compute_share_warnings(&state, "nope").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn compute_share_warnings_flags_an_unbuilt_laravel_vite_site() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, root) = state_with_site_root(tmp.path()).await;
+        std::fs::write(root.join("vite.config.js"), "").unwrap();
+        assert!(compute_share_warnings(&state, "app").await.is_empty());
+
+        std::fs::write(root.join("artisan"), "").unwrap();
+        assert_eq!(
+            compute_share_warnings(&state, "app").await,
+            vec![yerd_tunnel::preflight::VITE_UNBUILT_WARNING.to_owned()]
+        );
+
+        std::fs::create_dir_all(root.join("public/build")).unwrap();
+        std::fs::write(root.join("public/build/manifest.json"), "{}").unwrap();
+        assert!(compute_share_warnings(&state, "app").await.is_empty());
     }
 
     #[tokio::test]

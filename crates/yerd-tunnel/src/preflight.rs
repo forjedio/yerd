@@ -1,23 +1,32 @@
 //! Pure share preflight checks.
 //!
 //! Spot site setups that break for public visitors before a share goes live: a
-//! running Vite dev server (assets would load from the sharer's machine) and a
-//! `SESSION_DOMAIN` pinned to the local TLD (session cookies would be rejected on
+//! running Vite dev server (assets would load from the sharer's machine), a
+//! Laravel site using Vite with no production build, and a `SESSION_DOMAIN` pinned to the local TLD (session cookies would be rejected on
 //! the public hostname). The daemon gathers the facts (a file check and the
-//! `.env` text) and this module turns them into human-readable warnings. Warnings
+//! `.env` text, plus file checks for Laravel and Vite) and this module turns them into human-readable warnings. Warnings
 //! never block a share.
 
 /// Warning when the site's web root holds Vite's `hot` file.
 pub const VITE_HOT_WARNING: &str =
-    "Vite dev server is running (the web root has a `hot` file), so \
-     visitors' browsers will try to load assets from your machine; stop it or run a production \
-     build before sharing";
+    "Vite dev server is running (the web root has a `hot` file), and it can't be reached \
+     through a share, so visitors' pages will load without their CSS and JS; stop it and run \
+     `npm run build` before sharing";
+
+/// Warning when a Laravel site has a Vite config but no production build.
+pub const VITE_UNBUILT_WARNING: &str =
+    "This Laravel site has a Vite config but no production build (public/build/manifest.json \
+     is missing); pages that load assets with @vite will be missing their CSS and JS, since \
+     Vite's dev server can't be reached through a share, so run `npm run build`";
 
 /// The facts a preflight check needs about one site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShareFacts<'a> {
     /// Whether `<served root>/hot` exists (Vite's dev-server marker).
     pub vite_hot: bool,
+    /// Whether the site is a Laravel app (an `artisan` file) with a Vite config
+    /// but no `build/manifest.json` under its served root.
+    pub vite_unbuilt: bool,
     /// The site's `.env` contents, when it has one.
     pub dotenv: Option<&'a str>,
     /// The local TLD without a leading dot, e.g. `test`.
@@ -31,6 +40,8 @@ pub fn preflight(facts: &ShareFacts<'_>) -> Vec<String> {
     let mut warnings = Vec::new();
     if facts.vite_hot {
         warnings.push(VITE_HOT_WARNING.to_owned());
+    } else if facts.vite_unbuilt {
+        warnings.push(VITE_UNBUILT_WARNING.to_owned());
     }
     if let Some(domain) = facts
         .dotenv
@@ -108,6 +119,7 @@ mod tests {
     fn warnings(vite_hot: bool, dotenv: Option<&str>) -> Vec<String> {
         preflight(&ShareFacts {
             vite_hot,
+            vite_unbuilt: false,
             dotenv,
             tld: "test",
         })
@@ -117,6 +129,25 @@ mod tests {
     fn vite_hot_file_table() {
         assert_eq!(warnings(true, None), vec![VITE_HOT_WARNING.to_owned()]);
         assert!(warnings(false, None).is_empty());
+    }
+
+    #[test]
+    fn vite_build_table() {
+        let cases: &[(bool, bool, &[&str])] = &[
+            (false, false, &[]),
+            (false, true, &[VITE_UNBUILT_WARNING]),
+            (true, false, &[VITE_HOT_WARNING]),
+            (true, true, &[VITE_HOT_WARNING]),
+        ];
+        for (vite_hot, vite_unbuilt, expected) in cases {
+            let found = preflight(&ShareFacts {
+                vite_hot: *vite_hot,
+                vite_unbuilt: *vite_unbuilt,
+                dotenv: None,
+                tld: "test",
+            });
+            assert_eq!(found, *expected, "hot={vite_hot} unbuilt={vite_unbuilt}");
+        }
     }
 
     #[test]

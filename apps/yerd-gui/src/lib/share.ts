@@ -218,11 +218,15 @@ export function unsharedProviders(
   }));
 }
 
-/** The site whose ngrok share holds the static `domain`, else null. */
+/** The site whose ngrok share holds the static `domain`, else null. Like the
+ *  daemon, a static-domain share whose URL isn't known yet (connecting or
+ *  retrying) counts as holding it; one on a different domain does not. */
 export function ngrokDomainHolder(items: readonly ShareItem[], domain: string | null | undefined): string | null {
   if (!domain) return null;
   const url = `https://${domain.toLowerCase()}`;
-  return items.find((i) => i.provider === "ngrok" && i.url === url)?.site ?? null;
+  return (
+    items.find((i) => i.provider === "ngrok" && i.staticDomain && (i.url === null || i.url === url))?.site ?? null
+  );
 }
 
 /** The inspector's subtitle under the site name. */

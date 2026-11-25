@@ -316,6 +316,25 @@ describe("IntegrationsView sharing", () => {
     expect(inspector()?.querySelector('[data-testid="share-chip"]')?.textContent?.trim()).toBe("CLOUDFLARE");
   });
 
+  it("toasts the share's preflight warnings", async () => {
+    const warning = "This Laravel site has a Vite config but no production build";
+    stubIpc({
+      startQuick: (args) =>
+        Promise.resolve({
+          type: "tunnels",
+          tunnels: [
+            { site: args.site, kind: "quick", state: "running", url: "https://x.trycloudflare.com", warnings: [warning] },
+          ],
+          cloudflared: MANAGED,
+        }),
+    });
+    await mountView();
+    await openShareDialog();
+    await click(document.querySelector('[data-option="app"]'));
+    await click(document.querySelector('[data-testid="share-submit"]'));
+    expect(useToast().toasts.value.find((t) => t.title === "Check app while it's shared")?.detail).toBe(warning);
+  });
+
   it("exposes a site by saving the hostname then routing DNS, never starting the tunnel", async () => {
     stubIpc();
     await mountView();
@@ -634,7 +653,7 @@ describe("IntegrationsView setup", () => {
     stubIpc({ tunnels: [named("running")], named: [{ site: "app", hostname: "app.example.com" }] });
     await mountView();
     await openProviders();
-    await click(document.querySelector('[data-testid="setup-tunnel"] [data-action="remove"]'));
+    await click(document.querySelector('[data-testid="provider-pane"] [data-action="remove"]'));
     expect(dialogTitles()).toEqual(["Remove tunnel dev?"]);
     await click(buttonByText("Remove tunnel"));
     expect(calls("delete_named_tunnel")).toEqual([{ name: "dev" }]);

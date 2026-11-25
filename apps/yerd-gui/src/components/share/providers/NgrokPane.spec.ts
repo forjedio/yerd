@@ -58,12 +58,29 @@ describe("NgrokPane", () => {
   it("saves the domain as typed and sends null when emptied", async () => {
     const w = await mountPane(status({ domain: "demo.ngrok-free.app" }));
     const domainSave = () => w.get('[data-testid="ngrok-domain"]').findAll("button").find((b) => b.text() === "Save");
-    expect(domainSave()?.attributes("disabled")).toBeDefined();
+    expect(domainSave()).toBeUndefined();
     await w.get('input[aria-label="ngrok static domain"]').setValue("https://Other.ngrok-free.app/");
     await domainSave()?.trigger("click");
     await w.get('input[aria-label="ngrok static domain"]').setValue("  ");
     await domainSave()?.trigger("click");
     expect(w.emitted("save-domain")).toEqual([["https://Other.ngrok-free.app/"], [null]]);
+  });
+
+  it("saves the domain on Enter once it changed", async () => {
+    const w = await mountPane(status({ domain: "demo.ngrok-free.app" }));
+    const input = w.get('input[aria-label="ngrok static domain"]');
+    await input.trigger("keydown", { key: "Enter" });
+    await input.setValue("other.ngrok-free.app");
+    await input.trigger("keydown", { key: "Enter" });
+    expect(w.emitted("save-domain")).toEqual([["other.ngrok-free.app"]]);
+  });
+
+  it("renders slotted actions in the bottom row", async () => {
+    const w = mount(NgrokPane, {
+      props: { status: status(), busy: null, connected: true },
+      slots: { default: "<button>Done</button>" },
+    });
+    expect(w.findAll("button").some((b) => b.text() === "Done")).toBe(true);
   });
 
   it("removes the token", async () => {

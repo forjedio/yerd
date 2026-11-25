@@ -73,7 +73,7 @@ apps/yerd-gui/
     │                       DumpsSetupDialog),
     │                       share/ (ShareProviderCards, ShareList, ShareInspector, ShareSiteDialog,
     │                       CloudflareLoginDialog, providers/ (TunnelProvidersDialog,
-    │                       CloudflarePane, NgrokPane, ZrokPane, BinarySection, ProviderTile)),
+    │                       CloudflarePane, NgrokPane, ZrokPane, PaneHeader, BinarySection, ProviderTile)),
     │                       doctor/ (DoctorList, DoctorInspector),
     │                       settings/ (SettingsGroup, SettingRow, UpdateActions, ConnectAgentDialog, GuiLogsDialog,
     │                       DiagnosticsDialog, MadeByForjed),

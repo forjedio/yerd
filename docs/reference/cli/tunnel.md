@@ -8,15 +8,15 @@ ports, no `sudo`. The [Sharing Sites guide](../../guide/sharing) covers the
 model, Cloudflare's two tiers (quick tunnels and named tunnels) and the other
 providers; this page is the command reference.
 
-::: info cloudflared is detected on PATH, or downloaded on demand
-The first share needs the `cloudflared` binary. Yerd looks for one already on
-your `PATH` first and uses it if it's version 2023.3.0 or newer; otherwise
-`yerd install tool cloudflared` (see [Tooling](./tooling)) fetches the official
-static build (checksum-verified) into the daemon's data directory - it is not
-bundled and never touches your system unless you already had a compatible
-`cloudflared` installed. Yerd's copy is used ahead of a `PATH` one once
-installed. Quick share needs no Cloudflare account; named tunnels need a one-time
-`yerd tunnel login`.
+::: info Each provider needs its binary
+A share needs the agent for its provider: `cloudflared` (2023.3.0 or newer),
+`ngrok` or `zrok2`. Yerd uses one already on your `PATH`, or
+`yerd install tool cloudflared|ngrok|zrok` (see [Tooling](./tooling)) fetches
+the official build (checksum-verified) into the daemon's data directory - none
+is bundled. Yerd's copy is used ahead of a `PATH` one once installed. A
+Cloudflare quick share needs no account; named tunnels need a one-time
+`yerd tunnel login`, ngrok needs an authtoken (`yerd tunnel ngrok token`) and
+zrok needs this machine enabled (`yerd tunnel zrok enable`).
 :::
 
 ## Commands
