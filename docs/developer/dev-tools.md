@@ -1,8 +1,8 @@
 # Dev-tool installer subsystem
 
 The **Tooling** feature lets a user install Composer, Node (`node`/`npm`/`npx`),
-Bun (`bun`/`bunx`), pnpm (`pnpm`/`pnpx`), the Laravel installer, WP-CLI, and cloudflared
-(the Cloudflare Tunnel connector used by sharing) as self-contained binaries on their `PATH`, from the [desktop app](./gui) or the
+Bun (`bun`/`bunx`), pnpm (`pnpm`/`pnpx`), the Laravel installer, WP-CLI, cloudflared
+(the Cloudflare Tunnel connector used by sharing), ngrok (`ngrok`), and zrok (`zrok2`) as self-contained binaries on their `PATH`, from the [desktop app](./gui) or the
 [`yerd` CLI](./binaries/yerd). This page documents its implementation
 end-to-end: the daemon subsystem that downloads/verifies/lays down the
 binaries (or, for the Laravel installer and WP-CLI, builds them via Composer),
@@ -32,7 +32,7 @@ flowchart TD
     INST --> DL["download + sha256 verify"]
     DL --> SWAP["stage_and_swap → {data}/tools/<id>/"]
     SWAP --> REC["reconcile_tool_shims_now\n(under shim_reconcile mutex)"]
-    REC --> BIN["{data}/bin symlinks\ncomposer/node/npm/npx/bun/bunx/pnpm/pnpx"]
+    REC --> BIN["{data}/bin symlinks\ncomposer/node/npm/npx/bun/bunx/pnpm/pnpx/ngrok/zrok2"]
     BIN -.->|on PATH via `yerd path`| SHELL["user's shell"]
 ```
 
@@ -43,11 +43,11 @@ differ enough (phar vs multi-file tarball vs single-binary zip) that a `match`
 into per-tool modules is clearer than an abstraction.
 
 ```rust
-pub enum Tool { Composer, Node, Bun, Pnpm, Laravel, WpCli, Cloudflared }
+pub enum Tool { Composer, Node, Bun, Pnpm, Laravel, WpCli, Cloudflared, Ngrok, Zrok }
 
 impl Tool {
-    pub const ALL: [Tool; 7];
-    pub const fn id(self) -> &'static str;            // "composer" | "node" | "bun" | "pnpm" | "laravel" | "wp-cli" | "cloudflared"
+    pub const ALL: [Tool; 9];
+    pub const fn id(self) -> &'static str;            // "composer" | "node" | "bun" | "pnpm" | "laravel" | "wp-cli" | "cloudflared" | "ngrok" | "zrok"
     pub const fn display_name(self) -> &'static str;  // for the UI
     pub const fn primary_bin(self) -> &'static str;   // the command external detection looks for
     pub const fn exposed_bins(self) -> &'static [&'static str]; // commands on PATH
@@ -57,7 +57,7 @@ impl Tool {
 ```
 
 `exposed_bins` is the single source of truth for which `{data}/bin` names a tool
-owns: `composer`; `node`/`npm`/`npx`; `bun`/`bunx`; `pnpm`/`pnpx`; `laravel`; `wp`; `cloudflared`. It drives
+owns: `composer`; `node`/`npm`/`npx`; `bun`/`bunx`; `pnpm`/`pnpx`; `laravel`; `wp`; `cloudflared`; `ngrok`; `zrok2`. It drives
 both shim creation and pruning.
 
 `accepts_external` is the source of truth for whether a copy already on the
@@ -135,6 +135,8 @@ a `User-Agent` (the GitHub API used for Bun rejects requests without one).
 | `bun.rs` | GitHub `releases/latest` → `tag_name` (`bun-v…`) | `bun-<os>-<arch>.zip` (plain, non-baseline) | per-release `SHASUMS256.txt` | `bun-<os>-<arch>/bun` |
 | `pnpm.rs` | GitHub `releases/latest` → `tag_name` (`v…`) | `pnpm-<os>-<arch>.tar.gz` (glibc, non-musl; unpacked with `unpack_in` for its hard-link members) | the release API's per-asset `digest` | `pnpm-<os>-<arch>/{pnpm,pnpx,dist}` |
 | `cloudflared.rs` | GitHub `releases/latest` JSON → `tag_name` (`YYYY.M.N`) | `cloudflared-linux-<amd64\|arm64>` (bare binary) or `cloudflared-darwin-<amd64\|arm64>.tgz` | a compiled-in pinned hash when present, else the release API's per-asset `digest`; fail-closed, and the asset URL must be on a trusted GitHub host | `{data}/tools/cloudflared/cloudflared` |
+| `ngrok.rs` | ngrok's official download archive page (`ngrok_archive`, HTML) → first `<h2>Version X.Y.Z` | `ngrok-v3-<ver>-<darwin\|linux>-<amd64\|arm64>.tar.gz` from `bin.ngrok.com`, single `ngrok` member | the SHA256 listed beside that link in the newest release block; fail-closed, and the link must be `https` on exactly `bin.ngrok.com` | `{data}/tools/ngrok/ngrok` |
+| `zrok.rs` | GitHub `/releases?per_page=30` → highest stable `v2.x.y` tag (not `releases/latest`: v1 maintenance releases interleave) | `zrok_<ver>_<darwin\|linux>_<amd64\|arm64>.tar.gz`, single `zrok2` member | the release API's per-asset `digest`; fail-closed | `{data}/tools/zrok/zrok2` |
 
 Each module has a pure host→asset mapper (`current_os_arch()` → `darwin-arm64` /
 `linux-x64` / `bun-darwin-aarch64` / …) that returns a typed
@@ -232,7 +234,7 @@ WP-CLI's bundled dependencies emit PHP deprecation notices on newer PHP that wou
 The commands a tool provides are symlinks in `{data}/bin` - the same directory as
 the PHP `php`/`php<ver>`/`phpcover` shims. The two reconcilers partition the
 namespace cleanly: the PHP reconcile only prunes `php<X.Y>*` names, and
-`reconcile_tool_shims` owns `composer`/`node`/`npm`/`npx`/`bun`/`bunx`/`pnpm`/`pnpx`/`laravel`/`wp`/`cloudflared`.
+`reconcile_tool_shims` owns `composer`/`node`/`npm`/`npx`/`bun`/`bunx`/`pnpm`/`pnpx`/`laravel`/`wp`/`cloudflared`/`ngrok`/`zrok2`.
 
 For each installed tool it creates `(name → target)` links via the shared
 `php_install::place_symlink` (atomic temp+rename); for each **uninstalled** tool
@@ -247,6 +249,8 @@ dangling by an uninstall is still removed. Per-tool targets:
 | Bun | `bun` → `bun_root/bun`; `bunx` → `{data}/bin/bun` (sibling; Bun dispatches on argv0) |
 | pnpm | `pnpm` → `pnpm_root/pnpm`; `pnpx` → `pnpm_root/pnpx`, a hard link of `pnpm` (pnpm dispatches on `current_exe`, which resolves symlinks on Linux) |
 | cloudflared | `cloudflared` → `{data}/tools/cloudflared/cloudflared` directly (unversioned path, and the documented outbound-proxy exception, so no multi-call shim) |
+| ngrok | `ngrok` → the `yerd` binary (multi-call shim resolving `{data}/tools/ngrok/ngrok`, with the outbound proxy env) |
+| zrok | `zrok2` → the `yerd` binary (multi-call shim resolving `{data}/tools/zrok/zrok2`, with the outbound proxy env) |
 
 ::: tip Why npm points at an absolute path
 Node's `bin/npm` and `bin/npx` are themselves *relative* symlinks into

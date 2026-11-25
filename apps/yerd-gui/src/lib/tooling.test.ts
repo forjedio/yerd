@@ -100,6 +100,8 @@ describe("toolDescription", () => {
     ["bun", "Fast JavaScript runtime and package manager"],
     ["wp-cli", "The wp command for managing WordPress sites"],
     ["cloudflared", "Cloudflare Tunnel connector - used by Share"],
+    ["ngrok", "ngrok agent - public tunnels to your local sites"],
+    ["zrok", "zrok (zrok2) - open-source public tunnels to your local sites"],
     ["unknown", ""],
   ])("%s", (id, expected) => {
     expect(toolDescription(id)).toBe(expected);

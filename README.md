@@ -55,7 +55,7 @@ everything the app does. Running it on a server? The
 - 📬 **Mail capture** and a live **Laravel dump / query inspector**, built in.
 - 🌍 **Share any site publicly** in one click via Cloudflare Tunnel - a quick link, or a stable hostname on your own domain, with optional password.
 - 📱 **LAN access** - open your `.test` sites from a phone or another machine on your network.
-- 🧰 **Composer, Node, Bun, pnpm, the Laravel installer, WP-CLI, and cloudflared** installed on demand as standalone binaries - no system package manager.
+- 🧰 **Composer, Node, Bun, pnpm, the Laravel installer, WP-CLI, cloudflared, ngrok, and zrok** installed on demand as standalone binaries - no system package manager.
 - 🤖 **AI agents welcome** - a built-in MCP server lets Claude Code, Cursor and friends manage sites, databases, mail and dumps.
 - 🏢 **Corporate-network friendly** - an outbound HTTP proxy (system, manual, or off) for every download and tool Yerd runs.
 - 🪶 **One ~16 MB daemon** - no containers, no VM, no Electron.

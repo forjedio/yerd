@@ -1,6 +1,7 @@
 //! Dev-tool installer subsystem - Composer, Node (node/npm/npx), Bun (bun/bunx),
-//! pnpm (pnpm/pnpx), the Laravel installer, WP-CLI, and cloudflared (the
-//! Cloudflare Tunnel connector Share uses).
+//! pnpm (pnpm/pnpx), the Laravel installer, WP-CLI, cloudflared (the
+//! Cloudflare Tunnel connector Share uses), and the ngrok and zrok (`zrok2`)
+//! tunnel agents.
 //!
 //! Most tools ship as a self-contained, relocatable binary (no global install):
 //! Node's tarball, Bun's zip, pnpm's tarball, Composer's phar. yerd downloads + sha256-verifies
@@ -16,9 +17,11 @@ pub mod cloudflared;
 pub mod composer;
 pub mod external;
 pub mod laravel;
+pub mod ngrok;
 pub mod node;
 pub mod pnpm;
 pub mod wp_cli;
+pub mod zrok;
 
 use std::path::{Path, PathBuf};
 
@@ -49,6 +52,12 @@ pub enum Tool {
     /// cloudflared - the Cloudflare Tunnel connector used by Share, a single
     /// static binary from Cloudflare's GitHub releases.
     Cloudflared,
+    /// ngrok - the ngrok v3 agent, a single binary from ngrok's official
+    /// download archive.
+    Ngrok,
+    /// zrok - the open-source zrok v2 agent, whose binary is `zrok2`, from the
+    /// openziti/zrok GitHub releases.
+    Zrok,
 }
 
 /// Filename of the installed-version marker inside a tool's dir.
@@ -56,7 +65,7 @@ const VERSION_MARKER: &str = ".version";
 
 impl Tool {
     /// Every tool, for `list_status` / reconcile.
-    pub const ALL: [Tool; 7] = [
+    pub const ALL: [Tool; 9] = [
         Tool::Composer,
         Tool::Node,
         Tool::Bun,
@@ -64,6 +73,8 @@ impl Tool {
         Tool::Laravel,
         Tool::WpCli,
         Tool::Cloudflared,
+        Tool::Ngrok,
+        Tool::Zrok,
     ];
 
     /// Stable id used on the wire and as the on-disk dir name.
@@ -77,6 +88,8 @@ impl Tool {
             Tool::Laravel => "laravel",
             Tool::WpCli => "wp-cli",
             Tool::Cloudflared => "cloudflared",
+            Tool::Ngrok => "ngrok",
+            Tool::Zrok => "zrok",
         }
     }
 
@@ -91,6 +104,8 @@ impl Tool {
             Tool::Laravel => "Laravel Installer",
             Tool::WpCli => "WP-CLI",
             Tool::Cloudflared => "cloudflared",
+            Tool::Ngrok => "ngrok",
+            Tool::Zrok => "zrok",
         }
     }
 
@@ -106,6 +121,8 @@ impl Tool {
             Tool::Laravel => "laravel",
             Tool::WpCli => "wp",
             Tool::Cloudflared => "cloudflared",
+            Tool::Ngrok => "ngrok",
+            Tool::Zrok => "zrok2",
         }
     }
 
@@ -120,6 +137,8 @@ impl Tool {
             Tool::Laravel => &["laravel"],
             Tool::WpCli => &["wp"],
             Tool::Cloudflared => &["cloudflared"],
+            Tool::Ngrok => &["ngrok"],
+            Tool::Zrok => &["zrok2"],
         }
     }
 
@@ -144,7 +163,9 @@ impl Tool {
             | Tool::Bun
             | Tool::Pnpm
             | Tool::Laravel
-            | Tool::Cloudflared => true,
+            | Tool::Cloudflared
+            | Tool::Ngrok
+            | Tool::Zrok => true,
             Tool::WpCli => false,
         }
     }
@@ -303,6 +324,8 @@ pub(crate) async fn latest(
         Tool::Laravel => laravel::latest(dl).await?,
         Tool::WpCli => wp_cli::latest(dl).await?,
         Tool::Cloudflared => cloudflared::latest(dl).await?,
+        Tool::Ngrok => ngrok::latest(dl).await?,
+        Tool::Zrok => zrok::latest(dl).await?,
     };
     Ok(Some(version))
 }
@@ -353,6 +376,8 @@ pub async fn install(
         Tool::Laravel => laravel::install(dirs, proxy_env, progress).await,
         Tool::WpCli => wp_cli::install(dirs, proxy_env, progress).await,
         Tool::Cloudflared => cloudflared::install(dirs, dl, progress).await,
+        Tool::Ngrok => ngrok::install(dirs, dl, progress).await,
+        Tool::Zrok => zrok::install(dirs, dl, progress).await,
     };
     match &result {
         Ok(()) => note(progress, format!("Installed {}", tool.display_name())),
@@ -391,10 +416,12 @@ fn via_yerd(links: Vec<(String, PathBuf)>, yerd_bin: &Path) -> Vec<(String, Path
 }
 
 /// The `(name_in_bin, symlink_target)` pairs for an installed `tool`. Empty if
-/// the tool isn't installed or its root can't be resolved. Every command is a
-/// link to the yerd multi-call binary except `cloudflared`, which links straight
-/// to the managed binary: its path carries no version to resolve, and it is the
-/// documented outbound-proxy exception, so there is no environment to inject.
+/// the tool isn't installed or its root can't be resolved. Every command
+/// (including `ngrok` and `zrok2`, so they get the outbound proxy environment)
+/// is a link to the yerd multi-call binary except `cloudflared`, which links
+/// straight to the managed binary: its path carries no version to resolve, and
+/// it is the documented outbound-proxy exception, so there is no environment to
+/// inject.
 #[cfg(unix)]
 fn shim_links(
     dirs: &PlatformDirs,
@@ -410,6 +437,8 @@ fn shim_links(
         Tool::Laravel => vec![("laravel".to_owned(), yerd_bin.to_path_buf())],
         Tool::WpCli => vec![("wp".to_owned(), yerd_bin.to_path_buf())],
         Tool::Cloudflared => cloudflared_links(dirs),
+        Tool::Ngrok => vec![("ngrok".to_owned(), yerd_bin.to_path_buf())],
+        Tool::Zrok => vec![("zrok2".to_owned(), yerd_bin.to_path_buf())],
     }
 }
 
@@ -531,6 +560,73 @@ pub(crate) fn verify_sha256(bytes: &[u8], want_sha: &str, label: &str) -> Result
             "{label}: got {got}, want {want_sha}"
         )))
     }
+}
+
+/// A `v<semver>` tag made of ASCII alphanumerics, `.` and `-` only. The tag is
+/// interpolated into the download URL and stored as the version marker, so a
+/// hostile release payload must not be able to inject `/` or `..`.
+pub(crate) fn valid_tag(tag: &str) -> bool {
+    let Some(rest) = tag.strip_prefix('v') else {
+        return false;
+    };
+    rest.bytes().next().is_some_and(|b| b.is_ascii_digit())
+        && rest
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+        && !rest.contains("..")
+}
+
+/// The bytes of the regular file named exactly `member` at the root of a
+/// `.tar.gz` (no directory component, no `./` prefix). Symlinks, directories,
+/// and same-named files in subdirectories are skipped, so the result is always
+/// the archive's own top-level executable. `label` names the archive for errors.
+pub(crate) fn extract_file_from_tgz(
+    gz: &[u8],
+    member: &str,
+    label: &str,
+) -> Result<Vec<u8>, ToolError> {
+    use std::io::Read as _;
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(gz));
+    let entries = archive
+        .entries()
+        .map_err(|e| ToolError::Unpack(format!("{label}: {e}")))?;
+    for entry in entries {
+        let mut entry = entry.map_err(|e| ToolError::Unpack(format!("{label}: {e}")))?;
+        let is_member = entry
+            .path()
+            .map_err(|e| ToolError::Unpack(format!("{label}: {e}")))?
+            .as_os_str()
+            == member;
+        if is_member && entry.header().entry_type().is_file() {
+            let mut buf = Vec::new();
+            entry
+                .read_to_end(&mut buf)
+                .map_err(|e| ToolError::Unpack(format!("{label}: {e}")))?;
+            return Ok(buf);
+        }
+    }
+    Err(ToolError::Unpack(format!(
+        "no {member} executable in {label}"
+    )))
+}
+
+/// Write `bytes` as the executable `staging/name` (`rwxr-xr-x` on Unix).
+pub(crate) fn write_executable(staging: &Path, name: &str, bytes: &[u8]) -> Result<(), ToolError> {
+    let dest = staging.join(name);
+    std::fs::write(&dest, bytes).map_err(|e| ToolError::Io(format!("{}: {e}", dest.display())))?;
+    set_mode_755(&dest)
+}
+
+#[cfg(unix)]
+fn set_mode_755(path: &Path) -> Result<(), ToolError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| ToolError::Io(format!("chmod {}: {e}", path.display())))
+}
+
+#[cfg(not(unix))]
+fn set_mode_755(_path: &Path) -> Result<(), ToolError> {
+    Ok(())
 }
 
 /// The single child **directory** of `dir` (Node/Bun archives wrap their payload
@@ -665,6 +761,8 @@ mod tests {
             ("2024.12.0", "2024.12.0", None),
             ("2025.1.0", "2024.12.0", None),
             ("installed", "2025.11.1", None),
+            ("3.39.12", "3.39.13", Some("3.39.13")),
+            ("v2.0.10", "v2.0.11", Some("v2.0.11")),
         ];
         for (installed, latest, want) in cases {
             assert_eq!(
@@ -757,6 +855,14 @@ mod tests {
             .with(
                 "https://api.github.com/repos/cloudflare/cloudflared/releases/latest",
                 r#"{"tag_name":"2025.11.1","assets":[]}"#,
+            )
+            .with(
+                "https://ngrok.com/download/archive/ngrok/ngrok-v3/stable/ngrok_archive",
+                ngrok::ARCHIVE_FIXTURE,
+            )
+            .with(
+                "https://api.github.com/repos/openziti/zrok/releases?per_page=30",
+                zrok::RELEASES_FIXTURE,
             );
         let cases: &[(Tool, Option<&str>)] = &[
             (Tool::Composer, Some("2.8.12")),
@@ -764,6 +870,8 @@ mod tests {
             (Tool::Pnpm, Some("v10.2.0")),
             (Tool::Laravel, Some("v5.33.0")),
             (Tool::Cloudflared, Some("2025.11.1")),
+            (Tool::Ngrok, Some("3.39.13")),
+            (Tool::Zrok, Some("v2.0.11")),
             (Tool::Node, None),
         ];
         for (tool, want) in cases {
@@ -813,6 +921,100 @@ mod tests {
         assert_eq!(Tool::Pnpm.exposed_bins(), &["pnpm", "pnpx"]);
         assert_eq!(Tool::Composer.primary_bin(), "composer");
         assert_eq!(Tool::Laravel.display_name(), "Laravel Installer");
+        assert_eq!(Tool::Zrok.exposed_bins(), &["zrok2"]);
+        assert_eq!(Tool::Ngrok.primary_bin(), "ngrok");
+    }
+
+    #[test]
+    fn valid_tag_accepts_only_plain_semver_tags() {
+        let cases = [
+            ("v12.21.0", true),
+            ("v11.0.0-rc.3", true),
+            ("12.21.0", false),
+            ("v", false),
+            ("v..1", false),
+            ("v1/../x", false),
+            ("bun-v1.0.0", false),
+            ("", false),
+        ];
+        for (tag, want) in cases {
+            assert_eq!(valid_tag(tag), want, "{tag:?}");
+        }
+    }
+
+    enum Member {
+        File(&'static str, &'static [u8]),
+        Symlink(&'static str),
+        Dir(&'static str),
+    }
+
+    fn tgz(members: &[Member]) -> Vec<u8> {
+        let mut b = tar::Builder::new(Vec::new());
+        for member in members {
+            let mut h = tar::Header::new_gnu();
+            let body: &[u8] = match member {
+                Member::File(name, body) => {
+                    h.set_path(name).unwrap();
+                    h.set_entry_type(tar::EntryType::Regular);
+                    body
+                }
+                Member::Symlink(name) => {
+                    h.set_path(name).unwrap();
+                    h.set_link_name("/bin/sh").unwrap();
+                    h.set_entry_type(tar::EntryType::Symlink);
+                    b""
+                }
+                Member::Dir(name) => {
+                    h.set_path(name).unwrap();
+                    h.set_entry_type(tar::EntryType::Directory);
+                    b""
+                }
+            };
+            h.set_mode(0o755);
+            h.set_size(body.len() as u64);
+            h.set_cksum();
+            b.append(&h, body).unwrap();
+        }
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut enc, &b.into_inner().unwrap()).unwrap();
+        enc.finish().unwrap()
+    }
+
+    type ExtractCase = (&'static str, Vec<u8>, Option<&'static [u8]>);
+
+    #[test]
+    fn extract_file_from_tgz_cases() {
+        let cases: Vec<ExtractCase> = vec![
+            (
+                "root member among decoys",
+                tgz(&[
+                    Member::File("README.md", b"readme"),
+                    Member::File("LICENSE", b"license"),
+                    Member::File("ngrok", b"ngrok-bin"),
+                ]),
+                Some(b"ngrok-bin"),
+            ),
+            (
+                "nested member",
+                tgz(&[Member::Dir("x/"), Member::File("x/ngrok", b"nested")]),
+                None,
+            ),
+            ("symlink member", tgz(&[Member::Symlink("ngrok")]), None),
+            ("directory member", tgz(&[Member::Dir("ngrok")]), None),
+            (
+                "missing member",
+                tgz(&[Member::File("LICENSE", b"license")]),
+                None,
+            ),
+            ("not gzip", b"definitely not gzip".to_vec(), None),
+        ];
+        for (name, gz, want) in cases {
+            let got = extract_file_from_tgz(&gz, "ngrok", "test.tar.gz");
+            match want {
+                Some(bytes) => assert_eq!(got.unwrap(), bytes, "{name}"),
+                None => assert!(matches!(got, Err(ToolError::Unpack(_))), "{name}: {got:?}"),
+            }
+        }
     }
 
     /// Issue #150: an external `wp` can't stand in for the managed build, so
@@ -1014,6 +1216,28 @@ mod tests {
         uninstall(&dirs, Tool::Cloudflared).unwrap();
         reconcile_tool_shims(&dirs, &yerd_bin, None).unwrap();
         assert!(std::fs::symlink_metadata(bin.join("cloudflared")).is_err());
+
+        for (tool, name) in [(Tool::Ngrok, "ngrok"), (Tool::Zrok, "zrok2")] {
+            stage_and_swap(&dirs, tool, "1.0.0", |s| {
+                write_executable(s, name, b"#!/bin/sh\n")
+            })
+            .unwrap();
+        }
+        reconcile_tool_shims(&dirs, &yerd_bin, None).unwrap();
+        for name in ["ngrok", "zrok2"] {
+            assert_eq!(
+                std::fs::read_link(bin.join(name)).unwrap(),
+                yerd_bin,
+                "{name}"
+            );
+        }
+
+        uninstall(&dirs, Tool::Ngrok).unwrap();
+        uninstall(&dirs, Tool::Zrok).unwrap();
+        reconcile_tool_shims(&dirs, &yerd_bin, None).unwrap();
+        for name in ["ngrok", "zrok2"] {
+            assert!(std::fs::symlink_metadata(bin.join(name)).is_err(), "{name}");
+        }
     }
 
     #[cfg(unix)]

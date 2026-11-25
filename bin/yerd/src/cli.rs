@@ -136,7 +136,7 @@ pub enum Command {
     /// List local managed services and their status.
     Services,
     /// List installable dev tools (Composer, Node, Bun, pnpm, Laravel, WP-CLI,
-    /// cloudflared) and their install status.
+    /// cloudflared, ngrok, zrok) and their install status.
     Tools,
     /// Manage installed Node versions and defaults.
     Node {
@@ -1074,10 +1074,10 @@ pub enum UninstallTarget {
         version: String,
     },
     /// Uninstall a dev tool (`composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`,
-    /// `cloudflared`).
+    /// `cloudflared`, `ngrok`, `zrok`).
     Tool {
-        /// Tool id: `composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`, or
-        /// `cloudflared`.
+        /// Tool id: `composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`,
+        /// `cloudflared`, `ngrok`, or `zrok`.
         id: String,
     },
 }
@@ -1096,10 +1096,10 @@ pub enum InstallTarget {
         legacy: bool,
     },
     /// Install a dev tool (`composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`,
-    /// `cloudflared`) at its latest release.
+    /// `cloudflared`, `ngrok`, `zrok`) at its latest release.
     Tool {
-        /// Tool id: `composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`, or
-        /// `cloudflared`.
+        /// Tool id: `composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`,
+        /// `cloudflared`, `ngrok`, or `zrok`.
         id: String,
         /// Optional Node release selector, e.g. 24, v24.1.0, lts/* or lts/iron.
         version: Option<String>,

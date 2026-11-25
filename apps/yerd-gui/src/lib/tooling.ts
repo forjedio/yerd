@@ -16,6 +16,8 @@ const DESCRIPTIONS: Record<string, string> = {
   bun: "Fast JavaScript runtime and package manager",
   "wp-cli": "The wp command for managing WordPress sites",
   cloudflared: "Cloudflare Tunnel connector - used by Share",
+  ngrok: "ngrok agent - public tunnels to your local sites",
+  zrok: "zrok (zrok2) - open-source public tunnels to your local sites",
 };
 
 /** The short description shown for a tool, keyed by wire id; empty for unknown ids. */

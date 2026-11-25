@@ -133,7 +133,7 @@ onMounted(load);
 <template>
   <SettingsGroup
     label="Network"
-    note="Downloads, updates, Composer, npm, pnpm, Bun, the Laravel installer and WP-CLI"
+    note="Downloads, updates, Composer, npm, pnpm, Bun, ngrok, zrok, the Laravel installer and WP-CLI"
   >
     <div class="flex items-center gap-4 px-[18px] py-3">
       <div class="min-w-0 flex-1">

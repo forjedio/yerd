@@ -18,7 +18,9 @@ use serde::Deserialize;
 use yerd_php::{current_os_arch, is_safe_member, Arch, Downloader, Os};
 use yerd_platform::PlatformDirs;
 
-use super::{extract_root_dir, stage_and_swap, tool_dir, verify_sha256, Tool, ToolError};
+use super::{
+    extract_root_dir, stage_and_swap, tool_dir, valid_tag, verify_sha256, Tool, ToolError,
+};
 
 const LATEST_API: &str = "https://api.github.com/repos/pnpm/pnpm/releases/latest";
 const RELEASE_BASE: &str = "https://github.com/pnpm/pnpm/releases/download";
@@ -48,20 +50,6 @@ fn host_platform() -> Option<&'static str> {
         (Os::Linux, Arch::Aarch64) => "linux-arm64",
         (Os::Linux, Arch::X86_64) => "linux-x64",
     })
-}
-
-/// A `v<semver>` tag made of ASCII alphanumerics, `.` and `-` only. The tag is
-/// interpolated into the download URL and stored as the version marker, so a
-/// hostile release payload must not be able to inject `/` or `..`.
-fn valid_tag(tag: &str) -> bool {
-    let Some(rest) = tag.strip_prefix('v') else {
-        return false;
-    };
-    rest.bytes().next().is_some_and(|b| b.is_ascii_digit())
-        && rest
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
-        && !rest.contains("..")
 }
 
 /// The lowercase SHA-256 hex GitHub publishes for the asset named exactly
@@ -323,23 +311,6 @@ mod tests {
             ),
             (format!("/v12.21.0/{asset}"), pnpm_tarball()),
         ])
-    }
-
-    #[test]
-    fn valid_tag_accepts_only_plain_semver_tags() {
-        let cases = [
-            ("v12.21.0", true),
-            ("v11.0.0-rc.3", true),
-            ("12.21.0", false),
-            ("v", false),
-            ("v..1", false),
-            ("v1/../x", false),
-            ("bun-v1.0.0", false),
-            ("", false),
-        ];
-        for (tag, want) in cases {
-            assert_eq!(valid_tag(tag), want, "{tag:?}");
-        }
     }
 
     #[test]

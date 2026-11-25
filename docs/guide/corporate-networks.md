@@ -2,7 +2,8 @@
 
 On a corporate network, traffic to the internet often has to go through an HTTP
 proxy. Yerd makes its own outbound requests - downloading PHP, Node, pnpm, Bun,
-Composer, service engines and cloudflared, checking for updates, creating sites -
+Composer, service engines, cloudflared, ngrok and zrok, checking for updates,
+creating sites -
 and it can send all of them through a proxy.
 
 ## Modes
@@ -58,20 +59,24 @@ KDE proxy settings are not read; set the proxy manually instead.
 
 - Every download and update check the daemon makes: PHP (including legacy
   builds and extensions), Node, pnpm, Bun, Composer, service engines,
-  cloudflared, the WordPress version list, Yerd's own self-update, and the
+  cloudflared, ngrok, zrok, the WordPress version list, Yerd's own self-update, and the
   Cloudflare API calls behind named tunnels.
 - The tools the daemon runs while creating sites or installing tools: Composer,
   the Laravel installer, WP-CLI, npm, pnpm, Bun and git get `HTTP_PROXY`,
   `HTTPS_PROXY`, `NO_PROXY` (both cases) and `NODE_USE_ENV_PROXY=1`.
 - The commands in Yerd's bin directory - `php`, `composer`, `laravel`, `wp`,
-  `node`, `npm`, `npx`, `pnpm`, `pnpx`, `bun` and `bunx` - when you run them
-  yourself. Yerd writes the resolved proxy to `network.env` in its data
+  `node`, `npm`, `npx`, `pnpm`, `pnpx`, `bun`, `bunx`, `ngrok` and `zrok2` -
+  when you run them yourself. Yerd writes the resolved proxy to `network.env` in its data
   directory and these commands fill it in, **but only when your shell doesn't
   name a proxy of its own**. If any of `http_proxy`, `https_proxy` or
   `all_proxy` (either case) is set in your environment, Yerd adds nothing and
   your settings win. If you only set `no_proxy`, Yerd still adds its proxy and
   sets both `no_proxy` and `NO_PROXY` to your entries followed by its own
   (loopback and `.test`), so your bypass list is kept.
+
+Running the ngrok agent through a proxy is a paid ngrok feature: on a free
+plan, `ngrok` refuses to start (`ERR_NGROK_9009`) once Yerd fills in a proxy.
+Set the proxy mode to Off, or set your own proxy variables in that shell.
 
 Your sites' own PHP code (requests made by the app you are developing) is not
 changed.

@@ -1,11 +1,12 @@
-//! `node`, `npm`, `npx`, `pnpm`, `pnpx`, `bun` and `bunx` multi-call shims.
+//! `node`, `npm`, `npx`, `pnpm`, `pnpx`, `bun`, `bunx`, `ngrok` and `zrok2`
+//! multi-call shims.
 //!
 //! `{data}/bin/<name>` is a symlink to *this* `yerd` binary. Invoked under one
 //! of those names, yerd resolves the same target the daemon used to link
-//! directly (the global default Node's `bin/<name>`, or the pnpm/Bun root),
-//! fills in the outbound proxy environment from `{data}/network.env` when the
-//! caller has none, then `exec`s the real binary with `argv[0]` preserved
-//! (pnpx and bunx dispatch on it). Unix-only.
+//! directly (the global default Node's `bin/<name>`, the pnpm/Bun root, or the
+//! ngrok/zrok binary), fills in the outbound proxy environment from
+//! `{data}/network.env` when the caller has none, then `exec`s the real binary
+//! with `argv[0]` preserved (pnpx and bunx dispatch on it). Unix-only.
 
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -24,6 +25,10 @@ pub(crate) enum TargetKind {
     Pnpm,
     /// `bun`, `bunx`: the Bun binary.
     Bun,
+    /// `ngrok`: the managed ngrok agent.
+    Ngrok,
+    /// `zrok2`: the managed zrok v2 agent.
+    Zrok,
 }
 
 /// The tool a shim name dispatches to, or `None` for any other name.
@@ -33,6 +38,8 @@ pub(crate) fn target_kind(name: &str) -> Option<TargetKind> {
         "node" | "npm" | "npx" => Some(TargetKind::Node),
         "pnpm" | "pnpx" => Some(TargetKind::Pnpm),
         "bun" | "bunx" => Some(TargetKind::Bun),
+        "ngrok" => Some(TargetKind::Ngrok),
+        "zrok2" => Some(TargetKind::Zrok),
         _ => None,
     }
 }
@@ -52,6 +59,14 @@ pub(crate) fn resolve_target(
         yerd_platform::single_top_level_dir(&dirs.data.join("tools").join(tool))
             .map_err(|e| e.to_string())
     };
+    let binary = |tool: &str, bin: &str| {
+        let path = dirs.data.join("tools").join(tool).join(bin);
+        if path.is_file() {
+            Ok(path)
+        } else {
+            Err(format!("{tool} is not installed"))
+        }
+    };
     match kind {
         TargetKind::Node => {
             let configured = yerd_config::Config::load(&dirs.config.join("yerd.toml"))
@@ -64,12 +79,14 @@ pub(crate) fn resolve_target(
         }
         TargetKind::Pnpm => Ok(root("pnpm")?.join(name)),
         TargetKind::Bun => Ok(root("bun")?.join("bun")),
+        TargetKind::Ngrok => binary("ngrok", "ngrok"),
+        TargetKind::Zrok => binary("zrok", "zrok2"),
     }
 }
 
-/// If `argv[0]` names a Node, pnpm, or Bun command, exec the managed tool and
-/// return its exit code on failure (on success `exec` never returns);
-/// otherwise `None`, so `main` falls through to the next shim / CLI.
+/// If `argv[0]` names a Node, pnpm, Bun, ngrok, or zrok command, exec the
+/// managed tool and return its exit code on failure (on success `exec` never
+/// returns); otherwise `None`, so `main` falls through to the next shim / CLI.
 #[must_use]
 pub fn dispatch() -> Option<ExitCode> {
     let arg0 = std::env::args_os().next()?;
@@ -116,6 +133,9 @@ mod tests {
             ("pnpx", Some(TargetKind::Pnpm)),
             ("bun", Some(TargetKind::Bun)),
             ("bunx", Some(TargetKind::Bun)),
+            ("ngrok", Some(TargetKind::Ngrok)),
+            ("zrok2", Some(TargetKind::Zrok)),
+            ("zrok", None),
             ("composer", None),
             ("php", None),
             ("nodejs", None),
@@ -161,6 +181,10 @@ mod tests {
         touch(&pnpm_root.join("pnpx"));
         let bun_root = dirs.data.join("tools/bun/bun-darwin-aarch64");
         touch(&bun_root.join("bun"));
+        let ngrok = dirs.data.join("tools/ngrok/ngrok");
+        touch(&ngrok);
+        let zrok2 = dirs.data.join("tools/zrok/zrok2");
+        touch(&zrok2);
 
         for (name, expected) in [
             ("node", dist_bin.join("node")),
@@ -170,6 +194,8 @@ mod tests {
             ("pnpx", pnpm_root.join("pnpx")),
             ("bun", bun_root.join("bun")),
             ("bunx", bun_root.join("bun")),
+            ("ngrok", ngrok),
+            ("zrok2", zrok2),
         ] {
             let kind = target_kind(name).unwrap();
             assert_eq!(
@@ -202,7 +228,7 @@ mod tests {
     fn missing_tools_are_errors() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_at(tmp.path());
-        for name in ["node", "pnpm", "bunx"] {
+        for name in ["node", "pnpm", "bunx", "ngrok", "zrok2"] {
             assert!(resolve_target(&dirs, name, target_kind(name).unwrap()).is_err());
         }
     }
