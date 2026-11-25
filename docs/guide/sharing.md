@@ -102,6 +102,8 @@ ever shows it masked (`2fXk••••••••Qa`). **Replace** swaps it, *
 deletes it. ngrok checks the token when a share starts, so a mistyped token
 still reads as **Ready** until then.
 
+<ThemedImage light="/images/share-providers-ngrok-light.png" dark="/images/share-providers-ngrok-dark.png" alt="The ngrok pane of the Providers sheet: Yerd's ngrok 3.39.13, a saved authtoken shown masked and the static domain acme-demo.ngrok-free.app" />
+
 ```sh
 pbpaste | yerd tunnel ngrok token          # read the token from stdin
 yerd tunnel ngrok domain name.ngrok-free.app
@@ -127,6 +129,8 @@ on the same machine could briefly see it in the process list.
 so you can enable it again with any account token. If zrok refuses the disable
 (for example because the account token was revoked), the local environment is
 kept and the error is shown.
+
+<ThemedImage light="/images/share-providers-zrok-light.png" dark="/images/share-providers-zrok-dark.png" alt="The zrok pane of the Providers sheet: Yerd's zrok2 2.0.11 with this machine enabled and a Disable button" />
 
 ```sh
 pbpaste | yerd tunnel zrok enable
@@ -324,7 +328,7 @@ shows a count.
   the list. On a narrower window the list becomes a table (site, provider,
   public URL and status) and a share's details open in a drawer.
 
-  <ThemedImage light="/images/share-light.png" dark="/images/share-dark.png" alt="The Share page listing quick links and sites on your domain, with a password-protected quick link selected" />
+  <ThemedImage light="/images/share-light.png" dark="/images/share-dark.png" alt="The Share page with Cloudflare, ngrok and zrok provider cards, the All / Cloudflare / ngrok / zrok filter, and a password-protected Cloudflare quick link selected whose site is also shared through ngrok" />
 
 - Selecting a share shows its details: the provider badge, the **Public URL**
   with **Copy** and **Open**, a **Provider** / **Local site** / **Status** strip
@@ -353,7 +357,7 @@ shows a count.
   off. Sharing creates the DNS record and the daemon brings the tunnel up.
   Removing the last site takes it back down.
 
-  <ThemedImage light="/images/share-new-light.png" dark="/images/share-new-dark.png" alt="The Share a site dialog sharing portal on your domain, with the public hostname pre-filled" />
+  <ThemedImage light="/images/share-new-light.png" dark="/images/share-new-dark.png" alt="The Share a site dialog sharing portal through ngrok, with the Cloudflare, ngrok and zrok provider cards and the Static domain option selected" />
 
 - **Providers** opens the [Tunnel providers](#tunnel-providers) sheet. Its
   Cloudflare pane holds the rest: which `cloudflared` is in use (with a link to

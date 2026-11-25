@@ -36,7 +36,7 @@ removes them cleanly on uninstall.
 Open the **Tooling** page from the sidebar (under the **Developer** group). It
 lists the developer tools Yerd manages in two groups:
 
-<ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="The Tooling page: Composer (with an update to 2.9.1), the Laravel installer, WP-CLI and cloudflared installed, and Bun (found externally in /opt/homebrew/bin) and pnpm available" />
+<ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="The Tooling page: Composer (with an update to 2.9.1), the Laravel installer, WP-CLI, cloudflared, ngrok and zrok installed, and Bun (found externally in /opt/homebrew/bin) and pnpm available" />
 
 - **Installed** lists each installed tool (**Composer**, **Bun**, **pnpm**, the
   **Laravel installer**, **WP-CLI**, **cloudflared**, **ngrok**, **zrok**) with its version and the commands it

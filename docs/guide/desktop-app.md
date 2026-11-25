@@ -113,7 +113,7 @@ The **Editor** submenu defaults to the Preferred editor set in [Settings](#setti
 
 ### Tooling
 
-<ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="The Tooling page: installed Composer (update available), Laravel installer, WP-CLI and cloudflared, with Bun (external) and pnpm available" />
+<ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="The Tooling page: installed Composer (update available), Laravel installer, WP-CLI, cloudflared, ngrok and zrok, with Bun (external) and pnpm available" />
 
 Installs self-contained developer tools - Composer, Bun, pnpm, the Laravel installer, WP-CLI, cloudflared (used by [Share](#share)), and the ngrok and zrok tunnel agents - onto your PATH alongside PHP, each managed by Yerd (install / update / uninstall) so they don't collide with system installs. Node.js isn't listed here: it has its own [Node](#node) page. See [Tooling](./tooling).
 
@@ -152,7 +152,7 @@ Laravel telemetry interception - `dump()`/`dd()` plus queries, jobs, views, requ
 
 ### Share
 
-<ThemedImage light="/images/share-light.png" dark="/images/share-dark.png" alt="Share page" />
+<ThemedImage light="/images/share-light.png" dark="/images/share-dark.png" alt="The Share page with Cloudflare, ngrok and zrok provider cards, the provider filter, and acme-shop shared through both Cloudflare and ngrok" />
 
 Publishes a local site to the public internet through a tunnel provider: Cloudflare Tunnel, ngrok or zrok. Provider cards at the top show whether each provider is set up (**Manage** opens the Providers sheet). Your shares are listed below with each one's provider icon, provider and kind, a status dot and its public address, and an **All / Cloudflare / ngrok / zrok** filter; a site can be shared through several providers at once. Selecting one shows its public URL (**Copy**, **Open**), its provider, local site and health (Connecting, Running, Reconnecting, Failed) with the last error and any preflight warnings, the site's other shares with **Also share through** for the remaining providers, and **Stop sharing** or **Remove from domain**. On a narrower window the list becomes a table and the details open in a drawer. **Share a site** picks a site and a provider (with **Set up** for one that isn't ready) and, for Cloudflare, a temporary Quick link or your own domain, or for ngrok its static domain or a random URL; **Providers** opens the Tunnel providers sheet: the Cloudflare pane shows which `cloudflared` is in use (install or update it from [Tooling](#tooling)), connects your Cloudflare account and manages the tunnel for your domain; the ngrok pane saves an authtoken and optional static domain; the zrok pane enables this machine with a zrok account token; and **Default for new shares** picks the provider new shares use. A key button on each share sets an optional share password. See [Sharing Sites](./sharing).
 
