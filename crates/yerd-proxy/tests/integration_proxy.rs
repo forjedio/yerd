@@ -26,7 +26,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 
 use yerd_core::{
-    PhpVersion, ProxyRule, ProxySite, RouterConfig, Site, SiteRouter, Tld, UpstreamTarget,
+    Domain, PhpVersion, ProxyRule, ProxySite, ResponseHeader, RouterConfig, Site, SiteRouter, Tld,
+    UpstreamTarget,
 };
 use yerd_proxy::{Backend, BackendResolver, CertStore, ProxyClientTls, ProxyError, ProxyServer};
 
@@ -123,7 +124,7 @@ async fn spawn_upstream(shutdown: oneshot::Receiver<()>) -> SocketAddr {
                             u8::from(conn_upgrade)
                         );
                         let resp = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\nX-Powered-By: upstream\r\n\r\n{body}",
                             body.len()
                         );
                         let _ = stream.write_all(resp.as_bytes()).await;
@@ -406,6 +407,243 @@ async fn proxy_rule_upstream_response_is_not_given_site_headers() {
         headers.get("x-site-header").map(|v| v.to_str().unwrap()),
         Some("on")
     );
+
+    let _ = tx_shutdown.send(());
+    let _ = up_tx.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
+fn header(name: &str, value: &str) -> ResponseHeader {
+    ResponseHeader::new(name, value).unwrap()
+}
+
+fn assert_single(headers: &hyper::HeaderMap, name: &str, value: &str) {
+    let values: Vec<&str> = headers
+        .get_all(name)
+        .iter()
+        .map(|v| v.to_str().unwrap())
+        .collect();
+    assert_eq!(values, [value], "{name}");
+}
+
+async fn spawn_dead_upstream(shutdown: oneshot::Receiver<()>) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut shutdown = shutdown;
+        loop {
+            tokio::select! {
+                _ = &mut shutdown => break,
+                accepted = listener.accept() => {
+                    if let Ok((stream, _)) = accepted {
+                        drop(stream);
+                    }
+                }
+            }
+        }
+    });
+    port
+}
+
+async fn spawn_upgrade_upstream(shutdown: oneshot::Receiver<()>) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut shutdown = shutdown;
+        loop {
+            tokio::select! {
+                _ = &mut shutdown => break,
+                accepted = listener.accept() => {
+                    let Ok((mut stream, _)) = accepted else { continue };
+                    tokio::spawn(async move {
+                        let mut buf = Vec::new();
+                        let mut chunk = [0u8; 1024];
+                        loop {
+                            let n = match stream.read(&mut chunk).await {
+                                Ok(0) | Err(_) => return,
+                                Ok(n) => n,
+                            };
+                            buf.extend_from_slice(&chunk[..n]);
+                            if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                        let resp = "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nX-Powered-By: upstream\r\n\r\n";
+                        let _ = stream.write_all(resp.as_bytes()).await;
+                        let _ = stream.flush().await;
+                        while let Ok(n) = stream.read(&mut chunk).await {
+                            if n == 0 {
+                                break;
+                            }
+                        }
+                    });
+                }
+            }
+        }
+    });
+    addr
+}
+
+fn spawn_proxy_server(
+    listener: TcpListener,
+    router: SiteRouter,
+) -> (oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+    let resolver = Arc::new(StaticResolver {
+        backend: Backend::PhpFpmTcp {
+            addr: "127.0.0.1:1".parse().unwrap(),
+        },
+    });
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let task = tokio::spawn(async move {
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
+            listener,
+            None,
+            router,
+            resolver,
+            Arc::new(NoLoginTokens),
+            None,
+            Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
+            false,
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
+        .await;
+    });
+    (tx_shutdown, task)
+}
+
+/// Whole-host proxy headers replace the upstream's same-named header on every
+/// domain the proxy answers (apex, exact alias, wildcard) and also reach Yerd's
+/// own `502` for a dead upstream; a proxy with no headers is left untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn whole_host_proxy_headers_replace_upstream_and_cover_502_and_aliases() {
+    yerd_proxy::tls::init_crypto_once();
+
+    let (up_tx, up_rx) = oneshot::channel::<()>();
+    let upstream = spawn_upstream(up_rx).await;
+    let upstream_url = format!("http://127.0.0.1:{}", upstream.port());
+    let (dead_tx, dead_rx) = oneshot::channel::<()>();
+    let dead_port = spawn_dead_upstream(dead_rx).await;
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+
+    let mut router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
+    let apex = Domain::apex("reverb");
+    router
+        .insert_proxy_with_domains(
+            ProxySite::new(
+                "reverb",
+                UpstreamTarget::from_url_str(&upstream_url).unwrap(),
+            )
+            .unwrap(),
+            vec![
+                apex.clone(),
+                Domain::parse_subpart("*.reverb").unwrap(),
+                Domain::parse_subpart("alias").unwrap(),
+            ],
+            apex,
+        )
+        .unwrap();
+    router.set_response_headers(
+        "reverb",
+        vec![
+            header("X-Powered-By", "yerd"),
+            header("Access-Control-Allow-Origin", "*"),
+        ],
+    );
+    router
+        .insert_proxy(
+            ProxySite::new(
+                "dead",
+                UpstreamTarget::from_url_str(&format!("http://127.0.0.1:{dead_port}")).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    router.set_response_headers("dead", vec![header("X-Dead", "yes")]);
+    router
+        .insert_proxy(
+            ProxySite::new(
+                "plain",
+                UpstreamTarget::from_url_str(&upstream_url).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let (tx_shutdown, proxy_task) = spawn_proxy_server(proxy_listener, router);
+
+    for host in ["reverb.test", "alias.test", "ws.reverb.test"] {
+        let (status, headers) = client_get_headers(proxy_addr, host, "/x").await;
+        assert_eq!(status, 200, "{host}");
+        assert_single(&headers, "x-powered-by", "yerd");
+        assert_single(&headers, "access-control-allow-origin", "*");
+    }
+
+    let (status, headers) = client_get_headers(proxy_addr, "dead.test", "/").await;
+    assert_eq!(status, 502);
+    assert_single(&headers, "x-dead", "yes");
+
+    let (status, headers) = client_get_headers(proxy_addr, "plain.test", "/").await;
+    assert_eq!(status, 200);
+    assert_single(&headers, "x-powered-by", "upstream");
+    assert!(headers.get("access-control-allow-origin").is_none());
+
+    let _ = tx_shutdown.send(());
+    let _ = up_tx.send(());
+    let _ = dead_tx.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
+/// A whole-host proxy's `101 Switching Protocols` carries its configured
+/// headers while the upgrade handshake headers stay intact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn whole_host_proxy_upgrade_101_carries_headers() {
+    yerd_proxy::tls::init_crypto_once();
+
+    let (up_tx, up_rx) = oneshot::channel::<()>();
+    let upstream = spawn_upgrade_upstream(up_rx).await;
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+
+    let mut router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
+    router
+        .insert_proxy(
+            ProxySite::new(
+                "reverb",
+                UpstreamTarget::from_url_str(&format!("http://127.0.0.1:{}", upstream.port()))
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    router.set_response_headers("reverb", vec![header("X-Powered-By", "yerd")]);
+    let (tx_shutdown, proxy_task) = spawn_proxy_server(proxy_listener, router);
+
+    let stream = TcpStream::connect(proxy_addr).await.unwrap();
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake::<_, Empty<Bytes>>(io)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = conn.with_upgrades().await;
+    });
+    let req = Request::builder()
+        .method("GET")
+        .uri("/app")
+        .header("Host", "reverb.test")
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+    let resp = sender.send_request(req).await.unwrap();
+    assert_eq!(resp.status().as_u16(), 101);
+    assert_single(resp.headers(), "x-powered-by", "yerd");
+    assert_single(resp.headers(), "upgrade", "websocket");
 
     let _ = tx_shutdown.send(());
     let _ = up_tx.send(());

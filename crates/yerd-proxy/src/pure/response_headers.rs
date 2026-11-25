@@ -1,4 +1,4 @@
-//! Pure application of a site's custom response headers.
+//! Pure application of a site's or whole-host proxy's custom response headers.
 //!
 //! Semantics are **replace**: each configured header removes every value the
 //! response already carried under that name (compared case-insensitively, since

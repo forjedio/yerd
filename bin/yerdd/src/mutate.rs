@@ -16,6 +16,7 @@
 //! itself before every lookup - otherwise `yerd use Blog 8.4` would look up
 //! `"Blog"`, miss the stored `"blog"`, and wrongly report "not found".
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use yerd_config::{Config, DomainDelta};
@@ -459,8 +460,8 @@ fn apply_add_proxy(
     })
 }
 
-/// Remove a whole-host proxy by name, pruning its domain delta so a re-added
-/// proxy of the same name starts from the defaults.
+/// Remove a whole-host proxy by name, pruning its domain delta and response
+/// headers so a re-added proxy of the same name starts from the defaults.
 fn apply_remove_proxy(cfg: &mut Config, name: &str) -> Result<Applied, MutateError> {
     let name_lc = name.to_ascii_lowercase();
     let before = cfg.proxies.len();
@@ -469,6 +470,7 @@ fn apply_remove_proxy(cfg: &mut Config, name: &str) -> Result<Applied, MutateErr
         return Err(MutateError::NotFound(format!("no proxy named {name_lc}")));
     }
     cfg.domains.proxy.remove(&name_lc);
+    cfg.response_headers.proxy.remove(&name_lc);
     Ok(Applied {
         summary: format!("removed proxy {name_lc}"),
     })
@@ -488,8 +490,8 @@ fn apply_update_proxy(cfg: &mut Config, name: &str, url: &str) -> Result<Applied
     })
 }
 
-/// The per-site storage key, shared by `proxy_rules`, `route_rules` and
-/// `response_headers`:
+/// The per-site storage key, shared by `proxy_rules`, `route_rules` and the
+/// site side of `response_headers` (see [`resolve_header_target`]):
 /// linked sites key by name, parked sites by document-root (matching
 /// `[[overrides]]`). Returns `None` if the site is unknown to the pre-mutation
 /// router.
@@ -680,9 +682,46 @@ fn apply_remove_route_rule(
     })
 }
 
-/// Set a custom response header on an existing site. A header whose name the
-/// site already has (ignoring case) is replaced in place, keeping its position
-/// and adopting the new casing.
+/// Locate the site or whole-host proxy a response-header request names: a
+/// site known to the pre-mutation router first (linked by name, parked by
+/// document-root, as [`site_rule_key`]), then a configured proxy by name. A
+/// site therefore wins over a same-named proxy, matching how routing and
+/// [`resolve_domain_target`] treat a name-shadowed proxy.
+fn resolve_header_target(
+    cfg: &Config,
+    router: &SiteRouter,
+    name_lc: &str,
+) -> Result<DomainTarget, MutateError> {
+    if let Some((linked, key)) = site_rule_key(router, name_lc) {
+        Ok(if linked {
+            DomainTarget::Linked(key)
+        } else {
+            DomainTarget::Parked(key)
+        })
+    } else if cfg.proxies.iter().any(|p| p.name() == name_lc) {
+        Ok(DomainTarget::Proxy(name_lc.to_owned()))
+    } else {
+        Err(MutateError::NotFound(format!(
+            "no site or proxy named {name_lc}"
+        )))
+    }
+}
+
+/// The `[response_headers]` map and key a resolved target's headers live in.
+fn header_map_mut(
+    cfg: &mut Config,
+    target: DomainTarget,
+) -> (&mut BTreeMap<String, Vec<ResponseHeader>>, String) {
+    match target {
+        DomainTarget::Linked(key) => (&mut cfg.response_headers.linked, key),
+        DomainTarget::Parked(key) => (&mut cfg.response_headers.parked, key),
+        DomainTarget::Proxy(key) => (&mut cfg.response_headers.proxy, key),
+    }
+}
+
+/// Set a custom response header on an existing site or whole-host proxy. A
+/// header whose name it already has (ignoring case) is replaced in place,
+/// keeping its position and adopting the new casing.
 fn apply_set_response_header(
     cfg: &mut Config,
     router: &SiteRouter,
@@ -693,13 +732,8 @@ fn apply_set_response_header(
     let name_lc = site.to_ascii_lowercase();
     let header = ResponseHeader::new(name, value)
         .map_err(|e| MutateError::Invalid(format!("invalid response header: {e}")))?;
-    let (linked, key) =
-        site_rule_key(router, &name_lc).ok_or_else(|| not_found_site(cfg, &name_lc))?;
-    let map = if linked {
-        &mut cfg.response_headers.linked
-    } else {
-        &mut cfg.response_headers.parked
-    };
+    let target = resolve_header_target(cfg, router, &name_lc)?;
+    let (map, key) = header_map_mut(cfg, target);
     let headers = map.entry(key).or_default();
     let header_name = header.name().to_owned();
     let summary = if let Some(existing) = headers.iter_mut().find(|h| h.has_name(&header_name)) {
@@ -712,8 +746,8 @@ fn apply_set_response_header(
     Ok(Applied { summary })
 }
 
-/// Remove a custom response header (matched ignoring case) from a site,
-/// pruning the site's entry when its last header goes so the config
+/// Remove a custom response header (matched ignoring case) from a site or
+/// whole-host proxy, pruning its entry when its last header goes so the config
 /// round-trips to a byte-identical state.
 fn apply_remove_response_header(
     cfg: &mut Config,
@@ -722,14 +756,9 @@ fn apply_remove_response_header(
     name: &str,
 ) -> Result<Applied, MutateError> {
     let name_lc = site.to_ascii_lowercase();
-    let (linked, key) =
-        site_rule_key(router, &name_lc).ok_or_else(|| not_found_site(cfg, &name_lc))?;
-    let map = if linked {
-        &mut cfg.response_headers.linked
-    } else {
-        &mut cfg.response_headers.parked
-    };
-    let not_found = || MutateError::NotFound(format!("site {name_lc} has no header {name}"));
+    let target = resolve_header_target(cfg, router, &name_lc)?;
+    let (map, key) = header_map_mut(cfg, target);
+    let not_found = || MutateError::NotFound(format!("{name_lc} has no header {name}"));
     let Some(headers) = map.get_mut(&key) else {
         return Err(not_found());
     };
@@ -799,9 +828,9 @@ fn apply_set_front_controller(
     }
 }
 
-/// Which `[domains]` map (and key) a claimant's delta lives in: linked sites key
-/// by name, parked sites by document-root (mirroring `overrides`), whole-host
-/// proxies by proxy name (which may itself be dotted).
+/// Which `[domains]` (or `[response_headers]`) map and key a claimant's entry
+/// lives in: linked sites key by name, parked sites by document-root (mirroring
+/// `overrides`), whole-host proxies by proxy name (which may itself be dotted).
 enum DomainTarget {
     Linked(String),
     Parked(String),
@@ -2082,6 +2111,80 @@ mod tests {
                 "{name}: {value:?} must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn response_header_set_replace_and_remove_on_a_proxy() {
+        let mut cfg = cfg_with_proxy("reverb");
+        let router = empty_router();
+        set_header(&mut cfg, &router, "Reverb", "X-Powered-By", "yerd").unwrap();
+        set_header(&mut cfg, &router, "reverb", "X-Frame-Options", "DENY").unwrap();
+        let applied = set_header(&mut cfg, &router, "reverb", "x-powered-by", "dev").unwrap();
+        assert!(
+            applied.summary.starts_with("replaced"),
+            "{}",
+            applied.summary
+        );
+        let headers = cfg.response_headers.proxy.get("reverb").unwrap();
+        assert_eq!(headers.len(), 2);
+        assert_eq!(headers[0].name(), "x-powered-by");
+        assert_eq!(headers[0].value(), "dev");
+        assert!(cfg.response_headers.linked.is_empty());
+        assert!(cfg.response_headers.parked.is_empty());
+
+        remove_header(&mut cfg, &router, "reverb", "X-POWERED-BY").unwrap();
+        remove_header(&mut cfg, &router, "reverb", "x-frame-options").unwrap();
+        assert!(
+            cfg.response_headers.proxy.is_empty(),
+            "removing the last header must prune the proxy's entry"
+        );
+        assert!(matches!(
+            remove_header(&mut cfg, &router, "reverb", "X-A"),
+            Err(MutateError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn response_header_on_a_dotted_proxy_name() {
+        let mut cfg = cfg_with_proxy("api.account");
+        set_header(
+            &mut cfg,
+            &empty_router(),
+            "API.Account",
+            "Access-Control-Allow-Origin",
+            "*",
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.response_headers.proxy.get("api.account").unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn response_header_unknown_name_says_site_or_proxy() {
+        let mut cfg = Config::default();
+        match set_header(&mut cfg, &empty_router(), "ghost", "X-A", "1") {
+            Err(MutateError::NotFound(msg)) => {
+                assert_eq!(msg, "no site or proxy named ghost");
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn response_header_prefers_a_parked_site_over_a_same_named_proxy() {
+        let mut cfg = cfg_with_proxy("blog");
+        let mut router = empty_router();
+        router
+            .insert(Site::parked("blog", "/srv/blog", v(8, 3)).unwrap())
+            .unwrap();
+        set_header(&mut cfg, &router, "blog", "X-A", "1").unwrap();
+        assert!(cfg.response_headers.proxy.is_empty());
+        assert_eq!(
+            cfg.response_headers.parked.get("/srv/blog").unwrap().len(),
+            1
+        );
     }
 
     #[test]
@@ -3502,6 +3605,39 @@ mod tests {
         .unwrap();
         assert!(cfg.proxies.is_empty());
         assert!(cfg.domains.is_empty());
+    }
+
+    #[test]
+    fn remove_proxy_drops_its_response_headers() {
+        let mut cfg = cfg_with_proxy("reverb");
+        let r = empty_router();
+        set_header(&mut cfg, &r, "reverb", "X-A", "1").unwrap();
+        apply(
+            &mut cfg,
+            &r,
+            &Request::RemoveProxy {
+                name: "reverb".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.response_headers.proxy.is_empty());
+        apply(
+            &mut cfg,
+            &r,
+            &Request::AddProxy {
+                name: "reverb".into(),
+                url: "http://127.0.0.1:48087".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(matches!(
+            remove_header(&mut cfg, &r, "reverb", "X-A"),
+            Err(MutateError::NotFound(_))
+        ));
     }
 
     #[test]

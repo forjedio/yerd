@@ -139,3 +139,4 @@ instead. `proxy list` marks them `(managed by <service>)`.
 - [HTTPS & Certificates](../../guide/https) - how `secure` mints a trusted cert.
 - [Reverse Proxies](../../guide/proxies) - the guide-level walkthrough.
 - [Domains](./domains) - give a proxy or site more `.test` names.
+- [Response headers](./headers) - add headers such as `Access-Control-Allow-Origin` to a whole-host proxy.

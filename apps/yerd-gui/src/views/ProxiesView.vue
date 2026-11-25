@@ -341,11 +341,17 @@ onUnmounted(
   }),
 );
 
+/** A site with the proxy's name takes the name over, so the proxy is not routed. */
+function shadowedBySite(item: ProxyItem | null): boolean {
+  return item?.kind === "proxy" && sites.value.some((s) => s.name === item.proxy.name);
+}
+
 const inspectorProps = computed(() => ({
   item: selectedItem.value,
   report: report.value ?? null,
   tld: tld.value,
   busy: selectedItem.value ? isBusy(selectedItem.value.key) : false,
+  shadowed: shadowedBySite(selectedItem.value),
 }));
 </script>
 

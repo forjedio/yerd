@@ -9,7 +9,7 @@ import Spinner from "@/components/ui/Spinner.vue";
 import type { ResponseHeaderEntry } from "@/ipc/types";
 
 /**
- * Add a response header to a site, or edit one (`editing` set). The fields
+ * Add a response header to a site or whole-host proxy, or edit one (`editing` set). The fields
  * reset every time the dialog opens. The daemon validates names and values, so
  * the only client-side gate is that both are filled and something changed.
  */
@@ -18,6 +18,8 @@ const props = defineProps<{
   /** The header being edited, or null to add a new one. */
   editing: ResponseHeaderEntry | null;
   busy?: boolean;
+  /** The header belongs to a whole-host proxy, which changes the banner copy. */
+  proxy?: boolean;
 }>();
 
 const emit = defineEmits<{ "update:open": [boolean]; submit: [name: string, value: string] }>();
@@ -71,7 +73,11 @@ function save(): void {
       :disabled="busy"
       @keydown.enter="save"
     />
-    <InfoBanner class="mt-3">
+    <InfoBanner v-if="proxy" class="mt-3">
+      Added to every response for this proxy, including errors and redirects. A header with the
+      same name sent by the upstream is replaced.
+    </InfoBanner>
+    <InfoBanner v-else class="mt-3">
       Added to every response for this site, including errors and redirects, but not to responses
       from proxy path rules. A header with the same name sent by the app is replaced.
     </InfoBanner>

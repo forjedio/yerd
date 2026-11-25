@@ -28,7 +28,21 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v32 (current)
+### v33 (current)
+
+**Added:** the optional `[response_headers.proxy]` table - custom response headers for whole-host proxies, keyed by proxy name, in the same `name`/`value` array-of-tables shape as `[response_headers.linked]`. It defaults to empty when absent, so a file with no proxy headers omits it entirely. A key naming no configured proxy is tolerated (as in `[domains.proxy]`): it is neither routed nor listed, and the daemon prunes a proxy's entry when the proxy is removed.
+
+```toml
+[[response_headers.proxy.reverb]]
+name = "Access-Control-Allow-Origin"
+value = "*"
+```
+
+**Migration from v32:** bare version bump - the table defaults to empty when absent, so a v32 file needs no other change.
+
+**To downgrade to v32:** change `version = 33` to `version = 32` and delete every `[[response_headers.proxy.*]]` table (a v32 daemon rejects the unknown key under `deny_unknown_fields`).
+
+### v32
 
 **Added:** `default_provider` under `[tunnel]` (`cloudflare`, `ngrok` or `zrok`; the provider new shares use, default `cloudflare` and omitted while it is) and the optional `[tunnel.ngrok]` table (`authtoken`, the ngrok agent authtoken, and `domain`, an optional static domain as a bare hostname). Both default when absent, so a file that never configured a provider omits them entirely.
 

@@ -3,6 +3,7 @@ import { Copy, CornerDownRight, ExternalLink, Globe, Pencil, Trash2, X } from "l
 import { computed } from "vue";
 
 import SiteDomainsCard from "@/components/sites/SiteDomainsCard.vue";
+import SiteHeadersCard from "@/components/sites/SiteHeadersCard.vue";
 import Button from "@/components/ui/Button.vue";
 import InspectorFooter from "@/components/ui/InspectorFooter.vue";
 import InspectorFrame from "@/components/ui/InspectorFrame.vue";
@@ -19,8 +20,9 @@ import { cn } from "@/lib/utils";
 /**
  * The selected proxy's inspector. A whole-domain proxy shows Open and Copy URL,
  * the ROUTE card (its upstream with an Edit button, and the HTTPS switch), the
- * DOMAINS card and Remove proxy. A path rule shows its upstream with Edit (or a
- * "Managed by" note in its place for a service-owned rule), and Remove path. In
+ * DOMAINS and RESPONSE HEADERS cards and Remove proxy. A path rule shows its
+ * upstream with Edit (or a "Managed by" note in its place for a service-owned
+ * rule), and Remove path. In
  * `panel` mode it sits beside the list; in `drawer` mode it slides over the
  * window (see `InspectorFrame`). Writes go up as events; the view owns them.
  */
@@ -32,6 +34,8 @@ const props = defineProps<{
   report: StatusReport | null;
   tld: string;
   busy?: boolean;
+  /** A same-named site hides this proxy, so header edits by name would reach the site. */
+  shadowed?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -182,6 +186,12 @@ const LABEL = `mb-2 px-1 ${SECTION_LABEL}`;
           alias-tag
           @domains-changed="emit('domainsChanged')"
         />
+
+        <SiteHeadersCard v-if="proxy && !shadowed" :site="{ name: proxy.name }" proxy />
+        <p v-else-if="proxy" class="text-[13px] text-faint" data-testid="headers-shadowed">
+          A site named {{ proxy.name }} takes this proxy's name, so its response headers can't be
+          edited until the site is removed or renamed.
+        </p>
       </div>
 
       <InspectorFooter>

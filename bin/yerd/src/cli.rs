@@ -231,9 +231,9 @@ pub enum Command {
         #[command(subcommand)]
         action: RouteAction,
     },
-    /// Manage a site's custom response headers, added to every response the
-    /// site serves except those from path-prefix proxy rules (for example
-    /// `Access-Control-Allow-Origin` for CORS).
+    /// Manage a site's or whole-host proxy's custom response headers, added to
+    /// every response it serves except those from path-prefix proxy rules (for
+    /// example `Access-Control-Allow-Origin` for CORS).
     Header {
         /// What to do.
         #[command(subcommand)]
@@ -585,28 +585,29 @@ pub enum RouteAction {
 /// Action of `yerd header`.
 #[derive(clap::Subcommand, Debug, Clone)]
 pub enum HeaderAction {
-    /// Set a header on every response for the site, including errors and
-    /// redirects, except responses from path-prefix proxy rules. Replaces a
-    /// same-named header from PHP or Yerd, and replaces the site's existing
-    /// entry for that name.
+    /// Set a header on every response for the site or whole-host proxy,
+    /// including errors and redirects, except responses from path-prefix proxy
+    /// rules. Replaces a same-named header from PHP, the upstream or Yerd, and
+    /// replaces the existing entry for that name.
     Set {
-        /// Site name.
+        /// Site or whole-host proxy name.
         site: String,
         /// Header name, e.g. `Access-Control-Allow-Origin`.
         name: String,
         /// Header value, e.g. `https://app.test`.
         value: String,
     },
-    /// Remove a header from a site by name (case-insensitive).
+    /// Remove a header from a site or whole-host proxy by name
+    /// (case-insensitive).
     Remove {
-        /// Site name.
+        /// Site or whole-host proxy name.
         site: String,
         /// Header name to remove.
         name: String,
     },
     /// List custom response headers.
     List {
-        /// Site name; omit to list every site's headers.
+        /// Site or proxy name; omit to list every site's and proxy's headers.
         site: Option<String>,
     },
 }

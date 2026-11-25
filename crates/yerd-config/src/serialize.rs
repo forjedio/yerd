@@ -94,8 +94,8 @@ struct WireSer<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     route_rules: Option<RouteRulesSectionSer<'a>>,
     // v24: optional `[response_headers]` table, emitted after `[route_rules]`
-    // so an existing config's byte shape is untouched. `None` (skipped) when
-    // both maps are empty.
+    // so an existing config's byte shape is untouched; v33 added the proxy map.
+    // `None` (skipped) when every map is empty.
     #[serde(skip_serializing_if = "Option::is_none")]
     response_headers: Option<ResponseHeadersSectionSer<'a>>,
     // v28: optional `[network]` table, emitted last so an existing config's
@@ -167,6 +167,8 @@ struct ResponseHeadersSectionSer<'a> {
     linked: BTreeMap<&'a str, Vec<ResponseHeaderSer<'a>>>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     parked: BTreeMap<&'a str, Vec<ResponseHeaderSer<'a>>>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    proxy: BTreeMap<&'a str, Vec<ResponseHeaderSer<'a>>>,
 }
 
 #[derive(Serialize)]
@@ -578,10 +580,15 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
         response_headers: {
             let linked = response_header_map(&c.response_headers.linked);
             let parked = response_header_map(&c.response_headers.parked);
-            if linked.is_empty() && parked.is_empty() {
+            let proxy = response_header_map(&c.response_headers.proxy);
+            if linked.is_empty() && parked.is_empty() && proxy.is_empty() {
                 None
             } else {
-                Some(ResponseHeadersSectionSer { linked, parked })
+                Some(ResponseHeadersSectionSer {
+                    linked,
+                    parked,
+                    proxy,
+                })
             }
         },
         network: if c.network == crate::NetworkSection::default() {
@@ -714,8 +721,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 32\n"),
-            "expected `version = 32` first line; got: {s}"
+            s.starts_with("version = 33\n"),
+            "expected `version = 33` first line; got: {s}"
         );
     }
 

@@ -605,10 +605,11 @@ fn failed_request_response(e: &ProxyError) -> Response<BoxBody> {
 
 /// Route one request and produce its response.
 ///
-/// For a PHP site every response, including the HTTP→HTTPS redirect and the
-/// `500` for a failed backend, passes through [`finish_site_response`] to pick
-/// up the site's custom response headers. The one exemption is a path-prefix
-/// proxy rule, whose upstream response is returned untouched.
+/// For a PHP site or whole-host proxy every response, including the
+/// HTTP→HTTPS redirect, a proxy's `502`/`101` and the `500` for a failed
+/// backend, passes through [`finish_site_response`] to pick up its custom
+/// response headers. The one exemption is a path-prefix proxy rule, whose
+/// upstream response is returned untouched.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
     req: Request<Incoming>,
@@ -648,13 +649,17 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
                 forward,
                 secure,
                 unbound,
+                headers,
             } => {
                 if matches!(listener, Listener::Http) && !unbound {
                     if let (true, Some(port)) = (secure, redirect_port) {
-                        return https_redirect(&host, &req, port);
+                        return Ok(finish_site_response(
+                            https_redirect(&host, &req, port),
+                            headers.as_deref(),
+                        ));
                     }
                 }
-                return proxy_fwd::forward(
+                let result = proxy_fwd::forward(
                     req,
                     &forward.target,
                     client_tls.as_ref(),
@@ -664,6 +669,7 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
                     &host,
                 )
                 .await;
+                return Ok(finish_site_response(result, headers.as_deref()));
             }
             Routed::Respond(resp) => return Ok(resp),
         };
@@ -767,8 +773,8 @@ async fn serve_routed<R: BackendResolver>(
     Ok(finish_site_response(result, headers.as_deref()))
 }
 
-/// Turn a site response, or the error that replaced it, into the final
-/// response with the site's custom headers applied.
+/// Turn a site or whole-host proxy response, or the error that replaced it,
+/// into the final response with its custom headers applied.
 fn finish_site_response(
     result: Result<Response<BoxBody>, ProxyError>,
     headers: Option<&[ResponseHeader]>,
@@ -1218,6 +1224,8 @@ enum Routed {
         forward: ProxyTarget,
         secure: bool,
         unbound: bool,
+        /// The proxy's configured response headers, applied in [`dispatch`].
+        headers: Option<Arc<[ResponseHeader]>>,
     },
     /// A synthetic response to return directly.
     Respond(Response<BoxBody>),
@@ -1270,6 +1278,7 @@ async fn resolve_request(
                 },
                 secure: proxy.secure(),
                 unbound: false,
+                headers: guard.shared_response_headers(proxy.name()),
             });
         }
         None => {}

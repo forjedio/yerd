@@ -133,8 +133,11 @@ pub use schema::{
 /// `[parked.claims]` map ([`ParkedSection::claims`]); it defaults (empty) when
 /// absent, so v30→v31 is a bare bump too. v32 added `[tunnel] default_provider`
 /// and the optional `[tunnel.ngrok]` table ([`TunnelSection`]); both default
-/// when absent, so v31→v32 is a bare bump too.
+/// when absent, so v31→v32 is a bare bump too. v33 added the optional
+/// `[response_headers.proxy]` table of whole-host proxy headers
+/// ([`ResponseHeadersSection::proxy`]); it defaults (empty) when absent, so
+/// v32→v33 is a bare bump too.
 ///
 /// The per-version detail, including how to hand-edit a file back down for an
 /// older binary, lives in `docs/developer/config-schema-history.md`.
-pub const CURRENT_VERSION: u32 = 32;
+pub const CURRENT_VERSION: u32 = 33;

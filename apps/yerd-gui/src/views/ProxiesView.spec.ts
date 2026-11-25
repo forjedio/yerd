@@ -79,6 +79,8 @@ function stubIpc(opts: {
         return Promise.resolve({ type: "parked", paths: [] });
       case "list_groups":
         return Promise.resolve({ type: "groups", order: [], members: {} });
+      case "list_response_headers":
+        return Promise.resolve({ type: "response_headers", headers: [] });
       case "add_proxy":
       case "remove_proxy":
       case "add_proxy_rule":
@@ -290,6 +292,19 @@ describe("ProxiesView layouts", () => {
     const classes = row(w, "proxy:reverb").classes();
     expect(classes).toContain("group-focus-visible/list:bg-brand/25");
     expect(classes).not.toContain("bg-brand/[0.14]");
+  });
+});
+
+describe("ProxiesView shadowed proxy", () => {
+  it.each([
+    ["a same-named site hides the headers card", ["reverb"], false],
+    ["an unrelated site keeps it", ["app"], true],
+  ])("%s", async (_label, siteNames, shown) => {
+    stubIpc({ proxies: [reverb()], sites: siteNames.map((n) => site(n)) });
+    const w = await mountView();
+    const inspector = await openRow(w, "proxy:reverb");
+    expect(inspector.find('[data-testid="headers-card"]').exists()).toBe(shown);
+    expect(inspector.find('[data-testid="headers-shadowed"]').exists()).toBe(!shown);
   });
 });
 

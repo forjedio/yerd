@@ -33,7 +33,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 
 | Key         | TOML type            | Meaning                                                            | Default        |
 | ----------- | -------------------- | ----------------------------------------------------------------- | -------------- |
-| `version`   | integer              | On-disk schema version. **Mandatory**; written as `32` by this release. | `n/a (required)` |
+| `version`   | integer              | On-disk schema version. **Mandatory**; written as `33` by this release. | `n/a (required)` |
 | `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
 | `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
 | `update_channel` | string          | Self-update channel: `"stable"` or `"edge"`.                      | `"stable"`     |
@@ -55,7 +55,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 | `proxies`   | array of tables      | Whole-host reverse proxies (`reverb.test` → an upstream URL).      | empty          |
 | `proxy_rules` | table              | Per-site path-prefix reverse-proxy rules.                         | empty          |
 | `route_rules` | table              | Per-site path-prefix routing rules (prefix → a file inside the site). | empty       |
-| `response_headers` | table         | Per-site custom response headers (name + value) added to every response. | empty       |
+| `response_headers` | table         | Per-site and per-proxy custom response headers (name + value) added to every response. | empty       |
 | `network`   | table                | Outbound HTTP proxy for Yerd's downloads and the tools it runs.   | system detection |
 | `favourites` | table              | Sites starred in the desktop app.                                 | empty          |
 
@@ -67,7 +67,7 @@ The free-form maps are the exception, because their keys *are* the data. `[servi
 
 ### `version`
 
-The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `32`, and Yerd always writes `version = 32`. Older `version = 1` through `version = 31` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `33`, and Yerd always writes `version = 33`. Older `version = 1` through `version = 32` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
 
 ### `tld`
 
@@ -680,16 +680,18 @@ and no `index.php` gets SPA routing automatically, with no rule stored here.
 
 ### `[response_headers]`
 
-Per-site custom **response headers** (schema v25) - each one is added to every
-response the proxy produces for the site, replacing any same-named header.
-**Empty by default** (the whole table is omitted) until you set a header. Split
-by site class exactly like `[route_rules]`: linked headers key by site name,
-parked headers by byte-exact document-root.
+Per-site custom **response headers** (schema v25) and per-proxy ones (schema
+v33) - each one is added to every response Yerd produces for the site or
+whole-host proxy, replacing any same-named header. **Empty by default** (the
+whole table is omitted) until you set a header. Site headers are split by site
+class exactly like `[route_rules]`: linked headers key by site name, parked
+headers by byte-exact document-root. Proxy headers key by proxy name.
 
 | Key                         | TOML type                         | Meaning                                         |
 | --------------------------- | --------------------------------- | ----------------------------------------------- |
 | `[response_headers.linked]` | table (`name → array of headers`) | Headers for **linked** sites, keyed by name.    |
 | `[response_headers.parked]` | table (`docroot → array`)         | Headers for **parked** sites, keyed by docroot. |
+| `[response_headers.proxy]`  | table (`name → array of headers`) | Headers for **whole-host proxies**, keyed by proxy name. |
 
 Each header is a `{ name, value }` table, kept in the order it was set. Removing
 a site's last header drops its key entirely, so the file round-trips
@@ -707,10 +709,11 @@ not one Yerd manages (`Connection`, `Keep-Alive`, `Transfer-Encoding`,
 `Upgrade`, `TE`, `Trailer`, `Content-Length`, `Host`, or any `Proxy-*`), and the
 value must be non-empty with no control characters. A hand-edited entry that
 fails is a hard parse error, and two entries for one site sharing a name
-(ignoring case) fail validation.
+(ignoring case) fail validation. A proxy key naming no configured proxy is
+ignored, and removing a proxy drops its key.
 
 Manage these with [`yerd header`](cli/headers), or the **Response headers** card
-in the desktop app's site inspector.
+in the desktop app's site and proxy inspectors.
 
 ### `[network]`
 
@@ -742,7 +745,7 @@ the desktop app's General settings.
 
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `32`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `33`.
 
 When the daemon loads a file, it routes on the version it finds:
 
@@ -785,6 +788,7 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v29 → v30`** is a bare version bump: v30 only **added** the optional `[favourites]` table (starred sites), which defaults to empty when absent.
 - **`v30 → v31`** is a bare version bump: v31 only **added** the optional `[parked.claims]` map (suffix-stripped names held by parked folders), which defaults to empty when absent.
 - **`v31 → v32`** is a bare version bump: v32 only **added** `[tunnel] default_provider` and the optional `[tunnel.ngrok]` table, both of which default when absent.
+- **`v32 → v33`** is a bare version bump: v33 only **added** the optional `[response_headers.proxy]` table (whole-host proxy response headers), which defaults to empty when absent.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 

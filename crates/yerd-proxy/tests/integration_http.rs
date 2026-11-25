@@ -2614,6 +2614,59 @@ async fn https_redirect_carries_configured_header() {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn proxy_https_redirect_carries_configured_header() {
+    let proxy_http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_http_addr = proxy_http_listener.local_addr().unwrap();
+    let https_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+
+    let cfg = RouterConfig::with_tld(Tld::new("test").unwrap());
+    let mut router = SiteRouter::new(cfg);
+    let mut proxy = yerd_core::ProxySite::new(
+        "reverb",
+        yerd_core::UpstreamTarget::from_url_str("http://127.0.0.1:1").unwrap(),
+    )
+    .unwrap();
+    proxy.set_secure(true);
+    router.insert_proxy(proxy).unwrap();
+    router.set_response_headers("reverb", vec![header("Access-Control-Allow-Origin", "*")]);
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+
+    let https = yerd_proxy::HttpsBinding {
+        listener: https_listener,
+        public_port: Arc::new(std::sync::atomic::AtomicU16::new(8443)),
+        cert_store: Arc::new(StubCertStore),
+    };
+
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        let _ = ProxyServer::serve(
+            proxy_http_listener,
+            Some(https),
+            router,
+            Arc::new(StaticResolver {
+                backend: unreachable_backend(),
+            }),
+            Arc::new(NoLoginTokens),
+            None,
+            Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
+            false,
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
+        .await;
+    });
+
+    let (status, headers) = client_get_headers(proxy_http_addr, "reverb.test", "/").await;
+    assert_eq!(status, 301);
+    assert_single_header(&headers, "access-control-allow-origin", "*");
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
 // ─── Hyper client helpers ───────────────────────────────────────────
 
 async fn client_get(addr: SocketAddr, host: &str, path: &str) -> Vec<u8> {

@@ -1,7 +1,7 @@
-//! Pure per-site custom response headers.
+//! Pure custom response headers for sites and whole-host proxies.
 //!
 //! A [`ResponseHeader`] is a name and value the proxy sets on every response it
-//! produces for a PHP site, replacing any same-named header the response already
+//! produces for a PHP site or whole-host proxy, replacing any same-named header the response already
 //! carried. Like [`RouteRule`](crate::RouteRule) it is pure data with no serde
 //! impls: `yerd-config` and `yerd-ipc` own their own wire structs.
 //!
@@ -33,7 +33,7 @@ const RESERVED_NAMES: &[&str] = &[
     "location",
 ];
 
-/// A custom response header attached to a PHP site.
+/// A custom response header attached to a PHP site or whole-host proxy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResponseHeader {
     name: String,

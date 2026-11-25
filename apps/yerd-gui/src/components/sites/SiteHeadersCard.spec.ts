@@ -131,4 +131,24 @@ describe("SiteHeadersCard", () => {
     expect(dialog.props("open")).toBe(false);
     expect(dialog.props("editing")).toBeNull();
   });
+
+  it("manages a whole-host proxy's headers by name and words the dialog for a proxy", async () => {
+    listResponseHeaders.mockResolvedValue([
+      header("reverb", "Access-Control-Allow-Origin", "*"),
+      header("api", "X-Frame-Options", "DENY"),
+    ]);
+    const w = mount(SiteHeadersCard, { props: { site: { name: "reverb" }, proxy: true } });
+    await flushPromises();
+    expect(rows(w)).toEqual(["Access-Control-Allow-Origin*"]);
+    expect(w.findComponent(HeaderDialog).props("proxy")).toBe(true);
+
+    await w.findAll("button").find((b) => b.text().includes("Add header"))!.trigger("click");
+    w.findComponent(HeaderDialog).vm.$emit("submit", "X-Powered-By", "yerd");
+    await flushPromises();
+    expect(setResponseHeader).toHaveBeenCalledWith("reverb", "X-Powered-By", "yerd");
+
+    await w.get('[aria-label="Remove header Access-Control-Allow-Origin"]').trigger("click");
+    await flushPromises();
+    expect(removeResponseHeader).toHaveBeenCalledWith("reverb", "Access-Control-Allow-Origin");
+  });
 });
