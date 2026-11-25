@@ -784,16 +784,28 @@ pub enum ServiceAction {
 /// Action of `yerd tunnel`.
 #[derive(clap::Subcommand, Debug, Clone)]
 pub enum TunnelAction {
-    /// Share a site publicly via a Quick Tunnel (a random `*.trycloudflare.com`
-    /// URL). Requires `cloudflared` (`yerd install tool cloudflared`).
+    /// Share a site publicly through a tunnel provider: a Cloudflare quick
+    /// link (a random `*.trycloudflare.com` URL), ngrok, or zrok. Without
+    /// `--provider` the default provider is used (`yerd tunnel default`).
     Share {
         /// Site name (e.g. `app` or `app.test`).
         site: String,
+        /// The provider to share through.
+        #[arg(long, value_enum)]
+        provider: Option<TunnelProviderArg>,
+        /// ngrok only: ignore the configured static domain and let ngrok pick
+        /// the URL.
+        #[arg(long)]
+        random_url: bool,
     },
-    /// Stop sharing a site.
+    /// Stop sharing a site. Without `--provider` every share of the site is
+    /// stopped, except its own-domain (named tunnel) mapping.
     Stop {
-        /// Site name whose tunnel to stop.
+        /// Site name whose share to stop.
         site: String,
+        /// Stop only the share through this provider.
+        #[arg(long, value_enum)]
+        provider: Option<TunnelProviderArg>,
     },
     /// Show live tunnels and `cloudflared` install status.
     Status,
@@ -909,7 +921,8 @@ pub enum ZrokAction {
     Disable,
 }
 
-/// A tunnel provider argument (`yerd tunnel default <provider>`).
+/// A tunnel provider argument (`yerd tunnel default <provider>`,
+/// `--provider`).
 #[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TunnelProviderArg {
     /// Cloudflare Tunnel.
@@ -1447,6 +1460,53 @@ mod tests {
                 }
             }
         ));
+    }
+
+    #[test]
+    fn tunnel_share_and_stop_take_a_provider() {
+        let cli = parse(&[
+            "yerd",
+            "tunnel",
+            "share",
+            "app",
+            "--provider",
+            "ngrok",
+            "--random-url",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Command::Tunnel {
+                action: TunnelAction::Share {
+                    provider: Some(TunnelProviderArg::Ngrok),
+                    random_url: true,
+                    ..
+                }
+            }
+        ));
+        let cli = parse(&["yerd", "tunnel", "stop", "app", "--provider", "zrok"]);
+        assert!(matches!(
+            cli.command,
+            Command::Tunnel {
+                action: TunnelAction::Stop {
+                    provider: Some(TunnelProviderArg::Zrok),
+                    ..
+                }
+            }
+        ));
+        let cli = parse(&["yerd", "tunnel", "share", "app"]);
+        assert!(matches!(
+            cli.command,
+            Command::Tunnel {
+                action: TunnelAction::Share {
+                    provider: None,
+                    random_url: false,
+                    ..
+                }
+            }
+        ));
+        assert!(
+            Cli::try_parse_from(["yerd", "tunnel", "share", "app", "--provider", "bogus"]).is_err()
+        );
     }
 
     #[test]

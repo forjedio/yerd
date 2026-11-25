@@ -2,15 +2,18 @@
 
 Yerd can **publish a local site to the public internet** over a secure HTTPS URL,
 so you can share work in progress, test a webhook, or demo from your own machine
-without deploying anything. It works through [Cloudflare
-Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
-(`cloudflared`): the connection is **outbound-only** - no inbound ports, no
-router config, no `sudo` - which fits Yerd's rootless model.
+without deploying anything. It works through a tunnel provider:
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+(`cloudflared`), [ngrok](https://ngrok.com) or [zrok](https://zrok.io). Every
+connection is **outbound-only** - no inbound ports, no router config, no `sudo` -
+which fits Yerd's rootless model.
 
 Sharing is opt-in and per-site. A site is never reachable from the internet until
-you explicitly share it.
+you explicitly share it. A site can be shared through **several providers at
+once**: each share gets its own public URL, and stopping one leaves the others
+running.
 
-There are two tiers, and you can use either:
+Cloudflare has two tiers, and you can use either:
 
 - **Quick share** - one click gives you a random `https://<name>.trycloudflare.com`
   URL. No Cloudflare account, no config, nothing to set up. Best for a quick
@@ -45,7 +48,7 @@ it is on your `PATH` after `yerd path install`. Yerd's copy is used ahead of one
 on your `PATH`. Updates show up in **Tooling** like any other tool (re-run
 `yerd install tool cloudflared` to update from the CLI), and
 `yerd uninstall tool cloudflared` removes it; uninstalling is refused while a
-tunnel is running and keeps your Cloudflare login and tunnels.
+Cloudflare tunnel is running and keeps your Cloudflare login and tunnels.
 
 In the desktop app, install, update and uninstall `cloudflared` from
 **Tooling**. The **Share** page links there the first time you visit, and the
@@ -142,11 +145,18 @@ The fastest way to put a site online:
 
 ```sh
 yerd tunnel share app        # -> https://calm-river-1234.trycloudflare.com
-yerd tunnel status           # see live tunnels and their URLs
+yerd tunnel status           # see live shares, their provider and URLs
 yerd tunnel stop app         # take it back offline
 ```
 
-`share` waits until Cloudflare's edge reports the tunnel online and then prints
+`share` uses the [default provider](#default-provider) (Cloudflare unless you
+changed it); `--provider cloudflare|ngrok|zrok` picks another one. A provider
+that isn't ready is an error that says what to set up; Yerd never falls back to
+a different provider. `stop` without `--provider` stops every share of the
+site (its own-domain mapping is left alone); with `--provider` it stops only
+that one.
+
+`share` waits until the provider reports the share online and then prints
 the URL. If it can't come online (for example, no network), the share is stopped
 and the command fails with the reason, so a share reported as failed never goes
 live later.
@@ -167,6 +177,52 @@ That's your machine's DNS resolver, not Yerd - some ISP resolvers don't resolve
 fresh `*.trycloudflare.com` names. Point your system DNS at `1.1.1.1` or
 `8.8.8.8` and the URL resolves immediately.
 :::
+
+## Share through ngrok
+
+```sh
+yerd tunnel share app --provider ngrok                 # your static domain, if saved
+yerd tunnel share blog --provider ngrok --random-url   # let ngrok pick the address
+yerd tunnel stop app --provider ngrok
+```
+
+- Install ngrok from **Tooling** (or `yerd install tool ngrok`). A copy on your
+  `PATH` works too, but it must be **ngrok 3.16.0 or newer** to use a static
+  domain (older agents don't know the `--url` flag).
+- Save your authtoken in the **Providers** sheet (or `yerd tunnel ngrok token`).
+- With a [static domain](#ngrok) saved, shares use it unless you ask for a
+  **random URL**. Only one share can hold the static domain at a time; the
+  desktop app disables it while another site's share uses it, and from the CLI
+  ngrok's own error tells you, so share the second site with `--random-url`.
+  Without a static domain, ngrok picks the address (on free plans, your
+  account's dev domain).
+- Free plans limit how many agents can run at once, so a second ngrok share may
+  fail with ngrok's own error (for example `ERR_NGROK_108`). Yerd shows that
+  error as-is.
+- ngrok's free plan shows browsers a one-time warning page before your site;
+  webhooks and API clients aren't affected.
+- ngrok's local web inspector (port 4040) is turned off for Yerd's shares, so
+  several agents never compete for it.
+
+## Share through zrok
+
+```sh
+yerd tunnel share app --provider zrok
+yerd tunnel stop app --provider zrok
+```
+
+- Install zrok from **Tooling** and [enable this machine](#zrok) first. Until
+  then a zrok share is refused with a pointer to `yerd tunnel zrok enable`.
+- Each zrok share is a public share with a **new URL every time it starts**.
+- Stopping a share deletes it from your zrok account. A share that had to be
+  killed hard (it ignored the stop signal for five seconds) can linger in the
+  zrok console until zrok expires it.
+- Disabling zrok is refused while a zrok share is running, and uninstalling
+  ngrok or zrok is refused while a share through it is running.
+
+Shares through ngrok and zrok are torn down when the daemon exits and are not
+resumed when it starts again. A changed [outbound proxy](./corporate-networks)
+applies to shares started after the change; restart a share to pick it up.
 
 ## Named tunnels
 
@@ -258,18 +314,26 @@ The [desktop app](./desktop-app) has a **Share** page in the sidebar (also
 reachable from the command palette). When any site is shared, the sidebar item
 shows a count.
 
-- The page lists your shares in two groups: **Quick links** and **Your domain**
-  (named after your Cloudflare zone). Each row shows the site, a status dot and
-  its public address. On a narrower window the list becomes a table (site,
-  type, public URL and status) and a share's details open in a drawer.
+- **Providers** cards at the top show each provider's status (Cloudflare
+  **Connected**, ngrok **Token saved**, zrok **Enabled**, or **Not installed** /
+  **Not set up**); **Manage** opens the Providers sheet.
+- Below them, **Shares** lists every share with the provider's icon, the site,
+  the provider and kind (Cloudflare **Quick link** or **Your domain**, ngrok
+  **Reserved domain** or **Random URL**, zrok **Public share**), a status dot
+  and its public address. The **All / Cloudflare / ngrok / zrok** filter narrows
+  the list. On a narrower window the list becomes a table (site, provider,
+  public URL and status) and a share's details open in a drawer.
 
   <ThemedImage light="/images/share-light.png" dark="/images/share-dark.png" alt="The Share page listing quick links and sites on your domain, with a password-protected quick link selected" />
 
-- Selecting a share shows its details: the **Public URL** with **Copy** and
-  **Open**, a **Type** / **Local site** / **Status** strip with the tunnel's state
-  (Connecting, Running, Reconnecting, Failed, retrying) and its last error, any
-  [preflight warnings](#preflight-warnings) in amber, and, for a quick link, a
-  note on its limits. A quick link has **Stop sharing**; a domain share has
+- Selecting a share shows its details: the provider badge, the **Public URL**
+  with **Copy** and **Open**, a **Provider** / **Local site** / **Status** strip
+  with the share's state (Connecting, Running, Reconnecting, Failed, retrying),
+  its last error and the binary in use, the site's other shares under **is also
+  shared** (each with **Open**) plus **Also share through** for the providers it
+  isn't shared through yet, any [preflight warnings](#preflight-warnings) in
+  amber, and notes on a Cloudflare quick link's limits or ngrok's browser
+  warning page. A per-site share has **Stop sharing**; a domain share has
   **Remove from domain**, plus **Start tunnel** when sites are exposed but no
   tunnel is running at all (for example after `yerd tunnel unpublish`) or
   **Restart tunnel** when it failed. A failed tunnel already retries on its own;
@@ -277,8 +341,13 @@ shows a count.
   never interrupted.
 - The key button sets or removes the share's [share
   password](#password-protection). Protected shares show a key icon in the list.
-- **Share a site** opens one dialog for both kinds: pick a site, then **Quick
-  link** or **Your domain**. For your domain the **Public hostname** is
+- **Share a site** opens one dialog: pick a site, a **Provider** (the default is
+  preselected; a provider that isn't ready offers **Set up**, which opens the
+  Providers sheet on it), then the URL. For ngrok with a static domain saved,
+  choose **Static domain** or **Random URL**. If the site is already shared
+  through another provider, a note says the new share adds a second public URL.
+  For Cloudflare choose **Quick link** or **Your domain**. For your domain the
+  **Public hostname** is
   pre-filled with `{site}.{your-domain}` and must stay on that domain; until
   Yerd knows your authorized domain the field stays empty and **Share** stays
   off. Sharing creates the DNS record and the daemon brings the tunnel up.
@@ -301,21 +370,24 @@ shows a count.
 
 ## How requests reach your site
 
-Both tunnel kinds connect to a dedicated, loopback-only listener inside the
-daemon rather than to the ports that serve `.test` traffic, so changing port
+Every tunnel, whatever the provider, connects to a dedicated, loopback-only
+listener inside the daemon rather than to the ports that serve `.test` traffic,
+so changing port
 redirects or [elevation](./elevation) while sharing doesn't break the tunnel.
 That listener looks up the **public** hostname, finds the site it belongs to,
 and serves it through the same pipeline as local requests (proxy rules, static
-files, route rules, PHP). A public hostname that isn't mapped to a site gets a
-`404`.
+files, route rules, PHP). Cloudflare, ngrok and zrok all forward the public
+hostname unchanged, so the same site and its [share
+password](#password-protection) apply on every provider. A public hostname that
+isn't mapped to a site gets a `404`.
 
 To your application, a tunnelled request looks like this:
 
 - `HTTP_HOST` and `SERVER_NAME` are the **public** hostname (for example
   `app.example.com` or `calm-river-1234.trycloudflare.com`), never the `.test`
   name, so URLs your app generates point at the public address.
-- `HTTPS=on` and `SERVER_PORT=443`, because visitors use HTTPS at Cloudflare's
-  edge. There is no HTTP-to-HTTPS redirect, and frameworks don't need
+- `HTTPS=on` and `SERVER_PORT=443`, because visitors use HTTPS at the
+  provider's edge. There is no HTTP-to-HTTPS redirect, and frameworks don't need
   `TrustProxies` configured to get the host and scheme right.
 - `REMOTE_ADDR` is `127.0.0.1` for every visitor.
 
@@ -362,8 +434,8 @@ yerd tunnel password app 's3cret'   # protect app on every tunnel
 yerd tunnel password app --clear    # remove it
 ```
 
-- The password applies to the site on both quick and named tunnels, and takes
-  effect on the next request, without restarting anything.
+- The password applies to the site on every share (quick, named, ngrok and
+  zrok), and takes effect on the next request, without restarting anything.
 - Local `.test` access is never prompted.
 - Yerd checks the password itself and strips the `Authorization` header before
   the request reaches PHP. While a share is protected, your app never receives
@@ -412,14 +484,21 @@ those in the Cloudflare dashboard if you no longer want them.
 
 ## How it stays safe
 
-- `cloudflared` runs **unprivileged**, as the daemon user. Sharing never invokes
+- Every tunnel agent runs **unprivileged**, as the daemon user. Sharing never invokes
   the privileged helper and never opens a public listening port - the tunnel
   dials out, and the origin listener it connects to is bound to `127.0.0.1`
   only.
 - The account certificate and per-tunnel credentials live in a daemon-owned `0700`
   directory; the desktop app never reads them.
-- Nothing is shared until you ask, and quick tunnels are torn down on daemon
-  shutdown.
+- Nothing is shared until you ask, and quick tunnels, ngrok and zrok shares are
+  torn down on daemon shutdown.
+- The ngrok authtoken is handed to ngrok only as `NGROK_AUTHTOKEN`, never on its
+  command line, and Yerd runs ngrok with its own config file, so your
+  `ngrok.yml` is never read. If ngrok echoes the token in an error, Yerd
+  replaces it with `***` in the reported error and in the share's log when the
+  share fails, crashes or stops. A share that keeps running after echoing it
+  (say, after the token was revoked) keeps it in its log, which only your user
+  can read, until the share stops.
 
 ## Command reference
 

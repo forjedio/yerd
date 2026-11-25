@@ -1220,6 +1220,8 @@ mod variant_name_pinning {
                 last_error: None,
                 protected: false,
                 warnings: Vec::new(),
+                provider: yerd_core::tunnel_provider::TunnelProvider::Cloudflare,
+                static_domain: false,
             }],
             cloudflared: crate::status::CloudflaredStatus {
                 installed: true,

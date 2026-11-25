@@ -20,7 +20,14 @@ import IntegrationsView from "./IntegrationsView.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { resetResourceCache } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
-import type { CloudflaredStatus, SiteEntry, SiteHostname, StatusReport, TunnelInfo } from "@/ipc/types";
+import type {
+  CloudflaredStatus,
+  SiteEntry,
+  SiteHostname,
+  StatusReport,
+  TunnelInfo,
+  TunnelProviderStatus,
+} from "@/ipc/types";
 
 function site(name: string): SiteEntry {
   return {
@@ -43,7 +50,11 @@ interface StubOpts {
   routeDns?: () => Promise<unknown>;
   stop?: () => Promise<unknown>;
   jobStates?: ("running" | "succeeded")[];
+  providers?: TunnelProviderStatus[];
 }
+
+const NGROK_READY: TunnelProviderStatus = { provider: "ngrok", readiness: "ready", configured: true };
+const ZROK_SETUP: TunnelProviderStatus = { provider: "zrok", readiness: "needs_setup", configured: false };
 
 /** A default mock: the given tunnels and named sites, `ok` for every mutation, and
  *  a reject for anything unexpected so a wrong wire call is loud. */
@@ -69,12 +80,15 @@ function stubIpc(opts: StubOpts = {}) {
         });
       case "start_named_tunnel":
         return Promise.resolve({ type: "tunnels", tunnels, cloudflared });
-      case "start_quick_tunnel":
+      case "start_quick_tunnel": {
+        const provider = (args?.provider as string | null) ?? "cloudflare";
+        const url = provider === "ngrok" ? "https://x.ngrok-free.app" : "https://x.trycloudflare.com";
         return Promise.resolve({
           type: "tunnels",
-          tunnels: [{ site: args?.site, kind: "quick", state: "running", url: "https://x.trycloudflare.com" }],
+          tunnels: [{ site: args?.site, kind: "quick", state: "running", url, provider }],
           cloudflared,
         });
+      }
       case "stop_tunnel":
         return opts.stop?.() ?? Promise.resolve({ type: "tunnels", tunnels: [], cloudflared });
       case "cloudflared_login":
@@ -99,7 +113,13 @@ function stubIpc(opts: StubOpts = {}) {
       case "list_tunnel_providers":
         return Promise.resolve({
           type: "tunnel_providers",
-          providers: [{ provider: "cloudflare", readiness: "ready", configured: true }],
+          providers: opts.providers ?? [
+            {
+              provider: "cloudflare",
+              readiness: cloudflared.installed ? "ready" : "not_installed",
+              configured: cloudflared.logged_in,
+            },
+          ],
           default_provider: "cloudflare",
         });
       default:
@@ -216,14 +236,20 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+function rowKeys(): string[] {
+  return Array.from(document.querySelectorAll('[data-testid="share-list"] [data-key]')).map(
+    (r) => r.getAttribute("data-key") ?? "",
+  );
+}
+
 describe("IntegrationsView list", () => {
-  it("groups quick and domain shares and selects the first on a wide window", async () => {
+  it("lists quick and domain shares by site and selects the first on a wide window", async () => {
     stubIpc({ tunnels: [quick("running"), named("running")], named: [{ site: "blog", hostname: "blog.example.com" }] });
     await mountView();
-    const sections = Array.from(document.querySelectorAll("[data-section]"));
-    expect(sections.map((s) => s.getAttribute("aria-label"))).toEqual(["Quick links", "Your domain · example.com"]);
-    expect(document.querySelector('[aria-current="true"]')?.getAttribute("data-key")).toBe("quick:app");
+    expect(rowKeys()).toEqual(["cloudflare:quick:app", "cloudflare:domain:blog"]);
+    expect(document.querySelector('[aria-current="true"]')?.getAttribute("data-key")).toBe("cloudflare:quick:app");
     expect(inspector()?.textContent).toContain("Stop sharing");
+    expect(document.querySelector('[data-testid="provider-card-cloudflare"]')?.textContent).toContain("Connected");
   });
 
   it("opens the compact drawer on a row click and closes it", async () => {
@@ -231,7 +257,7 @@ describe("IntegrationsView list", () => {
     stubIpc({ tunnels: [quick("running")] });
     await mountView();
     expect(inspector()).toBeNull();
-    await click(document.querySelector('[data-key="quick:app"]'));
+    await click(document.querySelector('[data-key="cloudflare:quick:app"]'));
     expect(inspector()).not.toBeNull();
     await click(document.querySelector('[aria-label="Close share details"]'));
     expect(inspector()).toBeNull();
@@ -246,10 +272,10 @@ describe("IntegrationsView list", () => {
 });
 
 describe("IntegrationsView empty states", () => {
-  it("points to Tooling when cloudflared is missing", async () => {
+  it("points to Tooling when no provider is installed", async () => {
     stubIpc({ cloudflared: { installed: false, logged_in: false } });
     await mountView();
-    expect(document.body.textContent).toContain("Sharing needs cloudflared");
+    expect(document.body.textContent).toContain("Sharing needs a tunnel provider");
     await click(buttonByText("Open Tooling"));
     expect(push).toHaveBeenCalledWith("/tooling");
     expect(calls("install_cloudflared_streamed")).toHaveLength(0);
@@ -274,12 +300,12 @@ describe("IntegrationsView sharing", () => {
     await click(document.querySelector('[data-option="app"]'));
     await click(document.querySelector('[data-testid="share-submit"]'));
 
-    expect(calls("start_quick_tunnel")).toEqual([{ site: "app" }]);
+    expect(calls("start_quick_tunnel")).toEqual([{ site: "app", provider: "cloudflare", randomUrl: false }]);
     expect(useToast().toasts.value.find((t) => t.title === "Sharing app")?.detail).toBe(
       "https://x.trycloudflare.com",
     );
     expect(dialogTitles()).not.toContain("Share a site");
-    expect(inspector()?.querySelector('[data-testid="share-chip"]')?.textContent?.trim()).toBe("Quick link");
+    expect(inspector()?.querySelector('[data-testid="share-chip"]')?.textContent?.trim()).toBe("CLOUDFLARE");
   });
 
   it("exposes a site by saving the hostname then routing DNS, never starting the tunnel", async () => {
@@ -318,7 +344,7 @@ describe("IntegrationsView sharing", () => {
     stubIpc({ tunnels: [quick("running")] });
     await mountView();
     await click(inspector()?.querySelector('[data-action="stop"]') ?? null);
-    expect(calls("stop_tunnel")).toEqual([{ site: "app" }]);
+    expect(calls("stop_tunnel")).toEqual([{ site: "app", provider: "cloudflare" }]);
   });
 
   it("removing a site from the domain only clears its hostname", async () => {
@@ -347,6 +373,64 @@ describe("IntegrationsView sharing", () => {
     expect(share.disabled).toBe(false);
     await click(inspector()?.querySelector('[data-action="stop"]') ?? null);
     expect(share.disabled).toBe(true);
+  });
+});
+
+describe("IntegrationsView providers", () => {
+  const both = () => [quick("running"), quick("running", { provider: "ngrok", url: "https://x.ngrok-free.app" })];
+  const providers = (): TunnelProviderStatus[] => [
+    { provider: "cloudflare", readiness: "ready", configured: true },
+    NGROK_READY,
+    ZROK_SETUP,
+  ];
+
+  it("lists one row per provider share and filters them", async () => {
+    stubIpc({ tunnels: both(), providers: providers() });
+    await mountView();
+    expect(rowKeys()).toEqual(["cloudflare:quick:app", "ngrok:quick:app"]);
+    const ngrok = Array.from(document.querySelectorAll('[role="radio"]')).find((b) => b.textContent?.trim() === "ngrok");
+    await click(ngrok ?? null);
+    expect(rowKeys()).toEqual(["ngrok:quick:app"]);
+  });
+
+  it("stops only the ngrok share from its row", async () => {
+    stubIpc({ tunnels: both(), providers: providers() });
+    await mountView();
+    await click(document.querySelector('[data-key="ngrok:quick:app"]'));
+    expect(inspector()?.querySelector('[data-testid="share-chip"]')?.textContent?.trim()).toBe("NGROK");
+    await click(inspector()?.querySelector('[data-action="stop"]') ?? null);
+    expect(calls("stop_tunnel")).toEqual([{ site: "app", provider: "ngrok" }]);
+  });
+
+  it("shares through ngrok from the dialog", async () => {
+    stubIpc({ providers: providers() });
+    await mountView();
+    await openShareDialog();
+    await click(document.querySelector('[data-provider="ngrok"]'));
+    await click(document.querySelector('[data-option="app"]'));
+    await click(document.querySelector('[data-testid="share-submit"]'));
+    expect(calls("start_quick_tunnel")).toEqual([{ site: "app", provider: "ngrok", randomUrl: false }]);
+    expect(document.querySelector('[aria-current="true"]')?.getAttribute("data-key")).toBe("ngrok:quick:app");
+  });
+
+  it("opens the providers sheet on zrok from Set up zrok", async () => {
+    stubIpc({ providers: providers() });
+    await mountView();
+    await openShareDialog();
+    await click(document.querySelector('[data-provider="zrok"]'));
+    await click(document.querySelector('[data-testid="provider-setup"]'));
+    expect(dialogTitles()).not.toContain("Share a site");
+    expect(document.querySelector('[data-testid="provider-zrok"]')?.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("shows the also-shared card in the compact drawer", async () => {
+    setWide(false);
+    stubIpc({ tunnels: both(), providers: providers() });
+    await mountView();
+    await click(document.querySelector('[data-key="ngrok:quick:app"]'));
+    const also = inspector()?.querySelector('[data-testid="share-also"]');
+    expect(also?.querySelector('[data-sibling="cloudflare:quick:app"]')).not.toBeNull();
+    expect(also?.querySelector('[data-also="zrok"]')?.textContent).toContain("needs set up");
   });
 });
 

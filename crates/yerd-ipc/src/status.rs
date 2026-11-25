@@ -753,13 +753,17 @@ pub struct FixResult {
     pub message: String,
 }
 
-/// Which Cloudflare Tunnel tier a published site uses. Wire-level mirror of
-/// `yerd_tunnel::TunnelKind` (this crate stays free of that dependency).
+/// Which kind of share a tunnel entry is. Wire-level mirror of the Cloudflare
+/// variants of `yerd_tunnel::TunnelKind` (this crate stays free of that
+/// dependency). ngrok and zrok shares report `quick` with their
+/// [`TunnelInfo::provider`] set, since a new variant would break older
+/// clients' deserialisation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum TunnelKind {
-    /// Ephemeral `*.trycloudflare.com` tunnel (no account).
+    /// A per-site share: an ephemeral `*.trycloudflare.com` tunnel (no
+    /// account), or an ngrok or zrok share.
     Quick,
     /// Named tunnel on the user's Cloudflare domain (stable hostname).
     Named,
@@ -770,7 +774,7 @@ pub enum TunnelKind {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum TunnelRunState {
-    /// The `cloudflared` process is alive and connected to the Cloudflare edge.
+    /// The tunnel process is alive and connected to its provider's edge.
     Running,
     /// The process has exited unexpectedly. A supervised tunnel stays in this
     /// state while a restart is pending.
@@ -787,13 +791,13 @@ pub enum TunnelRunState {
 pub struct TunnelInfo {
     /// The site the tunnel publishes.
     pub site: String,
-    /// Quick vs Named.
+    /// Quick (any per-site share) vs Named.
     pub kind: TunnelKind,
     /// Edge health: connecting (never online yet), running (online),
     /// reconnecting (was online, now restarting or edge lost), or failed (the
     /// process exited and a restart is pending).
     pub state: TunnelRunState,
-    /// The public URL (Quick tunnels) once captured.
+    /// The public URL (per-site shares) once captured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// A public hostname for this entry. The daemon currently leaves it unset:
@@ -809,6 +813,19 @@ pub struct TunnelInfo {
     /// Non-blocking preflight warnings computed when the share started.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// The provider serving this share; omitted for Cloudflare, so an absent
+    /// field means Cloudflare.
+    #[serde(default, skip_serializing_if = "is_cloudflare")]
+    pub provider: TunnelProvider,
+    /// Whether an ngrok share serves the configured static domain; omitted
+    /// when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub static_domain: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_cloudflare(provider: &TunnelProvider) -> bool {
+    *provider == TunnelProvider::Cloudflare
 }
 
 /// One named tunnel recorded on the account, for

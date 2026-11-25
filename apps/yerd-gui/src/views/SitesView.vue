@@ -67,11 +67,13 @@ import {
   setWordpressAutoLogin,
   setFrontController,
   sitesAndParked,
+  listTunnelProviders,
   startQuickTunnel,
   unlink,
   unpark,
 } from "@/ipc/client";
 import type { GroupsState, Site, SiteEntry } from "@/ipc/types";
+import { siteShare } from "@/lib/share";
 
 const toast = useToast();
 const operations = useOperations();
@@ -793,8 +795,11 @@ const sharing = ref<string | null>(null);
 async function shareSitePublicly(s: Site): Promise<void> {
   sharing.value = s.name;
   try {
-    const r = await startQuickTunnel(s.name);
-    const entry = r.tunnels.find((t) => t.site === s.name);
+    const provider = await listTunnelProviders()
+      .then((p) => p.default_provider)
+      .catch(() => undefined);
+    const r = await startQuickTunnel(s.name, provider);
+    const entry = siteShare(r.tunnels, s.name, provider);
     const url = entry?.url;
     if (url) {
       const copied = await navigator.clipboard

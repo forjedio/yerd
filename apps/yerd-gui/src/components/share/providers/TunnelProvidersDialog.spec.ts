@@ -19,7 +19,7 @@ vi.mock("@/ipc/client", () => ({
 
 import TunnelProvidersDialog from "./TunnelProvidersDialog.vue";
 import { useToast } from "@/composables/useToast";
-import type { CloudflaredStatus, NamedTunnelMeta, TunnelProvidersResponse } from "@/ipc/types";
+import type { CloudflaredStatus, NamedTunnelMeta, TunnelProvider, TunnelProvidersResponse } from "@/ipc/types";
 
 const Pass = { template: "<div><slot /></div>" };
 const TOKEN = "zrokAccountToken123";
@@ -38,7 +38,9 @@ function reply(): TunnelProvidersResponse {
   };
 }
 
-async function mountDialog(extra: { cloudflared?: CloudflaredStatus; tunnel?: NamedTunnelMeta } = {}) {
+async function mountDialog(
+  extra: { cloudflared?: CloudflaredStatus; tunnel?: NamedTunnelMeta; initial?: TunnelProvider } = {},
+) {
   const wrapper = mount(TunnelProvidersDialog, {
     attachTo: document.body,
     props: {
@@ -101,6 +103,12 @@ describe("TunnelProvidersDialog", () => {
     expect(el('[data-testid="provider-ngrok"]').textContent).toContain("Needs setup");
     expect(el('[data-testid="provider-zrok"]').textContent).toContain("Not installed");
     expect(el('[data-testid="setup-account"]')).not.toBeNull();
+  });
+
+  it("opens on the provider it was asked for", async () => {
+    await mountDialog({ initial: "zrok" });
+    expect(el('[data-testid="provider-zrok"]').getAttribute("aria-pressed")).toBe("true");
+    expect(el('[data-testid="setup-account"]')).toBeNull();
   });
 
   it("shows the ngrok pane when ngrok is selected", async () => {

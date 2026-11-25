@@ -742,18 +742,32 @@ pub enum Request {
     /// [`super::Response::JobStarted`] immediately; progress is polled via
     /// [`Self::JobStatus`].
     InstallCloudflaredStreamed,
-    /// Start a Quick Tunnel for a site, publishing it at a random
-    /// `*.trycloudflare.com` URL. Replies [`super::Response::Tunnels`] with the
-    /// live tunnel (including its URL once captured). Requires `cloudflared` to be
-    /// installed.
+    /// Share a site through a tunnel provider: a Cloudflare Quick Tunnel at a
+    /// random `*.trycloudflare.com` URL, an ngrok share, or a zrok public
+    /// share. Replies [`super::Response::Tunnels`] with the live tunnels
+    /// (including this share's URL once captured). Requires the provider to be
+    /// installed and set up.
     StartQuickTunnel {
         /// The site name to share.
         site: String,
+        /// The provider to share through; absent means the configured default
+        /// provider.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<TunnelProvider>,
+        /// ngrok only: ignore the configured static domain and let ngrok pick
+        /// the URL.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        random_url: bool,
     },
-    /// Stop and tear down the tunnel for a site. No-op if none is running.
+    /// Stop and tear down a site's share. No-op if none is running.
     StopTunnel {
-        /// The site whose tunnel to stop.
+        /// The site whose share to stop.
         site: String,
+        /// The provider whose share to stop; absent stops every per-site share
+        /// of the site (Cloudflare quick link, ngrok, zrok). The site's
+        /// named-tunnel mapping is never touched.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<TunnelProvider>,
     },
     /// Fetch the live tunnel state plus `cloudflared` install status. Returns
     /// [`super::Response::Tunnels`].
@@ -1457,8 +1471,24 @@ mod variant_name_pinning {
         });
         pin(Request::StageUpdate { channel: None });
         pin(Request::InstallCloudflaredStreamed);
-        pin(Request::StartQuickTunnel { site: "app".into() });
-        pin(Request::StopTunnel { site: "app".into() });
+        pin(Request::StartQuickTunnel {
+            site: "app".into(),
+            provider: None,
+            random_url: false,
+        });
+        pin(Request::StartQuickTunnel {
+            site: "app".into(),
+            provider: Some(TunnelProvider::Ngrok),
+            random_url: true,
+        });
+        pin(Request::StopTunnel {
+            site: "app".into(),
+            provider: None,
+        });
+        pin(Request::StopTunnel {
+            site: "app".into(),
+            provider: Some(TunnelProvider::Zrok),
+        });
         pin(Request::TunnelStatus);
         pin(Request::CloudflaredLogin);
         pin(Request::CreateNamedTunnel {

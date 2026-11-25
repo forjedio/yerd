@@ -6,6 +6,8 @@ import {
   DEFAULT_OPTIONS,
   needsTooling,
   PROVIDER_ORDER,
+  providerCardDot,
+  providerCardStatus,
   providerName,
   readinessDot,
   readinessLabel,
@@ -56,6 +58,18 @@ describe("providers", () => {
     [status({ source: "managed" }), false],
   ])("needs Tooling %#", (s, expected) => {
     expect(needsTooling(s)).toBe(expected);
+  });
+
+  it.each([
+    [status({ provider: "cloudflare", configured: true }), "Connected", "bg-success"],
+    [status({ provider: "cloudflare", configured: false }), "Ready", "bg-success"],
+    [status({ provider: "ngrok" }), "Token saved", "bg-success"],
+    [status({ provider: "zrok" }), "Enabled", "bg-success"],
+    [status({ provider: "zrok", readiness: "needs_setup", configured: false }), "Not set up", "bg-warning"],
+    [status({ provider: "ngrok", readiness: "not_installed", configured: true }), "Not installed", "bg-warning"],
+  ])("provider card status %#", (s, label, dot) => {
+    expect(providerCardStatus(s)).toBe(label);
+    expect(providerCardDot(s)).toBe(dot);
   });
 
   it("offers every provider as a default", () => {

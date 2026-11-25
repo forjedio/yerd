@@ -1,5 +1,6 @@
 //! `TunnelManager` drives the shared `yerd-supervise` state machine for one
-//! supervised `cloudflared` child per key, doing the real I/O.
+//! supervised tunnel child (`cloudflared`, ngrok or zrok) per key, doing the
+//! real I/O.
 //!
 //! Differs from `yerd_services::ServiceManager` in one important way: a tunnel's
 //! readiness can take tens of seconds (a cold edge connect), and the whole
@@ -12,7 +13,9 @@
 //! `StopTunnel`/`TunnelStatus`/shutdown stay responsive.
 //!
 //! Supervision is continuous: once `Running`, every tick checks the child is
-//! still alive and asks the driver to probe `cloudflared`'s `/ready` endpoint.
+//! still alive and, for the Cloudflare kinds, asks the driver to probe
+//! `cloudflared`'s `/ready` endpoint. ngrok and zrok have no probe: they are
+//! ready once their public URL is in the log and then running while alive.
 //! The probe never runs under the lock: `advance` returns [`Step::Probe`] with
 //! the metrics address, the driver probes with the lock released, and then feeds
 //! the result back through [`record_probe`](TunnelManager::record_probe). A crash
@@ -24,11 +27,16 @@
 //! was started with and report [`Step::Gone`] for any other, so a stale driver
 //! left over from a stop and re-start can never act on its replacement.
 //!
-//! The metrics address is picked fresh on every spawn (through
-//! [`LaunchSpec::metrics_addr`]) and handed to the child as `TUNNEL_METRICS`, so
-//! a port taken by another process costs one failed attempt, not a crash loop.
-//! A pidfile is written per spawn and removed on stop, so the daemon can reap a
-//! `cloudflared` orphaned by a daemon crash.
+//! For the Cloudflare kinds the metrics address is picked fresh on every spawn
+//! (through [`LaunchSpec::metrics_addr`]) and handed to the child as
+//! `TUNNEL_METRICS`, so a port taken by another process costs one failed
+//! attempt, not a crash loop. A pidfile is written per spawn and removed on
+//! stop, so the daemon can reap a tunnel child orphaned by a daemon crash.
+//!
+//! ngrok may echo its authtoken in an authentication error, so for an instance
+//! carrying [`NGROK_AUTHTOKEN_ENV`] the token is redacted from `last_error`,
+//! and its logfile is rewritten through [`redact`] whenever a crash, a
+//! readiness timeout or a stop is recorded.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -47,6 +55,10 @@ use yerd_supervise::{ChildHandle, Clock, ExitReason, ProcessSpawner};
 
 use crate::error::TunnelError;
 use crate::parse::{last_error_line, parse_quick_url};
+use crate::providers::{
+    last_ngrok_error, last_zrok_error, ngrok_static_domain, parse_ngrok_url, parse_zrok_url,
+    redact, NGROK_AUTHTOKEN_ENV,
+};
 use crate::TunnelKind;
 
 /// Floor between readiness checks while a tunnel is connecting.
@@ -61,29 +73,33 @@ const ERROR_TAIL_BYTES: u64 = 64 * 1024;
 /// The env var `cloudflared` reads its metrics server address from.
 const METRICS_ENV: &str = "TUNNEL_METRICS";
 
+/// Largest logfile [`redact_logfile`] rewrites; a bigger one is removed.
+const REDACT_LIMIT_BYTES: u64 = 1024 * 1024;
+
 /// Source of a fresh loopback metrics address, called once per spawn.
 pub type MetricsAddrSource = Arc<dyn Fn() -> std::io::Result<SocketAddr> + Send + Sync>;
 
-/// Everything needed to spawn one supervised `cloudflared` child: the binary,
-/// its argument vector, the pinned environment, the logfile its output is
+/// Everything needed to spawn one supervised tunnel child: the binary, its
+/// argument vector, the pinned environment, the logfile its output is
 /// redirected to, the per-spawn metrics address source, and its pidfile. Passed
 /// to [`TunnelManager::begin`].
 #[derive(Clone)]
 pub struct LaunchSpec {
-    /// Path to the `cloudflared` binary.
+    /// Path to the tunnel binary.
     pub binary: PathBuf,
     /// Argument vector (excluding the program name).
     pub args: Vec<OsString>,
     /// The child's complete environment: the inherited environment is cleared
-    /// before these are applied, so this is the only environment `cloudflared`
+    /// before these are applied, so this is the only environment the child
     /// sees (e.g. `HOME`, `TUNNEL_ORIGIN_CERT`, and any forwarded allowlist).
-    /// `TUNNEL_METRICS` is appended per spawn.
+    /// `TUNNEL_METRICS` is appended per spawn for the Cloudflare kinds.
     pub env: Vec<(OsString, OsString)>,
     /// Logfile the child's stdout+stderr are redirected to (and tailed for
     /// readiness and errors).
     pub logfile: PathBuf,
-    /// Called on every spawn for the metrics address passed as `TUNNEL_METRICS`
-    /// and probed for `/ready`.
+    /// Called on every spawn of a Cloudflare kind for the metrics address
+    /// passed as `TUNNEL_METRICS` and probed for `/ready`; never called for
+    /// ngrok or zrok.
     pub metrics_addr: MetricsAddrSource,
     /// Where the live child's PID is recorded (written per spawn, removed on
     /// stop) so a daemon crash's orphan can be reaped on the next start.
@@ -114,7 +130,8 @@ pub enum Step {
     /// then report the outcome through [`TunnelManager::record_probe`].
     Probe(SocketAddr),
     /// The tunnel just came up (returned once per `Starting` to `Running`
-    /// transition); a Quick tunnel's URL is captured. Read it via `snapshots`.
+    /// transition); a per-site share's URL is captured. Read it via
+    /// `snapshots`.
     Ready,
     /// The instance no longer exists, or belongs to a newer generation. Stop
     /// driving.
@@ -140,13 +157,14 @@ pub enum TunnelState {
 pub struct TunnelSnapshot {
     /// Supervisor key: the site name, or a reserved key for the named tunnel.
     pub site: String,
-    /// Quick vs Named.
+    /// What the instance serves.
     pub kind: TunnelKind,
     /// Reported health (see [`TunnelState`]).
     pub state: TunnelState,
     /// The process PID, when alive.
     pub pid: Option<u32>,
-    /// The public URL (Quick tunnels) once captured for the current spawn.
+    /// The public URL (every kind but Named) once captured for the current
+    /// spawn.
     pub url: Option<String>,
     /// The generation this instance was begun with.
     pub generation: u64,
@@ -190,7 +208,7 @@ struct Instance<Ch: ChildHandle> {
     metrics: Option<SocketAddr>,
 }
 
-/// Supervises local `cloudflared` tunnels, one instance per key.
+/// Supervises local tunnel children, one instance per key.
 pub struct TunnelManager<S, C>
 where
     S: ProcessSpawner,
@@ -391,7 +409,7 @@ where
         };
         match inst.state {
             PoolState::Starting { .. } => {
-                let ready = ok && (inst.kind == TunnelKind::Named || inst.url.is_some());
+                let ready = ok && (!inst.kind.needs_url() || inst.url.is_some());
                 if ready {
                     inst.pending = Event::HealthCheckOk;
                     inst.ever_ready = true;
@@ -436,18 +454,21 @@ where
     /// as `last_error` and fed to the FSM as a crash, so it backs off and retries
     /// instead of ending supervision.
     fn do_spawn(&mut self, site: &str) -> Step {
-        let Some((binary, args, env, logfile, metrics_addr)) = self.instances.get(site).map(|i| {
-            (
-                i.binary.clone(),
-                i.args.clone(),
-                i.env.clone(),
-                i.logfile.clone(),
-                Arc::clone(&i.metrics_addr),
-            )
-        }) else {
+        let Some((kind, binary, args, env, logfile, metrics_addr)) =
+            self.instances.get(site).map(|i| {
+                (
+                    i.kind,
+                    i.binary.clone(),
+                    i.args.clone(),
+                    i.env.clone(),
+                    i.logfile.clone(),
+                    Arc::clone(&i.metrics_addr),
+                )
+            })
+        else {
             return Step::Gone;
         };
-        let spawned = self.spawn_child(&binary, &args, env, &logfile, &*metrics_addr);
+        let spawned = self.spawn_child(kind, &binary, &args, env, &logfile, &*metrics_addr);
         let Some(inst) = self.instances.get_mut(site) else {
             return Step::Gone;
         };
@@ -458,7 +479,7 @@ where
             Ok((addr, child)) => {
                 let pid = child.id();
                 write_pidfile(&inst.pidfile, pid);
-                inst.metrics = Some(addr);
+                inst.metrics = addr;
                 inst.child = Some(child);
                 inst.pending = Event::SpawnSucceeded { pid };
             }
@@ -474,16 +495,25 @@ where
         Step::Continue
     }
 
+    /// Spawn one child of `kind`. Only the Cloudflare kinds get a metrics
+    /// address (and `TUNNEL_METRICS`); ngrok and zrok are spawned without one.
     fn spawn_child(
         &self,
+        kind: TunnelKind,
         binary: &Path,
         args: &[OsString],
         mut env: Vec<(OsString, OsString)>,
         logfile: &Path,
         metrics_addr: &(dyn Fn() -> std::io::Result<SocketAddr> + Send + Sync),
-    ) -> Result<(SocketAddr, S::Child), String> {
-        let addr = metrics_addr().map_err(|e| format!("could not pick a metrics address: {e}"))?;
-        env.push((METRICS_ENV.into(), addr.to_string().into()));
+    ) -> Result<(Option<SocketAddr>, S::Child), String> {
+        let addr = if kind.uses_ready_probe() {
+            let addr =
+                metrics_addr().map_err(|e| format!("could not pick a metrics address: {e}"))?;
+            env.push((METRICS_ENV.into(), addr.to_string().into()));
+            Some(addr)
+        } else {
+            None
+        };
         let cmd = build_cmd(binary, args, &env, logfile).map_err(|e| e.to_string())?;
         let child = self
             .spawner
@@ -493,9 +523,10 @@ where
     }
 
     /// `Action::HealthCheck` (while `Starting`): non-blocking. Check for a
-    /// crash, capture a Quick tunnel's URL from the log, then hand back a probe
-    /// once there is something to confirm. Never `await`s, so the lock-hold is
-    /// a file read.
+    /// crash and capture a per-site share's URL from the log. A Cloudflare kind
+    /// is then handed back for a probe once there is something to confirm; an
+    /// ngrok or zrok share comes up as soon as its URL is captured. Never
+    /// `await`s, so the lock-hold is a file read.
     fn do_health_check(&mut self, site: &str, state_since: Instant, now: Instant) -> Step {
         let Some(inst) = self.instances.get_mut(site) else {
             return Step::Gone;
@@ -504,10 +535,17 @@ where
             record_crash(inst, reason);
             return Step::Continue;
         }
-        if inst.kind == TunnelKind::Quick && inst.url.is_none() {
-            inst.url = parse_quick_url(&read_file_lossy(&inst.logfile));
+        if inst.kind.needs_url() && inst.url.is_none() {
+            inst.url = capture_url(inst.kind, &inst.args, &read_file_lossy(&inst.logfile));
         }
-        let can_be_ready = inst.kind == TunnelKind::Named || inst.url.is_some();
+        let can_be_ready = !inst.kind.needs_url() || inst.url.is_some();
+        if !inst.kind.uses_ready_probe() && can_be_ready {
+            inst.pending = Event::HealthCheckOk;
+            inst.ever_ready = true;
+            inst.edge_up = true;
+            inst.last_error = None;
+            return Step::Continue;
+        }
         if let (true, Some(addr)) = (can_be_ready, inst.metrics) {
             return Step::Probe(addr);
         }
@@ -530,8 +568,13 @@ where
         }
         let window = self.policy.health_check_window.as_secs();
         if let Some(i) = self.instances.get_mut(site) {
-            let base = format!("no Cloudflare edge connection within {window}s");
-            i.last_error = Some(with_log_error(base, &i.logfile));
+            let base = if i.kind.uses_ready_probe() {
+                format!("no Cloudflare edge connection within {window}s")
+            } else {
+                format!("no public URL from {} within {window}s", i.kind.program())
+            };
+            i.last_error = Some(with_log_error(base, i.kind, &i.logfile, &i.env));
+            redact_instance_log(i);
             i.child = None;
             i.edge_up = false;
             i.timed_out = true;
@@ -549,8 +592,8 @@ where
     }
 
     /// Stop the tunnel for `site`: SIGTERM, wait up to the stop grace, then
-    /// SIGKILL, drop the instance, and remove its pidfile. No-op if there is
-    /// none. A child that already exited, or vanished before the signal
+    /// SIGKILL, drop the instance, redact an ngrok token from its logfile, and
+    /// remove its pidfile. No-op if there is none. A child that already exited, or vanished before the signal
     /// landed (`ESRCH`), counts as stopped. Bounded by the stop grace. When
     /// signalling fails the pidfile is kept, so the next daemon start can
     /// still reap a child that may be running.
@@ -571,6 +614,7 @@ where
                 }
             }
         }
+        redact_instance_log(&inst);
         let _ = std::fs::remove_file(&inst.pidfile);
         Ok(())
     }
@@ -679,24 +723,95 @@ fn child_exit<Ch: ChildHandle>(child: Option<&mut Ch>) -> Option<ExitReason> {
 }
 
 /// Record an observed exit: drop the child, note the reason plus the log's last
-/// error line, and feed `Crashed` to the FSM.
+/// error line, redact an ngrok token from the logfile, and feed `Crashed` to
+/// the FSM.
 fn record_crash<Ch: ChildHandle>(inst: &mut Instance<Ch>, reason: ExitReason) {
     inst.child = None;
     inst.edge_up = false;
     inst.last_error = Some(with_log_error(
-        format!("cloudflared exited ({reason})"),
+        format!("{} exited ({reason})", inst.kind.program()),
+        inst.kind,
         &inst.logfile,
+        &inst.env,
     ));
+    redact_instance_log(inst);
     inst.pending = Event::Crashed { reason };
 }
 
-/// `base`, followed by the last `ERR` line of `logfile` when there is one.
+/// The public URL `kind` reports in `log`, if it has printed one yet.
+fn capture_url(kind: TunnelKind, args: &[OsString], log: &str) -> Option<String> {
+    match kind {
+        TunnelKind::Quick => parse_quick_url(log),
+        TunnelKind::Ngrok { .. } => parse_ngrok_url(log, ngrok_static_domain(args).as_deref()),
+        TunnelKind::Zrok => parse_zrok_url(log),
+        TunnelKind::Named => None,
+    }
+}
+
+/// `base`, followed by the last error line of `logfile` when there is one, in
+/// the format `kind`'s program logs, with an ngrok token in `env` redacted.
 /// Only the log's last [`ERROR_TAIL_BYTES`] are read, since a long-running
 /// tunnel's log can be large and this runs under the manager lock.
-fn with_log_error(base: String, logfile: &Path) -> String {
-    match last_error_line(&read_tail_lossy(logfile, ERROR_TAIL_BYTES)) {
+fn with_log_error(
+    base: String,
+    kind: TunnelKind,
+    logfile: &Path,
+    env: &[(OsString, OsString)],
+) -> String {
+    let tail = read_tail_lossy(logfile, ERROR_TAIL_BYTES);
+    let line = match kind {
+        TunnelKind::Quick | TunnelKind::Named => last_error_line(&tail),
+        TunnelKind::Ngrok { .. } => last_ngrok_error(&tail),
+        TunnelKind::Zrok => last_zrok_error(&tail),
+    };
+    let message = match line {
         Some(line) => format!("{base}: {line}"),
         None => base,
+    };
+    match ngrok_token(env) {
+        Some(token) => redact(&message, &token),
+        None => message,
+    }
+}
+
+/// The non-empty [`NGROK_AUTHTOKEN_ENV`] value in a child's env, if any.
+fn ngrok_token(env: &[(OsString, OsString)]) -> Option<String> {
+    env.iter()
+        .find(|(key, _)| key.as_os_str() == NGROK_AUTHTOKEN_ENV)
+        .and_then(|(_, value)| value.to_str())
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned)
+}
+
+/// Redact the token of an ngrok instance from its logfile (see
+/// [`redact_logfile`]); a no-op for any other instance.
+fn redact_instance_log<Ch: ChildHandle>(inst: &Instance<Ch>) {
+    if !matches!(inst.kind, TunnelKind::Ngrok { .. }) {
+        return;
+    }
+    if let Some(token) = ngrok_token(&inst.env) {
+        redact_logfile(&inst.logfile, &token);
+    }
+}
+
+/// Best-effort rewrite of `path` with every occurrence of `secret` redacted,
+/// called only once the child has exited or been killed, so nothing is
+/// writing. The log is truncated on every spawn and ngrok echoes a token while
+/// authenticating right after spawn, so a failing log is small: one larger
+/// than [`REDACT_LIMIT_BYTES`] is removed instead of read. The rewrite keeps
+/// the file's `0600` mode (`build_cmd` set it) and happens only when the
+/// secret is present. Errors are ignored.
+fn redact_logfile(path: &Path, secret: &str) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if meta.len() > REDACT_LIMIT_BYTES {
+        let _ = std::fs::remove_file(path);
+        return;
+    }
+    let text = read_file_lossy(path);
+    if text.contains(secret) {
+        let _ = std::fs::write(path, redact(&text, secret));
     }
 }
 
@@ -721,10 +836,10 @@ async fn graceful_reap<Ch: ChildHandle>(child: &mut Ch, grace: Duration) {
     }
 }
 
-/// Build the `cloudflared` command. The inherited environment is cleared first
-/// (`env_clear`) and only the pinned `env` is applied, so the daemon's own
-/// environment, including any unrelated secrets, never reaches the child; the
-/// caller is responsible for forwarding the few variables `cloudflared`
+/// Build the tunnel child's command. The inherited environment is cleared
+/// first (`env_clear`) and only the pinned `env` is applied, so the daemon's
+/// own environment, including any unrelated secrets, never reaches the child;
+/// the caller is responsible for forwarding the few variables the child
 /// legitimately needs. stdout+stderr are redirected to a freshly truncated
 /// logfile (so a stale URL from a prior run is not re-parsed) and, on Unix, the
 /// child is placed in its own process group so the supervisor's `killpg` reaps
@@ -1617,6 +1732,211 @@ mod tests {
             assert_eq!(read_tail_lossy(&path, limit), expected, "{limit}");
         }
         assert_eq!(read_tail_lossy(&tmp.path().join("missing"), 10), "");
+    }
+
+    const NGROK_TOKEN: &str = "2fXkSecretToken0123456789";
+
+    const NGROK_URL_LINE: &str =
+        "{\"lvl\":\"info\",\"msg\":\"started tunnel\",\"url\":\"https://abc.ngrok-free.app\"}\n";
+
+    const NGROK_KIND: TunnelKind = TunnelKind::Ngrok {
+        static_domain: false,
+    };
+
+    fn ngrok_spec(dir: &Path, metrics_addr: MetricsAddrSource) -> LaunchSpec {
+        let mut spec = spec_in(dir, "app@ngrok", metrics_addr);
+        spec.env = vec![(NGROK_AUTHTOKEN_ENV.into(), NGROK_TOKEN.into())];
+        spec
+    }
+
+    fn ngrok_log(dir: &Path) -> String {
+        std::fs::read_to_string(dir.join("app@ngrok.log")).unwrap()
+    }
+
+    #[derive(Clone)]
+    struct SkewClock {
+        base: Instant,
+        offset: Arc<Mutex<Duration>>,
+    }
+
+    impl SkewClock {
+        fn new() -> Self {
+            Self {
+                base: Instant::now(),
+                offset: Arc::new(Mutex::new(Duration::ZERO)),
+            }
+        }
+
+        fn skip(&self, by: Duration) {
+            *self.offset.lock().unwrap() += by;
+        }
+    }
+
+    impl Clock for SkewClock {
+        fn now(&self) -> Instant {
+            self.base + *self.offset.lock().unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn an_ngrok_share_is_ready_from_its_logged_url_without_a_probe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spawner = FakeSpawner::new(tmp.path().join("app@ngrok.log"), NGROK_URL_LINE);
+        let mut mgr = TunnelManager::new(spawner.clone(), FakeClock);
+        let (source, calls) = counting_metrics();
+        let generation = mgr
+            .begin("app@ngrok", ngrok_spec(tmp.path(), source), NGROK_KIND)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let mut ready = false;
+        for _ in 0..50 {
+            let step = mgr.advance("app@ngrok", generation).await.unwrap();
+            assert!(!matches!(step, Step::Probe(_)), "{step:?}");
+            if step == Step::Ready {
+                ready = true;
+                break;
+            }
+        }
+        assert!(ready);
+        let snap = only(&mut mgr);
+        assert_eq!(snap.kind, NGROK_KIND);
+        assert_eq!(snap.state, TunnelState::Running);
+        assert_eq!(snap.url.as_deref(), Some("https://abc.ngrok-free.app"));
+        for _ in 0..3 {
+            assert_eq!(
+                mgr.advance("app@ngrok", generation).await.unwrap(),
+                Step::Sleep(MONITOR_INTERVAL)
+            );
+        }
+        assert_eq!(calls.count(), 0);
+        assert_eq!(spawner.metrics_env(0), None);
+    }
+
+    #[tokio::test]
+    async fn a_zrok_share_without_its_banner_stays_connecting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spawner = FakeSpawner::new(tmp.path().join("app@zrok.log"), "INFO starting\n");
+        let mut mgr = TunnelManager::new(spawner, FakeClock);
+        let generation = mgr
+            .begin("app@zrok", spec(tmp.path(), "app@zrok"), TunnelKind::Zrok)
+            .await
+            .unwrap()
+            .unwrap();
+        for _ in 0..5 {
+            let step = mgr.advance("app@zrok", generation).await.unwrap();
+            assert!(matches!(step, Step::Continue | Step::Sleep(_)), "{step:?}");
+        }
+        let snap = only(&mut mgr);
+        assert_eq!(snap.state, TunnelState::Connecting);
+        assert_eq!(snap.url, None);
+    }
+
+    #[tokio::test]
+    async fn a_crashed_ngrok_records_its_error_with_the_token_redacted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let contents = format!(
+            "{{\"lvl\":\"crit\",\"msg\":\"command failed\",\"err\":\"authentication failed: token {NGROK_TOKEN} is invalid\"}}\n"
+        );
+        let spawner = FakeSpawner::new(tmp.path().join("app@ngrok.log"), &contents);
+        let mut mgr = TunnelManager::new(spawner.clone(), FakeClock);
+        let generation = mgr
+            .begin(
+                "app@ngrok",
+                ngrok_spec(tmp.path(), counting_metrics().0),
+                NGROK_KIND,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        spawner.crash_latest(ExitReason::Code(1));
+
+        mgr.advance("app@ngrok", generation).await.unwrap();
+
+        let snap = only(&mut mgr);
+        assert_eq!(
+            snap.last_error.as_deref(),
+            Some("ngrok exited (exit 1): authentication failed: token *** is invalid")
+        );
+        let log = ngrok_log(tmp.path());
+        assert!(!log.contains(NGROK_TOKEN), "{log}");
+        assert!(log.contains("***"), "{log}");
+    }
+
+    #[tokio::test]
+    async fn an_ngrok_readiness_timeout_redacts_the_token() {
+        let tmp = tempfile::tempdir().unwrap();
+        let contents = format!("ERROR:  authentication failed for {NGROK_TOKEN}\nERR_NGROK_105\n");
+        let spawner = FakeSpawner::new(tmp.path().join("app@ngrok.log"), &contents);
+        let clock = SkewClock::new();
+        let mut mgr = TunnelManager::new(spawner, clock.clone());
+        let generation = mgr
+            .begin(
+                "app@ngrok",
+                ngrok_spec(tmp.path(), counting_metrics().0),
+                NGROK_KIND,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        mgr.advance("app@ngrok", generation).await.unwrap();
+        clock.skip(Duration::from_secs(120));
+
+        let mut last_error = None;
+        for _ in 0..10 {
+            mgr.advance("app@ngrok", generation).await.unwrap();
+            last_error = only(&mut mgr).last_error;
+            if last_error.is_some() {
+                break;
+            }
+        }
+
+        assert_eq!(
+            last_error.as_deref(),
+            Some("no public URL from ngrok within 60s: authentication failed for *** (ERR_NGROK_105)")
+        );
+        assert!(!ngrok_log(tmp.path()).contains(NGROK_TOKEN));
+    }
+
+    #[tokio::test]
+    async fn stopping_a_live_ngrok_redacts_the_token_from_its_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let contents = format!("{NGROK_URL_LINE}token {NGROK_TOKEN} echoed\n");
+        let spawner = FakeSpawner::new(tmp.path().join("app@ngrok.log"), &contents);
+        let mut mgr = TunnelManager::new(spawner, FakeClock);
+        mgr.begin(
+            "app@ngrok",
+            ngrok_spec(tmp.path(), counting_metrics().0),
+            NGROK_KIND,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(ngrok_log(tmp.path()).contains(NGROK_TOKEN));
+
+        mgr.stop("app@ngrok").await.unwrap();
+
+        let log = ngrok_log(tmp.path());
+        assert!(!log.contains(NGROK_TOKEN), "{log}");
+        assert!(log.contains("token *** echoed"), "{log}");
+    }
+
+    #[test]
+    fn redact_logfile_rewrites_small_logs_and_removes_oversized_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let small = tmp.path().join("small.log");
+        std::fs::write(&small, "a secret here").unwrap();
+        redact_logfile(&small, "secret");
+        assert_eq!(std::fs::read_to_string(&small).unwrap(), "a *** here");
+
+        let big = tmp.path().join("big.log");
+        let filler = "x".repeat(usize::try_from(REDACT_LIMIT_BYTES).unwrap() + 1);
+        std::fs::write(&big, filler).unwrap();
+        redact_logfile(&big, "secret");
+        assert!(!big.exists());
+
+        redact_logfile(&tmp.path().join("missing.log"), "secret");
     }
 
     #[test]

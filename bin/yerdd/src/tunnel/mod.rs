@@ -1,13 +1,19 @@
-//! Cloudflare Tunnel wiring: the daemon's `TunnelManager` type, the IPC handlers
-//! for the tunnel requests, the `cloudflared` resolution cache and uninstall
-//! guard, and the snapshot→wire mapping. Installing `cloudflared` is a regular
-//! tool job (`tools::cloudflared`).
+//! Tunnel wiring for every provider: the daemon's `TunnelManager` type, the IPC
+//! handlers for the tunnel requests, the `cloudflared` resolution cache, the
+//! uninstall guards, and the snapshot→wire mapping. Installing a tunnel binary
+//! is a regular tool job (`tools::cloudflared`, `tools::ngrok`, `tools::zrok`).
 //!
-//! Every `cloudflared` points at the daemon's loopback tunnel listener
-//! (`state.tunnel_origin_port`), which routes by the public `Host` through
-//! [`rebuild_routes`]'s map. Each running instance is supervised by a background
-//! driver task (see [`supervise`]); start requests only launch and then wait for
-//! the instance to settle.
+//! Every tunnel child (`cloudflared`, ngrok or zrok) points at the daemon's
+//! loopback tunnel listener (`state.tunnel_origin_port`), which routes by the
+//! public `Host` through [`rebuild_routes`]'s map; ngrok and zrok forward the
+//! public `Host` unchanged, like `cloudflared`. Each running instance is
+//! supervised by a background driver task (see [`supervise`]); start requests
+//! only launch and then wait for the instance to settle.
+//!
+//! Manager keys: a Cloudflare quick link is keyed by its site name, the named
+//! tunnel by `@named` ([`named::NAMED_KEY`]), and ngrok and zrok shares by
+//! `<site>@ngrok` and `<site>@zrok` (see [`shares`]). Site names never contain
+//! `@`, so the keys never collide and a site can hold one share per provider.
 //!
 //! Lock discipline mirrors the services path: the site facts are read under the
 //! router lock, which is released before the `tunnel_manager` is taken; the
@@ -29,6 +35,7 @@ pub mod install;
 pub mod named;
 pub mod orphans;
 pub mod providers;
+pub mod shares;
 pub mod supervise;
 
 use std::collections::{BTreeMap, HashMap};
@@ -37,6 +44,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use yerd_core::tunnel_provider::TunnelProvider;
 use yerd_ipc::{
     CloudflaredStatus, ErrorCode, Response, TunnelInfo, TunnelKind as WireKind, TunnelRunState,
 };
@@ -45,7 +53,8 @@ use yerd_supervise::{SystemClock, TokioProcessSpawner};
 use yerd_tunnel::manager::{TunnelSnapshot, TunnelState};
 use yerd_tunnel::{LaunchSpec, TunnelKind, TunnelManager};
 
-use self::supervise::Settled;
+use self::shares::{is_per_site, provider_of, share_key, site_of};
+use self::supervise::{Launched, Settled};
 use crate::state::DaemonState;
 use crate::tools::Tool;
 
@@ -281,26 +290,69 @@ pub async fn start_quick_tunnel(site: &str, state: &Arc<DaemonState>) -> Respons
         Ok(spec) => spec,
         Err(resp) => return resp,
     };
+    launch_and_settle(state, &name, &name, spec, TunnelKind::Quick).await
+}
 
-    let launched = match supervise::launch(state, &name, spec, TunnelKind::Quick).await {
-        Ok(launched) => launched,
-        Err(yerd_tunnel::TunnelError::NotInstalled) => return named::not_installed(),
-        Err(e) => {
-            return Response::Error {
-                code: ErrorCode::Internal,
-                message: format!("could not start tunnel for {name}: {e}"),
-            }
+/// How a start failure names what it was starting.
+fn share_label(kind: TunnelKind) -> &'static str {
+    match kind {
+        TunnelKind::Quick | TunnelKind::Named => "tunnel",
+        TunnelKind::Ngrok { .. } => "ngrok share",
+        TunnelKind::Zrok => "zrok share",
+    }
+}
+
+/// Launch `spec` under `key` through [`supervise::launch`], then wait for it
+/// with [`settle_launched`]. `name` is the canonical site name used in errors.
+pub(super) async fn launch_and_settle(
+    state: &Arc<DaemonState>,
+    key: &str,
+    name: &str,
+    spec: LaunchSpec,
+    kind: TunnelKind,
+) -> Response {
+    match supervise::launch(state, key, spec, kind).await {
+        Ok(launched) => settle_launched(state, key, name, share_label(kind), launched).await,
+        Err(e) => launch_error(kind, name, &e),
+    }
+}
+
+/// The reply when [`supervise::launch`] refused a start: the binary vanished
+/// before the manager lock was held, or the manager is shutting down.
+pub(super) fn launch_error(kind: TunnelKind, name: &str, e: &yerd_tunnel::TunnelError) -> Response {
+    match (e, provider_of(kind)) {
+        (yerd_tunnel::TunnelError::NotInstalled, TunnelProvider::Cloudflare) => {
+            named::not_installed()
         }
-    };
+        (yerd_tunnel::TunnelError::NotInstalled, provider) => shares::not_installed(provider),
+        (e, _) => Response::Error {
+            code: ErrorCode::Internal,
+            message: format!("could not start {} for {name}: {e}", share_label(kind)),
+        },
+    }
+}
+
+/// Wait for a launched (or already running, when `launched` is `None`)
+/// instance under `key` to settle. A fresh start that never comes up is
+/// stopped (its own generation only) and reported as an error naming
+/// `program`, so a share reported as failed never goes live later. An
+/// existing instance is reported as-is.
+pub(super) async fn settle_launched(
+    state: &DaemonState,
+    key: &str,
+    name: &str,
+    program: &str,
+    launched: Option<Launched>,
+) -> Response {
     let generation = match &launched {
         Some(l) => l.generation,
-        None => match supervise::current_generation(state, &name).await {
+        None => match supervise::current_generation(state, key).await {
             Some(generation) => generation,
             None => return tunnels_response(state).await,
         },
     };
 
-    match supervise::wait_settled(state, &name, generation, supervise::SETTLE_TIMEOUT).await {
+    match supervise::wait_settled(state, key, generation, supervise::SETTLE_TIMEOUT).await {
         Settled::Running | Settled::Gone => tunnels_response(state).await,
         Settled::NotRunning { .. } if launched.is_none() => tunnels_response(state).await,
         Settled::NotRunning { last_error } => {
@@ -308,16 +360,16 @@ pub async fn start_quick_tunnel(site: &str, state: &Arc<DaemonState>) -> Respons
                 .tunnel_manager
                 .lock()
                 .await
-                .stop_if_generation(&name, generation)
+                .stop_if_generation(key, generation)
                 .await;
             rebuild_routes(state).await;
             if let Err(e) = stopped {
-                tracing::warn!(site = %name, error = %e, "could not stop a failed quick tunnel");
+                tracing::warn!(site = %name, error = %e, "could not stop a failed share");
             }
             let reason = last_error.unwrap_or_else(|| "it did not come online in time".to_owned());
             Response::Error {
                 code: ErrorCode::Internal,
-                message: format!("could not start tunnel for {name}: {reason}"),
+                message: format!("could not start {program} for {name}: {reason}"),
             }
         }
     }
@@ -381,17 +433,37 @@ pub(super) async fn resolve_site(state: &DaemonState, site: &str) -> Option<(Str
     Some((s.name().to_owned(), host))
 }
 
-/// `StopTunnel`: tear down a site's tunnel (no-op if none) and drop its host
-/// from the route map. The instance's driver sees it gone and exits. `site` may
-/// be a site name or `.test` host; one that no longer resolves (a removed site)
-/// is used as given.
-pub async fn stop_tunnel(site: &str, state: &DaemonState) -> Response {
-    let key = canonical_site_name(state, site)
+/// `StopTunnel`: tear down a site's share through `provider`, or every
+/// per-site share of the site (Cloudflare quick link, ngrok, zrok) when
+/// `provider` is `None`, and drop their hosts from the route map. No-op for a
+/// share that is not running; the named tunnel is never touched. Each
+/// instance's driver sees it gone and exits. `site` may be a site name or
+/// `.test` host; one that no longer resolves (a removed site) is used as
+/// given.
+pub async fn stop_tunnel(
+    site: &str,
+    provider: Option<TunnelProvider>,
+    state: &DaemonState,
+) -> Response {
+    let name = canonical_site_name(state, site)
         .await
         .unwrap_or_else(|| site.to_owned());
+    let keys: Vec<String> = match provider {
+        Some(provider) => vec![share_key(provider, &name)],
+        None => TunnelProvider::ALL
+            .iter()
+            .map(|provider| share_key(*provider, &name))
+            .collect(),
+    };
     let stopped = {
         let mut mgr = state.tunnel_manager.lock().await;
-        mgr.stop(&key).await
+        let mut first_err = None;
+        for key in &keys {
+            if let Err(e) = mgr.stop(key).await {
+                first_err.get_or_insert(e);
+            }
+        }
+        first_err.map_or(Ok(()), Err)
     };
     rebuild_routes(state).await;
     if let Err(e) = stopped {
@@ -409,17 +481,18 @@ pub async fn tunnel_status(state: &DaemonState) -> Response {
 }
 
 /// Number of distinct sites currently shared to the public internet: sites with
-/// a live quick tunnel, plus the sites the named tunnel exposes when it is live.
-/// Live means connecting, online, or reconnecting. A site shared via both is
-/// counted once. Surfaced in `StatusReport` so the GUI can badge the count.
+/// a live per-site share (any provider), plus the sites the named tunnel
+/// exposes when it is live. Live means connecting, online, or reconnecting. A
+/// site shared several ways is counted once. Surfaced in `StatusReport` so the
+/// GUI can badge the count.
 pub async fn shared_site_count(state: &DaemonState) -> u32 {
     let (mut shared, named_running) = {
         let mut mgr = state.tunnel_manager.lock().await;
         let snaps = mgr.snapshots();
         let shared: std::collections::BTreeSet<String> = snaps
             .iter()
-            .filter(|s| matches!(s.kind, TunnelKind::Quick) && is_live(s.state))
-            .map(|s| s.site.clone())
+            .filter(|s| is_per_site(s.kind) && is_live(s.state))
+            .map(|s| site_of(s).to_owned())
             .collect();
         let named_running = snaps
             .iter()
@@ -441,8 +514,8 @@ fn is_live(state: TunnelState) -> bool {
 }
 
 /// Shared `Response::Tunnels` builder. Reads the cached share warnings only
-/// (never the filesystem): a quick entry gets its own site's, the named entry
-/// gets every currently mapped site's, prefixed `"<site>: "`.
+/// (never the filesystem): a per-site entry gets its own site's, the named
+/// entry gets every currently mapped site's, prefixed `"<site>: "`.
 pub(super) async fn tunnels_response(state: &DaemonState) -> Response {
     let snapshots = {
         let mut mgr = state.tunnel_manager.lock().await;
@@ -466,22 +539,24 @@ pub(super) async fn tunnels_response(state: &DaemonState) -> Response {
     }
 }
 
-/// The `protected` flag and cached warnings reported for one snapshot. A quick
-/// tunnel is protected when its site has a share password; the named tunnel's
-/// protection is reported per site (see `named::list`), so it is never flagged
-/// here.
+/// The `protected` flag and cached warnings reported for one snapshot. A
+/// per-site share is protected when its site has a share password; the named
+/// tunnel's protection is reported per site (see `named::list`), so it is
+/// never flagged here.
 fn share_extras(
     snapshot: &TunnelSnapshot,
     mapped: &[String],
     passwords: &BTreeMap<String, String>,
     cache: &HashMap<String, Vec<String>>,
 ) -> (bool, Vec<String>) {
-    match snapshot.kind {
-        TunnelKind::Quick => (
-            passwords.contains_key(&snapshot.site),
-            cache.get(&snapshot.site).cloned().unwrap_or_default(),
-        ),
-        TunnelKind::Named => (
+    if is_per_site(snapshot.kind) {
+        let site = site_of(snapshot);
+        (
+            passwords.contains_key(site),
+            cache.get(site).cloned().unwrap_or_default(),
+        )
+    } else {
+        (
             false,
             mapped
                 .iter()
@@ -493,7 +568,7 @@ fn share_extras(
                         .map(move |w| format!("{site}: {w}"))
                 })
                 .collect(),
-        ),
+        )
     }
 }
 
@@ -551,10 +626,11 @@ pub(super) async fn refresh_named_share_warnings(state: &DaemonState) {
 
 /// Rebuild the tunnel origin listener's `public host -> site` route map from
 /// config (named-tunnel hostnames and share passwords, keyed by canonical site
-/// name, see [`canonical_tunnel_config`]) plus the URLs of the live quick
-/// tunnels, then swap it in. See the module doc for the lock order.
+/// name, see [`canonical_tunnel_config`]) plus the URLs of the live per-site
+/// shares of every provider, then swap it in. See the module doc for the lock
+/// order.
 ///
-/// A quick tunnel whose site is missing from the router snapshot the passwords
+/// A per-site share whose site is missing from the router snapshot the passwords
 /// were resolved against gets no route: its password would have been dropped
 /// with the site, so routing it could serve the site unprotected once the
 /// router has it back. The next rebuild restores it with its password.
@@ -564,8 +640,11 @@ pub async fn rebuild_routes(state: &DaemonState) {
         let mut mgr = state.tunnel_manager.lock().await;
         mgr.snapshots()
             .into_iter()
-            .filter(|s| matches!(s.kind, TunnelKind::Quick))
-            .filter_map(|s| s.url.map(|url| (s.site, url)))
+            .filter(|s| is_per_site(s.kind))
+            .filter_map(|s| {
+                let site = site_of(&s).to_owned();
+                s.url.map(|url| (site, url))
+            })
             .collect()
     };
     let (raw_sites, raw_passwords) = {
@@ -666,9 +745,10 @@ fn canonicalize_keys(
 
 /// Pure route-map builder behind [`rebuild_routes`]. `sites` is the named
 /// tunnel's `site -> hostname` map, `passwords` the `site -> password` map, and
-/// `quick` the live quick tunnels as `(site, public URL)`. Keys are normalized
-/// hosts. Named entries go in first and a quick entry never overrides a named
-/// key. A site's password protects it on every tunnel kind.
+/// `quick` the live per-site shares of every provider as `(site, public URL)`.
+/// Keys are normalized hosts. Named entries go in first and a per-site entry
+/// never overrides a named key. A site's password protects it on every tunnel
+/// kind.
 fn build_routes(
     sites: &BTreeMap<String, String>,
     passwords: &BTreeMap<String, String>,
@@ -701,13 +781,15 @@ fn url_host(url: &str) -> Option<String> {
     yerd_proxy::pure::tunnel::normalize_host(authority)
 }
 
-/// Map a manager snapshot, plus its share extras, to its wire form.
+/// Map a manager snapshot, plus its share extras, to its wire form. Every
+/// per-site share reports wire kind `quick`, with its provider alongside.
 fn to_wire(s: TunnelSnapshot, protected: bool, warnings: Vec<String>) -> TunnelInfo {
     TunnelInfo {
-        site: s.site,
-        kind: match s.kind {
-            TunnelKind::Quick => WireKind::Quick,
-            TunnelKind::Named => WireKind::Named,
+        site: site_of(&s).to_owned(),
+        kind: if is_per_site(s.kind) {
+            WireKind::Quick
+        } else {
+            WireKind::Named
         },
         state: match s.state {
             TunnelState::Connecting => TunnelRunState::Connecting,
@@ -720,6 +802,13 @@ fn to_wire(s: TunnelSnapshot, protected: bool, warnings: Vec<String>) -> TunnelI
         last_error: s.last_error,
         protected,
         warnings,
+        provider: provider_of(s.kind),
+        static_domain: matches!(
+            s.kind,
+            TunnelKind::Ngrok {
+                static_domain: true
+            }
+        ),
     }
 }
 
@@ -751,8 +840,9 @@ pub(crate) struct CloudflaredUninstallGuard<'a> {
 }
 
 /// Take the locks for a `cloudflared` uninstall, refusing while a tunnel
-/// operation is in progress or any tunnel instance exists (quick or named, in
-/// any state, including a failed one still retrying).
+/// operation is in progress or any Cloudflare instance exists (quick or named,
+/// in any state, including a failed one still retrying). ngrok and zrok shares
+/// do not block it.
 ///
 /// Lock order: the caller already holds `tool_mutate`; this `try_lock`s
 /// `tunnel_mutate` (never waiting minutes behind a login), then takes
@@ -771,7 +861,7 @@ pub(crate) async fn lock_for_cloudflared_uninstall(
         });
     };
     let mut manager = state.tunnel_manager.lock().await;
-    if !manager.snapshots().is_empty() {
+    if has_share_of(&mut manager, TunnelProvider::Cloudflare) {
         return Err(Response::Error {
             code: ErrorCode::InvalidPath,
             message: "stop every tunnel before uninstalling cloudflared".into(),
@@ -781,6 +871,37 @@ pub(crate) async fn lock_for_cloudflared_uninstall(
         _mutate: mutate,
         _manager: manager,
     })
+}
+
+fn has_share_of(manager: &mut DaemonTunnelManager, provider: TunnelProvider) -> bool {
+    manager
+        .snapshots()
+        .iter()
+        .any(|s| provider_of(s.kind) == provider)
+}
+
+/// Take the tunnel manager for an ngrok or zrok uninstall, refusing while any
+/// share of that provider exists (in any state). The caller holds the guard
+/// across the removal, after `tool_mutate`, so no share of it can start in
+/// between; a start that resolved the binary first is refused by
+/// `supervise::launch`, which checks the binary still exists.
+///
+/// # Errors
+///
+/// `Response::Error` (`InvalidPath`) while a share of `provider` exists.
+pub(crate) async fn lock_for_provider_uninstall(
+    state: &DaemonState,
+    provider: TunnelProvider,
+) -> Result<tokio::sync::MutexGuard<'_, DaemonTunnelManager>, Response> {
+    let mut manager = state.tunnel_manager.lock().await;
+    if has_share_of(&mut manager, provider) {
+        let name = provider.as_str();
+        return Err(Response::Error {
+            code: ErrorCode::InvalidPath,
+            message: format!("stop every {name} share before uninstalling {name}"),
+        });
+    }
+    Ok(manager)
 }
 
 /// Clear the `cloudflared`-resolution cache after an uninstall. Required: a
@@ -862,6 +983,16 @@ mod tests {
         let routes = build_routes(&map(&[("blog", "blog.example.com")]), &map(&[]), &quick);
         assert_eq!(routes.len(), 1);
         assert_eq!(routes.get("blog.example.com"), Some(&route("blog", None)));
+    }
+
+    #[test]
+    fn build_routes_maps_an_ngrok_url_with_its_site_password() {
+        let shares = vec![("blog".to_owned(), "https://x.ngrok-free.app".to_owned())];
+        let routes = build_routes(&map(&[]), &map(&[("blog", "secret")]), &shares);
+        assert_eq!(
+            routes,
+            HashMap::from([("x.ngrok-free.app".to_owned(), route("blog", Some("secret")))])
+        );
     }
 
     #[test]

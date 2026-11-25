@@ -1141,16 +1141,32 @@ pub async fn contributors() -> Result<Response, GuiError> {
 
 // ── tunnels (Cloudflare Tunnel integration) ──────────────────────────────────
 
-/// Publish a site at a temporary `*.trycloudflare.com` Quick Tunnel URL.
+/// Share a site through `provider` (the configured default when absent);
+/// `random_url` makes an ngrok share ignore the configured static domain.
 #[tauri::command]
-pub async fn start_quick_tunnel(site: String) -> Result<Response, GuiError> {
-    finish(exchange(&Request::StartQuickTunnel { site }).await?)
+pub async fn start_quick_tunnel(
+    site: String,
+    provider: Option<yerd_core::tunnel_provider::TunnelProvider>,
+    random_url: Option<bool>,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::StartQuickTunnel {
+            site,
+            provider,
+            random_url: random_url.unwrap_or(false),
+        })
+        .await?,
+    )
 }
 
-/// Tear down a site's running tunnel.
+/// Stop a site's share through `provider`, or every per-site share of it
+/// when absent.
 #[tauri::command]
-pub async fn stop_tunnel(site: String) -> Result<Response, GuiError> {
-    finish(exchange(&Request::StopTunnel { site }).await?)
+pub async fn stop_tunnel(
+    site: String,
+    provider: Option<yerd_core::tunnel_provider::TunnelProvider>,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::StopTunnel { site, provider }).await?)
 }
 
 /// Report the live tunnels plus `cloudflared` install/login status.

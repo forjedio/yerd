@@ -2,21 +2,34 @@
  * Pure derivations for the Share screen. No I/O; inputs are the daemon's
  * `tunnel_status`, `list_named_tunnels` and `list_sites` replies.
  */
-import type { CloudflaredStatus, Site, SiteHostname, TunnelInfo, TunnelRunState } from "@/ipc/types";
+import type {
+  CloudflaredStatus,
+  Site,
+  SiteHostname,
+  TunnelInfo,
+  TunnelProvider,
+  TunnelProviderStatus,
+  TunnelRunState,
+} from "@/ipc/types";
 import { validateDomainShape } from "@/lib/domainValidation";
+import { binaryLine, PROVIDER_ORDER, providerName, sourceLabel as providerSourceLabel } from "@/lib/providers";
 import { joinWithAnd, plural } from "@/lib/utils";
 
-/** How a share is published: a temporary quick link or a hostname on the user's domain. */
+/** How a share is published: a per-site share (a Cloudflare quick link, ngrok or
+ *  zrok) or a hostname on the user's Cloudflare domain. */
 export type ShareKind = "quick" | "domain";
 
 /** A share's state. A domain share is `offline` while no named tunnel instance exists. */
 export type ShareState = TunnelRunState | "offline";
 
-/** One row of the Share list: a quick link or a site mapped onto the domain tunnel. */
+/** One row of the Share list: a per-site share or a site mapped onto the domain tunnel. */
 export interface ShareItem {
   key: string;
+  provider: TunnelProvider;
   kind: ShareKind;
   site: string;
+  /** Whether an ngrok share serves the configured static domain. */
+  staticDomain: boolean;
   /** The public URL, once known. */
   url: string | null;
   /** The URL without its scheme, as the rows show it. */
@@ -27,19 +40,29 @@ export interface ShareItem {
   warnings: string[];
 }
 
-/** One group of the Share list. */
-export interface ShareSection {
-  kind: ShareKind;
-  label: string;
-  items: ShareItem[];
-}
+/** The Share list's provider filter. */
+export type ShareFilter = "all" | TunnelProvider;
 
-/** A share's selection key. A site can hold a quick link and a domain share at once. */
-export function shareKey(kind: ShareKind, site: string): string {
-  return `${kind}:${site}`;
+/** A share's selection key. A site can hold one share per provider plus a
+ *  domain share at once. */
+export function shareKey(provider: TunnelProvider, kind: ShareKind, site: string): string {
+  return `${provider}:${kind}:${site}`;
 }
 
 /** The single named tunnel instance the daemon supervises, in any state. */
+/** The per-site share of `site` through `provider` (Cloudflare when `provider`
+ *  is unknown), never the named-tunnel entry. */
+export function siteShare(
+  tunnels: readonly TunnelInfo[],
+  site: string,
+  provider: TunnelProvider | undefined,
+): TunnelInfo | null {
+  const want = provider ?? "cloudflare";
+  return (
+    tunnels.find((t) => t.site === site && t.kind === "quick" && (t.provider ?? "cloudflare") === want) ?? null
+  );
+}
+
 export function namedEntry(tunnels: readonly TunnelInfo[]): TunnelInfo | null {
   return tunnels.find((t) => t.kind === "named") ?? null;
 }
@@ -55,45 +78,106 @@ function hostOf(url: string): string {
   return url.replace(/^https?:\/\//, "").replace(/\/$/, "");
 }
 
-/** The Share list: Quick links in the daemon's order, then the sites on the
- *  domain tunnel by name. Empty groups are left out. */
-export function shareSections(
-  tunnels: readonly TunnelInfo[],
-  namedSites: readonly SiteHostname[],
-  zone: string | null,
-): ShareSection[] {
+/** The Share list: every per-site share (any provider) plus the sites on the
+ *  domain tunnel, sorted by site, then provider order, then quick before domain. */
+export function shareItems(tunnels: readonly TunnelInfo[], namedSites: readonly SiteHostname[]): ShareItem[] {
   const entry = namedEntry(tunnels);
-  const quick: ShareItem[] = tunnels
+  const perSite: ShareItem[] = tunnels
     .filter((t) => t.kind === "quick")
-    .map((t) => ({
-      key: shareKey("quick", t.site),
-      kind: "quick",
-      site: t.site,
-      url: t.url ?? null,
-      host: t.url ? hostOf(t.url) : null,
-      state: t.state,
-      protected: t.protected ?? false,
-      lastError: t.last_error ?? null,
-      warnings: t.warnings ?? [],
-    }));
-  const domain: ShareItem[] = [...namedSites]
-    .sort((a, b) => a.site.localeCompare(b.site))
-    .map((s) => ({
-      key: shareKey("domain", s.site),
-      kind: "domain",
-      site: s.site,
-      url: `https://${s.hostname}`,
-      host: s.hostname,
-      state: entry?.state ?? "offline",
-      protected: s.protected ?? false,
-      lastError: entry?.last_error ?? null,
-      warnings: namedWarningsFor(entry, s.site),
-    }));
-  const sections: ShareSection[] = [
-    { kind: "quick", label: "Quick links", items: quick },
-    { kind: "domain", label: zone ? `Your domain · ${zone}` : "Your domain", items: domain },
-  ];
-  return sections.filter((s) => s.items.length > 0);
+    .map((t) => {
+      const provider = t.provider ?? "cloudflare";
+      return {
+        key: shareKey(provider, "quick", t.site),
+        provider,
+        kind: "quick",
+        site: t.site,
+        staticDomain: t.static_domain ?? false,
+        url: t.url ?? null,
+        host: t.url ? hostOf(t.url) : null,
+        state: t.state,
+        protected: t.protected ?? false,
+        lastError: t.last_error ?? null,
+        warnings: t.warnings ?? [],
+      };
+    });
+  const domain: ShareItem[] = namedSites.map((s) => ({
+    key: shareKey("cloudflare", "domain", s.site),
+    provider: "cloudflare",
+    kind: "domain",
+    site: s.site,
+    staticDomain: false,
+    url: `https://${s.hostname}`,
+    host: s.hostname,
+    state: entry?.state ?? "offline",
+    protected: s.protected ?? false,
+    lastError: entry?.last_error ?? null,
+    warnings: namedWarningsFor(entry, s.site),
+  }));
+  const kindRank = (k: ShareKind) => (k === "quick" ? 0 : 1);
+  return [...perSite, ...domain].sort(
+    (a, b) =>
+      a.site.localeCompare(b.site) ||
+      PROVIDER_ORDER.indexOf(a.provider) - PROVIDER_ORDER.indexOf(b.provider) ||
+      kindRank(a.kind) - kindRank(b.kind),
+  );
+}
+
+/** The shares the list shows under `filter`. */
+export function filterShares(items: readonly ShareItem[], filter: ShareFilter): ShareItem[] {
+  return filter === "all" ? [...items] : items.filter((i) => i.provider === filter);
+}
+
+/** How a share is published, in the design's words. */
+export function kindLabel(item: ShareItem): string {
+  if (item.provider === "ngrok") return item.staticDomain ? "Reserved domain" : "Random URL";
+  if (item.provider === "zrok") return "Public share";
+  return item.kind === "quick" ? "Quick link" : "Your domain";
+}
+
+/** The PROVIDER fact's second line. */
+export function kindDetail(item: ShareItem): string {
+  if (item.provider === "ngrok") return item.staticDomain ? "Your static ngrok domain" : "ngrok picks the address";
+  if (item.provider === "zrok") return "New zrok URL each start";
+  return item.kind === "quick" ? "Temporary trycloudflare.com URL" : "Stable hostname, survives restarts";
+}
+
+/** The other shares of `item`'s site. */
+export function siblingShares(items: readonly ShareItem[], item: ShareItem): ShareItem[] {
+  return items.filter((i) => i.site === item.site && i.key !== item.key);
+}
+
+/** The providers `site` has no share through, in provider order, with whether
+ *  each is ready. Cloudflare counts as shared only by a quick link, since
+ *  "Also share" offers a quick link. */
+export function unsharedProviders(
+  items: readonly ShareItem[],
+  site: string,
+  providers: readonly TunnelProviderStatus[],
+): { provider: TunnelProvider; ready: boolean }[] {
+  return PROVIDER_ORDER.filter(
+    (p) => !items.some((i) => i.site === site && i.provider === p && i.kind === "quick"),
+  ).map((provider) => ({
+    provider,
+    ready: providers.find((s) => s.provider === provider)?.readiness === "ready",
+  }));
+}
+
+/** The site whose ngrok share holds the static `domain`, else null. */
+export function ngrokDomainHolder(items: readonly ShareItem[], domain: string | null | undefined): string | null {
+  if (!domain) return null;
+  const url = `https://${domain.toLowerCase()}`;
+  return items.find((i) => i.provider === "ngrok" && i.url === url)?.site ?? null;
+}
+
+/** The inspector's subtitle under the site name. */
+export function subtitle(item: ShareItem, localHost: string, over: string, tunnelName: string | null): string {
+  const sharing = `Sharing ${localHost} over ${over}`;
+  if (item.provider !== "cloudflare") {
+    return `${sharing} through ${providerName(item.provider)} · ${kindLabel(item).toLowerCase()}`;
+  }
+  if (item.kind === "quick") return `${sharing} · anyone with the link can reach it`;
+  const exposed = `${localHost} over ${over}`;
+  return tunnelName ? `Exposed through tunnel ${tunnelName} · ${exposed}` : `Exposed on your domain · ${exposed}`;
 }
 
 /** Whether the named tunnel can be started: sites are exposed and no instance
@@ -159,13 +243,6 @@ export function cloudflaredLine(status: CloudflaredStatus | null): string {
   return `${name} · ${sourceLabel(status)}`;
 }
 
-/** The TYPE fact for a share kind. */
-export function typeFacts(kind: ShareKind): { title: string; detail: string } {
-  return kind === "quick"
-    ? { title: "Quick link", detail: "Temporary trycloudflare.com URL" }
-    : { title: "Your domain", detail: "Stable hostname, survives restarts" };
-}
-
 /** The scheme a local site is published over. */
 export function scheme(site: Site | undefined): "HTTPS" | "HTTP" {
   return site?.secure ? "HTTPS" : "HTTP";
@@ -176,15 +253,21 @@ export function servedOver(site: Site | undefined): string {
   return `Served over ${scheme(site)}`;
 }
 
-/** The STATUS fact's second line: the share's error, else a hint for a down
- *  domain tunnel (pointing at Setup when no account is connected, since the
- *  tunnel can't start without one), else the cloudflared in use. */
+/** The STATUS fact's second line: the share's error, else for ngrok or zrok
+ *  the binary in use, else a hint for a down domain tunnel (pointing at Setup
+ *  when no account is connected, since the tunnel can't start without one),
+ *  else the cloudflared in use. */
 export function statusDetail(
   item: ShareItem,
   cloudflared: CloudflaredStatus | null,
   loggedIn = true,
+  providerStatus: TunnelProviderStatus | null = null,
 ): string {
   if (item.lastError) return item.lastError;
+  if (item.provider !== "cloudflare") {
+    const name = providerName(item.provider);
+    return providerStatus ? `${binaryLine(providerStatus, name)} · ${providerSourceLabel(providerStatus)}` : name;
+  }
   const down = item.state === "offline" || (item.kind === "domain" && item.state === "failed");
   if (down && !loggedIn) return "Connect your Cloudflare account in Setup to start it.";
   if (item.kind === "domain" && item.state === "failed") return "cloudflared exited. Restart to retry.";

@@ -963,7 +963,7 @@ export interface TunnelInfo {
   site: string;
   kind: TunnelKind;
   state: TunnelRunState;
-  /** Public URL of a Quick tunnel once captured; absent otherwise. */
+  /** Public URL of a per-site share once captured; absent otherwise. */
   url?: string;
   /** Configured public hostname of a Named tunnel; absent otherwise. */
   hostname?: string;
@@ -973,6 +973,11 @@ export interface TunnelInfo {
   protected?: boolean;
   /** Preflight warnings computed when the share started; absent when none. */
   warnings?: string[];
+  /** The provider serving this share; absent means Cloudflare. ngrok and zrok
+   *  shares report kind `quick`. */
+  provider?: TunnelProvider;
+  /** Whether an ngrok share serves the configured static domain; absent means false. */
+  static_domain?: boolean;
 }
 
 /** crates/yerd-ipc/src/status.rs - CloudflaredSource. */

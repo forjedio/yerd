@@ -48,6 +48,20 @@ export function needsTooling(status: TunnelProviderStatus): boolean {
   return status.source === "managed" && Boolean(status.update_available);
 }
 
+/** A Share page provider card's status: Cloudflare `Connected` once logged in,
+ *  ngrok `Token saved`, zrok `Enabled`, else `Not installed` / `Not set up`. */
+export function providerCardStatus(status: TunnelProviderStatus): string {
+  if (status.readiness === "not_installed") return "Not installed";
+  if (status.provider === "cloudflare") return status.configured ? "Connected" : readinessLabel(status.readiness);
+  if (!status.configured) return "Not set up";
+  return status.provider === "ngrok" ? "Token saved" : "Enabled";
+}
+
+/** A provider card's status dot class. */
+export function providerCardDot(status: TunnelProviderStatus): string {
+  return readinessDot(status.readiness);
+}
+
 /** Options for the "Default for new shares" select. */
 export const DEFAULT_OPTIONS: readonly { value: TunnelProvider; label: string }[] = PROVIDER_ORDER.map(
   (value) => ({ value, label: providerName(value) }),

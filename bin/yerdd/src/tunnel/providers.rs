@@ -51,6 +51,11 @@ pub(crate) struct ProviderBinary {
     pub version: Option<String>,
 }
 
+/// `tool`'s managed binary path, whether or not it is installed.
+pub(crate) fn managed_binary(dirs: &PlatformDirs, tool: Tool) -> PathBuf {
+    tools::tool_dir(dirs, tool).join(tool.primary_bin())
+}
+
 /// Resolve `tool`'s binary: Yerd's managed copy when installed, else (only
 /// when `user_path` is given) a copy on that `PATH`, probed for its version.
 pub(crate) async fn resolve_binary_in(
@@ -58,7 +63,7 @@ pub(crate) async fn resolve_binary_in(
     tool: Tool,
     user_path: Option<&[PathBuf]>,
 ) -> Option<ProviderBinary> {
-    let managed = tools::tool_dir(dirs, tool).join(tool.primary_bin());
+    let managed = managed_binary(dirs, tool);
     if managed.is_file() {
         return Some(ProviderBinary {
             path: managed,
@@ -95,8 +100,8 @@ async fn probe_version_within(dirs: &PlatformDirs, path: &Path, limit: Duration)
     parse_version_token(&String::from_utf8_lossy(&out.stdout))
 }
 
-/// `{data}/tunnel/zrok`, the `HOME` every zrok command runs with.
-fn zrok_home(dirs: &PlatformDirs) -> PathBuf {
+/// `{data}/tunnel/zrok`, the `HOME` every zrok command and share runs with.
+pub(crate) fn zrok_home(dirs: &PlatformDirs) -> PathBuf {
     install::tunnel_dir(dirs).join("zrok")
 }
 
@@ -109,7 +114,7 @@ pub(crate) fn zrok_enabled(dirs: &PlatformDirs) -> bool {
         .is_file()
 }
 
-fn tool_for(provider: TunnelProvider) -> Option<Tool> {
+pub(crate) fn tool_for(provider: TunnelProvider) -> Option<Tool> {
     match provider {
         TunnelProvider::Cloudflare => None,
         TunnelProvider::Ngrok => Some(Tool::Ngrok),
@@ -342,6 +347,12 @@ pub(crate) async fn disable_zrok_in(
         return error(ErrorCode::NotFound, ZROK_NOT_INSTALLED);
     };
     let _guard = state.zrok_mutate.lock().await;
+    if zrok_share_running(state).await {
+        return error(
+            ErrorCode::InvalidPath,
+            "stop every zrok share before disabling zrok",
+        );
+    }
     if !zrok_enabled(&state.dirs) {
         return error(ErrorCode::NotFound, "zrok is not enabled");
     }
@@ -356,6 +367,19 @@ pub(crate) async fn disable_zrok_in(
             Response::Ok
         }
     }
+}
+
+/// Whether any zrok share instance exists, in any state. Taken under
+/// `zrok_mutate` (lock order `zrok_mutate`, then `tunnel_manager`, as a zrok
+/// share start), so no share can start between this check and a disable.
+async fn zrok_share_running(state: &DaemonState) -> bool {
+    state
+        .tunnel_manager
+        .lock()
+        .await
+        .snapshots()
+        .iter()
+        .any(|s| matches!(s.kind, yerd_tunnel::TunnelKind::Zrok))
 }
 
 fn output_failure(out: &Output, secret: &str) -> String {

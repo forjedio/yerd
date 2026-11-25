@@ -71,7 +71,7 @@ apps/yerd-gui/
     │                       mail/ (MailInbox, MailReader, MailSetupDialog),
     │                       dumps/ (DumpsRequestList, DumpsRequestDetail, DumpsEventCard, DumpsCapturePill,
     │                       DumpsSetupDialog),
-    │                       share/ (ShareList, ShareInspector, ShareSiteDialog,
+    │                       share/ (ShareProviderCards, ShareList, ShareInspector, ShareSiteDialog,
     │                       CloudflareLoginDialog, providers/ (TunnelProvidersDialog,
     │                       CloudflarePane, NgrokPane, ZrokPane, BinarySection, ProviderTile)),
     │                       doctor/ (DoctorList, DoctorInspector),

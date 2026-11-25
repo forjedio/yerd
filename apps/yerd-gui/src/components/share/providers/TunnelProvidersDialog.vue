@@ -43,6 +43,8 @@ const props = defineProps<{
   /** The view's in-flight action key, for the Cloudflare pane. */
   busy: string | null;
   connected: boolean;
+  /** The provider selected when the sheet opens; Cloudflare when absent. */
+  initial?: TunnelProvider | null;
 }>();
 
 const emit = defineEmits<{
@@ -84,7 +86,7 @@ watch(
   () => props.open,
   (open) => {
     if (!open) return;
-    selected.value = "cloudflare";
+    selected.value = props.initial ?? "cloudflare";
     void load();
   },
   { immediate: true },

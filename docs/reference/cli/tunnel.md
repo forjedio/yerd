@@ -1,10 +1,12 @@
 # Tunnel
 
-The `yerd tunnel` commands publish a local site to the public internet through
+The `yerd tunnel` commands publish a local site to the public internet through a
+tunnel provider:
 [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
-(`cloudflared`). The connection is outbound-only - no inbound ports, no `sudo`.
-The [Sharing Sites guide](../../guide/sharing) covers the model and the two tiers
-(quick tunnels and named tunnels); this page is the command reference.
+(`cloudflared`), ngrok or zrok. The connection is outbound-only - no inbound
+ports, no `sudo`. The [Sharing Sites guide](../../guide/sharing) covers the
+model, Cloudflare's two tiers (quick tunnels and named tunnels) and the other
+providers; this page is the command reference.
 
 ::: info cloudflared is detected on PATH, or downloaded on demand
 The first share needs the `cloudflared` binary. Yerd looks for one already on
@@ -21,9 +23,9 @@ installed. Quick share needs no Cloudflare account; named tunnels need a one-tim
 
 | Command | Description |
 | --- | --- |
-| `yerd tunnel share <SITE>` | Share a site via a Quick Tunnel (random `*.trycloudflare.com` URL). |
-| `yerd tunnel stop <SITE>` | Stop sharing a site. |
-| `yerd tunnel status` | Show live tunnels and `cloudflared` install status. |
+| `yerd tunnel share <SITE> [--provider P] [--random-url]` | Share a site through the default provider, or `P` (`cloudflare`, `ngrok`, `zrok`). |
+| `yerd tunnel stop <SITE> [--provider P]` | Stop sharing a site (every share of it, or only the one through `P`). |
+| `yerd tunnel status` | Show live shares with their provider, and `cloudflared` install status. |
 | `yerd tunnel login` | Log in to a Cloudflare account (opens a browser) for named tunnels. |
 | `yerd tunnel create <NAME>` | Create a named tunnel on the logged-in account. |
 | `yerd tunnel delete <NAME>` | Delete a named tunnel and forget it locally. |
@@ -49,15 +51,31 @@ yerd tunnel stop app
 
 ## Quick tunnels
 
-### `yerd tunnel share <SITE>`
+### `yerd tunnel share <SITE> [--provider P] [--random-url]`
 
-Publishes `<SITE>` (a site name like `app`, or its host `app.test`) at a random
-`https://<name>.trycloudflare.com` URL and prints it, along with any [preflight
-warnings](../../guide/sharing#preflight-warnings). It waits until Cloudflare's
-edge reports the tunnel online; if it doesn't come online, the share is stopped
-and the command fails with `could not start tunnel for <site>: <reason>`.
-Requires `cloudflared` (`yerd install tool cloudflared`, unless a compatible
-one is on `PATH`).
+Publishes `<SITE>` (a site name like `app`, or its host `app.test`) through the
+[default provider](#yerd-tunnel-default-cloudflare-ngrok-zrok), or the one
+`--provider` names, and prints the URL along with any [preflight
+warnings](../../guide/sharing#preflight-warnings). A site can hold one share per
+provider at the same time.
+
+| Option | Description |
+| --- | --- |
+| `--provider <cloudflare\|ngrok\|zrok>` | Share through this provider instead of the default. |
+| `--random-url` | ngrok only: ignore the saved static domain and let ngrok pick the address (for example when another site's share already uses the static domain). |
+
+Through Cloudflare, the site gets a random `https://<name>.trycloudflare.com`
+URL. The command waits until Cloudflare's edge reports the tunnel online; if it
+doesn't come online, the share is stopped and the command fails with `could not
+start tunnel for <site>: <reason>`. Requires `cloudflared` (`yerd install tool
+cloudflared`, unless a compatible one is on `PATH`).
+
+Through ngrok, the share uses the saved static domain unless `--random-url` is
+given, and waits until ngrok logs its public URL. It needs ngrok installed and an
+authtoken saved (`yerd tunnel ngrok token`); a failure reads `could not start
+ngrok share for <site>: <reason>`. Through zrok, the machine must be enabled
+first (`yerd tunnel zrok enable`). A provider that isn't ready is an error that
+says what to set up; there is no fallback to another provider.
 
 The URL is temporary - it changes on the next share and is torn down on `stop`
 or daemon shutdown. Once online, a crashed quick tunnel is restarted
@@ -65,14 +83,19 @@ automatically, but with a **new** URL; quick tunnels are never resumed after a
 daemon restart. Sharing a site that is already shared (even one that is
 retrying) keeps the existing tunnel.
 
-### `yerd tunnel stop <SITE>`
+### `yerd tunnel stop <SITE> [--provider P]`
 
-Tears down the site's tunnel. No-op if it isn't shared.
+Without `--provider`, tears down every share of the site (Cloudflare quick link,
+ngrok, zrok); the site's own-domain mapping on the named tunnel is left alone
+(use `set-host --clear` for that). With `--provider`, only the share through that
+provider stops and the others keep running. No-op if it isn't shared.
 
 ### `yerd tunnel status`
 
-Lists live tunnels (site, state, URL/hostname) and the installed `cloudflared`
-version (or that it isn't installed). `--json` output also says whether you're
+Lists live shares (site, provider, state, URL/hostname) and the installed
+`cloudflared` version (or that it isn't installed). An ngrok share on the saved
+static domain reads `ngrok (static domain)`; the named tunnel's row reads
+`Cloudflare`. `--json` output also says whether you're
 logged in and where `cloudflared` came from: `managed` (Yerd's own download) or
 `system` (found on your `PATH`).
 
@@ -80,22 +103,24 @@ logged in and where `cloudflared` came from: `managed` (Yerd's own download) or
 
 | State | Meaning |
 | --- | --- |
-| `connecting` | Starting; not connected to Cloudflare's edge yet. |
+| `connecting` | Starting; not connected to the provider's edge yet. |
 | `online` | Connected and serving. (`running` in `--json` output.) |
 | `reconnecting` | Was online; the edge connection dropped and is recovering. |
 | `failed` | The process exited or never connected. Printed as `failed, retrying`, since it is restarted after a backoff of at most 30 seconds. A quick share that fails to come up at all is removed and reported as an error instead. |
 
 A password-protected share is marked `(password)`. Under each row, an
-`error: …` line shows the most recent error from `cloudflared`, and `warning: …`
+`error: …` line shows the most recent error from the provider's agent, and `warning: …`
 lines show the share's preflight warnings (on the named tunnel, each is prefixed
 with the site it applies to).
 
 ```text
 cloudflared: 2026.6.1
 
-SITE	STATE	URL
-app	online	https://calm-river-1234.trycloudflare.com	(password)
+SITE	PROVIDER	STATE	URL
+app	Cloudflare	online	https://calm-river-1234.trycloudflare.com	(password)
   warning: Vite dev server is running (the web root has a `hot` file), ...
+app	ngrok (static domain)	online	https://name.ngrok-free.app	(password)
+blog	zrok	connecting	-
 ```
 
 ## Named tunnels
@@ -249,7 +274,8 @@ pbpaste | yerd tunnel zrok enable
 
 Runs `zrok2 disable`, releasing this machine from the zrok account. If zrok
 refuses (for example a revoked token), the local environment is kept and the
-reason is printed.
+reason is printed. It is refused while a zrok share is running; stop it first
+(`yerd tunnel stop <SITE> --provider zrok`).
 
 ### `yerd tunnel default <cloudflare|ngrok|zrok>`
 

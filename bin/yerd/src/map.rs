@@ -15,7 +15,8 @@ use yerd_ipc::{
 };
 
 use crate::cli::{
-    Command, DbAction, MailAction, NgrokAction, ServiceAction, TunnelAction, ZrokAction,
+    Command, DbAction, MailAction, NgrokAction, ServiceAction, TunnelAction, TunnelProviderArg,
+    ZrokAction,
 };
 use crate::error::ClientError;
 
@@ -827,8 +828,19 @@ fn validate_domain(domain: &str) -> Result<(), ClientError> {
 /// reads that token from stdin first (see [`stdin_secret_prompt`]).
 fn tunnel_request(action: &TunnelAction) -> Result<Request, ClientError> {
     let req = match action {
-        TunnelAction::Share { site } => Request::StartQuickTunnel { site: site.clone() },
-        TunnelAction::Stop { site } => Request::StopTunnel { site: site.clone() },
+        TunnelAction::Share {
+            site,
+            provider,
+            random_url,
+        } => Request::StartQuickTunnel {
+            site: site.clone(),
+            provider: provider.map(TunnelProviderArg::provider),
+            random_url: *random_url,
+        },
+        TunnelAction::Stop { site, provider } => Request::StopTunnel {
+            site: site.clone(),
+            provider: provider.map(TunnelProviderArg::provider),
+        },
         TunnelAction::Status => Request::TunnelStatus,
         TunnelAction::Login => Request::CloudflaredLogin,
         TunnelAction::Create { name } => Request::CreateNamedTunnel { name: name.clone() },
@@ -1918,14 +1930,21 @@ fn format_tunnels(tunnels: &[TunnelInfo], cloudflared: &CloudflaredStatus) -> St
     if tunnels.is_empty() {
         return format!("{cf}\nno active tunnels");
     }
-    let mut out = format!("{cf}\n\nSITE\tSTATE\tURL");
+    let mut out = format!("{cf}\n\nSITE\tPROVIDER\tSTATE\tURL");
     for t in tunnels {
         let target = t.url.as_deref().or(t.hostname.as_deref()).unwrap_or("-");
         let protected = if t.protected { "\t(password)" } else { "" };
+        let static_domain = if t.static_domain {
+            " (static domain)"
+        } else {
+            ""
+        };
         let _ = write!(
             out,
-            "\n{}\t{}\t{}{}",
+            "\n{}\t{}{}\t{}\t{}{}",
             t.site,
+            t.provider.display_name(),
+            static_domain,
             tunnel_state_label(t),
             target,
             protected
@@ -2492,10 +2511,14 @@ mod tests {
                 last_error: None,
                 protected: false,
                 warnings: Vec::new(),
+                provider: yerd_core::tunnel_provider::TunnelProvider::Cloudflare,
+                static_domain: false,
             };
             let out = format_tunnels(&[tunnel], &cf);
             assert!(
-                out.contains(&format!("\napp\t{label}\thttps://x.trycloudflare.com")),
+                out.contains(&format!(
+                    "\napp\tCloudflare\t{label}\thttps://x.trycloudflare.com"
+                )),
                 "{out}"
             );
         }
@@ -2511,6 +2534,8 @@ mod tests {
             last_error: None,
             protected: false,
             warnings: Vec::new(),
+            provider: yerd_core::tunnel_provider::TunnelProvider::Cloudflare,
+            static_domain: false,
         }
     }
 
@@ -2533,7 +2558,7 @@ mod tests {
         ] {
             let out = format_tunnels(&[tunnel_info(kind, TunnelRunState::Failed)], &cf);
             assert!(
-                out.contains(&format!("\napp\t{label}\tapp.example.com")),
+                out.contains(&format!("\napp\tCloudflare\t{label}\tapp.example.com")),
                 "{out}"
             );
         }
@@ -2547,7 +2572,7 @@ mod tests {
         tunnel.warnings = vec!["Vite dev server is running".into(), "SESSION_DOMAIN".into()];
         let out = format_tunnels(&[tunnel], &installed_cloudflared());
         assert!(
-            out.contains("\napp\treconnecting\tapp.example.com\t(password)"),
+            out.contains("\napp\tCloudflare\treconnecting\tapp.example.com\t(password)"),
             "{out}"
         );
         assert!(out.contains("\n  error: connection refused"), "{out}");
@@ -2571,10 +2596,87 @@ mod tests {
     fn format_tunnels_omits_extras_when_absent() {
         let tunnel = tunnel_info(yerd_ipc::TunnelKind::Named, TunnelRunState::Running);
         let out = format_tunnels(&[tunnel], &installed_cloudflared());
-        assert!(out.ends_with("\napp\tonline\tapp.example.com"), "{out}");
+        assert!(
+            out.ends_with("\napp\tCloudflare\tonline\tapp.example.com"),
+            "{out}"
+        );
         assert!(!out.contains("error:"), "{out}");
         assert!(!out.contains("warning:"), "{out}");
         assert!(!out.contains("(password)"), "{out}");
+    }
+
+    #[test]
+    fn format_tunnels_renders_the_provider_column() {
+        use yerd_core::tunnel_provider::TunnelProvider;
+        let mut ngrok = tunnel_info(yerd_ipc::TunnelKind::Quick, TunnelRunState::Running);
+        ngrok.provider = TunnelProvider::Ngrok;
+        ngrok.static_domain = true;
+        ngrok.hostname = None;
+        ngrok.url = Some("https://demo.ngrok-free.app".into());
+        let mut zrok = tunnel_info(yerd_ipc::TunnelKind::Quick, TunnelRunState::Connecting);
+        zrok.provider = TunnelProvider::Zrok;
+        zrok.hostname = None;
+        let out = format_tunnels(&[ngrok, zrok], &installed_cloudflared());
+        assert!(out.contains("\n\nSITE\tPROVIDER\tSTATE\tURL\n"), "{out}");
+        assert!(
+            out.contains("\napp\tngrok (static domain)\tonline\thttps://demo.ngrok-free.app"),
+            "{out}"
+        );
+        assert!(out.ends_with("\napp\tzrok\tconnecting\t-"), "{out}");
+    }
+
+    #[test]
+    fn tunnel_share_and_stop_map_their_provider() {
+        use crate::cli::TunnelProviderArg;
+        use yerd_core::tunnel_provider::TunnelProvider;
+        for (action, expected) in [
+            (
+                TunnelAction::Share {
+                    site: "app".into(),
+                    provider: None,
+                    random_url: false,
+                },
+                Request::StartQuickTunnel {
+                    site: "app".into(),
+                    provider: None,
+                    random_url: false,
+                },
+            ),
+            (
+                TunnelAction::Share {
+                    site: "app".into(),
+                    provider: Some(TunnelProviderArg::Ngrok),
+                    random_url: true,
+                },
+                Request::StartQuickTunnel {
+                    site: "app".into(),
+                    provider: Some(TunnelProvider::Ngrok),
+                    random_url: true,
+                },
+            ),
+            (
+                TunnelAction::Stop {
+                    site: "app".into(),
+                    provider: None,
+                },
+                Request::StopTunnel {
+                    site: "app".into(),
+                    provider: None,
+                },
+            ),
+            (
+                TunnelAction::Stop {
+                    site: "app".into(),
+                    provider: Some(TunnelProviderArg::Zrok),
+                },
+                Request::StopTunnel {
+                    site: "app".into(),
+                    provider: Some(TunnelProvider::Zrok),
+                },
+            ),
+        ] {
+            assert_eq!(tunnel_request(&action).unwrap(), expected, "{action:?}");
+        }
     }
 
     #[test]

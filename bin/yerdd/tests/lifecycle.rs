@@ -396,6 +396,75 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(10), daemon_task).await;
     }
 
+    /// Sharing through a provider that is installed but not set up is refused
+    /// over IPC before anything is spawned, and stopping a provider's share of
+    /// an unknown site is a no-op. The staged managed `zrok2` short-circuits the
+    /// `PATH` search, so the result does not depend on the host.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn share_through_unready_provider_is_refused_over_ipc() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use yerd_core::tunnel_provider::TunnelProvider;
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = make_dirs(tmp.path());
+        let cfg_path = dirs.config.join("yerd.toml");
+        let zrok = dirs.data.join("tools").join("zrok").join("zrok2");
+        std::fs::create_dir_all(zrok.parent().unwrap()).unwrap();
+        std::fs::write(&zrok, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&zrok, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::create_dir_all(tmp.path().join("app")).unwrap();
+        let mut cfg = valid_config();
+        cfg.linked.push(
+            yerd_core::Site::linked(
+                "app",
+                tmp.path().join("app"),
+                yerd_core::PhpVersion::new(8, 3),
+            )
+            .unwrap(),
+        );
+        let daemon = yerdd::startup::bring_up_with_dirs(dirs.clone(), cfg, cfg_path)
+            .await
+            .expect("bring_up_with_dirs");
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let daemon_task = tokio::spawn(async move { drive_subsystems(daemon, shutdown_rx).await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let ipc_sock = dirs.runtime.join("yerd.sock");
+
+        let resp = round_trip(
+            &ipc_sock,
+            &Request::StartQuickTunnel {
+                site: "app".into(),
+                provider: Some(TunnelProvider::Zrok),
+                random_url: false,
+            },
+        )
+        .await;
+        let Response::Error { code, message } = resp else {
+            panic!("expected an error, got {resp:?}");
+        };
+        assert_eq!(code, yerd_ipc::ErrorCode::InvalidPath);
+        assert!(message.contains("yerd tunnel zrok enable"), "{message}");
+
+        match round_trip(&ipc_sock, &Request::TunnelStatus).await {
+            Response::Tunnels { tunnels, .. } => assert!(tunnels.is_empty(), "{tunnels:?}"),
+            other => panic!("expected Tunnels, got {other:?}"),
+        }
+        match round_trip(
+            &ipc_sock,
+            &Request::StopTunnel {
+                site: "nope".into(),
+                provider: Some(TunnelProvider::Zrok),
+            },
+        )
+        .await
+        {
+            Response::Tunnels { tunnels, .. } => assert!(tunnels.is_empty(), "{tunnels:?}"),
+            other => panic!("expected Tunnels, got {other:?}"),
+        }
+
+        shutdown_tx.send_replace(true);
+        let _ = tokio::time::timeout(Duration::from_secs(10), daemon_task).await;
+    }
+
     /// Send one raw HTTP/1.1 `GET /` with `host` to the loopback `port` and
     /// return the response status code.
     async fn raw_http_status(port: u16, host: &str) -> u16 {

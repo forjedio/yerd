@@ -804,14 +804,23 @@ export async function pollJobToEnd(
 
 // ── tunnels (Cloudflare Tunnel integration) ──────────────────────────────────
 
-/** Share a site via a Quick Tunnel; returns the refreshed tunnel list. */
-export async function startQuickTunnel(site: string): Promise<TunnelsResponse> {
-  return ensureOk(await call<Response>("start_quick_tunnel", { site })) as TunnelsResponse;
+/** Share a site through `provider` (the configured default when omitted);
+ *  `randomUrl` makes an ngrok share ignore the static domain. Returns the
+ *  refreshed tunnel list. */
+export async function startQuickTunnel(
+  site: string,
+  provider?: TunnelProvider,
+  randomUrl = false,
+): Promise<TunnelsResponse> {
+  return ensureOk(
+    await call<Response>("start_quick_tunnel", { site, provider: provider ?? null, randomUrl }),
+  ) as TunnelsResponse;
 }
 
-/** Stop a site's tunnel; returns the refreshed tunnel list. */
-export async function stopTunnel(site: string): Promise<TunnelsResponse> {
-  return ensureOk(await call<Response>("stop_tunnel", { site })) as TunnelsResponse;
+/** Stop a site's share through `provider`, or every per-site share of it when
+ *  omitted; returns the refreshed tunnel list. */
+export async function stopTunnel(site: string, provider?: TunnelProvider): Promise<TunnelsResponse> {
+  return ensureOk(await call<Response>("stop_tunnel", { site, provider: provider ?? null })) as TunnelsResponse;
 }
 
 /** Live tunnels plus `cloudflared` install status. */

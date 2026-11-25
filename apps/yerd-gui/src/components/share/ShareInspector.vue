@@ -1,22 +1,36 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { Copy, ExternalLink, Info, KeyRound, RotateCw, Square, TriangleAlert, X } from "lucide-vue-next";
+import { Copy, ExternalLink, Info, KeyRound, Plus, RotateCw, Square, TriangleAlert, X } from "lucide-vue-next";
 
 import { CARD } from "@/components/ui/styles";
 import Button from "@/components/ui/Button.vue";
 import InspectorFrame from "@/components/ui/InspectorFrame.vue";
 import Spinner from "@/components/ui/Spinner.vue";
-import type { CloudflaredStatus, Site } from "@/ipc/types";
-import { scheme, type ShareItem, servedOver, stateDotClass, stateLabel, statusDetail, typeFacts } from "@/lib/share";
+import type { CloudflaredStatus, Site, TunnelProvider, TunnelProviderStatus } from "@/ipc/types";
+import { providerName } from "@/lib/providers";
+import {
+  kindDetail,
+  kindLabel,
+  scheme,
+  type ShareItem,
+  servedOver,
+  stateDotClass,
+  stateLabel,
+  statusDetail,
+  subtitle as shareSubtitle,
+} from "@/lib/share";
 import { cn } from "@/lib/utils";
 
+import ProviderTile from "./providers/ProviderTile.vue";
+
 /**
- * The Share inspector: the selected share's header (kind chip, Stop sharing for
- * a quick link, Restart tunnel and Remove from domain for a domain share, the
- * share password), the public URL card with Copy and Open, the TYPE / LOCAL
- * SITE / STATUS strip, any preflight warnings and, for a quick link, its
- * limits. In `panel` mode it sits beside the list; in `drawer` mode it slides
- * over the window (760px).
+ * The Share inspector: the selected share's header (provider chip, Stop
+ * sharing for a per-site share, Restart tunnel and Remove from domain for a
+ * domain share, the share password), the public URL card with Copy and Open,
+ * the PROVIDER / LOCAL SITE / STATUS strip, the site's other shares with
+ * "Also share through" rows for the providers it is not shared through, any
+ * preflight warnings and the provider's notes. In `panel` mode it sits beside
+ * the list; in `drawer` mode it slides over the window (760px).
  */
 const props = defineProps<{
   mode: "panel" | "drawer";
@@ -28,6 +42,12 @@ const props = defineProps<{
   /** The domain tunnel's name. */
   tunnelName: string | null;
   cloudflared: CloudflaredStatus | null;
+  /** The selected share's provider status, for ngrok and zrok's STATUS line. */
+  providerStatus: TunnelProviderStatus | null;
+  /** The site's other shares. */
+  siblings: ShareItem[];
+  /** The providers the site has no share through, with their readiness. */
+  unshared: { provider: TunnelProvider; ready: boolean }[];
   /** Whether the domain tunnel can be started (sites exposed, no live instance). */
   canRestart: boolean;
   /** Whether a Cloudflare account is connected; starting the domain tunnel needs one. */
@@ -39,7 +59,9 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: [];
-  stop: [];
+  stop: [provider: TunnelProvider];
+  alsoShare: [provider: TunnelProvider];
+  openSibling: [url: string];
   removeFromDomain: [];
   restart: [];
   password: [];
@@ -53,16 +75,20 @@ const failed = computed(() => props.item?.state === "failed");
 const reachable = computed(() => !!props.item?.url && props.item.state !== "failed" && props.item.state !== "offline");
 const localHost = computed(() => `${props.item?.site ?? ""}.${props.tld}`);
 
-const subtitle = computed(() => {
-  const item = props.item;
-  if (!item) return "";
-  const over = `${localHost.value} over ${scheme(props.site)}`;
-  if (item.kind === "quick") return `Sharing ${over} · anyone with the link can reach it`;
-  return props.tunnelName ? `Exposed through tunnel ${props.tunnelName} · ${over}` : `Exposed on your domain · ${over}`;
-});
+const subtitle = computed(() =>
+  props.item ? shareSubtitle(props.item, localHost.value, scheme(props.site), props.tunnelName) : "",
+);
 
+const detail = computed(() =>
+  props.item ? statusDetail(props.item, props.cloudflared, props.loggedIn, props.providerStatus) : "",
+);
+
+/** Per-site actions are keyed by provider (`stop:ngrok:app`); domain actions by site. */
 function isBusy(action: string): boolean {
-  return props.busy === `${action}:${props.item?.site}`;
+  const item = props.item;
+  if (!item) return false;
+  const perSite = action === "stop";
+  return props.busy === (perSite ? `${action}:${item.provider}:${item.site}` : `${action}:${item.site}`);
 }
 
 const TOOL = "h-8 gap-1.5 px-3 text-[13px] font-semibold";
@@ -89,7 +115,7 @@ const CELL_LABEL = "text-[11px] font-medium uppercase tracking-[0.6px] text-fain
               class="shrink-0 rounded bg-brand/15 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-[0.4px] text-brand"
               data-testid="share-chip"
             >
-              {{ typeFacts(item.kind).title }}
+              {{ providerName(item.provider).toUpperCase() }}
             </span>
           </h2>
           <p class="mt-1.5 truncate text-xs text-muted-foreground" data-testid="share-subtitle">{{ subtitle }}</p>
@@ -115,7 +141,7 @@ const CELL_LABEL = "text-[11px] font-medium uppercase tracking-[0.6px] text-fain
             :class="TOOL"
             :disabled="locked"
             data-action="stop"
-            @click="emit('stop')"
+            @click="emit('stop', item.provider)"
           >
             <Spinner v-if="isBusy('stop')" class="size-4" />
             <Square v-else />
@@ -198,10 +224,10 @@ const CELL_LABEL = "text-[11px] font-medium uppercase tracking-[0.6px] text-fain
         data-testid="share-facts"
         :data-failed="failed ? 'true' : undefined"
       >
-        <div :class="CELL">
-          <span :class="CELL_LABEL">Type</span>
-          <span class="truncate text-[13px] font-semibold">{{ typeFacts(item.kind).title }}</span>
-          <span class="truncate text-xs text-muted-foreground">{{ typeFacts(item.kind).detail }}</span>
+        <div :class="CELL" data-testid="share-provider">
+          <span :class="CELL_LABEL">Provider</span>
+          <span class="truncate text-[13px] font-semibold">{{ providerName(item.provider) }} · {{ kindLabel(item) }}</span>
+          <span class="truncate text-xs text-muted-foreground">{{ kindDetail(item) }}</span>
         </div>
         <div :class="CELL">
           <span :class="CELL_LABEL">Local site</span>
@@ -214,10 +240,56 @@ const CELL_LABEL = "text-[11px] font-medium uppercase tracking-[0.6px] text-fain
             <span :class="cn('size-1.5 shrink-0 rounded-full', stateDotClass(item.state))" aria-hidden="true" />
             <span :class="failed ? 'text-destructive' : undefined">{{ stateLabel(item.state) }}</span>
           </span>
-          <span class="line-clamp-2 text-xs text-muted-foreground" :title="statusDetail(item, cloudflared, loggedIn)">
-            {{ statusDetail(item, cloudflared, loggedIn) }}
+          <span class="line-clamp-2 text-xs text-muted-foreground" :title="detail">
+            {{ detail }}
           </span>
         </div>
+      </div>
+
+      <div v-if="siblings.length || unshared.length" :class="cn(CARD, 'mt-4')" data-testid="share-also">
+        <div class="flex items-center justify-between gap-3 border-b px-[18px] py-3">
+          <span :class="cn(CELL_LABEL, 'truncate')">{{ item.site }} is also shared</span>
+          <span class="shrink-0 text-[11px] text-faint">each provider gets its own URL</span>
+        </div>
+        <div
+          v-for="sib in siblings"
+          :key="sib.key"
+          class="flex items-center gap-3 border-b px-[18px] py-2.5"
+          :data-sibling="sib.key"
+        >
+          <ProviderTile :provider="sib.provider" />
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-[13px] font-semibold">{{ providerName(sib.provider) }} · {{ kindLabel(sib) }}</p>
+            <p class="mt-0.5 flex items-center gap-1.5 text-xs">
+              <span :class="cn('size-1.5 shrink-0 rounded-full', stateDotClass(sib.state))" aria-hidden="true" />
+              <span :class="cn('truncate', sib.host ? 'font-mono text-muted-foreground' : 'text-faint')">
+                {{ sib.host ?? "Waiting for URL…" }}
+              </span>
+            </p>
+          </div>
+          <Button
+            v-if="sib.url"
+            variant="outline"
+            :class="TOOL"
+            data-action="open-sibling"
+            @click="sib.url && emit('openSibling', sib.url)"
+          >
+            <ExternalLink /> Open
+          </Button>
+        </div>
+        <button
+          v-for="u in unshared"
+          :key="u.provider"
+          type="button"
+          class="flex w-full items-center gap-1.5 px-[18px] py-2.5 text-left text-[13px] font-semibold text-brand hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+          :disabled="locked"
+          :data-also="u.provider"
+          @click="emit('alsoShare', u.provider)"
+        >
+          <Plus class="size-3.5" aria-hidden="true" />
+          Also share through {{ providerName(u.provider) }}
+          <span v-if="!u.ready" class="font-normal text-faint">· needs set up</span>
+        </button>
       </div>
 
       <ul v-if="item.warnings.length" class="mt-4 flex flex-col gap-1.5" data-testid="share-warnings">
@@ -228,7 +300,7 @@ const CELL_LABEL = "text-[11px] font-medium uppercase tracking-[0.6px] text-fain
       </ul>
 
       <div
-        v-if="item.kind === 'quick'"
+        v-if="item.provider === 'cloudflare' && item.kind === 'quick'"
         class="mt-4 flex items-start gap-3 rounded-[10px] border bg-sidebar p-4 text-[13px] leading-relaxed text-muted-foreground"
         data-testid="share-note"
       >
@@ -238,6 +310,14 @@ const CELL_LABEL = "text-[11px] font-medium uppercase tracking-[0.6px] text-fain
           concurrent requests, and server-sent events aren't supported. For a stable address, expose the site on
           your own domain instead.
         </p>
+      </div>
+      <div
+        v-else-if="item.provider === 'ngrok'"
+        class="mt-4 flex items-start gap-3 rounded-[10px] border bg-sidebar p-4 text-[13px] leading-relaxed text-muted-foreground"
+        data-testid="share-note"
+      >
+        <Info class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+        <p>ngrok's free plan shows a one-time warning page to browsers; webhooks and API clients aren't affected.</p>
       </div>
     </div>
   </InspectorFrame>
