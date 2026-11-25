@@ -215,7 +215,7 @@ async fn start_ngrok(
             return error(
                 ErrorCode::AlreadyExists,
                 format!(
-                    "the ngrok static domain {domain} is already in use by {holder}'s share - stop it or share with a random URL"
+                    "the ngrok static domain {domain} is already in use by {holder}'s share - stop it or share without the static domain"
                 ),
             );
         }

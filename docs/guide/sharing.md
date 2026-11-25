@@ -93,7 +93,8 @@ no account, so Cloudflare is ready as soon as `cloudflared` is installed.
    and paste it into the **Authtoken** field, then **Save**.
 3. Optionally enter your **Static domain** (free plans include one), such as
    `name.ngrok-free.app`. A pasted `https://` and trailing `/` are stripped.
-   Leave it empty to get a random URL each time.
+   Leave it empty to use the address ngrok assigns to your account (on free
+   plans, a fixed dev domain that doesn't change between shares).
 
 The authtoken is stored in Yerd's [config file](../reference/configuration#tunnel)
 (which only your user can read) and is handed to ngrok as `NGROK_AUTHTOKEN`. It
@@ -186,7 +187,7 @@ fresh `*.trycloudflare.com` names. Point your system DNS at `1.1.1.1` or
 
 ```sh
 yerd tunnel share app --provider ngrok                 # your static domain, if saved
-yerd tunnel share blog --provider ngrok --random-url   # let ngrok pick the address
+yerd tunnel share blog --provider ngrok --random-url   # your account's ngrok address
 yerd tunnel stop app --provider ngrok
 ```
 
@@ -194,12 +195,15 @@ yerd tunnel stop app --provider ngrok
   `PATH` works too, but it must be **ngrok 3.16.0 or newer** to use a static
   domain (older agents don't know the `--url` flag).
 - Save your authtoken in the **Providers** sheet (or `yerd tunnel ngrok token`).
-- With a [static domain](#ngrok) saved, shares use it unless you ask for a
-  **random URL**. Only one share can hold the static domain at a time; the
-  desktop app disables it while another site's share uses it, and from the CLI
-  ngrok's own error tells you, so share the second site with `--random-url`.
-  Without a static domain, ngrok picks the address (on free plans, your
-  account's dev domain).
+- With a [static domain](#ngrok) saved, shares use it unless you choose the
+  **Account URL** (`--random-url`). Only one share can hold the static domain
+  at a time; the desktop app disables it while another site's share uses it,
+  and from the CLI ngrok's own error tells you, so share the second site with
+  `--random-url`.
+- Without a static domain, or with `--random-url`, the share uses the address
+  ngrok assigns to your account. On free plans that is a fixed dev domain, so
+  it doesn't change between shares; `--random-url` only means "don't use
+  Yerd's saved static domain", not "give me a new address".
 - Free plans limit how many agents can run at once, so a second ngrok share may
   fail with ngrok's own error (for example `ERR_NGROK_108`). Yerd shows that
   error as-is.
@@ -323,7 +327,7 @@ shows a count.
   **Not set up**); **Manage** opens the Providers sheet.
 - Below them, **Shares** lists every share with the provider's icon, the site,
   the provider and kind (Cloudflare **Quick link** or **Your domain**, ngrok
-  **Reserved domain** or **Random URL**, zrok **Public share**), a status dot
+  **Reserved domain** or **Account URL**, zrok **Public share**), a status dot
   and its public address. The **All / Cloudflare / ngrok / zrok** filter narrows
   the list. On a narrower window the list becomes a table (site, provider,
   public URL and status) and a share's details open in a drawer.
@@ -348,7 +352,7 @@ shows a count.
 - **Share a site** opens one dialog: pick a site, a **Provider** (the default is
   preselected; a provider that isn't ready offers **Set up**, which opens the
   Providers sheet on it), then the URL. For ngrok with a static domain saved,
-  choose **Static domain** or **Random URL**. If the site is already shared
+  choose **Static domain** or **Account URL**. If the site is already shared
   through another provider, a note says the new share adds a second public URL.
   For Cloudflare choose **Quick link** or **Your domain**. For your domain the
   **Public hostname** is

@@ -131,12 +131,11 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Tunnel {
             action:
                 crate::cli::TunnelAction::Share {
-                    site,
                     provider: Some(provider),
                     ..
                 },
         } if provider.provider() != yerd_core::tunnel_provider::TunnelProvider::Cloudflare => {
-            return run_provider_share(&cli.command, site, provider.provider(), cli.json).await;
+            return run_provider_share(&cli.command, provider.provider(), cli.json).await;
         }
         Command::Update {
             target: None,
@@ -908,10 +907,10 @@ async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
 /// `yerd tunnel share --provider ngrok|zrok`: start the share, guarding against
 /// an older daemon that ignores `provider` and starts Cloudflare instead. The
 /// tunnel list is read first so a Cloudflare share that start created can be
-/// stopped again, leaving one the user already had alone.
+/// stopped again, leaving one the user already had alone. A failed stop is
+/// reported, since that site may still be public.
 async fn run_provider_share(
     command: &Command,
-    site: &str,
     provider: yerd_core::tunnel_provider::TunnelProvider,
     json: bool,
 ) -> ExitCode {
@@ -939,14 +938,19 @@ async fn run_provider_share(
         }
     };
     if let Response::Tunnels { tunnels, .. } = &resp {
-        let check = map::check_provider_start(site, provider, before.as_deref(), tunnels);
+        let check = map::check_provider_start(provider, before.as_deref(), tunnels);
         if check.unsupported {
             if let Some(name) = check.stop_cloudflare {
                 let stop = Request::StopTunnel {
-                    site: name,
+                    site: name.clone(),
                     provider: Some(yerd_core::tunnel_provider::TunnelProvider::Cloudflare),
                 };
-                let _ = transport::exchange(&stop).await;
+                if matches!(
+                    transport::exchange(&stop).await,
+                    Err(_) | Ok(Response::Error { .. })
+                ) {
+                    eprintln!("yerd: warning: {}", map::cleanup_failed_message(&name));
+                }
             }
             eprintln!("yerd: {}", map::unsupported_provider_message(provider));
             return ExitCode::from(1);

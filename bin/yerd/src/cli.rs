@@ -793,8 +793,8 @@ pub enum TunnelAction {
         /// The provider to share through.
         #[arg(long, value_enum)]
         provider: Option<TunnelProviderArg>,
-        /// ngrok only: ignore the configured static domain and let ngrok pick
-        /// the URL.
+        /// ngrok only: don't use the configured static domain; the share gets
+        /// the URL ngrok assigns to the account instead.
         #[arg(long)]
         random_url: bool,
     },

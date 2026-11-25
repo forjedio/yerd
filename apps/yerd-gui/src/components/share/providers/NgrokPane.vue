@@ -151,7 +151,7 @@ const HELP = "mt-2 text-xs text-muted-foreground";
             Save
           </Button>
         </div>
-        <p :class="HELP">Free plans include one static domain. Leave empty to get a random URL each time.</p>
+        <p :class="HELP">Free plans include one static domain. Leave empty to use the address ngrok assigns to your account.</p>
       </section>
     </div>
 

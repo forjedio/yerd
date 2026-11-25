@@ -754,8 +754,8 @@ pub enum Request {
         /// provider.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider: Option<TunnelProvider>,
-        /// ngrok only: ignore the configured static domain and let ngrok pick
-        /// the URL.
+        /// ngrok only: don't use the configured static domain; the share gets
+        /// the URL ngrok assigns to the account instead.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         random_url: bool,
     },

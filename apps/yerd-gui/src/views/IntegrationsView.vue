@@ -50,6 +50,7 @@ import type {
 import {
   canStartNamed,
   checkProviderStart,
+  cleanupFailedMessage,
   filterShares,
   loginUrlFrom,
   namedEntry,
@@ -359,13 +360,15 @@ async function doShare(site: string, provider: TunnelProvider, randomUrl: boolea
   const before = tunnels.value;
   try {
     const r = await startQuickTunnel(site, provider, randomUrl);
-    const check = checkProviderStart(site, provider, before, r.tunnels);
-    const stopped = check.stopCloudflare ? await stopTunnel(site, "cloudflare").catch(() => null) : null;
+    const check = checkProviderStart(provider, before, r.tunnels);
+    const stray = check.stopCloudflare;
+    const stopped = stray ? await stopTunnel(stray, "cloudflare").catch(() => null) : null;
     applyTunnelStatus(stopped ?? r);
     void refreshDaemon();
     refreshProviders();
     if (check.unsupported) {
       toast.error(`Couldn't share ${site}`, unsupportedProviderMessage(provider));
+      if (stray && !stopped) toast.error(`Couldn't stop the Cloudflare share of ${stray}`, cleanupFailedMessage(stray));
       return false;
     }
     const started = r.tunnels.find(

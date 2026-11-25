@@ -909,46 +909,40 @@ pub struct ProviderStartCheck {
     pub stop_cloudflare: Option<String>,
 }
 
-/// Whether `input` (a site name or `.test` host, as typed) names the site
-/// `name` the daemon reported.
-fn names_site(input: &str, name: &str) -> bool {
-    input == name
-        || input
-            .strip_prefix(name)
-            .is_some_and(|rest| rest.starts_with('.'))
-}
-
-fn has_share(tunnels: &[TunnelInfo], input: &str, provider: TunnelProvider) -> Option<String> {
+fn cloudflare_quick_sites(tunnels: &[TunnelInfo]) -> impl Iterator<Item = &str> {
     tunnels
         .iter()
-        .find(|t| {
-            t.kind == TunnelKind::Quick && t.provider == provider && names_site(input, &t.site)
-        })
-        .map(|t| t.site.clone())
+        .filter(|t| t.kind == TunnelKind::Quick && t.provider == TunnelProvider::Cloudflare)
+        .map(|t| t.site.as_str())
 }
 
 /// Check a `StartQuickTunnel` reply against the provider that was asked for.
-/// An older daemon ignores `provider` and starts a Cloudflare quick link, so a
-/// reply with no share of `site` through a non-Cloudflare `provider` is
-/// unsupported. The stray Cloudflare share is stopped only when `before` (the
-/// `TunnelStatus` ahead of the start, or `None` when unknown) shows it didn't
-/// exist.
+/// A daemon that predates ngrok and zrok ignores `provider` and starts a
+/// Cloudflare quick link, so a reply holding no share at all through a
+/// non-Cloudflare `provider` is unsupported. The stray Cloudflare share is the
+/// one Cloudflare quick share in `after` that `before` (the `TunnelStatus`
+/// ahead of the start, or `None` when unknown) lacks; it is left alone when
+/// that can't be told for certain.
 #[must_use]
 pub fn check_provider_start(
-    site: &str,
     provider: TunnelProvider,
     before: Option<&[TunnelInfo]>,
     after: &[TunnelInfo],
 ) -> ProviderStartCheck {
-    if provider == TunnelProvider::Cloudflare || has_share(after, site, provider).is_some() {
+    if provider == TunnelProvider::Cloudflare || after.iter().any(|t| t.provider == provider) {
         return ProviderStartCheck {
             unsupported: false,
             stop_cloudflare: None,
         };
     }
-    let stop_cloudflare = before
-        .filter(|prior| has_share(prior, site, TunnelProvider::Cloudflare).is_none())
-        .and_then(|_| has_share(after, site, TunnelProvider::Cloudflare));
+    let stop_cloudflare = before.and_then(|prior| {
+        let existing: std::collections::BTreeSet<&str> = cloudflare_quick_sites(prior).collect();
+        let mut created = cloudflare_quick_sites(after).filter(|s| !existing.contains(s));
+        match (created.next(), created.next()) {
+            (Some(site), None) => Some(site.to_owned()),
+            _ => None,
+        }
+    });
     ProviderStartCheck {
         unsupported: true,
         stop_cloudflare,
@@ -961,6 +955,15 @@ pub fn unsupported_provider_message(provider: TunnelProvider) -> String {
     format!(
         "The running Yerd daemon doesn't support {} sharing yet - restart Yerd and try again",
         provider.display_name()
+    )
+}
+
+/// The warning shown when the stray Cloudflare share of `site` couldn't be
+/// stopped, naming the command that stops it by hand.
+#[must_use]
+pub fn cleanup_failed_message(site: &str) -> String {
+    format!(
+        "{site} may still be public through its Cloudflare quick link - stop it with `yerd tunnel stop {site} --provider cloudflare`"
     )
 }
 
@@ -2852,7 +2855,6 @@ mod tests {
     fn check_provider_start_spots_a_daemon_that_ignored_the_provider() {
         type Case = (
             &'static str,
-            &'static str,
             TunnelProvider,
             Option<Vec<TunnelInfo>>,
             Vec<TunnelInfo>,
@@ -2860,7 +2862,9 @@ mod tests {
         );
         let cf = || share("app", TunnelProvider::Cloudflare);
         let ngrok = || share("app", TunnelProvider::Ngrok);
+        let zrok_blog = || share("blog", TunnelProvider::Zrok);
         let other = || share("blog", TunnelProvider::Cloudflare);
+        let third = || share("shop", TunnelProvider::Cloudflare);
         let ok = ProviderStartCheck {
             unsupported: false,
             stop_cloudflare: None,
@@ -2872,7 +2876,6 @@ mod tests {
         let cases: Vec<Case> = vec![
             (
                 "cloudflare asked",
-                "app",
                 TunnelProvider::Cloudflare,
                 Some(vec![]),
                 vec![cf()],
@@ -2880,31 +2883,34 @@ mod tests {
             ),
             (
                 "share present",
-                "app",
                 TunnelProvider::Ngrok,
                 Some(vec![]),
                 vec![cf(), ngrok()],
                 ok.clone(),
             ),
             (
-                "share present for a host",
-                "app.test",
+                "share present under the daemon's canonical name",
                 TunnelProvider::Ngrok,
                 None,
                 vec![ngrok()],
                 ok.clone(),
             ),
             (
+                "another site shares through the provider",
+                TunnelProvider::Zrok,
+                Some(vec![]),
+                vec![zrok_blog()],
+                ok.clone(),
+            ),
+            (
                 "old daemon created cloudflare",
-                "app",
                 TunnelProvider::Ngrok,
                 Some(vec![other()]),
                 vec![other(), cf()],
                 unsupported(Some("app")),
             ),
             (
-                "old daemon, host typed",
-                "app.test",
+                "old daemon, created share found by diff alone",
                 TunnelProvider::Zrok,
                 Some(vec![]),
                 vec![cf()],
@@ -2912,7 +2918,6 @@ mod tests {
             ),
             (
                 "cloudflare existed",
-                "app",
                 TunnelProvider::Ngrok,
                 Some(vec![cf()]),
                 vec![cf()],
@@ -2920,7 +2925,6 @@ mod tests {
             ),
             (
                 "prior list unknown",
-                "app",
                 TunnelProvider::Ngrok,
                 None,
                 vec![cf()],
@@ -2928,28 +2932,34 @@ mod tests {
             ),
             (
                 "nothing came back",
-                "app",
                 TunnelProvider::Zrok,
-                Some(vec![]),
+                Some(vec![other()]),
                 vec![other()],
                 unsupported(None),
             ),
             (
-                "similar name is another site",
-                "application",
+                "two new cloudflare shares are ambiguous",
                 TunnelProvider::Ngrok,
                 Some(vec![]),
-                vec![ngrok()],
+                vec![cf(), third()],
                 unsupported(None),
             ),
         ];
-        for (label, site, provider, before, after, want) in cases {
+        for (label, provider, before, after, want) in cases {
             assert_eq!(
-                check_provider_start(site, provider, before.as_deref(), &after),
+                check_provider_start(provider, before.as_deref(), &after),
                 want,
                 "{label}"
             );
         }
+    }
+
+    #[test]
+    fn cleanup_failed_message_names_the_manual_stop() {
+        assert_eq!(
+            cleanup_failed_message("app"),
+            "app may still be public through its Cloudflare quick link - stop it with `yerd tunnel stop app --provider cloudflare`"
+        );
     }
 
     #[test]

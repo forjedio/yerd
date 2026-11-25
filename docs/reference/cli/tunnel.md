@@ -62,7 +62,7 @@ provider at the same time.
 | Option | Description |
 | --- | --- |
 | `--provider <cloudflare\|ngrok\|zrok>` | Share through this provider instead of the default. |
-| `--random-url` | ngrok only: ignore the saved static domain and let ngrok pick the address (for example when another site's share already uses the static domain). |
+| `--random-url` | ngrok only: don't use the saved static domain; the share gets the address ngrok assigns to your account instead (for example when another site's share already uses the static domain). |
 
 Through Cloudflare, the site gets a random `https://<name>.trycloudflare.com`
 URL. The command waits until Cloudflare's edge reports the tunnel online; if it
@@ -78,10 +78,13 @@ first (`yerd tunnel zrok enable`). A provider that isn't ready is an error that
 says what to set up; there is no fallback to another provider.
 
 Every share is torn down on `stop` or daemon shutdown. A temporary URL (a
-Cloudflare quick link, zrok, or ngrok without a saved static domain or with
-`--random-url`) changes on the next share, and a crashed share is restarted
-automatically, but with a **new** URL. An ngrok share on the saved static domain
-keeps that domain across shares and restarts. Shares are never resumed after a
+Cloudflare quick link or zrok) changes on the next share, and a crashed share is
+restarted automatically, but with a **new** URL. An ngrok share on the saved
+static domain keeps that domain across shares and restarts. An ngrok share
+without a saved static domain, or with `--random-url`, uses the address ngrok
+assigns to your account: on the free plan that is a fixed dev domain that
+doesn't change between shares, and on paid plans it depends on the account's
+settings. Shares are never resumed after a
 daemon restart. Sharing a site that is already shared (even one that is
 retrying) keeps the existing tunnel.
 

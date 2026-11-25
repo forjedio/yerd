@@ -53,8 +53,8 @@ pub enum TunnelKind {
     Named,
     /// An ngrok share; ready once its public URL is logged.
     Ngrok {
-        /// Whether it serves the configured static domain rather than a URL
-        /// ngrok picks.
+        /// Whether it serves the configured static domain rather than the URL
+        /// ngrok assigns to the account.
         static_domain: bool,
     },
     /// A zrok public share; ready once its public URL is logged.

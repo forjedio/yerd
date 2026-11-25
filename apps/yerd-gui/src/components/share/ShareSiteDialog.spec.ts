@@ -237,12 +237,16 @@ describe("ShareSiteDialog", () => {
     expect(w.emitted("setup")).toEqual([["zrok"]]);
   });
 
-  it("preselects ngrok's static domain and lets Random URL replace it", async () => {
+  it("preselects ngrok's static domain and lets the account URL replace it", async () => {
     const w = mountDialog();
     await flushPromises();
     await pickProvider("ngrok");
     await pickSite("blog");
     expect(document.querySelector('[data-url="static"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(document.querySelector('[data-url="random"]')?.textContent).toContain("Account URL");
+    expect(document.querySelector('[data-url="random"]')?.textContent).toContain(
+      "The address ngrok assigns to your account",
+    );
     submit().click();
     await pickUrl("random");
     submit().click();
@@ -268,7 +272,7 @@ describe("ShareSiteDialog", () => {
     ]);
   });
 
-  it("falls back to a random URL when the static domain is taken while open", async () => {
+  it("falls back to the account URL when the static domain is taken while open", async () => {
     const w = mountDialog();
     await flushPromises();
     await pickProvider("ngrok");

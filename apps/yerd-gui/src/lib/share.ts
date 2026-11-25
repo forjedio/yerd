@@ -66,28 +66,40 @@ export function siteShare(
 export interface ProviderStartCheck {
   /** The daemon ignored the requested provider: report an error, not success. */
   unsupported: boolean;
-  /** Stop the site's Cloudflare share, since this start created it. */
-  stopCloudflare: boolean;
+  /** The site whose Cloudflare share this start created and must be stopped, else null. */
+  stopCloudflare: string | null;
+}
+
+function cloudflareQuickSites(tunnels: readonly TunnelInfo[]): string[] {
+  return tunnels.filter((t) => t.kind === "quick" && (t.provider ?? "cloudflare") === "cloudflare").map((t) => t.site);
 }
 
 /**
  * Check a `start_quick_tunnel` reply against the provider that was asked for.
- * An older daemon ignores `provider` and starts a Cloudflare quick link, so a
- * reply with no share of `site` through a non-Cloudflare `provider` is
- * unsupported. The stray Cloudflare share is stopped only when `before` (the
- * tunnel list ahead of the start, or null when unknown) shows it didn't exist.
+ * A daemon that predates ngrok and zrok ignores `provider` and starts a
+ * Cloudflare quick link, so a reply holding no share at all through a
+ * non-Cloudflare `provider` is unsupported. The stray Cloudflare share is the
+ * one Cloudflare quick share in `after` that `before` (the tunnel list ahead of
+ * the start, or null when unknown) lacks; it is left alone when that can't be
+ * told for certain.
  */
 export function checkProviderStart(
-  site: string,
   provider: TunnelProvider | undefined,
   before: readonly TunnelInfo[] | null,
   after: readonly TunnelInfo[],
 ): ProviderStartCheck {
-  if (!provider || provider === "cloudflare" || siteShare(after, site, provider)) {
-    return { unsupported: false, stopCloudflare: false };
+  if (!provider || provider === "cloudflare" || after.some((t) => t.provider === provider)) {
+    return { unsupported: false, stopCloudflare: null };
   }
-  const created = before !== null && !siteShare(before, site, "cloudflare") && !!siteShare(after, site, "cloudflare");
-  return { unsupported: true, stopCloudflare: created };
+  if (before === null) return { unsupported: true, stopCloudflare: null };
+  const existing = new Set(cloudflareQuickSites(before));
+  const created = cloudflareQuickSites(after).filter((s) => !existing.has(s));
+  return { unsupported: true, stopCloudflare: created.length === 1 ? (created[0] ?? null) : null };
+}
+
+/** The error a client shows when a stray Cloudflare share of `site` couldn't be stopped. */
+export function cleanupFailedMessage(site: string): string {
+  return `${site} may still be public through its Cloudflare quick link - stop it on the Share page`;
 }
 
 /** The error a client shows when the daemon can't share through `provider`. */
@@ -162,14 +174,14 @@ export function filterShares(items: readonly ShareItem[], filter: ShareFilter): 
 
 /** How a share is published, in the design's words. */
 export function kindLabel(item: ShareItem): string {
-  if (item.provider === "ngrok") return item.staticDomain ? "Reserved domain" : "Random URL";
+  if (item.provider === "ngrok") return item.staticDomain ? "Reserved domain" : "Account URL";
   if (item.provider === "zrok") return "Public share";
   return item.kind === "quick" ? "Quick link" : "Your domain";
 }
 
 /** The PROVIDER fact's second line. */
 export function kindDetail(item: ShareItem): string {
-  if (item.provider === "ngrok") return item.staticDomain ? "Your static ngrok domain" : "ngrok picks the address";
+  if (item.provider === "ngrok") return item.staticDomain ? "Your static ngrok domain" : "The address ngrok assigns to your account";
   if (item.provider === "zrok") return "New zrok URL each start";
   return item.kind === "quick" ? "Temporary trycloudflare.com URL" : "Stable hostname, survives restarts";
 }

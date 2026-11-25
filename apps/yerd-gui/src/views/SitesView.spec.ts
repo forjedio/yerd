@@ -511,6 +511,32 @@ describe("SitesView inspector wiring", () => {
       "The running Yerd daemon doesn't support ngrok sharing yet - restart Yerd and try again",
     );
     expect(toastFor("Sharing alpha")).toBeUndefined();
+    expect(toastFor("Couldn't stop the Cloudflare share of alpha")).toBeUndefined();
+  });
+
+  it("warns that the Cloudflare share may still be live when stopping it fails", async () => {
+    serve({
+      sites: [site("alpha")],
+      parked: ["/srv"],
+      routes: {
+        list_tunnel_providers: providersRoute("ngrok"),
+        tunnel_status: () => ({ type: "tunnels", tunnels: [], cloudflared: { installed: true, logged_in: false } }),
+        start_quick_tunnel: () => ({
+          type: "tunnels",
+          tunnels: [{ site: "alpha", kind: "quick", state: "running", url: "https://a.trycloudflare.com" }],
+        }),
+        stop_tunnel: () => Promise.reject(new Error("daemon busy")),
+      },
+    });
+    const w = await mountSites();
+    const inspector = await openDrawer(w, "alpha");
+    inspector.vm.$emit("share", site("alpha"));
+    await flushPromises();
+    expect(calls("stop_tunnel")).toEqual([{ site: "alpha", provider: "cloudflare" }]);
+    expect(toastFor("Couldn't share alpha")).toBeDefined();
+    expect(toastFor("Couldn't stop the Cloudflare share of alpha")?.detail).toBe(
+      "alpha may still be public through its Cloudflare quick link - stop it on the Share page",
+    );
   });
 
   it("shares through the default provider when the daemon honours it", async () => {

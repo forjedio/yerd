@@ -4,6 +4,7 @@ import {
   siteShare,
   canStartNamed,
   checkProviderStart,
+  cleanupFailedMessage,
   cloudflaredLine,
   filterShares,
   hostPlaceholder,
@@ -169,16 +170,28 @@ describe("checkProviderStart", () => {
   const ngrok = quick("app", { provider: "ngrok" });
   const other = quick("blog");
 
+  const zrokBlog = quick("blog", { provider: "zrok" });
+  const shop = quick("shop");
+
   it.each([
-    ["cloudflare asked", "cloudflare", [], [cf], false, false],
-    ["no provider asked", undefined, [], [cf], false, false],
-    ["the asked share is present", "ngrok", [], [cf, ngrok], false, false],
-    ["an old daemon started a new Cloudflare share", "ngrok", [other], [other, cf], true, true],
-    ["the Cloudflare share already existed", "ngrok", [cf], [cf], true, false],
-    ["the prior list is unknown", "ngrok", null, [cf], true, false],
-    ["no Cloudflare share came back either", "zrok", [], [], true, false],
+    ["cloudflare asked", "cloudflare", [], [cf], false, null],
+    ["no provider asked", undefined, [], [cf], false, null],
+    ["the asked share is present", "ngrok", [], [cf, ngrok], false, null],
+    ["the share is present without a prior list", "ngrok", null, [ngrok], false, null],
+    ["another site shares through the provider", "zrok", [], [zrokBlog], false, null],
+    ["an old daemon started a new Cloudflare share", "ngrok", [other], [other, cf], true, "app"],
+    ["the Cloudflare share already existed", "ngrok", [cf], [cf], true, null],
+    ["the prior list is unknown", "ngrok", null, [cf], true, null],
+    ["no Cloudflare share came back either", "zrok", [other], [other], true, null],
+    ["two new Cloudflare shares are ambiguous", "ngrok", [], [cf, shop], true, null],
   ] as const)("%s", (_label, provider, before, after, unsupported, stopCloudflare) => {
-    expect(checkProviderStart("app", provider, before, after)).toEqual({ unsupported, stopCloudflare });
+    expect(checkProviderStart(provider, before, after)).toEqual({ unsupported, stopCloudflare });
+  });
+
+  it("points at the Share page when cleanup fails", () => {
+    expect(cleanupFailedMessage("app")).toBe(
+      "app may still be public through its Cloudflare quick link - stop it on the Share page",
+    );
   });
 
   it("names the provider in the error", () => {
@@ -193,7 +206,7 @@ describe("provider-aware share helpers", () => {
     [item(), "Quick link", "Temporary trycloudflare.com URL"],
     [item({ kind: "domain" }), "Your domain", "Stable hostname, survives restarts"],
     [item({ provider: "ngrok", staticDomain: true }), "Reserved domain", "Your static ngrok domain"],
-    [item({ provider: "ngrok" }), "Random URL", "ngrok picks the address"],
+    [item({ provider: "ngrok" }), "Account URL", "The address ngrok assigns to your account"],
     [item({ provider: "zrok" }), "Public share", "New zrok URL each start"],
   ])("labels %#", (share, label, detail) => {
     expect(kindLabel(share)).toBe(label);

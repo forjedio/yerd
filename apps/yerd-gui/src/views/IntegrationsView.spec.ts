@@ -443,7 +443,27 @@ describe("IntegrationsView providers", () => {
       "The running Yerd daemon doesn't support ngrok sharing yet - restart Yerd and try again",
     );
     expect(toastTitles()).not.toContain("Sharing app");
+    expect(toastTitles()).not.toContain("Couldn't stop the Cloudflare share of app");
     expect(dialogTitles()).toContain("Share a site");
+  });
+
+  it("warns that the Cloudflare share may still be live when stopping it fails", async () => {
+    stubIpc({
+      providers: providers(),
+      startQuick: (args) =>
+        Promise.resolve({ type: "tunnels", tunnels: [quick("running", { site: args.site as string })], cloudflared: MANAGED }),
+      stop: () => Promise.reject(new Error("daemon busy")),
+    });
+    await mountView();
+    await openShareDialog();
+    await click(document.querySelector('[data-provider="ngrok"]'));
+    await click(document.querySelector('[data-option="app"]'));
+    await click(document.querySelector('[data-testid="share-submit"]'));
+    expect(calls("stop_tunnel")).toEqual([{ site: "app", provider: "cloudflare" }]);
+    expect(toastTitles()).toContain("Couldn't share app");
+    expect(useToast().toasts.value.find((t) => t.title === "Couldn't stop the Cloudflare share of app")?.detail).toBe(
+      "app may still be public through its Cloudflare quick link - stop it on the Share page",
+    );
   });
 
   it("keeps a Cloudflare share that existed before an old daemon ignored the provider", async () => {

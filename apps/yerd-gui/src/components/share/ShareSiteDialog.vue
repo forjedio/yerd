@@ -38,8 +38,8 @@ export interface ShareRequest {
  * is chosen. Cloudflare offers a Quick link (a temporary trycloudflare.com URL)
  * or Your domain (a hostname on the account's zone through the domain tunnel,
  * which follows the site until edited). ngrok offers its static domain, when
- * one is configured and free, or a random URL. zrok gives a new public URL
- * each start. A provider that is not ready replaces the URL choice with a
+ * one is configured and free, or the URL ngrok assigns to the account. zrok
+ * gives a new public URL each start. A provider that is not ready replaces the URL choice with a
  * "Set up" call to action, or with a Retry when the provider list failed to
  * load. While the share is in flight the dialog stays open
  * and locked; the view closes it on success.
@@ -334,8 +334,8 @@ const OPTION_BTN =
             @click="pickUrl('random')"
           >
             <span class="min-w-0">
-              <span class="block text-[13px] font-semibold">Random URL</span>
-              <span class="block text-xs text-muted-foreground">ngrok picks the address</span>
+              <span class="block text-[13px] font-semibold">Account URL</span>
+              <span class="block text-xs text-muted-foreground">The address ngrok assigns to your account</span>
             </span>
           </button>
         </div>
@@ -344,7 +344,7 @@ const OPTION_BTN =
       <div v-else>
         <span :class="LABEL">URL</span>
         <p class="text-xs text-muted-foreground" data-testid="url-line">
-          <template v-if="provider === 'ngrok'">ngrok picks the address. Save a static domain in Providers to keep one.</template>
+          <template v-if="provider === 'ngrok'">ngrok uses the address it assigns to your account. Save a static domain in Providers to use that instead.</template>
           <template v-else>zrok gives the share a new public URL each time it starts.</template>
         </p>
       </div>
