@@ -213,10 +213,13 @@ struct ResponseHeadersSectionWire {
     linked: BTreeMap<String, Vec<ResponseHeaderWire>>,
     #[serde(default)]
     parked: BTreeMap<String, Vec<ResponseHeaderWire>>,
+    #[serde(default)]
+    proxy: BTreeMap<String, Vec<ResponseHeaderWire>>,
 }
 
 /// One `[[response_headers.linked.<name>]]` /
-/// `[[response_headers.parked."<docroot>"]]` header (validated into
+/// `[[response_headers.parked."<docroot>"]]` /
+/// `[[response_headers.proxy.<name>]]` header (validated into
 /// `yerd_core::ResponseHeader` in `TryFrom`).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -708,6 +711,7 @@ impl TryFrom<Wire> for Config {
         let response_headers = crate::schema::ResponseHeadersSection {
             linked: convert_response_headers(w.response_headers.linked)?,
             parked: convert_response_headers(w.response_headers.parked)?,
+            proxy: convert_response_headers(w.response_headers.proxy)?,
         };
         let network = convert_network(w.network)?;
         Ok(Config {
@@ -1196,8 +1200,10 @@ fn validate_route_rule_set(rules: &[yerd_core::RouteRule]) -> Result<(), ConfigE
 }
 
 /// Linked `[response_headers]` keys must name a `[[linked]]` site, and each
-/// site's header names must be unique ignoring ASCII case. Parked headers key
-/// by document-root and can't be checked here, exactly as for `[route_rules]`.
+/// site's or proxy's header names must be unique ignoring ASCII case. Parked
+/// headers key by document-root and can't be checked here, exactly as for
+/// `[route_rules]`. Proxy keys naming no current proxy are tolerated, as
+/// `[domains.proxy]` tolerates them: the daemon neither routes nor lists them.
 fn validate_response_headers(c: &Config) -> Result<(), ConfigError> {
     let linked_names: BTreeSet<&str> = c.linked.iter().map(yerd_core::Site::name).collect();
     for (site, headers) in &c.response_headers.linked {
@@ -1206,7 +1212,12 @@ fn validate_response_headers(c: &Config) -> Result<(), ConfigError> {
         }
         validate_response_header_set(headers)?;
     }
-    for headers in c.response_headers.parked.values() {
+    for headers in c
+        .response_headers
+        .parked
+        .values()
+        .chain(c.response_headers.proxy.values())
+    {
         validate_response_header_set(headers)?;
     }
     Ok(())
@@ -1662,7 +1673,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 32,
+                current: 33,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -2685,7 +2696,54 @@ target = \"../../etc/passwd\"\n";
         c.response_headers
             .linked
             .insert("app".to_owned(), Vec::new());
+        c.response_headers
+            .proxy
+            .insert("reverb".to_owned(), Vec::new());
         assert_eq!(c.to_toml().unwrap(), Config::default().to_toml().unwrap());
+    }
+
+    #[test]
+    fn response_headers_proxy_round_trip() {
+        let mut c = Config::default();
+        for name in ["reverb", "api.account"] {
+            c.proxies
+                .push(yerd_core::ProxySite::new(name, upstream("http://127.0.0.1:3000")).unwrap());
+        }
+        c.response_headers.proxy.insert(
+            "reverb".to_owned(),
+            vec![
+                yerd_core::ResponseHeader::new("Access-Control-Allow-Origin", "*").unwrap(),
+                yerd_core::ResponseHeader::new("X-Frame-Options", "DENY").unwrap(),
+            ],
+        );
+        c.response_headers.proxy.insert(
+            "api.account".to_owned(),
+            vec![yerd_core::ResponseHeader::new("Cache-Control", "no-store").unwrap()],
+        );
+        let toml = c.to_toml().unwrap();
+        assert!(
+            toml.contains("[[response_headers.proxy.reverb]]"),
+            "got: {toml}"
+        );
+        assert!(
+            toml.contains("[[response_headers.proxy.\"api.account\"]]"),
+            "got: {toml}"
+        );
+        let back = Config::from_toml(&toml).unwrap();
+        assert_eq!(back.response_headers, c.response_headers);
+        assert_eq!(back.to_toml().unwrap(), toml);
+    }
+
+    #[test]
+    fn response_headers_proxy_orphan_key_is_tolerated() {
+        let mut c = Config::default();
+        c.response_headers.proxy.insert(
+            "ghost".to_owned(),
+            vec![yerd_core::ResponseHeader::new("X-A", "1").unwrap()],
+        );
+        assert!(c.validate().is_ok());
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back.response_headers.proxy.len(), 1);
     }
 
     #[test]
@@ -2721,6 +2779,20 @@ target = \"../../etc/passwd\"\n";
             other => panic!("expected ResponseHeaderDuplicateName, got {other:?}"),
         }
         c.response_headers.parked.clear();
+        c.response_headers.proxy.insert(
+            "reverb".to_owned(),
+            vec![
+                yerd_core::ResponseHeader::new("X-A", "1").unwrap(),
+                yerd_core::ResponseHeader::new("X-a", "2").unwrap(),
+            ],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::ResponseHeaderDuplicateName,
+            }) => {}
+            other => panic!("expected ResponseHeaderDuplicateName, got {other:?}"),
+        }
+        c.response_headers.proxy.clear();
         c.response_headers.linked.insert(
             "app".to_owned(),
             vec![

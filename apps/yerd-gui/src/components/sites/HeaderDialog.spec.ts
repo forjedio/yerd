@@ -3,8 +3,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import HeaderDialog from "./HeaderDialog.vue";
 
-function mountDialog(editing: { site: string; name: string; value: string } | null = null) {
-  return mount(HeaderDialog, { attachTo: document.body, props: { open: true, editing } });
+function mountDialog(editing: { site: string; name: string; value: string } | null = null, proxy = false) {
+  return mount(HeaderDialog, { attachTo: document.body, props: { open: true, editing, proxy } });
 }
 
 function field(id: string): HTMLInputElement {
@@ -45,5 +45,19 @@ describe("HeaderDialog", () => {
     await type("header-value", "SAMEORIGIN");
     expect(action("Save").disabled).toBe(false);
     w.unmount();
+  });
+
+  it("describes site headers by default and proxy headers for a proxy", () => {
+    const site = mountDialog();
+    expect(document.body.textContent).toContain("Added to every response for this site");
+    expect(document.body.textContent).toContain("sent by the app is replaced");
+    site.unmount();
+    document.body.innerHTML = "";
+
+    const proxy = mountDialog(null, true);
+    expect(document.body.textContent).toContain("Added to every response for this proxy");
+    expect(document.body.textContent).toContain("sent by the upstream is replaced");
+    expect(document.body.textContent).not.toContain("proxy path rules");
+    proxy.unmount();
   });
 });

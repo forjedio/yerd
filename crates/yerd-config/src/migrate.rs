@@ -56,6 +56,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v29_to_v30,
     migrate_v30_to_v31,
     migrate_v31_to_v32,
+    migrate_v32_to_v33,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -317,6 +318,13 @@ fn migrate_v31_to_v32(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 32)
 }
 
+/// `v32 → v33`: bare version bump. v33 added the optional
+/// `[response_headers.proxy]` table of whole-host proxy headers, which
+/// defaults to empty when absent.
+fn migrate_v32_to_v33(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 33)
+}
+
 /// Set the top-level `version` key, erroring if the root is not a table.
 fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
     let table = value.as_table_mut().ok_or(ConfigError::Migration {
@@ -386,7 +394,7 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 32);
+        assert_eq!(crate::CURRENT_VERSION, 33);
     }
 
     #[test]
@@ -483,6 +491,15 @@ mod tests {
         migrate_v28_to_v29(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 29);
         assert_eq!(v["php"]["default"].as_str(), Some("8.4"));
+    }
+
+    #[test]
+    fn v32_to_v33_is_a_bare_version_bump() {
+        let mut v: Value =
+            toml::from_str("version = 32\n[tunnel]\ndefault_provider = \"ngrok\"\n").unwrap();
+        migrate_v32_to_v33(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 33);
+        assert_eq!(v["tunnel"]["default_provider"].as_str(), Some("ngrok"));
     }
 
     #[test]

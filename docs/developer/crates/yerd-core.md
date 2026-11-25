@@ -431,7 +431,7 @@ table tests, which is what catches drift.
 ## `response_header` - per-site custom response headers {#response-header}
 
 A `ResponseHeader` is a name and value the proxy sets on every response for a
-PHP site, replacing any same-named header. Like `RouteRule` it carries no serde
+PHP site or whole-host proxy, replacing any same-named header. Like `RouteRule` it carries no serde
 impls; `yerd-config` and `yerd-ipc` own the wire structs.
 
 ```rust
@@ -456,8 +456,9 @@ the proxy. The name keeps the user's casing for display; `has_name` is the
 case-insensitive comparison the daemon and config use for "the same header".
 Validation is hand-rolled over bytes so this crate needs no `http` dependency.
 
-`SiteRouter` stores the lists per site name (`response_headers_for` /
-`set_response_headers`), like routing rules, but behind an `Arc` so the proxy
+`SiteRouter` stores the lists per site or whole-host proxy name (the two
+namespaces are disjoint; `response_headers_for` / `set_response_headers`, and
+`remove_proxy` clears a proxy's list), like routing rules, but behind an `Arc` so the proxy
 takes a per-request handle with `shared_response_headers` instead of copying.
 
 ## `service_directives` - free-form service config overrides {#service-directives}

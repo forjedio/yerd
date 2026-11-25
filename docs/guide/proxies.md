@@ -129,6 +129,29 @@ Point the target at the service's real port instead. In rootless mode Yerd binds
 `8080`/`8443`, so a dev server on one of those ports will need to move.
 :::
 
+## Response headers
+
+A whole-host proxy can add its own response headers, the same way a
+[site can](./sites#response-headers). The common case is CORS for a frontend
+dev server or Node app that another local site calls. A site's name takes
+priority over a proxy's: if a site is also named `frontend`, the command below
+changes that site's headers, and the proxy can't be reached by this name until
+the site is removed or renamed.
+
+```sh
+yerd header set frontend Access-Control-Allow-Origin https://app.test
+```
+
+The header goes on every response for the proxy, on all of its domains: the
+upstream's responses, Yerd's `502` when the upstream is down, the HTTPS
+redirect and WebSocket handshakes. A same-named header from the upstream is
+replaced. In the desktop app, a whole-domain proxy's inspector has a
+**Response headers** card with **Add header**, **Edit** and **Remove**. Path
+rules don't take headers. See [Response headers](../reference/cli/headers) for
+the validation rules.
+
+<ThemedImage light="/images/proxies-header-dialog-light.png" dark="/images/proxies-header-dialog-dark.png" alt="The Add response header dialog for the frontend.test proxy, with the name Access-Control-Allow-Origin and the value https://app.test" />
+
 ## Listing what's configured
 
 ```sh

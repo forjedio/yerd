@@ -105,8 +105,8 @@ pub struct Config {
     /// Per-site path-prefix routing rules (`app.test/api` → `api/index.php`),
     /// split by site class. Empty by default.
     pub route_rules: RouteRulesSection,
-    /// Per-site custom response headers (`Access-Control-Allow-Origin: *`),
-    /// split by site class. Empty by default.
+    /// Custom response headers (`Access-Control-Allow-Origin: *`) for sites,
+    /// split by site class, and for whole-host proxies. Empty by default.
     pub response_headers: ResponseHeadersSection,
     /// Outbound proxy for Yerd's own downloads and network subprocesses.
     /// Default: system detection.
@@ -210,11 +210,13 @@ impl RouteRulesSection {
     }
 }
 
-/// Per-site custom response headers (see [`Config::response_headers`]).
+/// Custom response headers for sites and whole-host proxies (see
+/// [`Config::response_headers`]).
 ///
 /// Keyed exactly like [`RouteRulesSection`]: **linked** headers by site name,
 /// **parked** headers by document-root string (byte-exact, never canonicalised -
-/// see [`SiteOverride`]). A site with no headers has no entry, so an
+/// see [`SiteOverride`]), and **proxy** headers by proxy name like
+/// [`DomainsSection::proxy`]. A site or proxy with no headers has no entry, so an
 /// uncustomised config omits the whole section. The daemon applies these onto
 /// [`yerd_core::SiteRouter`] at build time.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -224,6 +226,10 @@ pub struct ResponseHeadersSection {
     /// Parked-site headers, keyed by document-root string. `BTreeMap` for
     /// stable order.
     pub parked: BTreeMap<String, Vec<ResponseHeader>>,
+    /// Whole-host proxy headers, keyed by proxy name (name-stable, like
+    /// [`DomainsSection::proxy`]). A key naming no current proxy is inert and
+    /// tolerated, as in `[domains.proxy]`. `BTreeMap` for stable order.
+    pub proxy: BTreeMap<String, Vec<ResponseHeader>>,
 }
 
 /// Per-site routable-domain customisations (see [`Config::domains`]).

@@ -524,10 +524,10 @@ pub enum Response {
         /// Per-site routing rules.
         rules: Vec<RouteRuleEntry>,
     },
-    /// Reply to [`crate::Request::ListResponseHeaders`] - every site's custom
-    /// response headers.
+    /// Reply to [`crate::Request::ListResponseHeaders`] - every site's and
+    /// whole-host proxy's custom response headers.
     ResponseHeaders {
-        /// Per-site custom response headers, in each site's configured order.
+        /// Custom response headers, in each site's or proxy's configured order.
         headers: Vec<ResponseHeaderEntry>,
     },
     /// Reply to [`crate::Request::ProjectConfigDraft`] and
@@ -689,12 +689,12 @@ pub struct RouteRuleEntry {
     pub target: String,
 }
 
-/// One per-site custom response header (reply element of
+/// One site's or whole-host proxy's custom response header (reply element of
 /// [`Response::ResponseHeaders`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResponseHeaderEntry {
-    /// The site the header attaches to (a linked site name or a parked
-    /// document-root display label).
+    /// The site or proxy the header attaches to (a linked site name, a parked
+    /// document-root display label, or a whole-host proxy name).
     pub site: String,
     /// The header name, in the casing it was set with.
     pub name: String,

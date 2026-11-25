@@ -2,9 +2,15 @@ import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const openInBrowser = vi.fn();
+const listResponseHeaders = vi.fn();
+const setResponseHeader = vi.fn();
+const removeResponseHeader = vi.fn();
 vi.mock("@/ipc/client", () => ({
   IpcError: class IpcError extends Error {},
   openInBrowser: (...args: unknown[]) => openInBrowser(...args),
+  listResponseHeaders: (...args: unknown[]) => listResponseHeaders(...args),
+  setResponseHeader: (...args: unknown[]) => setResponseHeader(...args),
+  removeResponseHeader: (...args: unknown[]) => removeResponseHeader(...args),
 }));
 
 const toastSuccess = vi.fn();
@@ -67,6 +73,7 @@ function mountInspector(item: ProxyItem | null, props: Record<string, unknown> =
 beforeEach(() => {
   vi.clearAllMocks();
   openInBrowser.mockResolvedValue(undefined);
+  listResponseHeaders.mockResolvedValue([]);
   clipboardWriteText.mockResolvedValue(undefined);
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
@@ -160,6 +167,31 @@ describe("ProxyInspector for a whole-domain proxy", () => {
     expect(w.emitted("domainsChanged")).toHaveLength(1);
   });
 
+  it("shows the proxy's response headers card, keyed by the proxy name", async () => {
+    listResponseHeaders.mockResolvedValue([
+      { site: "mydocker", name: "Access-Control-Allow-Origin", value: "*" },
+      { site: "other", name: "X-Other", value: "1" },
+    ]);
+    const w = mountInspector(proxyItem());
+    await flushPromises();
+    const card = w.get('[data-testid="headers-card"]');
+    expect(card.findAll('[data-testid="header-row"]').map((r) => r.text())).toEqual([
+      "Access-Control-Allow-Origin*",
+    ]);
+    expect(w.findComponent({ name: "SiteHeadersCard" }).props("proxy")).toBe(true);
+  });
+
+  it.each([
+    ["taken", true],
+    ["unknown", false],
+  ])("hides the headers card while the proxy name is %s", async (nameState, note) => {
+    const w = mountInspector(proxyItem(), { nameState });
+    await flushPromises();
+    expect(w.find('[data-testid="headers-card"]').exists()).toBe(false);
+    expect(w.find('[data-testid="headers-shadowed"]').exists()).toBe(note);
+    expect(listResponseHeaders).not.toHaveBeenCalled();
+  });
+
   it("emits remove from Remove proxy…", async () => {
     const item = proxyItem();
     const w = mountInspector(item);
@@ -181,6 +213,7 @@ describe("ProxyInspector for a path rule", () => {
     expect(w.findAll("button").some((b) => ["Open", "Copy URL"].includes(b.text().trim()))).toBe(false);
     expect(w.find('button[aria-label="HTTPS"]').exists()).toBe(false);
     expect(w.find('[data-testid="domains-card"]').exists()).toBe(false);
+    expect(w.find('[data-testid="headers-card"]').exists()).toBe(false);
     const action = w.get('[data-testid="inspector-footer-action"]');
     expect(action.text()).toBe("Remove path…");
     await action.trigger("click");

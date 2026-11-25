@@ -750,8 +750,9 @@ fn route_request(action: &crate::cli::RouteAction) -> Result<Request, ClientErro
     })
 }
 
-/// Map a `yerd header <action>` to its wire request. Only the site name is
-/// checked client-side; the header name and value are validated by the daemon
+/// Map a `yerd header <action>` to its wire request. Only the target name is
+/// checked client-side, with [`validate_target_name`] since it may be a site
+/// or a (possibly dotted) whole-host proxy; the header name and value are validated by the daemon
 /// (authoritative, via `yerd_core::ResponseHeader`). `List` carries no filter
 /// on the wire, exactly like `yerd route list`.
 fn header_request(action: &crate::cli::HeaderAction) -> Result<Request, ClientError> {
@@ -759,7 +760,7 @@ fn header_request(action: &crate::cli::HeaderAction) -> Result<Request, ClientEr
     Ok(match action {
         HeaderAction::List { .. } => Request::ListResponseHeaders,
         HeaderAction::Set { site, name, value } => {
-            validate_name(site)?;
+            validate_target_name(site)?;
             Request::SetResponseHeader {
                 site: site.clone(),
                 name: name.clone(),
@@ -767,7 +768,7 @@ fn header_request(action: &crate::cli::HeaderAction) -> Result<Request, ClientEr
             }
         }
         HeaderAction::Remove { site, name } => {
-            validate_name(site)?;
+            validate_target_name(site)?;
             Request::RemoveResponseHeader {
                 site: site.clone(),
                 name: name.clone(),
@@ -5111,6 +5112,54 @@ mod tests {
             Request::ListResponseHeaders,
             "the site filter is applied client-side, not on the wire"
         );
+    }
+
+    #[test]
+    fn maps_header_command_on_a_dotted_proxy_name() {
+        use crate::cli::HeaderAction;
+        assert_eq!(
+            to_request(&Command::Header {
+                action: HeaderAction::Set {
+                    site: "api.account".into(),
+                    name: "X-A".into(),
+                    value: "1".into(),
+                },
+            })
+            .unwrap(),
+            Request::SetResponseHeader {
+                site: "api.account".into(),
+                name: "X-A".into(),
+                value: "1".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Header {
+                action: HeaderAction::Remove {
+                    site: "api.account".into(),
+                    name: "X-A".into(),
+                },
+            })
+            .unwrap(),
+            Request::RemoveResponseHeader {
+                site: "api.account".into(),
+                name: "X-A".into(),
+            }
+        );
+        for bad in ["", "bad name", "-api"] {
+            assert!(
+                matches!(
+                    to_request(&Command::Header {
+                        action: HeaderAction::Set {
+                            site: bad.into(),
+                            name: "X-A".into(),
+                            value: "1".into(),
+                        },
+                    }),
+                    Err(ClientError::Usage(_))
+                ),
+                "{bad:?} must be a usage error"
+            );
+        }
     }
 
     #[test]

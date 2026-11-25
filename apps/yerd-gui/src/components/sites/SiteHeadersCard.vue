@@ -8,17 +8,22 @@ import Spinner from "@/components/ui/Spinner.vue";
 import { CARD, SECTION_LABEL } from "@/components/ui/styles";
 import { useToast } from "@/composables/useToast";
 import { IpcError, listResponseHeaders, removeResponseHeader, setResponseHeader } from "@/ipc/client";
-import type { ResponseHeaderEntry, SiteEntry } from "@/ipc/types";
+import type { ResponseHeaderEntry } from "@/ipc/types";
 
 /**
- * The RESPONSE HEADERS card of the site inspector: this site's custom headers in
- * the order the proxy applies them, with Edit and Remove on each row and Add
+ * The RESPONSE HEADERS card of the site and proxy inspectors: this site's or
+ * whole-host proxy's custom headers in the order the proxy applies them, with Edit and Remove on each row and Add
  * header opening `HeaderDialog`. Headers are not part of `SiteEntry`, so the
  * card fetches its own and refetches after every change. Setting an existing
  * name replaces it, so an edit that renames a header sets the new name, then
  * removes the old one.
  */
-const props = defineProps<{ site: SiteEntry }>();
+const props = defineProps<{
+  /** The site or whole-host proxy; entries are matched by name, as the daemon keys them. */
+  site: { name: string };
+  /** A whole-host proxy rather than a site; only changes the dialog's wording. */
+  proxy?: boolean;
+}>();
 
 const toast = useToast();
 
@@ -172,6 +177,7 @@ function rowBusy(name: string): boolean {
     <HeaderDialog
       v-model:open="dialogOpen"
       :editing="editing"
+      :proxy="proxy"
       :busy="busy === 'add' || !!busy?.startsWith('edit:')"
       @submit="submit"
     />

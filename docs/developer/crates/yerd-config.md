@@ -78,7 +78,7 @@ pub use schema::{
     DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
 };
 
-pub const CURRENT_VERSION: u32 = 32;
+pub const CURRENT_VERSION: u32 = 33;
 ```
 
 `Config` exposes exactly four pure methods and two I/O methods:
@@ -339,7 +339,7 @@ version is the single trigger for forward migrations.
 
 ```rust
 /// The on-disk schema version this crate writes.
-pub const CURRENT_VERSION: u32 = 32;
+pub const CURRENT_VERSION: u32 = 33;
 ```
 
 `CURRENT_VERSION` is **decoupled** from `yerd_ipc::PROTOCOL_VERSION`: the on-disk
@@ -348,7 +348,7 @@ with a new entry in `migrate::STEPS`.
 
 `migrate.rs` holds the steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**
 - matching `migrate::up`, which indexes `STEPS[current]` (the version being
-migrated *from*). At v32 there are thirty-two (`STEPS.len() == CURRENT_VERSION`,
+migrated *from*). At v33 there are thirty-three (`STEPS.len() == CURRENT_VERSION`,
 pinned by `steps_cover_every_version_below_current`). Most entries are **bare
 version bumps** - the version added an optional table or scalar that defaults
 when absent, so the step only rewrites the `version` line. `v14 → v15` (the

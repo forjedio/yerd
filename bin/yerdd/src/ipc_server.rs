@@ -3370,9 +3370,12 @@ async fn list_routes(state: &DaemonState) -> Response {
     Response::Routes { rules }
 }
 
-/// Reply to [`Request::ListResponseHeaders`]: every per-site custom response
-/// header. Parked docroots resolve to the current site name exactly as
-/// [`list_routes`] does, falling back to the raw key.
+/// Reply to [`Request::ListResponseHeaders`]: every site's and whole-host
+/// proxy's custom response header. Parked docroots resolve to the current site
+/// name exactly as [`list_routes`] does, falling back to the raw key. Proxy
+/// entries are keyed by proxy name and listed only for a proxy the router
+/// serves: an orphan key, or a proxy hidden by a same-named site, is skipped
+/// because its headers are never applied and the name now resolves to the site.
 async fn list_response_headers(state: &DaemonState) -> Response {
     let cfg = state.config.lock().await;
     let router = state.router.read().await;
@@ -3397,6 +3400,18 @@ async fn list_response_headers(state: &DaemonState) -> Response {
         for h in site_headers {
             headers.push(yerd_ipc::ResponseHeaderEntry {
                 site: site_name.clone(),
+                name: h.name().to_owned(),
+                value: h.value().to_owned(),
+            });
+        }
+    }
+    for (proxy, proxy_headers) in &cfg.response_headers.proxy {
+        if router.proxy(proxy).is_none() {
+            continue;
+        }
+        for h in proxy_headers {
+            headers.push(yerd_ipc::ResponseHeaderEntry {
+                site: proxy.clone(),
                 name: h.name().to_owned(),
                 value: h.value().to_owned(),
             });
@@ -4357,6 +4372,84 @@ mod tests {
         }
         let saved = std::fs::read_to_string(&state.config_path).unwrap();
         assert!(saved.contains("localhost:3001"), "{saved}");
+    }
+
+    #[tokio::test]
+    async fn set_response_header_on_a_proxy_over_dispatch_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let steps = [
+            Request::AddProxy {
+                name: "grafana".into(),
+                url: "http://localhost:3000".into(),
+            },
+            Request::SetResponseHeader {
+                site: "grafana".into(),
+                name: "Access-Control-Allow-Origin".into(),
+                value: "*".into(),
+            },
+        ];
+        for req in steps {
+            let resp = dispatch(req.clone(), &state).await;
+            assert!(matches!(resp, Response::Ok), "{req:?} got {resp:?}");
+        }
+
+        let saved = std::fs::read_to_string(&state.config_path).unwrap();
+        assert!(
+            saved.contains("[[response_headers.proxy.grafana]]"),
+            "{saved}"
+        );
+        assert!(state
+            .router
+            .read()
+            .await
+            .shared_response_headers("grafana")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn list_response_headers_includes_routed_proxies_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let target = yerd_core::UpstreamTarget::from_url_str("http://127.0.0.1:9011").unwrap();
+        let reverb = yerd_core::ProxySite::new("reverb", target.clone()).unwrap();
+        let hidden = yerd_core::ProxySite::new("app", target).unwrap();
+        {
+            let mut router = state.router.write().await;
+            router.insert_proxy(reverb.clone()).unwrap();
+        }
+        {
+            let mut cfg = state.config.lock().await;
+            cfg.proxies.push(reverb);
+            cfg.proxies.push(hidden);
+            cfg.response_headers.proxy.insert(
+                "app".into(),
+                vec![yerd_core::ResponseHeader::new("X-Hidden", "4").unwrap()],
+            );
+            cfg.response_headers.linked.insert(
+                "app".into(),
+                vec![yerd_core::ResponseHeader::new("X-Site", "1").unwrap()],
+            );
+            cfg.response_headers.proxy.insert(
+                "reverb".into(),
+                vec![yerd_core::ResponseHeader::new("X-Proxy", "2").unwrap()],
+            );
+            cfg.response_headers.proxy.insert(
+                "ghost".into(),
+                vec![yerd_core::ResponseHeader::new("X-Orphan", "3").unwrap()],
+            );
+        }
+
+        match dispatch(Request::ListResponseHeaders, &state).await {
+            Response::ResponseHeaders { headers } => {
+                let rows: Vec<(&str, &str)> = headers
+                    .iter()
+                    .map(|h| (h.site.as_str(), h.name.as_str()))
+                    .collect();
+                assert_eq!(rows, [("app", "X-Site"), ("reverb", "X-Proxy")]);
+            }
+            other => panic!("expected ResponseHeaders, got {other:?}"),
+        }
     }
 
     #[tokio::test]

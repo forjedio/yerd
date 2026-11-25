@@ -984,25 +984,27 @@ pub enum Request {
     },
     /// Enumerate every site's path-prefix routing rules.
     ListRoutes,
-    /// Set a custom response header on a PHP site. The proxy adds it to every
-    /// response for the site, replacing any same-named header. Setting a name
-    /// the site already has (ignoring case) replaces that entry.
+    /// Set a custom response header on a PHP site or whole-host proxy. The
+    /// proxy adds it to every response for the site or proxy, replacing any
+    /// same-named header. Setting a name it already has (ignoring case)
+    /// replaces that entry.
     SetResponseHeader {
-        /// The site the header attaches to.
+        /// The site or whole-host proxy the header attaches to (a site wins
+        /// over a same-named proxy, as for domains).
         site: String,
         /// The header name (validated by the daemon).
         name: String,
         /// The header value (validated by the daemon).
         value: String,
     },
-    /// Remove a custom response header from a PHP site.
+    /// Remove a custom response header from a PHP site or whole-host proxy.
     RemoveResponseHeader {
-        /// The site the header is on.
+        /// The site or whole-host proxy the header is on.
         site: String,
         /// The header name to remove, matched ignoring case.
         name: String,
     },
-    /// Enumerate every site's custom response headers.
+    /// Enumerate every site's and whole-host proxy's custom response headers.
     ListResponseHeaders,
     /// Read the outbound-proxy settings and the proxy they resolve to. Replies
     /// [`crate::Response::NetworkSettings`]; every URL is redacted.

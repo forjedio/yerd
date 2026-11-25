@@ -54,8 +54,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 32\n"),
-        "expected first line `version = 32`; got: {s}"
+        s.starts_with("version = 33\n"),
+        "expected first line `version = 33`; got: {s}"
     );
 }
 
@@ -666,6 +666,47 @@ fn populated_response_headers_section_emits_after_route_rules_and_round_trips() 
         s.contains("name = \"Access-Control-Allow-Origin\"\nvalue = \"https://app.test\""),
         "a header must emit as a name/value pair; got: {s}"
     );
+
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
+    c.validate().unwrap();
+}
+
+#[test]
+fn proxy_response_headers_emit_after_site_headers_and_round_trip() {
+    let mut c = Config::default();
+    c.linked
+        .push(Site::linked("api", "docroot", PhpVersion::new(8, 3)).unwrap());
+    c.proxies.push(
+        yerd_core::ProxySite::new(
+            "reverb",
+            yerd_core::UpstreamTarget::from_url_str("http://127.0.0.1:8080").unwrap(),
+        )
+        .unwrap(),
+    );
+    c.response_headers.linked.insert(
+        "api".to_string(),
+        vec![ResponseHeader::new("X-Frame-Options", "DENY").unwrap()],
+    );
+    c.response_headers.proxy.insert(
+        "reverb".to_string(),
+        vec![ResponseHeader::new("Access-Control-Allow-Origin", "*").unwrap()],
+    );
+    let s = c.to_toml().unwrap();
+
+    assert!(
+        s.contains(
+            "[[response_headers.proxy.reverb]]\nname = \"Access-Control-Allow-Origin\"\nvalue = \"*\"\n"
+        ),
+        "got: {s}"
+    );
+    let linked_at = s
+        .find("[[response_headers.linked.api]]")
+        .expect("linked headers present");
+    let proxy_at = s
+        .find("[[response_headers.proxy.reverb]]")
+        .expect("proxy headers present");
+    assert!(linked_at < proxy_at, "got: {s}");
 
     let back = Config::from_toml(&s).unwrap();
     assert_eq!(back, c);
