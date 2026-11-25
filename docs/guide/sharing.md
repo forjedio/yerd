@@ -48,12 +48,93 @@ on your `PATH`. Updates show up in **Tooling** like any other tool (re-run
 tunnel is running and keeps your Cloudflare login and tunnels.
 
 In the desktop app, install, update and uninstall `cloudflared` from
-**Tooling**. The **Share** page links there the first time you visit, and its
-**Setup** dialog shows which `cloudflared` is in use (**Found on PATH** or
-**Yerd's copy**) with an **Open Tooling** link when it is missing or an update
-is available.
+**Tooling**. The **Share** page links there the first time you visit, and the
+Cloudflare pane of its **Providers** sheet shows which `cloudflared` is in use
+(**Found on PATH** or **Yerd's copy**) with an **Open Tooling** link when it is
+missing or an update is available.
 
-<ThemedImage light="/images/share-setup-light.png" dark="/images/share-setup-dark.png" alt="The Share setup dialog: Yerd's cloudflared installed, the Cloudflare account connected and the domain tunnel live with two sites" />
+<ThemedImage light="/images/share-setup-light.png" dark="/images/share-setup-dark.png" alt="The Cloudflare pane of the Providers sheet: Yerd's cloudflared installed, the Cloudflare account connected and the domain tunnel live with two sites" />
+
+## Tunnel providers
+
+Besides Cloudflare, Yerd can be set up for two more tunnel providers,
+[ngrok](https://ngrok.com) and [zrok](https://zrok.io). Each keeps its own
+account and its own URLs. On the **Share** page, **Providers** opens the
+**Tunnel providers** sheet: the providers are listed on the left with a status,
+the selected provider's settings are on the right, and **Default for new
+shares** sits underneath the list.
+
+| Status | Meaning |
+| --- | --- |
+| **Ready** | The provider can share. |
+| **Needs setup** | The binary is there, but the account step is not done yet (ngrok: no authtoken saved; zrok: this machine is not enabled). |
+| **Not installed** | No binary was found. Install it from **Tooling** (or `yerd install tool ngrok` / `yerd install tool zrok`). |
+
+Each pane shows which binary is in use: **Yerd's copy** (installed from
+Tooling) or **Found on PATH** (with its path), with **Re-check** and, when
+there is something to install or update, **Open Tooling**.
+
+From the CLI, `yerd tunnel providers` prints the same overview.
+
+### Cloudflare
+
+The Cloudflare pane holds everything that used to be in the Share page's setup
+dialog: the `cloudflared` binary, connecting your Cloudflare account, and the
+tunnel for your domain (see [Named tunnels](#named-tunnels)). Quick links need
+no account, so Cloudflare is ready as soon as `cloudflared` is installed.
+
+### ngrok
+
+1. Install ngrok from **Tooling**.
+2. Copy your authtoken from [dashboard.ngrok.com](https://dashboard.ngrok.com)
+   and paste it into the **Authtoken** field, then **Save**.
+3. Optionally enter your **Static domain** (free plans include one), such as
+   `name.ngrok-free.app`. A pasted `https://` and trailing `/` are stripped.
+   Leave it empty to get a random URL each time.
+
+The authtoken is stored in Yerd's [config file](../reference/configuration#tunnel)
+(which only your user can read) and is handed to ngrok as `NGROK_AUTHTOKEN`. It
+is never written to your shell profile or to ngrok's own config, and Yerd only
+ever shows it masked (`2fXk••••••••Qa`). **Replace** swaps it, **Remove token**
+deletes it. ngrok checks the token when a share starts, so a mistyped token
+still reads as **Ready** until then.
+
+```sh
+pbpaste | yerd tunnel ngrok token          # read the token from stdin
+yerd tunnel ngrok domain name.ngrok-free.app
+yerd tunnel ngrok token --clear
+```
+
+### zrok
+
+zrok is enabled once per machine with a zrok account token:
+
+1. Install zrok from **Tooling**.
+2. Copy your account token from [zrok.io](https://zrok.io), paste it into
+   **Enable this machine** and click **Enable**.
+
+Yerd runs `zrok2 enable` in **its own zrok environment** under the data
+directory (`{data}/tunnel/zrok`), so your own `~/.zrok2` is never touched, and
+a zrok you enabled yourself does not affect Yerd. zrok keeps the account token
+in that environment; Yerd does not store a second copy. While `zrok2 enable`
+runs (a few seconds), the token is passed on its command line, so other users
+on the same machine could briefly see it in the process list.
+
+**Disable** runs `zrok2 disable`, releasing this machine from your zrok account,
+so you can enable it again with any account token. If zrok refuses the disable
+(for example because the account token was revoked), the local environment is
+kept and the error is shown.
+
+```sh
+pbpaste | yerd tunnel zrok enable
+yerd tunnel zrok disable
+```
+
+### Default provider
+
+**Default for new shares** (or `yerd tunnel default <cloudflare|ngrok|zrok>`)
+picks the provider a new share uses unless you choose another. It starts as
+Cloudflare.
 
 ## Quick share
 
@@ -205,10 +286,13 @@ shows a count.
 
   <ThemedImage light="/images/share-new-light.png" dark="/images/share-new-dark.png" alt="The Share a site dialog sharing portal on your domain, with the public hostname pre-filled" />
 
-- **Setup** holds the rest: which `cloudflared` is in use (with a link to
+- **Providers** opens the [Tunnel providers](#tunnel-providers) sheet. Its
+  Cloudflare pane holds the rest: which `cloudflared` is in use (with a link to
   Tooling to install or update it), connecting your Cloudflare account, and
-  creating, starting or removing the tunnel for your domain. Closing the connect dialog before you
-  authorize in the browser cancels the login.
+  creating, starting or removing the tunnel for your domain. The ngrok and zrok
+  panes set those providers up, and **Default for new shares** picks the
+  default. Closing the connect dialog before you authorize in the browser
+  cancels the login.
 - Each site's `⋯` menu on the [Sites page](./sites) also has a **Share
   publicly…** shortcut that jumps straight to sharing that site, without going
   to the Share page first:

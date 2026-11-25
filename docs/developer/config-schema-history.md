@@ -28,7 +28,24 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v31 (current)
+### v32 (current)
+
+**Added:** `default_provider` under `[tunnel]` (`cloudflare`, `ngrok` or `zrok`; the provider new shares use, default `cloudflare` and omitted while it is) and the optional `[tunnel.ngrok]` table (`authtoken`, the ngrok agent authtoken, and `domain`, an optional static domain as a bare hostname). Both default when absent, so a file that never configured a provider omits them entirely.
+
+```toml
+[tunnel]
+default_provider = "ngrok"
+
+[tunnel.ngrok]
+authtoken = "2fXk..."
+domain = "demo.ngrok-free.app"
+```
+
+**Migration from v31:** bare version bump - both default when absent, so a v31 file needs no other change.
+
+**To downgrade to v31:** change `version = 32` to `version = 31`, delete the `default_provider` line from `[tunnel]`, and delete the `[tunnel.ngrok]` table (a v31 daemon rejects both under `deny_unknown_fields`).
+
+### v31
 
 **Added:** the optional `[parked.claims]` map - the suffix-stripped site names held by parked folders, keyed by byte-exact document root, each with the `name` held and a `url_synced` flag. The daemon maintains it after every scan. It defaults to empty when absent, so a file with no domain-named parked folders omits it entirely.
 

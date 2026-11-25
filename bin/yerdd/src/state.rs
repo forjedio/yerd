@@ -219,6 +219,10 @@ pub struct DaemonState {
     /// uninstall so it never runs mid-mutation. The `cloudflared` install itself
     /// runs under `tool_mutate` like every tool.
     pub tunnel_mutate: Mutex<()>,
+    /// Serialises zrok environment mutations (`zrok2 enable`/`disable` in
+    /// `{data}/tunnel/zrok`). Separate from `tunnel_mutate` so a minute-long
+    /// enable never blocks Cloudflare actions.
+    pub zrok_mutate: Mutex<()>,
     /// Serializes PHP-version install/update mutations. IPC dispatch is
     /// `tokio::spawn`-per-connection (and the streamed install is its own task),
     /// so two clients could install concurrently; the staging dir is keyed by

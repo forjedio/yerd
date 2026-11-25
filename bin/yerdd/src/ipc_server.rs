@@ -524,6 +524,18 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::SetTunnelPassword { site, password } => {
             crate::tunnel::named::set_password(&site, password.as_deref(), state).await
         }
+        Request::ListTunnelProviders => crate::tunnel::providers::list(state).await,
+        Request::SetNgrokAuthtoken { authtoken } => {
+            crate::tunnel::providers::set_ngrok_authtoken(state, authtoken.as_deref()).await
+        }
+        Request::SetNgrokDomain { domain } => {
+            crate::tunnel::providers::set_ngrok_domain(state, domain.as_deref()).await
+        }
+        Request::EnableZrok { token } => crate::tunnel::providers::enable_zrok(state, &token).await,
+        Request::DisableZrok => crate::tunnel::providers::disable_zrok(state).await,
+        Request::SetDefaultTunnelProvider { provider } => {
+            crate::tunnel::providers::set_default(state, provider).await
+        }
         Request::ProjectConfigDraft { path } => crate::project_file::draft(&path, state).await,
         Request::ExportProjectConfig { site } => crate::project_file::export(&site, state).await,
         _ => Response::Error {

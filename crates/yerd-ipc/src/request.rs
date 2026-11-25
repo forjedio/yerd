@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use yerd_core::tunnel_provider::TunnelProvider;
 use yerd_core::{PhpVersion, XdebugMode, XdebugStart};
 
 // IMPORTANT: per-field serde renames are forbidden in this crate. Add
@@ -813,6 +814,39 @@ pub enum Request {
         /// The share password, or `None` to remove it.
         password: Option<String>,
     },
+    /// List the tunnel providers with their readiness and settings. Returns
+    /// [`super::Response::TunnelProviders`].
+    ListTunnelProviders,
+    /// Save or clear the ngrok authtoken (`None` clears it). The token is
+    /// stored in the config and never echoed back. Replies
+    /// [`super::Response::Ok`].
+    SetNgrokAuthtoken {
+        /// The authtoken, or `None` to remove it.
+        authtoken: Option<String>,
+    },
+    /// Save or clear the ngrok static domain (`None` or an empty value clears
+    /// it). A scheme and trailing slash are stripped. Replies
+    /// [`super::Response::Ok`].
+    SetNgrokDomain {
+        /// The static domain, or `None` to remove it.
+        domain: Option<String>,
+    },
+    /// Enable this machine with a zrok account token in Yerd's own zrok
+    /// environment. The token is handed to zrok and never echoed back.
+    /// Replies [`super::Response::Ok`].
+    EnableZrok {
+        /// The zrok account token.
+        token: String,
+    },
+    /// Disable Yerd's zrok environment, releasing this machine from the zrok
+    /// account. Replies [`super::Response::Ok`].
+    DisableZrok,
+    /// Set the provider new shares use by default. Replies
+    /// [`super::Response::Ok`].
+    SetDefaultTunnelProvider {
+        /// The provider to use.
+        provider: TunnelProvider,
+    },
     /// List the user-defined site groups (ordered) and per-site membership.
     /// Returns [`super::Response::Groups`]. Groups are a GUI organisational
     /// overlay and do not affect routing.
@@ -1141,6 +1175,12 @@ mod variant_name_pinning {
             Request::StopNamedTunnel => {}
             Request::DeleteNamedTunnel { .. } => {}
             Request::SetTunnelPassword { .. } => {}
+            Request::ListTunnelProviders => {}
+            Request::SetNgrokAuthtoken { .. } => {}
+            Request::SetNgrokDomain { .. } => {}
+            Request::EnableZrok { .. } => {}
+            Request::DisableZrok => {}
+            Request::SetDefaultTunnelProvider { .. } => {}
             Request::ListGroups => {}
             Request::CreateGroup { .. } => {}
             Request::DeleteGroup { .. } => {}
@@ -1441,6 +1481,18 @@ mod variant_name_pinning {
         pin(Request::SetTunnelPassword {
             site: "app".into(),
             password: Some("secret".into()),
+        });
+        pin(Request::ListTunnelProviders);
+        pin(Request::SetNgrokAuthtoken {
+            authtoken: Some("tok".into()),
+        });
+        pin(Request::SetNgrokDomain {
+            domain: Some("demo.ngrok-free.app".into()),
+        });
+        pin(Request::EnableZrok { token: "t".into() });
+        pin(Request::DisableZrok);
+        pin(Request::SetDefaultTunnelProvider {
+            provider: TunnelProvider::Zrok,
         });
         pin(Request::ListGroups);
         pin(Request::CreateGroup {

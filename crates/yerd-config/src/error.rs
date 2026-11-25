@@ -197,6 +197,11 @@ pub enum ValidateErrorReason {
     /// A `[tunnel.passwords]` value was empty, longer than 128 bytes, or
     /// contained an ASCII control character.
     TunnelPasswordInvalid,
+    /// The `[tunnel.ngrok]` authtoken was empty, longer than 256 bytes, held
+    /// whitespace or non-ASCII characters, or started with `-`.
+    TunnelNgrokAuthtokenInvalid,
+    /// The `[tunnel.ngrok]` domain was not a plausible DNS hostname.
+    TunnelNgrokDomainInvalid,
     /// A `[groups]` order entry was an empty string.
     GroupNameEmpty,
     /// A `[groups]` order entry used the reserved name `Unallocated` (the GUI's
@@ -282,6 +287,10 @@ impl fmt::Display for ValidateErrorReason {
             Self::TunnelPasswordInvalid => {
                 "tunnel.passwords values must be 1 to 128 bytes with no control characters"
             }
+            Self::TunnelNgrokAuthtokenInvalid => {
+                "tunnel.ngrok authtoken must be 1-256 printable characters"
+            }
+            Self::TunnelNgrokDomainInvalid => "tunnel.ngrok domain must be a valid DNS name",
             Self::GroupNameEmpty => "groups.order contains an empty group name",
             Self::GroupNameReserved => "\"Unallocated\" is reserved and cannot be a group name",
             Self::GroupDuplicate => "groups.order contains a duplicate group name",
@@ -392,6 +401,8 @@ mod tests {
             ValidateErrorReason::TunnelMultipleNamed,
             ValidateErrorReason::TunnelDuplicateHostname,
             ValidateErrorReason::TunnelPasswordInvalid,
+            ValidateErrorReason::TunnelNgrokAuthtokenInvalid,
+            ValidateErrorReason::TunnelNgrokDomainInvalid,
             ValidateErrorReason::GroupNameEmpty,
             ValidateErrorReason::GroupNameReserved,
             ValidateErrorReason::GroupDuplicate,

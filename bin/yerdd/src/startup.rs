@@ -457,6 +457,7 @@ pub async fn bring_up_with_dirs(
         shim_reconcile: tokio::sync::Mutex::new(()),
         tool_mutate: tokio::sync::Mutex::new(()),
         tunnel_mutate: tokio::sync::Mutex::new(()),
+        zrok_mutate: tokio::sync::Mutex::new(()),
         php_mutate: tokio::sync::Mutex::new(()),
         php_settings_mutate: tokio::sync::Mutex::new(()),
         jobs: crate::jobs::JobRegistry::default(),

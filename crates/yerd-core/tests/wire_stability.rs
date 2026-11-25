@@ -131,6 +131,38 @@ fn outbound_proxy_mode_serialises_as_snake_case_string() {
 }
 
 #[test]
+fn tunnel_provider_serialises_as_snake_case_string() {
+    use yerd_core::tunnel_provider::TunnelProvider;
+    for (provider, expected) in [
+        (TunnelProvider::Cloudflare, r#""cloudflare""#),
+        (TunnelProvider::Ngrok, r#""ngrok""#),
+        (TunnelProvider::Zrok, r#""zrok""#),
+    ] {
+        assert_eq!(serde_json::to_string(&provider).unwrap(), expected);
+        assert_eq!(
+            serde_json::from_str::<TunnelProvider>(expected).unwrap(),
+            provider
+        );
+    }
+}
+
+#[test]
+fn provider_readiness_serialises_as_snake_case_string() {
+    use yerd_core::tunnel_provider::ProviderReadiness;
+    for (readiness, expected) in [
+        (ProviderReadiness::NotInstalled, r#""not_installed""#),
+        (ProviderReadiness::NeedsSetup, r#""needs_setup""#),
+        (ProviderReadiness::Ready, r#""ready""#),
+    ] {
+        assert_eq!(serde_json::to_string(&readiness).unwrap(), expected);
+        assert_eq!(
+            serde_json::from_str::<ProviderReadiness>(expected).unwrap(),
+            readiness
+        );
+    }
+}
+
+#[test]
 fn proxy_source_serialises_as_snake_case_string() {
     use yerd_core::network::ProxySource;
     for (source, expected) in [

@@ -272,7 +272,7 @@ struct FavouritesSectionWire {
     sites: BTreeSet<String>,
 }
 
-/// The `[tunnel]` table. All maps default to empty, so an absent table parses
+/// The `[tunnel]` table. Every key defaults, so an absent table parses
 /// to [`crate::schema::TunnelSection::default`].
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -283,6 +283,20 @@ struct TunnelSectionWire {
     sites: BTreeMap<String, String>,
     #[serde(default)]
     passwords: BTreeMap<String, String>,
+    #[serde(default)]
+    default_provider: yerd_core::tunnel_provider::TunnelProvider,
+    #[serde(default)]
+    ngrok: NgrokWire,
+}
+
+/// The `[tunnel.ngrok]` table; both keys are optional.
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NgrokWire {
+    #[serde(default)]
+    authtoken: Option<String>,
+    #[serde(default)]
+    domain: Option<String>,
 }
 
 /// The `[dumps]` table. All fields default, so an absent table parses to
@@ -667,6 +681,11 @@ impl TryFrom<Wire> for Config {
             named: w.tunnel.named,
             sites: w.tunnel.sites,
             passwords: w.tunnel.passwords,
+            default_provider: w.tunnel.default_provider,
+            ngrok: crate::schema::NgrokSettings {
+                authtoken: w.tunnel.ngrok.authtoken,
+                domain: w.tunnel.ngrok.domain,
+            },
         };
         let groups = crate::schema::GroupsSection {
             order: w.groups.order,
@@ -1327,6 +1346,10 @@ fn validate_groups(c: &Config) -> Result<(), ConfigError> {
 ///
 /// `[tunnel.passwords]` keys follow the same safe-key rule as site names, and
 /// each password is 1..=128 bytes with no ASCII control characters.
+///
+/// A `[tunnel.ngrok]` authtoken must have the provider-token shape (visible
+/// ASCII, no whitespace, no leading `-`) and a domain must look like a DNS
+/// name. Errors never echo either value.
 fn validate_tunnel(c: &Config) -> Result<(), ConfigError> {
     if c.tunnel.named.len() > 1 {
         return Err(ve(ValidateErrorReason::TunnelMultipleNamed));
@@ -1360,6 +1383,16 @@ fn validate_tunnel(c: &Config) -> Result<(), ConfigError> {
         }
         if !is_valid_tunnel_password(password) {
             return Err(ve(ValidateErrorReason::TunnelPasswordInvalid));
+        }
+    }
+    if let Some(token) = &c.tunnel.ngrok.authtoken {
+        if !yerd_core::tunnel_provider::is_valid_provider_token(token) {
+            return Err(ve(ValidateErrorReason::TunnelNgrokAuthtokenInvalid));
+        }
+    }
+    if let Some(domain) = &c.tunnel.ngrok.domain {
+        if !is_plausible_hostname(domain) {
+            return Err(ve(ValidateErrorReason::TunnelNgrokDomainInvalid));
         }
     }
     Ok(())
@@ -1629,7 +1662,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 31,
+                current: 32,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -2023,6 +2056,68 @@ mod tests {
                 reason: ValidateErrorReason::TunnelKeyInvalid,
             })
         ));
+    }
+
+    #[test]
+    fn tunnel_ngrok_v32_file_parses() {
+        let c = Config::from_toml(
+            "version = 32\n[tunnel]\ndefault_provider = \"zrok\"\n\n[tunnel.ngrok]\nauthtoken = \"tok_1\"\ndomain = \"demo.ngrok-free.app\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            c.tunnel.default_provider,
+            yerd_core::tunnel_provider::TunnelProvider::Zrok
+        );
+        assert_eq!(c.tunnel.ngrok.authtoken.as_deref(), Some("tok_1"));
+        assert_eq!(
+            c.tunnel.ngrok.domain.as_deref(),
+            Some("demo.ngrok-free.app")
+        );
+    }
+
+    #[test]
+    fn tunnel_ngrok_rejects_invalid_values() {
+        for (body, reason) in [
+            (
+                "[tunnel.ngrok]\nauthtoken = \"a b\"\n",
+                ValidateErrorReason::TunnelNgrokAuthtokenInvalid,
+            ),
+            (
+                "[tunnel.ngrok]\nauthtoken = \"-x\"\n",
+                ValidateErrorReason::TunnelNgrokAuthtokenInvalid,
+            ),
+            (
+                "[tunnel.ngrok]\ndomain = \"nodot\"\n",
+                ValidateErrorReason::TunnelNgrokDomainInvalid,
+            ),
+        ] {
+            let err = Config::from_toml(&format!("version = 32\n{body}")).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::Validate { reason: r } if r == reason),
+                "{body:?} gave {err:?}"
+            );
+            assert!(!err.to_string().contains("a b"), "{err}");
+        }
+    }
+
+    #[test]
+    fn tunnel_rejects_unknown_default_provider() {
+        assert!(
+            Config::from_toml("version = 32\n[tunnel]\ndefault_provider = \"other\"\n").is_err()
+        );
+        assert!(Config::from_toml("version = 32\n[tunnel.ngrok]\nextra = \"x\"\n").is_err());
+    }
+
+    #[test]
+    fn ngrok_settings_debug_redacts_the_token() {
+        let settings = crate::NgrokSettings {
+            authtoken: Some("supersecrettoken".to_owned()),
+            domain: Some("demo.ngrok-free.app".to_owned()),
+        };
+        let debug = format!("{settings:?}");
+        assert!(debug.contains("***"), "{debug}");
+        assert!(!debug.contains("supersecrettoken"), "{debug}");
+        assert!(debug.contains("demo.ngrok-free.app"), "{debug}");
     }
 
     #[test]

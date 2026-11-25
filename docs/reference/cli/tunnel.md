@@ -33,6 +33,12 @@ installed. Quick share needs no Cloudflare account; named tunnels need a one-tim
 | `yerd tunnel password <SITE> [PASSWORD] [--clear]` | Set or clear a site's share password. |
 | `yerd tunnel publish` | Start the named tunnel if it isn't running. Never restarts a live tunnel. |
 | `yerd tunnel unpublish` | Stop the named tunnel until the next hostname change or daemon start. |
+| `yerd tunnel providers` | Show the tunnel providers, their readiness and settings. |
+| `yerd tunnel ngrok token [TOKEN] [--clear]` | Save or clear the ngrok authtoken (read from stdin when omitted). |
+| `yerd tunnel ngrok domain <DOMAIN> \| --clear` | Save or clear the ngrok static domain. |
+| `yerd tunnel zrok enable [TOKEN]` | Enable this machine for zrok (token read from stdin when omitted). |
+| `yerd tunnel zrok disable` | Disable Yerd's zrok environment. |
+| `yerd tunnel default <cloudflare\|ngrok\|zrok>` | Set the provider new shares use by default. |
 
 ```sh
 yerd install tool cloudflared
@@ -182,6 +188,72 @@ stops the process, removes the credentials, and clears the exposed-site mappings
 Only the one configured tunnel may be deleted. The DNS records created by
 `set-host`/`route` remain on your account - remove them in the Cloudflare
 dashboard if you no longer want them.
+
+## Providers
+
+These commands configure the [tunnel providers](../../guide/sharing#tunnel-providers).
+Tokens are never printed back: replies show the ngrok authtoken masked.
+
+### `yerd tunnel providers`
+
+Shows each provider's status (`ready`, `needs setup`, `not installed`), the
+binary in use (`(Yerd)` for Yerd's copy, `(PATH <path>)` for one found on your
+`PATH`, plus any update waiting in Tooling) and its settings, then the default
+for new shares. `--json` prints the daemon's reply as-is.
+
+```text
+PROVIDER    STATUS       BINARY                                  SETTINGS
+Cloudflare  ready        cloudflared 2026.6.1 (Yerd)             account connected
+ngrok       ready        ngrok 3.18.4 (PATH /opt/homebrew/bin/ngrok)  token 2fXk••••••••Qa, domain demo.ngrok-free.app
+zrok        needs setup  zrok2 2.0.11 (Yerd)                     not enabled
+
+default for new shares: Cloudflare
+```
+
+### `yerd tunnel ngrok token [TOKEN] [--clear]`
+
+Saves the ngrok authtoken in Yerd's config, where it is handed to ngrok as
+`NGROK_AUTHTOKEN`. Omit the token to read it from stdin, which keeps it out of
+your shell history (on a terminal, Yerd prompts for it):
+
+```sh
+pbpaste | yerd tunnel ngrok token
+yerd tunnel ngrok token 2fXk...
+yerd tunnel ngrok token --clear
+```
+
+The token must be 1-256 visible ASCII characters with no spaces.
+
+### `yerd tunnel ngrok domain <DOMAIN> | --clear`
+
+Saves the optional static domain as a bare hostname: a pasted `https://` and
+trailing `/` are stripped, and an empty value clears it. `--clear` removes it.
+
+```sh
+yerd tunnel ngrok domain name.ngrok-free.app
+yerd tunnel ngrok domain --clear
+```
+
+### `yerd tunnel zrok enable [TOKEN]`
+
+Runs `zrok2 enable` with your zrok account token in Yerd's own zrok environment
+(`{data}/tunnel/zrok`), so `~/.zrok2` is untouched. Omit the token to read it
+from stdin. Fails if this machine is already enabled (disable it first) or zrok
+is not installed.
+
+```sh
+pbpaste | yerd tunnel zrok enable
+```
+
+### `yerd tunnel zrok disable`
+
+Runs `zrok2 disable`, releasing this machine from the zrok account. If zrok
+refuses (for example a revoked token), the local environment is kept and the
+reason is printed.
+
+### `yerd tunnel default <cloudflare|ngrok|zrok>`
+
+Sets the provider new shares use unless another is chosen.
 
 ::: tip Desktop app
 The desktop app's **Share** page (under **Integrations**) drives all of this with

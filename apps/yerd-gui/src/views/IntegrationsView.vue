@@ -7,8 +7,8 @@ import PageHeader from "@/components/PageHeader.vue";
 import CloudflareLoginDialog from "@/components/share/CloudflareLoginDialog.vue";
 import ShareInspector from "@/components/share/ShareInspector.vue";
 import ShareList from "@/components/share/ShareList.vue";
-import ShareSetupDialog from "@/components/share/ShareSetupDialog.vue";
 import ShareSiteDialog, { type ShareRequest } from "@/components/share/ShareSiteDialog.vue";
+import TunnelProvidersDialog from "@/components/share/providers/TunnelProvidersDialog.vue";
 import AsyncState from "@/components/ui/AsyncState.vue";
 import Button from "@/components/ui/Button.vue";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
@@ -358,28 +358,33 @@ async function onShare(request: ShareRequest): Promise<void> {
   select(shareKey(request.kind, request.site));
 }
 
-// ── Setup ──
-const setupOpen = ref(false);
+// ── Providers ──
+const providersOpen = ref(false);
 
-/** Close Setup, then open the next dialog, so two dialogs never stack. */
-function fromSetup(next: () => void): void {
-  setupOpen.value = false;
+/** Close the Providers sheet, then open the next dialog, so two dialogs never stack. */
+function fromProviders(next: () => void): void {
+  providersOpen.value = false;
   void nextTick(next);
 }
 
-function onSetupTooling(): void {
-  fromSetup(goToTooling);
+function onProvidersTooling(): void {
+  fromProviders(goToTooling);
 }
 
-function onSetupLogin(): void {
-  fromSetup(() => void doLogin());
+function onProvidersLogin(): void {
+  fromProviders(() => void doLogin());
 }
 
-function onSetupRemove(): void {
-  fromSetup(() => {
+function onProvidersRemove(): void {
+  fromProviders(() => {
     deleteOpen.value = true;
   });
 }
+
+/** Reload once the sheet closes, so the page reflects provider changes. */
+watch(providersOpen, (open) => {
+  if (!open) void reload();
+});
 
 // ── share passwords ──
 const passwordOpen = ref(false);
@@ -456,21 +461,21 @@ const shareDisabled = computed(() => !installed.value || connected.value !== tru
           variant="outline"
           size="sm"
           :disabled="!data"
-          data-testid="open-setup"
-          @click="setupOpen = true"
+          data-testid="open-providers"
+          @click="providersOpen = true"
         >
-          <SlidersHorizontal /> Setup
+          <SlidersHorizontal /> Providers
         </Button>
         <Button
           v-else
           variant="outline"
           size="icon"
           class="size-8"
-          aria-label="Setup"
-          title="Setup"
+          aria-label="Providers"
+          title="Providers"
           :disabled="!data"
-          data-testid="open-setup"
-          @click="setupOpen = true"
+          data-testid="open-providers"
+          @click="providersOpen = true"
         >
           <SlidersHorizontal />
         </Button>
@@ -576,8 +581,8 @@ const shareDisabled = computed(() => !installed.value || connected.value !== tru
       @share="onShare"
     />
 
-    <ShareSetupDialog
-      v-model:open="setupOpen"
+    <TunnelProvidersDialog
+      v-model:open="providersOpen"
       :cloudflared="cloudflared"
       :zone="authorizedDomain"
       :tunnel="tunnel"
@@ -585,11 +590,12 @@ const shareDisabled = computed(() => !installed.value || connected.value !== tru
       :exposed-count="exposedSites.length"
       :busy="busy"
       :connected="connected === true"
-      @tooling="onSetupTooling"
-      @login="onSetupLogin"
+      @tooling="onProvidersTooling"
+      @login="onProvidersLogin"
       @create="doCreateTunnel"
       @start="doStartNamed"
-      @remove="onSetupRemove"
+      @remove="onProvidersRemove"
+      @open-url="openExternal"
     />
 
     <CloudflareLoginDialog

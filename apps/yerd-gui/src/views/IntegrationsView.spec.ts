@@ -96,6 +96,12 @@ function stubIpc(opts: StubOpts = {}) {
       case "create_named_tunnel":
       case "delete_named_tunnel":
         return Promise.resolve({ type: "ok" });
+      case "list_tunnel_providers":
+        return Promise.resolve({
+          type: "tunnel_providers",
+          providers: [{ provider: "cloudflare", readiness: "ready", configured: true }],
+          default_provider: "cloudflare",
+        });
       default:
         return Promise.reject(new Error(`unexpected invoke ${cmd}`));
     }
@@ -182,8 +188,8 @@ async function openShareDialog(): Promise<void> {
   await click(document.querySelector('[data-testid="open-share"]'));
 }
 
-async function openSetup(): Promise<void> {
-  await click(document.querySelector('[data-testid="open-setup"]'));
+async function openProviders(): Promise<void> {
+  await click(document.querySelector('[data-testid="open-providers"]'));
 }
 
 function named(state: TunnelInfo["state"], extra: Partial<TunnelInfo> = {}): TunnelInfo {
@@ -389,10 +395,16 @@ describe("IntegrationsView share password", () => {
 });
 
 describe("IntegrationsView setup", () => {
-  it("closes Setup before the login dialog opens", async () => {
+  it("labels the header button Providers", async () => {
+    stubIpc();
+    await mountView();
+    expect(document.querySelector('[data-testid="open-providers"]')?.textContent?.trim()).toBe("Providers");
+  });
+
+  it("closes Providers before the login dialog opens", async () => {
     stubIpc({ cloudflared: { ...MANAGED, logged_in: false } });
     await mountView();
-    await openSetup();
+    await openProviders();
     await click(buttonByText("Connect"));
     expect(calls("cloudflared_login")).toHaveLength(1);
     expect(dialogTitles()).toEqual(["Connect Cloudflare account"]);
@@ -402,7 +414,7 @@ describe("IntegrationsView setup", () => {
     vi.useFakeTimers();
     stubIpc({ cloudflared: { ...MANAGED, logged_in: false }, jobStates: ["running", "running", "running"] });
     await mountView();
-    await openSetup();
+    await openProviders();
     await click(buttonByText("Connect"));
     expect(dialogTitles()).toEqual(["Connect Cloudflare account"]);
 
@@ -412,23 +424,23 @@ describe("IntegrationsView setup", () => {
     expect(calls("job_cancel")).toEqual([{ jobId: "j1" }]);
     expect(calls("tunnel_status").length).toBeGreaterThan(1);
 
-    await openSetup();
+    await openProviders();
     expect(buttonByText("Connect")).toBeTruthy();
   });
 
   it("does not cancel a login that finished", async () => {
     stubIpc({ cloudflared: { ...MANAGED, logged_in: false }, jobStates: ["succeeded"] });
     await mountView();
-    await openSetup();
+    await openProviders();
     await click(buttonByText("Connect"));
     await flushPromises();
     expect(calls("job_cancel")).toHaveLength(0);
   });
 
-  it("starts a stopped tunnel from Setup", async () => {
+  it("starts a stopped tunnel from Providers", async () => {
     stubIpc({ named: [{ site: "app", hostname: "app.example.com" }] });
     await mountView();
-    await openSetup();
+    await openProviders();
     await click(document.querySelector('[data-testid="setup-tunnel"] [data-action="start"]'));
     expect(calls("start_named_tunnel")).toHaveLength(1);
   });
@@ -436,7 +448,7 @@ describe("IntegrationsView setup", () => {
   it("removes the tunnel after the confirm", async () => {
     stubIpc({ tunnels: [named("running")], named: [{ site: "app", hostname: "app.example.com" }] });
     await mountView();
-    await openSetup();
+    await openProviders();
     await click(document.querySelector('[data-testid="setup-tunnel"] [data-action="remove"]'));
     expect(dialogTitles()).toEqual(["Remove tunnel dev?"]);
     await click(buttonByText("Remove tunnel"));

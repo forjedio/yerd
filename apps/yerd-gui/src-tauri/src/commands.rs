@@ -1204,6 +1204,44 @@ pub async fn set_tunnel_password(
     finish(exchange(&Request::SetTunnelPassword { site, password }).await?)
 }
 
+/// List the tunnel providers with their readiness and settings.
+#[tauri::command]
+pub async fn list_tunnel_providers() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListTunnelProviders).await?)
+}
+
+/// Save (or clear, with `None`) the ngrok authtoken.
+#[tauri::command]
+pub async fn set_ngrok_authtoken(authtoken: Option<String>) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetNgrokAuthtoken { authtoken }).await?)
+}
+
+/// Save (or clear, with `None`) the ngrok static domain.
+#[tauri::command]
+pub async fn set_ngrok_domain(domain: Option<String>) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetNgrokDomain { domain }).await?)
+}
+
+/// Enable Yerd's zrok environment with an account token.
+#[tauri::command]
+pub async fn enable_zrok(token: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::EnableZrok { token }).await?)
+}
+
+/// Disable Yerd's zrok environment.
+#[tauri::command]
+pub async fn disable_zrok() -> Result<Response, GuiError> {
+    finish(exchange(&Request::DisableZrok).await?)
+}
+
+/// Set the provider new shares use by default.
+#[tauri::command]
+pub async fn set_default_tunnel_provider(
+    provider: yerd_core::tunnel_provider::TunnelProvider,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetDefaultTunnelProvider { provider }).await?)
+}
+
 /// Start the consolidated named tunnel if it is not running. Idempotent: a live
 /// connector is never restarted.
 #[tauri::command]

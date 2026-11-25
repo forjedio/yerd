@@ -55,6 +55,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v28_to_v29,
     migrate_v29_to_v30,
     migrate_v30_to_v31,
+    migrate_v31_to_v32,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -310,6 +311,12 @@ fn migrate_v30_to_v31(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 31)
 }
 
+/// `v31 → v32`: bare version bump. v32 added `[tunnel] default_provider` and
+/// the optional `[tunnel.ngrok]` table; both default when absent.
+fn migrate_v31_to_v32(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 32)
+}
+
 /// Set the top-level `version` key, erroring if the root is not a table.
 fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
     let table = value.as_table_mut().ok_or(ConfigError::Migration {
@@ -379,7 +386,7 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 31);
+        assert_eq!(crate::CURRENT_VERSION, 32);
     }
 
     #[test]
@@ -476,6 +483,15 @@ mod tests {
         migrate_v28_to_v29(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 29);
         assert_eq!(v["php"]["default"].as_str(), Some("8.4"));
+    }
+
+    #[test]
+    fn v31_to_v32_is_a_bare_version_bump() {
+        let mut v: Value =
+            toml::from_str("version = 31\n[tunnel.passwords]\nblog = \"pw\"\n").unwrap();
+        migrate_v31_to_v32(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 32);
+        assert_eq!(v["tunnel"]["passwords"]["blog"].as_str(), Some("pw"));
     }
 
     #[test]

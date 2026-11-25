@@ -150,6 +150,10 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Link { name_or_path, path } => {
             resolve_link(name_or_path.as_deref(), path.as_deref())
         }
+        Command::Tunnel { action } if map::stdin_secret_prompt(action).is_some() => {
+            read_secret_line(map::stdin_secret_prompt(action).unwrap_or_default())
+                .and_then(|token| map::tunnel_secret_request(action, token))
+        }
         _ => map::to_request(&cli.command)
             .map(canonicalize_unpark)
             .and_then(canonicalize_db_paths)
@@ -888,6 +892,29 @@ async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
             }
         }
     }
+}
+
+/// Read one secret line from stdin, prompting on stderr only when stdin is a
+/// terminal. The value is trimmed; EOF or an empty line is a usage error.
+fn read_secret_line(prompt: &str) -> Result<String, ClientError> {
+    use std::io::{BufRead as _, IsTerminal as _, Write as _};
+    let stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        eprint!("{prompt}");
+        let _ = std::io::stderr().flush();
+    }
+    let mut line = String::new();
+    stdin
+        .lock()
+        .read_line(&mut line)
+        .map_err(|e| ClientError::Usage(format!("could not read the token from stdin: {e}")))?;
+    let token = line.trim();
+    if token.is_empty() {
+        return Err(ClientError::Usage(
+            "no token given - pass it as an argument or on stdin".to_owned(),
+        ));
+    }
+    Ok(token.to_owned())
 }
 
 /// Best-effort: rewrite an `Unpark` request's path to its canonical form so a

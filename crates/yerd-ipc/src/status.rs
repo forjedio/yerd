@@ -18,6 +18,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use yerd_core::tunnel_provider::{ProviderReadiness, TunnelProvider};
 use yerd_core::PhpVersion;
 
 /// A read-only snapshot of daemon runtime health, returned for
@@ -832,7 +833,8 @@ pub struct SiteHostname {
     pub protected: bool,
 }
 
-/// Where the `cloudflared` binary Yerd is using came from.
+/// Where a tunnel provider binary Yerd is using came from (`cloudflared`,
+/// `ngrok` or `zrok2`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -841,6 +843,39 @@ pub enum CloudflaredSource {
     Managed,
     /// A pre-existing binary found on the user's `PATH`.
     System,
+}
+
+/// One tunnel provider's readiness and settings, as reported by
+/// [`crate::Request::ListTunnelProviders`]. Secrets never appear here: the
+/// ngrok authtoken is only ever sent masked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TunnelProviderStatus {
+    /// The provider this entry describes.
+    pub provider: TunnelProvider,
+    /// Whether the provider can run shares now.
+    pub readiness: ProviderReadiness,
+    /// The binary version, without a leading `v`, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Where the binary came from, when installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<CloudflaredSource>,
+    /// The binary's path, set only for a copy found on the user's `PATH`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The newer published release, set only for a Yerd-managed binary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_available: Option<String>,
+    /// Whether the account step is done: Cloudflare logged in, ngrok token
+    /// saved, zrok environment enabled.
+    #[serde(default)]
+    pub configured: bool,
+    /// The saved ngrok authtoken, masked. ngrok only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authtoken_hint: Option<String>,
+    /// The saved ngrok static domain. ngrok only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
 }
 
 /// `cloudflared` install / account status, reported alongside the live tunnels.

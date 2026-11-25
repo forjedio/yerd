@@ -6,8 +6,10 @@
 //! accidental serde contract that downstream consumers might rely on.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 use yerd_core::network::{OutboundProxyMode, ProxyUrl};
+use yerd_core::tunnel_provider::TunnelProvider;
 use yerd_core::{Domain, PhpVersion, ProxyRule, ProxySite, ResponseHeader, RouteRule, Site, Tld};
 
 /// Top-level on-disk config.
@@ -341,11 +343,12 @@ impl FavouritesSection {
 /// mutation) reject it case-insensitively.
 pub const RESERVED_GROUP_NAME: &str = "Unallocated";
 
-/// Cloudflare Tunnel persistence (the Named Tunnels feature).
+/// Site sharing persistence: Cloudflare named tunnels and per-site hostnames,
+/// share passwords, the default provider for new shares, and ngrok settings.
 ///
-/// Both maps are empty by default, so a config without a `[tunnel]` table is the
-/// common case. Keyed by **site name** (not document-root) so the per-site
-/// hostname applies to parked and linked sites alike.
+/// Everything is empty or default by default, so a config without a `[tunnel]`
+/// table is the common case. Maps are keyed by **site name** (not
+/// document-root) so per-site settings apply to parked and linked sites alike.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TunnelSection {
     /// Named tunnels created locally, by tunnel name → tunnel UUID.
@@ -355,6 +358,40 @@ pub struct TunnelSection {
     /// Per-site share passwords (HTTP basic auth on tunnelled requests), by site
     /// name → password. One password protects every tunnel kind for that site.
     pub passwords: BTreeMap<String, String>,
+    /// The provider new shares use unless one is picked explicitly.
+    pub default_provider: TunnelProvider,
+    /// ngrok account settings (`[tunnel.ngrok]`).
+    pub ngrok: NgrokSettings,
+}
+
+/// ngrok account settings.
+///
+/// The authtoken is stored in plain text like the share passwords (the config
+/// file is `0600`) and is handed to ngrok in its environment, never on argv.
+/// `Debug` redacts it so a logged `Config` never leaks it.
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct NgrokSettings {
+    /// The ngrok agent authtoken, if saved.
+    pub authtoken: Option<String>,
+    /// An optional static domain as a bare hostname (`name.ngrok-free.app`).
+    pub domain: Option<String>,
+}
+
+impl NgrokSettings {
+    /// Whether neither a token nor a domain is set.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.authtoken.is_none() && self.domain.is_none()
+    }
+}
+
+impl fmt::Debug for NgrokSettings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NgrokSettings")
+            .field("authtoken", &self.authtoken.as_ref().map(|_| "***"))
+            .field("domain", &self.domain)
+            .finish()
+    }
 }
 
 /// Default loopback port for the dump server (see [`DumpsSection::port`]).

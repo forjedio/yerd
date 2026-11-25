@@ -1,24 +1,26 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref } from "vue";
+import { ExternalLink } from "lucide-vue-next";
 
 import Button from "@/components/ui/Button.vue";
-import DialogFrame from "@/components/ui/DialogFrame.vue";
 import Input from "@/components/ui/Input.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { SECTION_LABEL } from "@/components/ui/styles";
 import type { CloudflaredStatus, NamedTunnelMeta, TunnelInfo } from "@/ipc/types";
+import { readinessLabel } from "@/lib/providers";
 import { canStartNamed, tunnelChip } from "@/lib/share";
 import { CHIP_TONE, cn } from "@/lib/utils";
 
+import ProviderTile from "./ProviderTile.vue";
+
 /**
- * Share setup: which cloudflared binary is in use (installing and updating it
- * happen in Tooling, linked from here), the Cloudflare account, and the domain
- * tunnel (create, start a stopped or failed one, remove). Actions that open
- * another dialog or page are handed to the view, which closes this one first so
- * dialogs never stack.
+ * The Cloudflare pane of the Tunnel providers sheet: which cloudflared binary
+ * is in use (installing and updating it happen in Tooling, linked from here),
+ * the Cloudflare account, and the domain tunnel (create, start a stopped or
+ * failed one, remove). Actions that open another dialog or page are handed up
+ * to the view, which closes the sheet first so dialogs never stack.
  */
 const props = defineProps<{
-  open: boolean;
   cloudflared: CloudflaredStatus | null;
   zone: string | null;
   tunnel: NamedTunnelMeta | null;
@@ -32,22 +34,15 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  "update:open": [boolean];
   tooling: [];
   login: [];
   create: [name: string];
   start: [];
   remove: [];
+  "open-url": [url: string];
 }>();
 
 const newName = ref("");
-
-watch(
-  () => props.open,
-  (open) => {
-    if (open) newName.value = "";
-  },
-);
 
 const installed = computed(() => props.cloudflared?.installed ?? false);
 const loggedIn = computed(() => props.cloudflared?.logged_in ?? false);
@@ -65,6 +60,8 @@ const chipClass = computed(() => {
   return CHIP_TONE.neutral;
 });
 
+const readiness = computed(() => readinessLabel(installed.value ? "ready" : "not_installed"));
+
 const SECTION = "py-4 first:pt-0";
 const CHIP = "inline-flex shrink-0 items-center gap-1.5 rounded px-2 py-0.5 text-[11px] font-semibold";
 const LINK =
@@ -72,7 +69,24 @@ const LINK =
 </script>
 
 <template>
-  <DialogFrame :open="open" title="Share setup" width="lg" @update:open="(v: boolean) => emit('update:open', v)">
+  <div>
+    <div class="mb-4 flex items-center gap-2.5">
+      <ProviderTile provider="cloudflare" size="md" />
+      <h3 class="text-[15px] font-semibold">Cloudflare</h3>
+      <span
+        :class="cn(CHIP, 'uppercase', installed ? CHIP_TONE.success : CHIP_TONE.warning)"
+        data-testid="pane-readiness"
+      >
+        {{ readiness }}
+      </span>
+      <button
+        type="button"
+        :class="cn(LINK, 'ml-auto inline-flex items-center gap-1 text-brand')"
+        @click="emit('open-url', 'https://dash.cloudflare.com')"
+      >
+        dash.cloudflare.com <ExternalLink class="size-3" />
+      </button>
+    </div>
     <div class="divide-y">
       <section :class="SECTION" data-testid="setup-cloudflared">
         <p :class="SECTION_LABEL">cloudflared</p>
@@ -181,9 +195,5 @@ const LINK =
         <p v-else class="mt-2.5 text-xs text-muted-foreground">Connect your Cloudflare account first.</p>
       </section>
     </div>
-
-    <template #footer>
-      <Button @click="emit('update:open', false)">Done</Button>
-    </template>
-  </DialogFrame>
+  </div>
 </template>

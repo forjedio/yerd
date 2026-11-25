@@ -6,6 +6,8 @@
 //! no I/O, table-tested), while [`manager`] is the async I/O edge that supervises
 //! the `cloudflared` child via the shared `yerd-supervise` state machine and
 //! [`probe`] checks its edge health through the `/ready` metrics endpoint.
+//! [`providers`] holds the pure argv and output helpers for the ngrok and zrok
+//! one-shot commands.
 //!
 //! Every tunnel points `cloudflared` at the daemon's loopback tunnel listener
 //! ([`origin::origin_url`]), which routes by the public `Host` itself, so no
@@ -25,6 +27,7 @@ pub mod origin;
 pub mod parse;
 pub mod preflight;
 pub mod probe;
+pub mod providers;
 
 pub use error::TunnelError;
 pub use manager::{

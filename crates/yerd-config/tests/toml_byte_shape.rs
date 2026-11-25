@@ -54,8 +54,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 31\n"),
-        "expected first line `version = 31`; got: {s}"
+        s.starts_with("version = 32\n"),
+        "expected first line `version = 32`; got: {s}"
     );
 }
 
@@ -702,6 +702,43 @@ fn tunnel_passwords_emit_a_sub_table_only_when_set() {
         with.replace("\n[tunnel.passwords]\napp = \"s3cret\"\n", ""),
         without
     );
+
+    let back = Config::from_toml(&with).unwrap();
+    assert_eq!(back, c);
+}
+
+#[test]
+fn tunnel_ngrok_and_default_provider_emit_only_when_set() {
+    let mut c = Config::default();
+    c.tunnel
+        .named
+        .insert("yerd".to_string(), "uuid-1".to_string());
+    c.tunnel
+        .passwords
+        .insert("app".to_string(), "s3cret".to_string());
+    let without = c.to_toml().unwrap();
+    assert!(!without.contains("default_provider"), "got: {without}");
+    assert!(!without.contains("[tunnel.ngrok]"), "got: {without}");
+
+    c.tunnel.default_provider = yerd_core::tunnel_provider::TunnelProvider::Ngrok;
+    c.tunnel.ngrok.authtoken = Some("tok_abc".to_string());
+    c.tunnel.ngrok.domain = Some("demo.ngrok-free.app".to_string());
+    let with = c.to_toml().unwrap();
+    assert!(
+        with.contains("[tunnel]\ndefault_provider = \"ngrok\"\n\n[tunnel.named]\n"),
+        "got: {with}"
+    );
+    assert!(
+        with.contains(
+            "[tunnel.ngrok]\nauthtoken = \"tok_abc\"\ndomain = \"demo.ngrok-free.app\"\n"
+        ),
+        "got: {with}"
+    );
+    let passwords_at = with
+        .find("[tunnel.passwords]")
+        .expect("passwords table present");
+    let ngrok_at = with.find("[tunnel.ngrok]").expect("ngrok table present");
+    assert!(passwords_at < ngrok_at, "got: {with}");
 
     let back = Config::from_toml(&with).unwrap();
     assert_eq!(back, c);

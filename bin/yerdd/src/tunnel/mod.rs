@@ -28,6 +28,7 @@ pub mod credentials;
 pub mod install;
 pub mod named;
 pub mod orphans;
+pub mod providers;
 pub mod supervise;
 
 use std::collections::{BTreeMap, HashMap};
@@ -350,12 +351,17 @@ pub(super) fn pinned_home_env(
         "HOME".into(),
         install::tunnel_dir(&state.dirs).into_os_string(),
     )];
-    for key in FORWARDED_ENV {
-        if let Some(val) = std::env::var_os(key) {
-            env.push((key.into(), val));
-        }
-    }
+    env.extend(forwarded_env());
     env
+}
+
+/// The [`FORWARDED_ENV`] variables the daemon has set, for a child whose
+/// environment is otherwise cleared.
+pub(super) fn forwarded_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    FORWARDED_ENV
+        .iter()
+        .filter_map(|key| std::env::var_os(key).map(|val| ((*key).into(), val)))
+        .collect()
 }
 
 /// Resolve a site by name or `.test` host to its `(name, host)`, where `host` is

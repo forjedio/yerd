@@ -25,7 +25,7 @@ use yerd_ipc::{
     PhpPoolStatus, PoolRunState, PortRedirectTargets, PortStatus, ProxyEntry, ProxyRuleEntry,
     ReleaseNoteItem, ReleaseNotesEntry, Request, Response, ServiceAvailability, ServiceRunState,
     ServiceStatus, Severity, SiteCounts, SiteHostname, StagedArtifact, StatusReport, ToolStatus,
-    TunnelInfo, TunnelKind, TunnelRunState, UpdateSource,
+    TunnelInfo, TunnelKind, TunnelProviderStatus, TunnelRunState, UpdateSource,
 };
 
 // ---------- Request ----------
@@ -3775,6 +3775,88 @@ fn request_set_tunnel_password_byte_shape() {
         r#"{"type":"set_tunnel_password","site":"app","password":null}"#
     );
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), clear);
+}
+
+#[test]
+fn tunnel_provider_requests_byte_shape() {
+    use yerd_core::tunnel_provider::TunnelProvider;
+    for (req, expected) in [
+        (
+            Request::ListTunnelProviders,
+            r#"{"type":"list_tunnel_providers"}"#,
+        ),
+        (
+            Request::SetNgrokAuthtoken {
+                authtoken: Some("tok".into()),
+            },
+            r#"{"type":"set_ngrok_authtoken","authtoken":"tok"}"#,
+        ),
+        (
+            Request::SetNgrokAuthtoken { authtoken: None },
+            r#"{"type":"set_ngrok_authtoken","authtoken":null}"#,
+        ),
+        (
+            Request::SetNgrokDomain {
+                domain: Some("demo.ngrok-free.app".into()),
+            },
+            r#"{"type":"set_ngrok_domain","domain":"demo.ngrok-free.app"}"#,
+        ),
+        (
+            Request::SetNgrokDomain { domain: None },
+            r#"{"type":"set_ngrok_domain","domain":null}"#,
+        ),
+        (
+            Request::EnableZrok { token: "t".into() },
+            r#"{"type":"enable_zrok","token":"t"}"#,
+        ),
+        (Request::DisableZrok, r#"{"type":"disable_zrok"}"#),
+        (
+            Request::SetDefaultTunnelProvider {
+                provider: TunnelProvider::Zrok,
+            },
+            r#"{"type":"set_default_tunnel_provider","provider":"zrok"}"#,
+        ),
+    ] {
+        let s = serde_json::to_string(&req).unwrap();
+        assert_eq!(s, expected);
+        assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), req);
+    }
+}
+
+#[test]
+fn response_tunnel_providers_byte_shape() {
+    use yerd_core::tunnel_provider::{ProviderReadiness, TunnelProvider};
+    let r = Response::TunnelProviders {
+        providers: vec![
+            TunnelProviderStatus {
+                provider: TunnelProvider::Ngrok,
+                readiness: ProviderReadiness::Ready,
+                version: Some("3.18.4".into()),
+                source: Some(CloudflaredSource::System),
+                path: Some("/opt/homebrew/bin/ngrok".into()),
+                update_available: Some("3.19.0".into()),
+                configured: true,
+                authtoken_hint: Some("2fXk••••••••Qa".into()),
+                domain: Some("demo.ngrok-free.app".into()),
+            },
+            TunnelProviderStatus {
+                provider: TunnelProvider::Zrok,
+                readiness: ProviderReadiness::NotInstalled,
+                version: None,
+                source: None,
+                path: None,
+                update_available: None,
+                configured: false,
+                authtoken_hint: None,
+                domain: None,
+            },
+        ],
+        default_provider: TunnelProvider::Ngrok,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"tunnel_providers","providers":[{"provider":"ngrok","readiness":"ready","version":"3.18.4","source":"system","path":"/opt/homebrew/bin/ngrok","update_available":"3.19.0","configured":true,"authtoken_hint":"2fXk••••••••Qa","domain":"demo.ngrok-free.app"},{"provider":"zrok","readiness":"not_installed","configured":false}],"default_provider":"ngrok"}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
 
 #[test]

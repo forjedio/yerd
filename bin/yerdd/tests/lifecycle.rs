@@ -349,6 +349,53 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(10), daemon_task).await;
     }
 
+    /// The provider setting requests are dispatched and persisted: the saved
+    /// config holds the ngrok token, the normalised domain and the default.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tunnel_provider_settings_round_trip_over_ipc() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = make_dirs(tmp.path());
+        let cfg_path = dirs.config.join("yerd.toml");
+        let daemon =
+            yerdd::startup::bring_up_with_dirs(dirs.clone(), valid_config(), cfg_path.clone())
+                .await
+                .expect("bring_up_with_dirs");
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let daemon_task = tokio::spawn(async move { drive_subsystems(daemon, shutdown_rx).await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let ipc_sock = dirs.runtime.join("yerd.sock");
+
+        let token = "2fXkAbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcdQa";
+        for req in [
+            Request::SetNgrokAuthtoken {
+                authtoken: Some(token.into()),
+            },
+            Request::SetNgrokDomain {
+                domain: Some("https://Demo.ngrok-free.app/".into()),
+            },
+            Request::SetDefaultTunnelProvider {
+                provider: yerd_core::tunnel_provider::TunnelProvider::Ngrok,
+            },
+        ] {
+            let resp = round_trip(&ipc_sock, &req).await;
+            assert!(matches!(resp, Response::Ok), "{resp:?}");
+        }
+
+        let saved = yerd_config::Config::load(&cfg_path).unwrap();
+        assert_eq!(saved.tunnel.ngrok.authtoken.as_deref(), Some(token));
+        assert_eq!(
+            saved.tunnel.ngrok.domain.as_deref(),
+            Some("demo.ngrok-free.app")
+        );
+        assert_eq!(
+            saved.tunnel.default_provider,
+            yerd_core::tunnel_provider::TunnelProvider::Ngrok
+        );
+
+        shutdown_tx.send_replace(true);
+        let _ = tokio::time::timeout(Duration::from_secs(10), daemon_task).await;
+    }
+
     /// Send one raw HTTP/1.1 `GET /` with `host` to the loopback `port` and
     /// return the response status code.
     async fn raw_http_status(port: u16, host: &str) -> u16 {

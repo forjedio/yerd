@@ -28,6 +28,7 @@ mod router;
 pub mod service_directives;
 mod site;
 mod tld;
+pub mod tunnel_provider;
 
 /// `Server` header value the proxy stamps on its own (synthetic, non-forwarded)
 /// responses. It doubles as the signature the macOS privileged-port redirect
