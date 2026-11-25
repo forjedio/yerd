@@ -182,26 +182,33 @@ The clients connect to Yerd's instance by default:
 
 - **MySQL / MariaDB** connect over Yerd's Unix socket (the shim sets
   `MYSQL_UNIX_PORT`), so they work on any port.
-- **PostgreSQL** gets `PGHOST=127.0.0.1` and `PGPORT` set to the service's port,
-  unless you name a host yourself (`-h`, a `host=` connection string, a URI
-  with a host, or `PGHOST`/`PGHOSTADDR` in your environment), in which case
-  neither is added.
+- **PostgreSQL** gets `PGHOST=127.0.0.1`, `PGPORT` set to the service's port,
+  and `PGUSER=postgres` (the superuser Yerd creates), unless you name a host
+  yourself (`-h`, a `host=` or `service=` connection string, a URI with a
+  host, or `PGHOST`/`PGHOSTADDR`/`PGSERVICE` in your environment), in which
+  case none of them is added.
 - **Valkey** gets `-p <port>` when the service is not on the default 6379.
 
 Your own settings always win: an explicit `-h`, `-S`, or `--protocol` flag, a
-`[client]` `host` or `socket` in `~/.my.cnf`, or your own `MYSQL_UNIX_PORT`,
-`PGHOST`, or `PGPORT`. Note that pointing a MySQL/MariaDB client at TCP (with
+`[client]` `host` or `socket` in `~/.my.cnf`, a Postgres `-U`/`--username` or
+a user in a connection string or URI, or your own `MYSQL_UNIX_PORT`, `PGHOST`,
+`PGPORT`, or `PGUSER`. Note that pointing a MySQL/MariaDB client at TCP (with
 `-h` or `MYSQL_HOST`) disables the socket default, so a non-default port then
 also needs `-P` or `MYSQL_TCP_PORT`.
 
-Credentials are not injected - pass the user as usual:
+Passwords are never injected. MySQL and MariaDB take the user as usual, while
+Postgres connects to Yerd's instance as the `postgres` superuser unless you pass
+`-U` or set `PGUSER`:
 
 ```sh
 mysql -u root my_app
 mysqldump -u root my_app > my_app.sql
-psql -U postgres my_app
+psql my_app
 valkey-cli ping
 ```
+
+If you created a Postgres role matching your OS username and relied on
+connecting as it by default, export `PGUSER` with that name to keep doing so.
 
 ::: warning Shadowing other clients
 Once `{data}/bin` is on your `PATH`, Yerd's `mysql`, `psql`, and friends take
