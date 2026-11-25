@@ -1,3 +1,8 @@
+<script lang="ts">
+/** Whether a site holds a proxy's name: `unknown` until the site list loads. */
+export type ProxyNameState = "free" | "taken" | "unknown";
+</script>
+
 <script setup lang="ts">
 import { Copy, CornerDownRight, ExternalLink, Globe, Pencil, Trash2, X } from "lucide-vue-next";
 import { computed } from "vue";
@@ -34,8 +39,9 @@ const props = defineProps<{
   report: StatusReport | null;
   tld: string;
   busy?: boolean;
-  /** A same-named site hides this proxy, so header edits by name would reach the site. */
-  shadowed?: boolean;
+  /** Whether a same-named site hides this proxy; header edits by name would then
+   *  reach the site, so the headers card shows only when the name is `free`. */
+  nameState?: ProxyNameState;
 }>();
 
 const emit = defineEmits<{
@@ -187,8 +193,16 @@ const LABEL = `mb-2 px-1 ${SECTION_LABEL}`;
           @domains-changed="emit('domainsChanged')"
         />
 
-        <SiteHeadersCard v-if="proxy && !shadowed" :site="{ name: proxy.name }" proxy />
-        <p v-else-if="proxy" class="text-[13px] text-faint" data-testid="headers-shadowed">
+        <SiteHeadersCard
+          v-if="proxy && (nameState ?? 'free') === 'free'"
+          :site="{ name: proxy.name }"
+          proxy
+        />
+        <p
+          v-else-if="proxy && nameState === 'taken'"
+          class="text-[13px] text-faint"
+          data-testid="headers-shadowed"
+        >
           A site named {{ proxy.name }} takes this proxy's name, so its response headers can't be
           edited until the site is removed or renamed.
         </p>

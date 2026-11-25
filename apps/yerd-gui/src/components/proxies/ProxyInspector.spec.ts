@@ -181,11 +181,14 @@ describe("ProxyInspector for a whole-domain proxy", () => {
     expect(w.findComponent({ name: "SiteHeadersCard" }).props("proxy")).toBe(true);
   });
 
-  it("replaces the headers card with a note when a site hides the proxy", async () => {
-    const w = mountInspector(proxyItem(), { shadowed: true });
+  it.each([
+    ["taken", true],
+    ["unknown", false],
+  ])("hides the headers card while the proxy name is %s", async (nameState, note) => {
+    const w = mountInspector(proxyItem(), { nameState });
     await flushPromises();
     expect(w.find('[data-testid="headers-card"]').exists()).toBe(false);
-    expect(w.get('[data-testid="headers-shadowed"]').text()).toContain("A site named mydocker");
+    expect(w.find('[data-testid="headers-shadowed"]').exists()).toBe(note);
     expect(listResponseHeaders).not.toHaveBeenCalled();
   });
 

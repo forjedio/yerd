@@ -306,6 +306,14 @@ describe("ProxiesView shadowed proxy", () => {
     expect(inspector.find('[data-testid="headers-card"]').exists()).toBe(shown);
     expect(inspector.find('[data-testid="headers-shadowed"]').exists()).toBe(!shown);
   });
+
+  it("keeps the headers card hidden while the site list can't load", async () => {
+    stubIpc({ proxies: [reverb()], failures: ["list_sites"] });
+    const w = await mountView();
+    const inspector = await openRow(w, "proxy:reverb");
+    expect(inspector.find('[data-testid="headers-card"]').exists()).toBe(false);
+    expect(inspector.find('[data-testid="headers-shadowed"]').exists()).toBe(false);
+  });
 });
 
 describe("ProxiesView CA strip", () => {

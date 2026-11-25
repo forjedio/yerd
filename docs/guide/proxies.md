@@ -133,7 +133,10 @@ Point the target at the service's real port instead. In rootless mode Yerd binds
 
 A whole-host proxy can add its own response headers, the same way a
 [site can](./sites#response-headers). The common case is CORS for a frontend
-dev server or Node app that another local site calls:
+dev server or Node app that another local site calls. A site's name takes
+priority over a proxy's: if a site is also named `frontend`, the command below
+changes that site's headers, and the proxy can't be reached by this name until
+the site is removed or renamed.
 
 ```sh
 yerd header set frontend Access-Control-Allow-Origin https://app.test

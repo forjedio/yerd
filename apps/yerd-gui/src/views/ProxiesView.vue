@@ -10,7 +10,7 @@ import NewProxyDialog, {
 } from "@/components/proxies/NewProxyDialog.vue";
 import ProxiesEmptyState from "@/components/proxies/ProxiesEmptyState.vue";
 import ProxiesList from "@/components/proxies/ProxiesList.vue";
-import ProxyInspector from "@/components/proxies/ProxyInspector.vue";
+import ProxyInspector, { type ProxyNameState } from "@/components/proxies/ProxyInspector.vue";
 import SitesWarningStrip from "@/components/sites/SitesWarningStrip.vue";
 import PageHeader from "@/components/PageHeader.vue";
 import AsyncState from "@/components/ui/AsyncState.vue";
@@ -58,11 +58,15 @@ const {
   error: resourceError,
   refresh: load,
 } = useResource("proxies", listProxies);
-usePoll(() => load(), 5000);
 
 // The site picker for path rules shares the Sites view's cached resource (same
 // key + fetcher reference), so it stays coherent with everything else.
-const { data: sitesData } = useResource("sites", sitesAndParked);
+const {
+  data: sitesData,
+  error: sitesError,
+  refresh: loadSites,
+} = useResource("sites", sitesAndParked);
+usePoll(() => Promise.all([load(), loadSites()]), 5000);
 
 const proxies = computed<ProxyEntry[]>(() => proxyData.value?.proxies ?? []);
 const rules = computed<ProxyRuleEntry[]>(() => proxyData.value?.rules ?? []);
@@ -341,9 +345,12 @@ onUnmounted(
   }),
 );
 
-/** A site with the proxy's name takes the name over, so the proxy is not routed. */
-function shadowedBySite(item: ProxyItem | null): boolean {
-  return item?.kind === "proxy" && sites.value.some((s) => s.name === item.proxy.name);
+/** A site with the proxy's name takes the name over, so the proxy is not routed.
+ *  Until the site list has loaded without error the answer is `unknown`. */
+function proxyNameState(item: ProxyItem | null): ProxyNameState {
+  if (item?.kind !== "proxy") return "free";
+  if (!sitesData.value || sitesError.value) return "unknown";
+  return sites.value.some((s) => s.name === item.proxy.name) ? "taken" : "free";
 }
 
 const inspectorProps = computed(() => ({
@@ -351,7 +358,7 @@ const inspectorProps = computed(() => ({
   report: report.value ?? null,
   tld: tld.value,
   busy: selectedItem.value ? isBusy(selectedItem.value.key) : false,
-  shadowed: shadowedBySite(selectedItem.value),
+  nameState: proxyNameState(selectedItem.value),
 }));
 </script>
 
