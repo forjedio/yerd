@@ -62,7 +62,7 @@ provider at the same time.
 | Option | Description |
 | --- | --- |
 | `--provider <cloudflare\|ngrok\|zrok>` | Share through this provider instead of the default. |
-| `--random-url` | ngrok only: don't use the saved static domain; the share gets the address ngrok assigns to your account instead (for example when another site's share already uses the static domain). |
+| `--random-url` | ngrok only: don't use the saved static domain; the share gets the address ngrok assigns to your account instead. When the saved static domain is your account's dev domain, this lands on the same domain, so it can't run alongside a share already on it; use another provider or a different ngrok domain for a second share. |
 
 Through Cloudflare, the site gets a random `https://<name>.trycloudflare.com`
 URL. The command waits until Cloudflare's edge reports the tunnel online; if it

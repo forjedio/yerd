@@ -951,6 +951,8 @@ async fn run_provider_share(
                 ) {
                     eprintln!("yerd: warning: {}", map::cleanup_failed_message(&name));
                 }
+            } else if check.cleanup_unknown {
+                eprintln!("yerd: warning: {}", map::cleanup_unknown_message());
             }
             eprintln!("yerd: {}", map::unsupported_provider_message(provider));
             return ExitCode::from(1);

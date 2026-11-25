@@ -50,6 +50,7 @@ import type {
 import {
   canStartNamed,
   checkProviderStart,
+  CLEANUP_UNKNOWN_MESSAGE,
   cleanupFailedMessage,
   filterShares,
   loginUrlFrom,
@@ -369,6 +370,7 @@ async function doShare(site: string, provider: TunnelProvider, randomUrl: boolea
     if (check.unsupported) {
       toast.error(`Couldn't share ${site}`, unsupportedProviderMessage(provider));
       if (stray && !stopped) toast.error(`Couldn't stop the Cloudflare share of ${stray}`, cleanupFailedMessage(stray));
+      if (check.cleanupUnknown) toast.error("Check your Cloudflare shares", CLEANUP_UNKNOWN_MESSAGE);
       return false;
     }
     const started = r.tunnels.find(

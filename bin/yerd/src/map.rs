@@ -907,6 +907,9 @@ pub struct ProviderStartCheck {
     pub unsupported: bool,
     /// The site whose Cloudflare share this start created and must be stopped.
     pub stop_cloudflare: Option<String>,
+    /// Whether this start may have created a Cloudflare share that couldn't be
+    /// identified, so the user must check and stop it by hand.
+    pub cleanup_unknown: bool,
 }
 
 fn cloudflare_quick_sites(tunnels: &[TunnelInfo]) -> impl Iterator<Item = &str> {
@@ -933,20 +936,36 @@ pub fn check_provider_start(
         return ProviderStartCheck {
             unsupported: false,
             stop_cloudflare: None,
+            cleanup_unknown: false,
         };
     }
-    let stop_cloudflare = before.and_then(|prior| {
-        let existing: std::collections::BTreeSet<&str> = cloudflare_quick_sites(prior).collect();
-        let mut created = cloudflare_quick_sites(after).filter(|s| !existing.contains(s));
-        match (created.next(), created.next()) {
-            (Some(site), None) => Some(site.to_owned()),
-            _ => None,
-        }
-    });
+    let Some(prior) = before else {
+        return ProviderStartCheck {
+            unsupported: true,
+            stop_cloudflare: None,
+            cleanup_unknown: true,
+        };
+    };
+    let existing: std::collections::BTreeSet<&str> = cloudflare_quick_sites(prior).collect();
+    let created: Vec<&str> = cloudflare_quick_sites(after)
+        .filter(|s| !existing.contains(s))
+        .collect();
+    let stop_cloudflare = match created.as_slice() {
+        [site] => Some((*site).to_owned()),
+        _ => None,
+    };
     ProviderStartCheck {
         unsupported: true,
         stop_cloudflare,
+        cleanup_unknown: created.len() > 1,
     }
+}
+
+/// The warning shown when a start may have left a Cloudflare quick link
+/// running that couldn't be identified.
+#[must_use]
+pub fn cleanup_unknown_message() -> String {
+    "a Cloudflare quick link may have been started and still be public - check `yerd tunnel status` and stop it with `yerd tunnel stop <site> --provider cloudflare`".to_owned()
 }
 
 /// The error shown when the running daemon can't share through `provider`.
@@ -2852,6 +2871,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn check_provider_start_spots_a_daemon_that_ignored_the_provider() {
         type Case = (
             &'static str,
@@ -2868,10 +2888,17 @@ mod tests {
         let ok = ProviderStartCheck {
             unsupported: false,
             stop_cloudflare: None,
+            cleanup_unknown: false,
         };
         let unsupported = |stop: Option<&str>| ProviderStartCheck {
             unsupported: true,
             stop_cloudflare: stop.map(str::to_owned),
+            cleanup_unknown: false,
+        };
+        let unknown = ProviderStartCheck {
+            unsupported: true,
+            stop_cloudflare: None,
+            cleanup_unknown: true,
         };
         let cases: Vec<Case> = vec![
             (
@@ -2928,7 +2955,7 @@ mod tests {
                 TunnelProvider::Ngrok,
                 None,
                 vec![cf()],
-                unsupported(None),
+                unknown.clone(),
             ),
             (
                 "nothing came back",
@@ -2942,7 +2969,7 @@ mod tests {
                 TunnelProvider::Ngrok,
                 Some(vec![]),
                 vec![cf(), third()],
-                unsupported(None),
+                unknown,
             ),
         ];
         for (label, provider, before, after, want) in cases {
@@ -2959,6 +2986,16 @@ mod tests {
         assert_eq!(
             cleanup_failed_message("app"),
             "app may still be public through its Cloudflare quick link - stop it with `yerd tunnel stop app --provider cloudflare`"
+        );
+    }
+
+    #[test]
+    fn cleanup_unknown_message_names_status_and_the_manual_stop() {
+        let m = cleanup_unknown_message();
+        assert!(m.contains("`yerd tunnel status`"), "{m}");
+        assert!(
+            m.contains("`yerd tunnel stop <site> --provider cloudflare`"),
+            "{m}"
         );
     }
 

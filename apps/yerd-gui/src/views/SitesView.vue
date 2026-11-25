@@ -75,7 +75,7 @@ import {
   unpark,
 } from "@/ipc/client";
 import type { GroupsState, Site, SiteEntry } from "@/ipc/types";
-import { checkProviderStart, cleanupFailedMessage, siteShare, unsupportedProviderMessage } from "@/lib/share";
+import { CLEANUP_UNKNOWN_MESSAGE, checkProviderStart, cleanupFailedMessage, siteShare, unsupportedProviderMessage } from "@/lib/share";
 
 const toast = useToast();
 const operations = useOperations();
@@ -819,6 +819,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
     if (check.unsupported && provider) {
       toast.error(`Couldn't share ${s.name}`, unsupportedProviderMessage(provider));
       if (stray && !cleaned) toast.error(`Couldn't stop the Cloudflare share of ${stray}`, cleanupFailedMessage(stray));
+      if (check.cleanupUnknown) toast.error("Check your Cloudflare shares", CLEANUP_UNKNOWN_MESSAGE);
       return;
     }
     const entry = provider

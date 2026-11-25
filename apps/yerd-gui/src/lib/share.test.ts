@@ -4,6 +4,7 @@ import {
   siteShare,
   canStartNamed,
   checkProviderStart,
+  CLEANUP_UNKNOWN_MESSAGE,
   cleanupFailedMessage,
   cloudflaredLine,
   filterShares,
@@ -174,18 +175,22 @@ describe("checkProviderStart", () => {
   const shop = quick("shop");
 
   it.each([
-    ["cloudflare asked", "cloudflare", [], [cf], false, null],
-    ["no provider asked", undefined, [], [cf], false, null],
-    ["the asked share is present", "ngrok", [], [cf, ngrok], false, null],
-    ["the share is present without a prior list", "ngrok", null, [ngrok], false, null],
-    ["another site shares through the provider", "zrok", [], [zrokBlog], false, null],
-    ["an old daemon started a new Cloudflare share", "ngrok", [other], [other, cf], true, "app"],
-    ["the Cloudflare share already existed", "ngrok", [cf], [cf], true, null],
-    ["the prior list is unknown", "ngrok", null, [cf], true, null],
-    ["no Cloudflare share came back either", "zrok", [other], [other], true, null],
-    ["two new Cloudflare shares are ambiguous", "ngrok", [], [cf, shop], true, null],
-  ] as const)("%s", (_label, provider, before, after, unsupported, stopCloudflare) => {
-    expect(checkProviderStart(provider, before, after)).toEqual({ unsupported, stopCloudflare });
+    ["cloudflare asked", "cloudflare", [], [cf], false, null, false],
+    ["no provider asked", undefined, [], [cf], false, null, false],
+    ["the asked share is present", "ngrok", [], [cf, ngrok], false, null, false],
+    ["the share is present without a prior list", "ngrok", null, [ngrok], false, null, false],
+    ["another site shares through the provider", "zrok", [], [zrokBlog], false, null, false],
+    ["an old daemon started a new Cloudflare share", "ngrok", [other], [other, cf], true, "app", false],
+    ["the Cloudflare share already existed", "ngrok", [cf], [cf], true, null, false],
+    ["the prior list is unknown", "ngrok", null, [cf], true, null, true],
+    ["no Cloudflare share came back either", "zrok", [other], [other], true, null, false],
+    ["two new Cloudflare shares are ambiguous", "ngrok", [], [cf, shop], true, null, true],
+  ] as const)("%s", (_label, provider, before, after, unsupported, stopCloudflare, cleanupUnknown) => {
+    expect(checkProviderStart(provider, before, after)).toEqual({ unsupported, stopCloudflare, cleanupUnknown });
+  });
+
+  it("points at the Share page when the stray share is unknown", () => {
+    expect(CLEANUP_UNKNOWN_MESSAGE).toContain("check the Share page");
   });
 
   it("points at the Share page when cleanup fails", () => {

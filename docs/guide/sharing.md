@@ -198,8 +198,11 @@ yerd tunnel stop app --provider ngrok
 - With a [static domain](#ngrok) saved, shares use it unless you choose the
   **Account URL** (`--random-url`). Only one share can hold the static domain
   at a time; the desktop app disables it while another site's share uses it,
-  and from the CLI ngrok's own error tells you, so share the second site with
-  `--random-url`.
+  and from the CLI ngrok's own error tells you. `--random-url` only helps when
+  your account's address differs from the saved static domain. If the saved
+  domain **is** your account's dev domain (the usual case on the free plan),
+  `--random-url` lands on the same domain and fails the same way, so share the
+  second site through another provider or a different ngrok domain instead.
 - Without a static domain, or with `--random-url`, the share uses the address
   ngrok assigns to your account. On free plans that is a fixed dev domain, so
   it doesn't change between shares; `--random-url` only means "don't use

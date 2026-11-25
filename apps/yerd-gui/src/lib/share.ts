@@ -68,6 +68,9 @@ export interface ProviderStartCheck {
   unsupported: boolean;
   /** The site whose Cloudflare share this start created and must be stopped, else null. */
   stopCloudflare: string | null;
+  /** Whether this start may have created a Cloudflare share that couldn't be
+   *  identified, so the user must check and stop it by hand. */
+  cleanupUnknown: boolean;
 }
 
 function cloudflareQuickSites(tunnels: readonly TunnelInfo[]): string[] {
@@ -89,13 +92,21 @@ export function checkProviderStart(
   after: readonly TunnelInfo[],
 ): ProviderStartCheck {
   if (!provider || provider === "cloudflare" || after.some((t) => t.provider === provider)) {
-    return { unsupported: false, stopCloudflare: null };
+    return { unsupported: false, stopCloudflare: null, cleanupUnknown: false };
   }
-  if (before === null) return { unsupported: true, stopCloudflare: null };
+  if (before === null) return { unsupported: true, stopCloudflare: null, cleanupUnknown: true };
   const existing = new Set(cloudflareQuickSites(before));
   const created = cloudflareQuickSites(after).filter((s) => !existing.has(s));
-  return { unsupported: true, stopCloudflare: created.length === 1 ? (created[0] ?? null) : null };
+  return {
+    unsupported: true,
+    stopCloudflare: created.length === 1 ? (created[0] ?? null) : null,
+    cleanupUnknown: created.length > 1,
+  };
 }
+
+/** The error a client shows when a start may have left an unidentified Cloudflare quick link running. */
+export const CLEANUP_UNKNOWN_MESSAGE =
+  "A Cloudflare quick link may have been started and still be public - check the Share page and stop it there";
 
 /** The error a client shows when a stray Cloudflare share of `site` couldn't be stopped. */
 export function cleanupFailedMessage(site: string): string {

@@ -539,6 +539,31 @@ describe("SitesView inspector wiring", () => {
     );
   });
 
+  it("warns to check the Cloudflare shares when the prior list is unknown, without stopping anything", async () => {
+    serve({
+      sites: [site("alpha")],
+      parked: ["/srv"],
+      routes: {
+        list_tunnel_providers: providersRoute("ngrok"),
+        tunnel_status: () => Promise.reject(new Error("daemon busy")),
+        start_quick_tunnel: () => ({
+          type: "tunnels",
+          tunnels: [{ site: "alpha", kind: "quick", state: "running", url: "https://a.trycloudflare.com" }],
+        }),
+        stop_tunnel: () => ({ type: "tunnels", tunnels: [] }),
+      },
+    });
+    const w = await mountSites();
+    const inspector = await openDrawer(w, "alpha");
+    inspector.vm.$emit("share", site("alpha"));
+    await flushPromises();
+    expect(calls("stop_tunnel")).toEqual([]);
+    expect(toastFor("Couldn't share alpha")).toBeDefined();
+    expect(toastFor("Check your Cloudflare shares")?.detail).toBe(
+      "A Cloudflare quick link may have been started and still be public - check the Share page and stop it there",
+    );
+  });
+
   it("shares through the default provider when the daemon honours it", async () => {
     serve({
       sites: [site("alpha")],
