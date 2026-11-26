@@ -202,6 +202,10 @@ pub struct DaemonState {
     /// reconciles its watch set (e.g. a newly-parked root) without waiting for
     /// an unrelated filesystem event.
     pub watch_dirty: Notify,
+    /// Set when startup reconciled the config but could not save it. The
+    /// filesystem watcher starts dirty from this, so it keeps retrying the save
+    /// on each wake until one succeeds.
+    pub config_unsaved: std::sync::atomic::AtomicBool,
     /// Dump-telemetry ring buffer + server control, shared with the dump-server
     /// task and the IPC dump handlers.
     pub dumps: Arc<crate::dump_server::DumpStore>,

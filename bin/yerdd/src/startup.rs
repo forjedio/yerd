@@ -182,11 +182,14 @@ pub async fn bring_up_with_dirs(
         reconcile_parked_added(&mut config, &router, crate::self_update::now_epoch(), |p| {
             Path::new(p).is_dir()
         });
-    if migrated || claimed || stamped {
-        if let Err(e) = config.save(&config_path) {
-            tracing::warn!(error = %e, "could not persist parked site names; the next change will");
-        }
-    }
+    let startup_save_failed = (migrated || claimed || stamped)
+        && config.save(&config_path).map_or_else(
+            |e| {
+                tracing::warn!(error = %e, "could not persist parked site names; the watcher retries");
+                true
+            },
+            |()| false,
+        );
     let renamed_sites = pending_url_syncs(&config);
     if router.is_empty() {
         tracing::info!("no sites configured - every request will 404 until a site is added");
@@ -458,6 +461,7 @@ pub async fn bring_up_with_dirs(
         libvips_probe: Arc::new(yerd_platform::ActiveLibvipsProbe::new()),
         network: crate::network::NetworkRuntime::production(),
         watch_dirty: tokio::sync::Notify::new(),
+        config_unsaved: std::sync::atomic::AtomicBool::new(startup_save_failed),
         dumps: Arc::new(crate::dump_server::DumpStore::new()),
         shim_reconcile: tokio::sync::Mutex::new(()),
         tool_mutate: tokio::sync::Mutex::new(()),

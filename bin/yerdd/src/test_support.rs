@@ -157,6 +157,7 @@ pub fn state_in(tmp: &Path) -> DaemonState {
             Arc::new(|| Box::pin(async { None })),
         ),
         watch_dirty: tokio::sync::Notify::new(),
+        config_unsaved: std::sync::atomic::AtomicBool::new(false),
         dumps: Arc::new(crate::dump_server::DumpStore::new()),
         shim_reconcile: Mutex::new(()),
         tunnel_manager: Arc::new(Mutex::new(crate::tunnel::new_manager())),

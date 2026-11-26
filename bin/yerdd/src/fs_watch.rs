@@ -67,7 +67,9 @@ pub async fn run(state: Arc<DaemonState>, mut shutdown_rx: watch::Receiver<bool>
     };
 
     let mut watched: HashSet<PathBuf> = HashSet::new();
-    let mut unsaved = false;
+    let mut unsaved = state
+        .config_unsaved
+        .load(std::sync::atomic::Ordering::Relaxed);
     if let Some(desired) = recompute(&state, &mut unsaved).await {
         reconcile(debouncer.watcher(), &mut watched, &desired);
     }
@@ -272,6 +274,26 @@ mod tests {
         let cfg = state.config.lock().await;
         assert!(cfg.favourites.sites.contains("laravel-com"));
         assert!(!cfg.favourites.sites.contains("laravel"));
+    }
+
+    #[tokio::test]
+    async fn recompute_retries_an_unsaved_config_until_it_saves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        state
+            .config
+            .lock()
+            .await
+            .favourites
+            .sites
+            .insert("blog".to_owned());
+        let mut unsaved = true;
+
+        recompute(&state, &mut unsaved).await.unwrap();
+
+        assert!(!unsaved);
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert!(reloaded.favourites.sites.contains("blog"));
     }
 
     #[tokio::test]
