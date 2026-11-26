@@ -136,6 +136,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             // handler is polled every few seconds and must not re-stat every
             // site's marker files on each poll. See `wordpress_detect`.
             let favourites = state.favourite_sites.read().await.clone();
+            let added = state.site_added.read().await.clone();
             let router = state.router.read().await;
             let tld = router.config().tld().to_owned();
             let wordpress_sites = state.wordpress_sites.read().await;
@@ -160,6 +161,11 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
                         is_laravel,
                         favourite: favourites.contains(&name.to_ascii_lowercase()),
                         framework: framework_sites.get(name).copied(),
+                        added_at: added.added_at(
+                            site.kind(),
+                            name,
+                            &site.document_root().to_string_lossy(),
+                        ),
                     }
                 })
                 .collect();
@@ -3132,6 +3138,12 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
             site.set_web_subpath(subpath);
         }
     }
+    if let Request::Link { name, .. } = &req {
+        new.added
+            .linked
+            .entry(name.to_ascii_lowercase())
+            .or_insert_with(crate::self_update::now_epoch);
+    }
 
     if let Err(e) = new.validate() {
         return internal(format!("config validation failed: {e}"));
@@ -3153,11 +3165,16 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
     let pending: std::collections::HashSet<&str> =
         renames.iter().map(|r| r.doc_root.as_str()).collect();
     startup::reconcile_parked_claims(&mut new, &candidate, &pending);
+    startup::reconcile_parked_added(&mut new, &candidate, crate::self_update::now_epoch(), |p| {
+        std::path::Path::new(p).is_dir()
+    });
 
     if let Err(e) = new.save(&state.config_path) {
         return internal(format!("config save failed: {e}"));
     }
 
+    *state.site_added.write().await = new.added.clone();
+    *state.favourite_sites.write().await = new.favourites.sites.clone();
     *cfg_guard = new;
     let site_after = site_needing_url_sync(&req, &candidate);
     *state.router.write().await = candidate;
@@ -5062,6 +5079,85 @@ Subject: Captured\r\n\r\nhi\r\n";
             }
             other => panic!("expected Sites, got {other:?}"),
         }
+    }
+
+    async fn listed_added_at(state: &DaemonState, name: &str) -> Option<u64> {
+        match dispatch(Request::ListSites, state).await {
+            Response::Sites { sites } => {
+                sites
+                    .iter()
+                    .find(|s| s.site.name() == name)
+                    .unwrap()
+                    .added_at
+            }
+            other => panic!("expected Sites, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn link_stamps_added_at_and_lists_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        let state = state_in(tmp.path());
+
+        let resp = dispatch(
+            Request::Link {
+                name: "App".into(),
+                path: app,
+            },
+            &state,
+        )
+        .await;
+        assert!(matches!(resp, Response::Ok), "got {resp:?}");
+
+        let listed = listed_added_at(&state, "app").await;
+        assert!(listed.is_some_and(|t| t > 0), "got {listed:?}");
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert_eq!(reloaded.added.linked.get("app").copied(), listed);
+    }
+
+    #[tokio::test]
+    async fn park_stamps_first_seen_for_new_folders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sites_root = tmp.path().join("sites");
+        std::fs::create_dir_all(sites_root.join("blog")).unwrap();
+        let state = state_in(tmp.path());
+
+        let resp = dispatch(Request::Park { path: sites_root }, &state).await;
+        assert!(matches!(resp, Response::Ok), "got {resp:?}");
+
+        let listed = listed_added_at(&state, "blog").await;
+        assert!(listed.is_some_and(|t| t > 0), "got {listed:?}");
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert_eq!(reloaded.added.parked.values().copied().max(), listed);
+    }
+
+    #[tokio::test]
+    async fn upgraded_config_lists_existing_parked_sites_undated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sites_root = tmp.path().join("sites");
+        std::fs::create_dir_all(sites_root.join("blog")).unwrap();
+        let state = state_in(tmp.path());
+        let canonical = sites_root.canonicalize().unwrap();
+        state
+            .config
+            .lock()
+            .await
+            .added
+            .baseline_pending
+            .insert(canonical.to_string_lossy().into_owned());
+
+        let resp = dispatch(Request::Park { path: sites_root }, &state).await;
+        assert!(matches!(resp, Response::Ok), "got {resp:?}");
+
+        assert_eq!(listed_added_at(&state, "blog").await, None);
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert!(reloaded.added.baseline_pending.is_empty());
+        assert_eq!(
+            reloaded.added.parked.values().copied().collect::<Vec<_>>(),
+            [0]
+        );
     }
 
     #[tokio::test]

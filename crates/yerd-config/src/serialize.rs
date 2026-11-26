@@ -106,6 +106,20 @@ struct WireSer<'a> {
     // existing config's byte shape is untouched. `None` (skipped) when empty.
     #[serde(skip_serializing_if = "Option::is_none")]
     favourites: Option<FavouritesSectionSer<'a>>,
+    // v34: optional `[added]` table, emitted after `[favourites]` so an
+    // existing config's byte shape is untouched. `None` (skipped) when empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    added: Option<AddedSectionSer<'a>>,
+}
+
+#[derive(Serialize)]
+struct AddedSectionSer<'a> {
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    baseline_pending: &'a BTreeSet<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    linked: &'a BTreeMap<String, u64>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    parked: &'a BTreeMap<String, u64>,
 }
 
 #[derive(Serialize)]
@@ -608,6 +622,15 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 sites: &c.favourites.sites,
             })
         },
+        added: if c.added.is_empty() {
+            None
+        } else {
+            Some(AddedSectionSer {
+                baseline_pending: &c.added.baseline_pending,
+                linked: &c.added.linked,
+                parked: &c.added.parked,
+            })
+        },
     };
     toml::to_string_pretty(&w).map_err(Into::into)
 }
@@ -721,8 +744,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 33\n"),
-            "expected `version = 33` first line; got: {s}"
+            s.starts_with("version = 34\n"),
+            "expected `version = 34` first line; got: {s}"
         );
     }
 

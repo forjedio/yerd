@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowRight, CircleCheck, RotateCw, Square, TriangleAlert } from "lucide-vue-next";
+import { CircleCheck, RotateCw, ShieldCheck, Square, TriangleAlert } from "lucide-vue-next";
 import { computed } from "vue";
 import { RouterLink } from "vue-router";
 
@@ -10,9 +10,10 @@ import { healthRows, metaSegments, siteHeadline, statusKind } from "@/lib/overvi
 import { cn } from "@/lib/utils";
 
 /**
- * The Overview's status card: serving state, Restart/Stop, the site-count
- * headline, the daemon meta line and the inset health rows. Display only; the
- * view owns the daemon calls and confirmation dialogs.
+ * The Overview's environment strip: serving state and site-count headline, the
+ * daemon details line, the health chips and Restart/Stop. One row when wide,
+ * stacked when compact. Display only; the view owns the daemon calls and
+ * confirmation dialogs.
  */
 const props = defineProps<{
   report: StatusReport;
@@ -30,16 +31,28 @@ const rows = computed(() => healthRows(props.report));
 const LABELS = { serving: "Serving", "not-serving": "Not serving", ready: "Ready" } as const;
 const label = computed(() => LABELS[kind.value]);
 const bad = computed(() => kind.value === "not-serving");
+
+const CHIP_TONES = {
+  ok: "bg-card text-muted-foreground dark:bg-background",
+  warn: "border-warning/40 bg-warning/10 text-warning",
+  bad: "border-destructive/40 bg-destructive/10 text-destructive",
+} as const;
+
+const LINK_TONES = {
+  ok: "",
+  warn: "bg-warning/20",
+  bad: "bg-destructive/20",
+} as const;
 </script>
 
 <template>
   <section
     data-testid="status-card"
-    class="rounded-xl border bg-card px-5 pb-5 pt-[18px] text-card-foreground"
+    class="grid grid-cols-[minmax(0,1fr)_auto] gap-x-5 gap-y-3 rounded-xl border bg-muted px-5 py-4 text-card-foreground dark:bg-card xl:grid-cols-[auto_1px_minmax(0,1fr)_auto] xl:items-center"
   >
-    <div class="flex h-[30px] items-center justify-between gap-3">
+    <div class="col-start-1 row-start-1 min-w-0">
       <div class="flex items-center gap-2">
-        <span class="relative flex size-2.5" aria-hidden="true">
+        <span class="relative flex size-2" aria-hidden="true">
           <span
             :class="
               cn(
@@ -49,7 +62,7 @@ const bad = computed(() => kind.value === "not-serving");
             "
           />
           <span
-            :class="cn('relative inline-flex size-2.5 rounded-full', bad ? 'bg-destructive' : 'bg-success')"
+            :class="cn('relative inline-flex size-2 rounded-full', bad ? 'bg-destructive' : 'bg-success')"
           />
         </span>
         <span
@@ -64,61 +77,64 @@ const bad = computed(() => kind.value === "not-serving");
           {{ label }}
         </span>
       </div>
-      <div class="flex shrink-0 gap-2">
-        <Button variant="outline" size="sm" :disabled="busy !== null" @click="emit('restart')">
-          <Spinner v-if="busy === 'restart:daemon'" class="!size-3.5" />
-          <RotateCw v-else class="!size-3.5" /> Restart
-        </Button>
-        <Button variant="outline" size="sm" :disabled="busy !== null" @click="emit('stop')">
-          <Spinner v-if="busy === 'daemon'" class="!size-3.5" />
-          <Square v-else class="!size-3" /> Stop
-        </Button>
-      </div>
+      <h2 class="mt-1 whitespace-nowrap text-[22px] font-semibold leading-tight tracking-[-0.3px]">
+        {{ headline.text }}
+        <span v-if="headline.showTld" class="font-mono text-lg font-medium text-muted-foreground"
+          >.{{ report.tld }}</span
+        >
+      </h2>
     </div>
 
-    <h2 class="mt-3 text-[26px] font-semibold leading-tight tracking-[-0.4px]">
-      {{ headline.text }}
-      <span v-if="headline.showTld" class="font-mono text-xl font-medium text-muted-foreground"
-        >.{{ report.tld }}</span
-      >
-    </h2>
+    <span class="hidden h-11 w-px bg-border xl:col-start-2 xl:row-start-1 xl:block" aria-hidden="true" />
 
-    <p class="mt-2 truncate font-mono text-xs text-faint" :title="meta">{{ meta }}</p>
-
-    <ul
-      v-if="rows.length"
-      data-testid="health-rows"
-      class="mt-3 overflow-hidden rounded-lg border bg-muted text-[13px] dark:bg-background"
+    <div
+      class="col-span-2 row-start-2 min-w-0 xl:col-span-1 xl:col-start-3 xl:row-start-1"
     >
-      <li
-        v-for="(row, i) in rows"
-        :key="row.key"
-        :data-tone="row.tone"
-        :class="
-          cn(
-            'flex min-h-[30px] items-center gap-2 py-1.5 pl-3 pr-3',
-            i > 0 && 'border-t',
-            row.tone === 'warn' && 'bg-warning/10 text-warning',
-            row.tone === 'bad' && 'bg-destructive/10 text-destructive',
-            row.tone === 'ok' && 'text-muted-foreground',
-          )
-        "
-      >
-        <CircleCheck
-          v-if="row.tone === 'ok'"
-          class="size-[13px] shrink-0 text-success"
-          aria-hidden="true"
-        />
-        <TriangleAlert v-else class="size-[13px] shrink-0" aria-hidden="true" />
-        <span class="min-w-0 flex-1 truncate" :title="row.text">{{ row.text }}</span>
-        <RouterLink
-          v-if="row.link"
-          :to="row.link.to"
-          class="inline-flex shrink-0 items-center gap-1 text-xs font-semibold hover:underline"
+      <p class="truncate font-mono text-xs text-faint" :title="meta">{{ meta }}</p>
+      <ul v-if="rows.length" data-testid="health-rows" class="mt-2 flex flex-wrap gap-1.5">
+        <li
+          v-for="row in rows"
+          :key="row.key"
+          :data-tone="row.tone"
+          :class="
+            cn(
+              'inline-flex h-6 min-w-0 max-w-full items-center gap-1.5 rounded-md border pl-2 text-xs',
+              row.link ? 'pr-1' : 'pr-2',
+              CHIP_TONES[row.tone],
+            )
+          "
         >
-          {{ row.link.label }} <ArrowRight class="size-3" aria-hidden="true" />
-        </RouterLink>
-      </li>
-    </ul>
+          <template v-if="row.tone === 'ok'">
+            <ShieldCheck v-if="row.key === 'trust'" class="size-3 shrink-0 text-success" aria-hidden="true" />
+            <CircleCheck v-else class="size-3 shrink-0 text-success" aria-hidden="true" />
+          </template>
+          <TriangleAlert v-else class="size-3 shrink-0" aria-hidden="true" />
+          <span class="min-w-0 truncate" :title="row.text">{{ row.text }}</span>
+          <RouterLink
+            v-if="row.link"
+            :to="row.link.to"
+            :class="
+              cn(
+                'shrink-0 rounded px-1.5 py-px text-[11px] font-semibold hover:underline',
+                LINK_TONES[row.tone],
+              )
+            "
+          >
+            {{ row.link.label }}
+          </RouterLink>
+        </li>
+      </ul>
+    </div>
+
+    <div class="col-start-2 row-start-1 flex shrink-0 items-start gap-2 xl:col-start-4 xl:items-center">
+      <Button variant="outline" size="sm" :disabled="busy !== null" @click="emit('restart')">
+        <Spinner v-if="busy === 'restart:daemon'" class="!size-3.5" />
+        <RotateCw v-else class="!size-3.5" /> Restart
+      </Button>
+      <Button variant="outline" size="sm" :disabled="busy !== null" @click="emit('stop')">
+        <Spinner v-if="busy === 'daemon'" class="!size-3.5" />
+        <Square v-else class="!size-3" /> Stop
+      </Button>
+    </div>
   </section>
 </template>

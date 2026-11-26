@@ -15,6 +15,7 @@ import { resetResourceCache, useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
 import { listServices } from "@/ipc/client";
 import type { AddableServiceType, ServiceStatus, StatusReport } from "@/ipc/types";
+import { servicesIntent } from "@/lib/shortcuts/servicesIntent";
 import { getViewActions } from "@/lib/shortcuts/useViewActions";
 
 function svc(overrides: Partial<ServiceStatus> = {}): ServiceStatus {
@@ -702,6 +703,15 @@ describe("ServicesView states", () => {
     await flushPromises();
     expect(w.find('[role="dialog"]').exists()).toBe(true);
     expect(calls("addable_service_types")).toHaveLength(1);
+  });
+
+  it("opens the Add dialog from a services intent and clears it", async () => {
+    stubIpc({});
+    servicesIntent.value = "add";
+    const w = await mountView();
+    expect(w.find('[role="dialog"]').exists()).toBe(true);
+    expect(calls("addable_service_types")).toHaveLength(1);
+    expect(servicesIntent.value).toBeNull();
   });
 
   it("shows the load error on a cold failure", async () => {

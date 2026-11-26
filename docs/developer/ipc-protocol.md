@@ -339,6 +339,10 @@ The multi-domain feature adds three more `SiteEntry` fields alongside `is_wordpr
 `SiteEntry` gained `framework: Option<SiteFramework>` (after `favourite`, skipped when `None`): the framework detected at the site's project root, one of `"laravel"`, `"wordpress"`, `"symfony"`, `"statamic"`, `"craft"` or `"drupal"`. It is served from a daemon cache refreshed on every router rebuild, like `is_wordpress`, and a `WordPress` site always reports `"wordpress"`. A newer daemon may add values, so a strict older client decoding this enum fails closed; the GUI, CLI and daemon ship together.
 :::
 
+::: info Added time on `SiteEntry`
+`SiteEntry` gained `added_at: Option<u64>` (after `framework`, skipped when `None`): when the site was added to Yerd, as Unix seconds - when it was linked or created, or when the daemon first found it in a parked folder. It is read from the config's `[added]` table, and a site that predates the record (stored as `0`) reports `None`, like a site with no entry. The GUI's Overview sorts its **Recently added** list by it. There is no matching mutator; the daemon stamps the time itself. Same additive, no-bump pattern as `web_subpath`.
+:::
+
 ::: info Update availability on `ToolStatus` and `CloudflaredStatus`
 `ToolStatus` (in `Response::Tools`) gained `update_available: Option<String>` (last field, skipped when `None`): the newer published version of a Yerd-managed, installed tool, matching `PhpPoolStatus::update_available`. Separately, the `cloudflared` status carried by `Response::Tunnels` (`CloudflaredStatus`) gained the same `update_available` field, set only for the Yerd-managed binary; a `cloudflared` found on `PATH` always omits it. Both are served from a daemon cache that a notify-only poll refreshes every 12 hours, so `ListTools` and `TunnelStatus` never touch the network. Same additive, no-bump pattern as `external_path`.
 :::

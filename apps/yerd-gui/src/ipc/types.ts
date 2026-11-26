@@ -74,6 +74,9 @@ export interface SiteEntry extends Site {
   favourite?: boolean;
   /** The framework detected at the site's project root, when recognised. */
   framework?: SiteFramework;
+  /** Unix seconds when the site was linked or created, or first discovered in
+   *  a parked folder. Absent when unknown. */
+  added_at?: number;
 }
 
 /** crates/yerd-ipc/src/response.rs - WordPressAdminUser, for the auto-login

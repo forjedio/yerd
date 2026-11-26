@@ -202,6 +202,10 @@ pub struct DaemonState {
     /// reconciles its watch set (e.g. a newly-parked root) without waiting for
     /// an unrelated filesystem event.
     pub watch_dirty: Notify,
+    /// Set when startup reconciled the config but could not save it. The
+    /// filesystem watcher starts dirty from this, so it keeps retrying the save
+    /// on each wake until one succeeds.
+    pub config_unsaved: std::sync::atomic::AtomicBool,
     /// Dump-telemetry ring buffer + server control, shared with the dump-server
     /// task and the IPC dump handlers.
     pub dumps: Arc<crate::dump_server::DumpStore>,
@@ -282,6 +286,10 @@ pub struct DaemonState {
     /// `[favourites]` refreshed after each `SetSiteFavourite` save, so
     /// `ListSites` never takes the config mutex.
     pub favourite_sites: RwLock<std::collections::BTreeSet<String>>,
+    /// When each site was added: a copy of the config's `[added]` refreshed
+    /// after every config commit that can change it (a mutation or a
+    /// filesystem-watcher rescan), so `ListSites` never takes the config mutex.
+    pub site_added: RwLock<yerd_config::AddedSection>,
     /// The host's LAN IPv4 discovered **once at startup** when LAN mode is on
     /// (the same value baked into the bootstrap TLS cert's iPAddress SAN). All
     /// runtime consumers (`DaemonInfo`, status, `remote-setup` URL) read this

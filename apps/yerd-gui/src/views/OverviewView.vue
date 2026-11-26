@@ -1,14 +1,19 @@
 <script setup lang="ts">
 import {
+  ArrowUpRight,
   CircleAlert,
+  Database,
   Download,
-  Laptop,
+  Github,
+  Link,
   LoaderCircle,
+  Plus,
   RotateCw,
   ShieldAlert,
   Square,
 } from "lucide-vue-next";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 
 import DaemonDownHero from "@/components/DaemonDownHero.vue";
 import PageHeader from "@/components/PageHeader.vue";
@@ -16,13 +21,19 @@ import ContributorsCard from "@/components/overview/ContributorsCard.vue";
 import FavouritesCard from "@/components/overview/FavouritesCard.vue";
 import OverviewStatusCard from "@/components/overview/OverviewStatusCard.vue";
 import ReleaseNotesCard from "@/components/overview/ReleaseNotesCard.vue";
+import ServicesCard from "@/components/overview/ServicesCard.vue";
 import SetupChecklist from "@/components/overview/SetupChecklist.vue";
 import Button from "@/components/ui/Button.vue";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
+import Spinner from "@/components/ui/Spinner.vue";
+import { servicesIntent } from "@/lib/shortcuts/servicesIntent";
+import { sitesIntent, type SitesIntent } from "@/lib/shortcuts/sitesIntent";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
+import { loadPlatform, usePlatform } from "@/composables/usePlatform";
 import { usePoll } from "@/composables/usePoll";
 import { useResource } from "@/composables/useResource";
+import { useUpdateCheck } from "@/composables/useUpdateCheck";
 import {
   daemonVersionConflict,
   IpcError,
@@ -30,22 +41,37 @@ import {
   restartDaemon,
   sitesAndParked,
   stopDaemon,
+  tunnelStatus,
 } from "@/ipc/client";
 import { useToast } from "@/composables/useToast";
 import { setupPending, setupSteps } from "@/lib/overview";
-import logoUrl from "@/assets/logo.svg";
+import { sharedSiteNames } from "@/lib/share";
 
 // The home/dashboard. It reads the shared daemon report (no poller of its own)
 // and shows the shared daemon-down hero, so it stays useful when the socket is
-// gone - the same surface that shows "N sites" becomes the start button. The
-// right column (release notes, contributors) loads independently of the left.
+// gone - the same surface that shows "N sites" becomes the start button.
+// Contributors and What's new load independently of the rest.
 const { report, connected, lastError, refresh } = useDaemon();
 const toast = useToast();
+const router = useRouter();
+const { home } = usePlatform();
+const updates = useUpdateCheck();
 
 const running = computed(() => connected.value === true);
 
 /** Where the version-conflict banner sends the user: only a newer app build fixes it. */
 const RELEASES_URL = "https://github.com/forjedio/yerd/releases";
+const REPO_URL = "https://github.com/forjedio/yerd";
+
+function openSites(intent: SitesIntent): void {
+  sitesIntent.value = intent;
+  void router.push("/sites");
+}
+
+function addService(): void {
+  servicesIntent.value = "add";
+  void router.push("/services");
+}
 
 // ── daemon lifecycle (Stop / Restart; Start lives in the daemon-down hero) ──
 const busy = ref<string | null>(null);
@@ -120,6 +146,33 @@ const { data: sitesData, refresh: reloadSites } = useResource("sites", sitesAndP
 });
 const sites = computed(() => sitesData.value?.sites ?? []);
 const sitesLoaded = computed(() => sitesData.value !== null);
+const groups = computed(() => sitesData.value?.groups ?? { order: [], members: {} });
+
+// Tunnel status is only fetched while the report counts a share, so the common
+// case costs no extra IPC. The cached list is dropped when sharing stops, so a
+// stale one never flashes a badge when the next share starts.
+const {
+  data: tunnelsData,
+  refresh: reloadTunnels,
+  mutate: setTunnels,
+} = useResource("overview-tunnels", tunnelStatus, {
+  immediate: false,
+});
+const sharing = computed(() => (report.value?.shared_sites ?? 0) > 0);
+const shared = computed(() =>
+  sharing.value && tunnelsData.value ? sharedSiteNames(tunnelsData.value.tunnels) : new Set<string>(),
+);
+function reloadSharing(): Promise<void> {
+  return running.value && sharing.value ? reloadTunnels() : Promise.resolve();
+}
+watch(
+  sharing,
+  (on) => {
+    if (!on) setTunnels(() => null);
+    void reloadSharing();
+  },
+  { immediate: true },
+);
 
 // macOS: set when this (older) GUI refused to reconfigure a NEWER registered
 // daemon. A GUI-vs-registered-daemon condition (independent of reachability), so
@@ -127,6 +180,7 @@ const sitesLoaded = computed(() => sitesData.value !== null);
 const versionConflict = ref<string | null>(null);
 
 onMounted(() => {
+  void loadPlatform();
   if (running.value) void reloadSites();
   daemonVersionConflict()
     .then((v) => (versionConflict.value = v))
@@ -138,7 +192,10 @@ onMounted(() => {
 watch(running, (up) => {
   if (up) void reloadSites();
 });
-usePoll(() => (running.value ? reloadSites() : Promise.resolve()), 5000);
+usePoll(
+  () => (running.value ? Promise.all([reloadSites(), reloadSharing()]).then(() => {}) : Promise.resolve()),
+  5000,
+);
 
 onUnmounted(
   registerViewActions({
@@ -160,6 +217,11 @@ const siteCount = computed(() =>
 
 const showSetup = computed(
   () => !!report.value && setupPending(setupSteps(report.value, sitesData.value?.parked.length ?? 0)),
+);
+
+/** The Pinned/Services grid replaces the hero only while the daemon is up (or still connecting). */
+const showGrid = computed(
+  () => connecting.value || (running.value && !!report.value && statusError.value === null),
 );
 
 const favouritesSkeleton = computed(
@@ -197,113 +259,158 @@ const stopBody = computed(() =>
       </Button>
     </div>
 
-    <div class="flex-1 overflow-y-auto px-6 py-6 xl:px-8">
-      <div class="grid gap-6 xl:grid-cols-2 xl:items-start">
-        <div class="flex min-w-0 flex-col gap-3.5" data-testid="overview-left">
-          <div class="flex h-6 items-center gap-2">
-            <Laptop class="size-[15px] text-muted-foreground" aria-hidden="true" />
-            <h2 class="text-[15px] font-semibold">Your environment</h2>
+    <div class="flex-1 overflow-y-auto px-6 py-6 xl:px-7">
+      <div class="flex min-w-0 flex-col gap-4">
+        <div data-testid="overview-actions" class="flex items-center gap-2">
+          <Button size="sm" class="h-[34px] px-3.5" :disabled="!running" @click="openSites('create')">
+            <Plus /> New site
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            class="h-[34px] px-3"
+            :disabled="!running"
+            @click="openSites('link')"
+          >
+            <Link class="!size-3.5" /> Link folder
+          </Button>
+          <Button size="sm" variant="outline" class="h-[34px] px-3" :disabled="!running" @click="addService">
+            <Database class="!size-3.5" /> Add service
+          </Button>
+          <div class="ml-auto flex items-center gap-1">
+            <Button
+              size="sm"
+              variant="ghost"
+              class="h-[30px] px-2 text-muted-foreground"
+              aria-label="Check for updates"
+              title="Check for updates"
+              :disabled="!running || updates.checking.value"
+              @click="updates.check(true)"
+            >
+              <Spinner v-if="updates.checking.value" class="!size-3.5" />
+              <Download v-else class="!size-3.5" />
+              <span class="hidden xl:inline">Check for updates</span>
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              class="h-[30px] px-2 text-muted-foreground"
+              aria-label="GitHub"
+              title="Open Yerd on GitHub"
+              @click="openInBrowser(REPO_URL)"
+            >
+              <Github class="!size-3.5" />
+              <span class="hidden xl:inline">GitHub</span>
+              <ArrowUpRight class="hidden !size-3 xl:inline" />
+            </Button>
           </div>
+        </div>
 
+        <section
+          v-if="connecting"
+          data-testid="overview-skeleton"
+          class="rounded-xl border bg-muted px-5 py-4 dark:bg-card"
+        >
+          <div class="flex items-center gap-2">
+            <LoaderCircle class="size-3.5 animate-spin text-brand" aria-hidden="true" />
+            <span class="text-[11px] font-semibold uppercase tracking-[0.6px] text-brand">
+              Connecting
+            </span>
+          </div>
+          <div class="mt-3 h-6 w-56 animate-pulse rounded-md bg-card dark:bg-background" />
+          <div class="mt-3 h-2.5 w-80 max-w-full animate-pulse rounded bg-card dark:bg-background" />
+        </section>
+
+        <section
+          v-else-if="statusError !== null"
+          data-testid="overview-status-error"
+          role="alert"
+          class="rounded-xl border border-destructive/40 bg-card px-5 pb-5 pt-[18px]"
+        >
+          <div class="flex items-center gap-2">
+            <CircleAlert class="size-4 text-destructive" aria-hidden="true" />
+            <h3 class="text-[15px] font-semibold">Couldn't read the daemon's status</h3>
+          </div>
+          <p class="mt-2 break-words text-[13px] text-muted-foreground">{{ statusError }}</p>
+          <p class="mt-1 text-xs text-faint">
+            The daemon is running but its reply didn't make sense to this app. If you've just
+            updated, restarting Yerd usually fixes it.
+          </p>
+          <div class="mt-4 flex gap-2">
+            <Button size="sm" :disabled="retrying" @click="retryStatus">
+              <RotateCw /> Retry
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              :disabled="busy !== null"
+              @click="restartDaemonOpen = true"
+            >
+              Restart daemon
+            </Button>
+          </div>
+        </section>
+
+        <DaemonDownHero v-else-if="!running || !report" class="min-h-[480px]">
+          Your sites and services come back once Yerd is running.
+        </DaemonDownHero>
+
+        <template v-else>
+          <OverviewStatusCard
+            :report="report"
+            :site-count="siteCount"
+            :busy="busy"
+            @stop="stopDaemonOpen = true"
+            @restart="restartDaemonOpen = true"
+          />
+          <SetupChecklist
+            v-if="showSetup"
+            :report="report"
+            :parked-roots="sitesData?.parked.length ?? 0"
+          />
+        </template>
+
+        <div
+          v-if="showGrid"
+          data-testid="overview-grid"
+          class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_436px] xl:items-stretch"
+        >
+          <FavouritesCard
+            v-if="report && !favouritesSkeleton"
+            :sites="sites"
+            :report="report"
+            :total-sites="siteCount"
+            :groups="groups"
+            :home="home"
+            :shared="shared"
+            @changed="reloadSites({ force: true })"
+          />
           <section
-            v-if="connecting"
-            data-testid="overview-skeleton"
-            class="rounded-xl border bg-card px-5 pb-5 pt-[18px]"
-          >
-            <div class="flex items-center gap-2">
-              <LoaderCircle class="size-3.5 animate-spin text-brand" aria-hidden="true" />
-              <span class="text-[11px] font-semibold uppercase tracking-[0.6px] text-brand">
-                Connecting
-              </span>
-            </div>
-            <div class="mt-4 h-6 w-56 animate-pulse rounded-md bg-muted" />
-            <div class="mt-4 h-2.5 w-80 max-w-full animate-pulse rounded bg-muted" />
-            <div class="mt-4 h-11 animate-pulse rounded-lg bg-muted" />
-          </section>
-
-          <section
-            v-else-if="statusError !== null"
-            data-testid="overview-status-error"
-            role="alert"
-            class="rounded-xl border border-destructive/40 bg-card px-5 pb-5 pt-[18px]"
-          >
-            <div class="flex items-center gap-2">
-              <CircleAlert class="size-4 text-destructive" aria-hidden="true" />
-              <h3 class="text-[15px] font-semibold">Couldn't read the daemon's status</h3>
-            </div>
-            <p class="mt-2 break-words text-[13px] text-muted-foreground">{{ statusError }}</p>
-            <p class="mt-1 text-xs text-faint">
-              The daemon is running but its reply didn't make sense to this app. If you've just
-              updated, restarting Yerd usually fixes it.
-            </p>
-            <div class="mt-4 flex gap-2">
-              <Button size="sm" :disabled="retrying" @click="retryStatus">
-                <RotateCw /> Retry
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                :disabled="busy !== null"
-                @click="restartDaemonOpen = true"
-              >
-                Restart daemon
-              </Button>
-            </div>
-          </section>
-
-          <DaemonDownHero v-else-if="!running || !report" class="min-h-[560px]">
-            Favourites and services come back once Yerd is running.
-          </DaemonDownHero>
-
-          <template v-else>
-            <OverviewStatusCard
-              :report="report"
-              :site-count="siteCount"
-              :busy="busy"
-              @stop="stopDaemonOpen = true"
-              @restart="restartDaemonOpen = true"
-            />
-            <SetupChecklist
-              v-if="showSetup"
-              :report="report"
-              :parked-roots="sitesData?.parked.length ?? 0"
-            />
-            <FavouritesCard
-              v-if="sitesLoaded"
-              :sites="sites"
-              :report="report"
-              :total-sites="siteCount"
-              @changed="reloadSites"
-            />
-          </template>
-
-          <section
-            v-if="favouritesSkeleton"
+            v-else
             data-testid="favourites-skeleton"
-            class="rounded-xl border bg-card px-5 pb-6 pt-[18px]"
+            class="rounded-xl border bg-muted px-5 pb-6 pt-[18px] dark:bg-card"
           >
-            <div class="h-3.5 w-28 animate-pulse rounded bg-muted" />
+            <div class="h-3.5 w-28 animate-pulse rounded bg-card dark:bg-background" />
             <div v-for="i in 4" :key="i" class="mt-6 flex items-center gap-3">
-              <div class="size-3.5 animate-pulse rounded-sm bg-muted" />
+              <div class="size-3.5 animate-pulse rounded-sm bg-card dark:bg-background" />
               <div class="flex-1 space-y-1.5">
-                <div class="h-2.5 w-44 animate-pulse rounded bg-muted" />
-                <div class="h-2 w-28 animate-pulse rounded bg-muted" />
+                <div class="h-2.5 w-44 animate-pulse rounded bg-card dark:bg-background" />
+                <div class="h-2 w-28 animate-pulse rounded bg-card dark:bg-background" />
               </div>
             </div>
           </section>
-        </div>
 
-        <div class="flex min-w-0 flex-col gap-3.5" data-testid="overview-right">
-          <div class="flex h-6 items-center gap-2">
-            <img :src="logoUrl" alt="" class="size-4 rounded-[4px]" />
-            <h2 class="font-display text-base font-normal leading-none tracking-[0.4px]">YERD</h2>
+          <div class="flex min-w-0 flex-col gap-4">
+            <ServicesCard v-if="report" :services="report.services ?? []" :tld="tld" :sites="sites" />
+            <ContributorsCard :running="connected" />
           </div>
-          <ReleaseNotesCard
-            :running="connected"
-            :installed-version="report?.daemon_version || undefined"
-          />
-          <ContributorsCard :running="connected" />
         </div>
+        <ContributorsCard v-else :running="connected" />
+
+        <ReleaseNotesCard
+          :running="connected"
+          :installed-version="report?.daemon_version || undefined"
+        />
       </div>
     </div>
 

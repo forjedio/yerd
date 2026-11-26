@@ -178,11 +178,18 @@ pub async fn bring_up_with_dirs(
     }
     let pending: HashSet<&str> = renames.iter().map(|r| r.doc_root.as_str()).collect();
     let claimed = reconcile_parked_claims(&mut config, &router, &pending);
-    if migrated || claimed {
-        if let Err(e) = config.save(&config_path) {
-            tracing::warn!(error = %e, "could not persist parked site names; the next change will");
-        }
-    }
+    let stamped =
+        reconcile_parked_added(&mut config, &router, crate::self_update::now_epoch(), |p| {
+            Path::new(p).is_dir()
+        });
+    let startup_save_failed = (migrated || claimed || stamped)
+        && config.save(&config_path).map_or_else(
+            |e| {
+                tracing::warn!(error = %e, "could not persist parked site names; the watcher retries");
+                true
+            },
+            |()| false,
+        );
     let renamed_sites = pending_url_syncs(&config);
     if router.is_empty() {
         tracing::info!("no sites configured - every request will 404 until a site is added");
@@ -192,6 +199,7 @@ pub async fn bring_up_with_dirs(
     let laravel_sites = Arc::new(RwLock::new(laravel_sites));
     let framework_sites = Arc::new(RwLock::new(framework_sites));
     let favourite_sites = RwLock::new(config.favourites.sites.clone());
+    let site_added = RwLock::new(config.added.clone());
 
     let cfg_http = config.ports.http;
     let cfg_https = config.ports.https;
@@ -453,6 +461,7 @@ pub async fn bring_up_with_dirs(
         libvips_probe: Arc::new(yerd_platform::ActiveLibvipsProbe::new()),
         network: crate::network::NetworkRuntime::production(),
         watch_dirty: tokio::sync::Notify::new(),
+        config_unsaved: std::sync::atomic::AtomicBool::new(startup_save_failed),
         dumps: Arc::new(crate::dump_server::DumpStore::new()),
         shim_reconcile: tokio::sync::Mutex::new(()),
         tool_mutate: tokio::sync::Mutex::new(()),
@@ -471,6 +480,7 @@ pub async fn bring_up_with_dirs(
         laravel_sites,
         framework_sites,
         favourite_sites,
+        site_added,
         lan_ip,
         lan_setup_bound: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         remote_setup_code: Mutex::new(None),
@@ -1168,6 +1178,58 @@ pub(crate) fn reconcile_parked_claims(
             .or_insert(yerd_config::ParkedClaim { name, url_synced });
     }
     cfg.parked.claims != before
+}
+
+/// Bring [`yerd_config::AddedSection::parked`] in line with `router`: every
+/// served parked site without an entry is recorded as first seen at `now`, or
+/// as `0` (undated) when its parked root is still listed in
+/// [`yerd_config::AddedSection::baseline_pending`].
+///
+/// A parked root counts as available once the router serves at least one site
+/// under it. Only an available root leaves the baseline list, and only an
+/// available root has its entries pruned, and then only those whose folder is
+/// gone (`is_dir` false): a folder hidden by a same-named linked site keeps its
+/// time. An unavailable root (a missing drive, or on Linux an empty mount point)
+/// keeps everything, so its sites are neither re-stamped nor lose their times
+/// when it returns. Returns whether `[added]` changed, so the caller knows to
+/// save.
+pub(crate) fn reconcile_parked_added(
+    cfg: &mut yerd_config::Config,
+    router: &SiteRouter,
+    now: u64,
+    is_dir: impl Fn(&str) -> bool,
+) -> bool {
+    let served: HashSet<String> = router
+        .iter()
+        .filter(|site| site.kind() == yerd_core::SiteKind::Parked)
+        .map(|site| site.document_root().to_string_lossy().into_owned())
+        .collect();
+    let parked_roots = &cfg.parked.paths;
+    let root_of = |doc_root: &str| -> Option<String> {
+        Path::new(doc_root)
+            .parent()
+            .and_then(Path::to_str)
+            .filter(|parent| parked_roots.contains(*parent))
+            .map(str::to_owned)
+    };
+    let available: HashSet<String> = served.iter().filter_map(|r| root_of(r)).collect();
+    let before = cfg.added.clone();
+    cfg.added.parked.retain(|doc_root, _| {
+        served.contains(doc_root)
+            || root_of(doc_root).is_some_and(|root| !available.contains(&root) || is_dir(doc_root))
+    });
+    for doc_root in served {
+        let pending =
+            root_of(&doc_root).is_some_and(|root| cfg.added.baseline_pending.contains(&root));
+        cfg.added
+            .parked
+            .entry(doc_root)
+            .or_insert(if pending { 0 } else { now });
+    }
+    cfg.added
+        .baseline_pending
+        .retain(|root| parked_roots.contains(root) && !available.contains(root));
+    cfg.added != before
 }
 
 /// Rekey every name-keyed setting from each rename's legacy name to its new
@@ -2365,6 +2427,171 @@ mod tests {
             ]
         );
         assert!(!reconcile_parked_claims(&mut cfg, &router, &HashSet::new()));
+    }
+
+    struct AddedCase {
+        label: &'static str,
+        served: &'static [(&'static str, &'static str)],
+        roots: &'static [&'static str],
+        folders: &'static [&'static str],
+        pending: &'static [&'static str],
+        existing: &'static [(&'static str, u64)],
+        expected: &'static [(&'static str, u64)],
+        expected_pending: &'static [&'static str],
+        changed: bool,
+    }
+
+    const NOW: u64 = 1_764_100_000;
+
+    const ADDED_CASES: &[AddedCase] = &[
+        AddedCase {
+            label: "the upgrade baseline records existing sites undated",
+            served: &[("a", "/srv/a")],
+            roots: &["/srv"],
+            folders: &[],
+            pending: &["/srv"],
+            existing: &[],
+            expected: &[("/srv/a", 0)],
+            expected_pending: &[],
+            changed: true,
+        },
+        AddedCase {
+            label: "a root missing during the upgrade stays pending",
+            served: &[("a", "/srv/a")],
+            roots: &["/mnt", "/srv"],
+            folders: &[],
+            pending: &["/mnt", "/srv"],
+            existing: &[],
+            expected: &[("/srv/a", 0)],
+            expected_pending: &["/mnt"],
+            changed: true,
+        },
+        AddedCase {
+            label: "a pending root that returns is baselined, not stamped",
+            served: &[("b", "/mnt/b"), ("a", "/srv/a")],
+            roots: &["/mnt", "/srv"],
+            folders: &[],
+            pending: &["/mnt"],
+            existing: &[("/srv/a", 0)],
+            expected: &[("/mnt/b", 0), ("/srv/a", 0)],
+            expected_pending: &[],
+            changed: true,
+        },
+        AddedCase {
+            label: "an unparked root leaves the baseline",
+            served: &[],
+            roots: &[],
+            folders: &[],
+            pending: &["/old"],
+            existing: &[],
+            expected: &[],
+            expected_pending: &[],
+            changed: true,
+        },
+        AddedCase {
+            label: "a new site after the baseline is stamped now",
+            served: &[("a", "/srv/a")],
+            roots: &["/srv"],
+            folders: &[],
+            pending: &[],
+            existing: &[],
+            expected: &[("/srv/a", NOW)],
+            expected_pending: &[],
+            changed: true,
+        },
+        AddedCase {
+            label: "an existing entry is not overwritten",
+            served: &[("a", "/srv/a")],
+            roots: &["/srv"],
+            folders: &[],
+            pending: &[],
+            existing: &[("/srv/a", 5)],
+            expected: &[("/srv/a", 5)],
+            expected_pending: &[],
+            changed: false,
+        },
+        AddedCase {
+            label: "a vanished site is pruned",
+            served: &[("a", "/srv/a")],
+            roots: &["/srv"],
+            folders: &[],
+            pending: &[],
+            existing: &[("/srv/a", 5), ("/srv/gone", 5)],
+            expected: &[("/srv/a", 5)],
+            expected_pending: &[],
+            changed: true,
+        },
+        AddedCase {
+            label: "a hidden folder that still exists is kept",
+            served: &[("a", "/srv/a")],
+            roots: &["/srv"],
+            folders: &["/srv/blog"],
+            pending: &[],
+            existing: &[("/srv/a", 5), ("/srv/blog", 7)],
+            expected: &[("/srv/a", 5), ("/srv/blog", 7)],
+            expected_pending: &[],
+            changed: false,
+        },
+        AddedCase {
+            label: "a root serving no sites keeps its entries",
+            served: &[],
+            roots: &["/mnt"],
+            folders: &[],
+            pending: &[],
+            existing: &[("/mnt/a", 5)],
+            expected: &[("/mnt/a", 5)],
+            expected_pending: &[],
+            changed: false,
+        },
+        AddedCase {
+            label: "an unparked root's entries are pruned",
+            served: &[],
+            roots: &[],
+            folders: &["/mnt/a"],
+            pending: &[],
+            existing: &[("/mnt/a", 5)],
+            expected: &[],
+            expected_pending: &[],
+            changed: true,
+        },
+    ];
+
+    #[test]
+    fn reconcile_parked_added_cases() {
+        for case in ADDED_CASES {
+            let router = parked_router(case.served);
+            let mut cfg = yerd_config::Config::default();
+            cfg.parked
+                .paths
+                .extend(case.roots.iter().map(|r| (*r).to_owned()));
+            cfg.added
+                .baseline_pending
+                .extend(case.pending.iter().map(|r| (*r).to_owned()));
+            cfg.added.parked.extend(
+                case.existing
+                    .iter()
+                    .map(|(root, t)| ((*root).to_owned(), *t)),
+            );
+
+            let changed =
+                reconcile_parked_added(&mut cfg, &router, NOW, |p| case.folders.contains(&p));
+
+            let got: Vec<(&str, u64)> = cfg
+                .added
+                .parked
+                .iter()
+                .map(|(root, t)| (root.as_str(), *t))
+                .collect();
+            assert_eq!(got, case.expected, "{}", case.label);
+            let pending: Vec<&str> = cfg
+                .added
+                .baseline_pending
+                .iter()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(pending, case.expected_pending, "{}", case.label);
+            assert_eq!(changed, case.changed, "{}", case.label);
+        }
     }
 
     #[test]

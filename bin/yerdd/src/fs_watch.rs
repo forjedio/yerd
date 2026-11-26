@@ -29,7 +29,8 @@
 //! On either wake the task rebuilds the router from the *current* config under
 //! the config lock (same lock order as the mutation path: config → router), so
 //! it never races a concurrent mutation. It saves config only when the parked
-//! name claims or a renamed site's settings changed (or an earlier save failed);
+//! name claims, a renamed site's settings or the parked added times changed
+//! (or an earlier save failed);
 //! the config file lives outside the watched directories, so a save never
 //! feeds back into its own fs events.
 
@@ -66,7 +67,9 @@ pub async fn run(state: Arc<DaemonState>, mut shutdown_rx: watch::Receiver<bool>
     };
 
     let mut watched: HashSet<PathBuf> = HashSet::new();
-    let mut unsaved = false;
+    let mut unsaved = state
+        .config_unsaved
+        .load(std::sync::atomic::Ordering::Relaxed);
     if let Some(desired) = recompute(&state, &mut unsaved).await {
         reconcile(debouncer.watcher(), &mut watched, &desired);
     }
@@ -90,9 +93,9 @@ pub async fn run(state: Arc<DaemonState>, mut shutdown_rx: watch::Receiver<bool>
 /// (every parked root + every unresolved project root). A parked site renamed
 /// by the rebuild (see [`startup::live_parked_renames`]) has its name-keyed
 /// settings moved to the new name and its app-side URL synced, and the parked
-/// name claims are brought in line with the new router. Config is saved when
-/// either changed, or when an earlier save failed (`unsaved`, cleared only by a
-/// successful save). The tunnel route map is then rebuilt (after the config
+/// name claims and first-seen times are brought in line with the new router.
+/// Config is saved when any of them changed, or when an earlier save failed
+/// (`unsaved`, cleared only by a successful save). The tunnel route map is then rebuilt (after the config
 /// lock is released), so a shared site that just appeared becomes routable.
 /// Returns `None` if the rebuild failed (the previous router is left in place).
 async fn recompute(state: &DaemonState, unsaved: &mut bool) -> Option<HashSet<PathBuf>> {
@@ -115,7 +118,15 @@ async fn recompute(state: &DaemonState, unsaved: &mut bool) -> Option<HashSet<Pa
     }
     let pending: HashSet<&str> = renames.iter().map(|r| r.doc_root.as_str()).collect();
     let claimed = startup::reconcile_parked_claims(&mut next, &routing.0, &pending);
-    if moved || claimed {
+    let stamped = startup::reconcile_parked_added(
+        &mut next,
+        &routing.0,
+        crate::self_update::now_epoch(),
+        |p| std::path::Path::new(p).is_dir(),
+    );
+    if moved || claimed || stamped {
+        *state.site_added.write().await = next.added.clone();
+        *state.favourite_sites.write().await = next.favourites.sites.clone();
         *guard = next;
         *unsaved = true;
     }
@@ -231,6 +242,8 @@ mod tests {
         recompute(&state, &mut false).await.unwrap();
 
         assert!(state.router.read().await.get("laravel").is_some());
+        let mirror = state.favourite_sites.read().await.clone();
+        assert!(mirror.contains("laravel") && !mirror.contains("laravel-com"));
         let cfg = state.config.lock().await;
         assert!(cfg.favourites.sites.contains("laravel"));
         assert!(!cfg.favourites.sites.contains("laravel-com"));
@@ -261,5 +274,51 @@ mod tests {
         let cfg = state.config.lock().await;
         assert!(cfg.favourites.sites.contains("laravel-com"));
         assert!(!cfg.favourites.sites.contains("laravel"));
+    }
+
+    #[tokio::test]
+    async fn recompute_retries_an_unsaved_config_until_it_saves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        state
+            .config
+            .lock()
+            .await
+            .favourites
+            .sites
+            .insert("blog".to_owned());
+        let mut unsaved = true;
+
+        recompute(&state, &mut unsaved).await.unwrap();
+
+        assert!(!unsaved);
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert!(reloaded.favourites.sites.contains("blog"));
+    }
+
+    #[tokio::test]
+    async fn recompute_stamps_a_new_parked_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parked = tmp.path().join("Sites");
+        std::fs::create_dir_all(&parked).unwrap();
+        let state = state_in(tmp.path());
+        state
+            .config
+            .lock()
+            .await
+            .parked
+            .paths
+            .insert(parked.to_string_lossy().into_owned());
+        recompute(&state, &mut false).await.unwrap();
+        assert!(state.site_added.read().await.parked.is_empty());
+
+        std::fs::create_dir_all(parked.join("blog")).unwrap();
+        recompute(&state, &mut false).await.unwrap();
+
+        let root = parked.join("blog").to_string_lossy().into_owned();
+        let cached = state.site_added.read().await.parked.get(&root).copied();
+        assert!(cached.is_some_and(|t| t > 0), "got {cached:?}");
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert_eq!(reloaded.added.parked.get(&root).copied(), cached);
     }
 }

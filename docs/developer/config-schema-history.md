@@ -28,7 +28,26 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v33 (current)
+### v34 (current)
+
+**Added:** the optional `[added]` table - when each site was added to Yerd, as Unix seconds, for the desktop app's **Recently added** list. `[added.linked]` is keyed by site name and `[added.parked]` by byte-exact document root (like `[domains.parked]`), so renaming a parked folder never carries a time across to a different site. A value of `0` means the site was already there before Yerd recorded added times: it is kept so the site is never stamped later, but reported as undated. `baseline_pending` lists the parked roots whose existing sites the migration asked to record as undated. The table is omitted when empty, so a fresh config never writes it.
+
+```toml
+[added]
+baseline_pending = ["/Users/you/Sites"]
+
+[added.linked]
+blog = 1764100000
+
+[added.parked]
+"/Users/you/Sites/api" = 0
+```
+
+**Migration from v33:** structural but small, like v15 - the migration copies `[parked] paths` into `[added] baseline_pending` and leaves any other keys alone (a config with no parked roots gains nothing). The daemon records every parked site it finds under a listed root as `0` (undated) rather than "now", and drops a root from the list once a scan finds at least one site under it, so upgrading doesn't make every existing project look recently added, even if a drive is unmounted at the time. Existing linked sites simply have no entry. No times are invented.
+
+**To downgrade to v33:** change `version = 34` to `version = 33` and delete the `[added]` table and its `[added.linked]` / `[added.parked]` sub-tables (a v33 daemon rejects the unknown table under `deny_unknown_fields`). The recorded added times are lost, and upgrading again starts a fresh baseline.
+
+### v33
 
 **Added:** the optional `[response_headers.proxy]` table - custom response headers for whole-host proxies, keyed by proxy name, in the same `name`/`value` array-of-tables shape as `[response_headers.linked]`. It defaults to empty when absent, so a file with no proxy headers omits it entirely. A key naming no configured proxy is tolerated (as in `[domains.proxy]`): it is neither routed nor listed, and the daemon prunes a proxy's entry when the proxy is removed.
 

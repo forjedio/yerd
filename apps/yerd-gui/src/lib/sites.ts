@@ -17,6 +17,17 @@ export function asciiLower(s: string): string {
 }
 
 /**
+ * The group a site's membership names, read as an own property so a site named
+ * like an `Object.prototype` member (`constructor`, `toString`) is not handed an
+ * inherited function.
+ */
+export function memberGroup(groups: GroupsState, name: string): string | undefined {
+  return Object.prototype.hasOwnProperty.call(groups.members, name)
+    ? groups.members[name]
+    : undefined;
+}
+
+/**
  * A domain as the daemon stores it (`yerd-core` `Domain::parse`): ASCII
  * lowercased with one trailing dot stripped, so `API.blog.test.` and
  * `api.blog.test` are the same domain.
@@ -166,7 +177,7 @@ export function buildSections(input: BuildSectionsInput): SiteSection[] {
   const sites = [...input.sites].sort(byName);
   const known = new Set(groups.order.map(asciiLower));
   const groupOf = (s: SiteEntry): string | null => {
-    const g = groups.members[s.name];
+    const g = memberGroup(groups, s.name);
     return g && known.has(asciiLower(g)) ? asciiLower(g) : null;
   };
 

@@ -4062,6 +4062,7 @@ mod tests {
                     is_laravel: false,
                     favourite: false,
                     framework: None,
+                    added_at: None,
                 }],
             },
             false,
@@ -4096,6 +4097,7 @@ mod tests {
                     is_laravel: false,
                     favourite: false,
                     framework: None,
+                    added_at: None,
                 }],
             },
             false,
@@ -4732,6 +4734,7 @@ mod tests {
             is_laravel: false,
             favourite: false,
             framework: None,
+            added_at: None,
         };
         let r = render_domains(&[e], "test", None, false);
         assert!(r.stdout.contains("corp.test (primary)"));
@@ -4751,6 +4754,7 @@ mod tests {
             is_laravel: false,
             favourite: false,
             framework: None,
+            added_at: None,
         };
         let r = render_domains(&[e], "test", None, false);
         assert!(r.stdout.contains("foo.test (primary)"));

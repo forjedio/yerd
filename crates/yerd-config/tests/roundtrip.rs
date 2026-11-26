@@ -115,6 +115,7 @@ fn populated_expected() -> Config {
         "docroot-a".to_string(),
         vec![ResponseHeader::new("X-Frame-Options", "DENY").unwrap()],
     );
+    c.added.baseline_pending = c.parked.paths.clone();
     c
 }
 

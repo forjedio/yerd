@@ -57,6 +57,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v30_to_v31,
     migrate_v31_to_v32,
     migrate_v32_to_v33,
+    migrate_v33_to_v34,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -325,6 +326,36 @@ fn migrate_v32_to_v33(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 33)
 }
 
+/// `v33 → v34`: a structural step, like [`migrate_v14_to_v15`]. v34 added the
+/// optional `[added]` table of per-site added times. Upgrading copies
+/// `[parked] paths` into `[added] baseline_pending` so the daemon records the
+/// sites already under those roots as undated rather than stamping them "now",
+/// which would make an upgrade look like a burst of recently added sites. This
+/// is an upgrade baseline, not a backfill: no times are invented. A config with
+/// no parked roots gains nothing, other keys under `[added]` are left
+/// untouched, and a non-table `added` value is left for the wire
+/// deserialisation to reject.
+fn migrate_v33_to_v34(value: &mut Value) -> Result<(), ConfigError> {
+    let root = value.as_table_mut().ok_or(ConfigError::Migration {
+        reason: MigrationErrorReason::MissingVersion,
+    })?;
+    let roots: Vec<Value> = root
+        .get("parked")
+        .and_then(|p| p.get("paths"))
+        .and_then(Value::as_array)
+        .map(|paths| paths.iter().filter(|p| p.is_str()).cloned().collect())
+        .unwrap_or_default();
+    if !roots.is_empty() {
+        let added = root
+            .entry("added")
+            .or_insert_with(|| Value::Table(toml::Table::new()));
+        if let Some(table) = added.as_table_mut() {
+            table.insert("baseline_pending".to_string(), Value::Array(roots));
+        }
+    }
+    set_version(value, 34)
+}
+
 /// Set the top-level `version` key, erroring if the root is not a table.
 fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
     let table = value.as_table_mut().ok_or(ConfigError::Migration {
@@ -394,7 +425,54 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 33);
+        assert_eq!(crate::CURRENT_VERSION, 34);
+    }
+
+    #[test]
+    fn v33_to_v34_baselines_the_parked_roots() {
+        let mut v: Value =
+            toml::from_str("version = 33\n[parked]\npaths = [\"/a\", \"/srv\"]\n").unwrap();
+        migrate_v33_to_v34(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 34);
+        let pending: Vec<&str> = v
+            .get("added")
+            .and_then(|a| a.get("baseline_pending"))
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(pending, ["/a", "/srv"]);
+        assert!(v.get("parked").and_then(|p| p.get("paths")).is_some());
+    }
+
+    #[test]
+    fn v33_to_v34_without_parked_roots_adds_nothing() {
+        let mut v: Value = toml::from_str("version = 33\n").unwrap();
+        migrate_v33_to_v34(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 34);
+        assert!(v.get("added").is_none());
+    }
+
+    #[test]
+    fn v33_to_v34_keeps_existing_added_keys() {
+        let mut v: Value = toml::from_str(
+            "version = 33\n[parked]\npaths = [\"/srv\"]\n[added.linked]\nblog = 5\n",
+        )
+        .unwrap();
+        migrate_v33_to_v34(&mut v).unwrap();
+        let added = v.get("added").unwrap();
+        assert!(added
+            .get("baseline_pending")
+            .and_then(Value::as_array)
+            .is_some());
+        assert_eq!(
+            added
+                .get("linked")
+                .and_then(|l| l.get("blog"))
+                .and_then(Value::as_integer),
+            Some(5)
+        );
     }
 
     #[test]

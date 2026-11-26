@@ -33,7 +33,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 
 | Key         | TOML type            | Meaning                                                            | Default        |
 | ----------- | -------------------- | ----------------------------------------------------------------- | -------------- |
-| `version`   | integer              | On-disk schema version. **Mandatory**; written as `33` by this release. | `n/a (required)` |
+| `version`   | integer              | On-disk schema version. **Mandatory**; written as `34` by this release. | `n/a (required)` |
 | `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
 | `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
 | `update_channel` | string          | Self-update channel: `"stable"` or `"edge"`.                      | `"stable"`     |
@@ -58,16 +58,17 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 | `response_headers` | table         | Per-site and per-proxy custom response headers (name + value) added to every response. | empty       |
 | `network`   | table                | Outbound HTTP proxy for Yerd's downloads and the tools it runs.   | system detection |
 | `favourites` | table              | Sites starred in the desktop app.                                 | empty          |
+| `added`     | table                | When each site was added, for the desktop app's Recently added list. | empty       |
 
 ::: warning Unknown keys are rejected
-The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, a `[parked.claims."<docroot>"]` entry, `[mail]`, `[dumps]`, `[dumps.features]`, `[domains]`, a `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` / `[domains.proxy.<name>]` entry, `[proxy_rules]`, `[route_rules]`, `[response_headers]`, `[network]`, `[favourites]`, a `[[proxies]]` entry, a `[services.<id>]` table, a `[[linked]]` entry, an `[[overrides]]` entry, or a `[[php.extensions.<version>]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
+The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, a `[parked.claims."<docroot>"]` entry, `[mail]`, `[dumps]`, `[dumps.features]`, `[domains]`, a `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` / `[domains.proxy.<name>]` entry, `[proxy_rules]`, `[route_rules]`, `[response_headers]`, `[network]`, `[favourites]`, `[added]`, a `[[proxies]]` entry, a `[services.<id>]` table, a `[[linked]]` entry, an `[[overrides]]` entry, or a `[[php.extensions.<version>]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
 
 The free-form maps are the exception, because their keys *are* the data. `[services.<id>.overrides]` (like `[php.directives."<version>"]`) takes arbitrary directive names, so `deny_unknown_fields` does not apply *inside* it - the keys are shape-checked instead, and a bad one is dropped rather than failing the load. It still applies to the enclosing `[services.<id>]` table.
 :::
 
 ### `version`
 
-The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `33`, and Yerd always writes `version = 33`. Older `version = 1` through `version = 32` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `34`, and Yerd always writes `version = 34`. Older `version = 1` through `version = 33` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
 
 ### `tld`
 
@@ -547,6 +548,28 @@ Like `[groups]` membership, entries are keyed by **site name** and are not check
 sites = ["blog"]
 ```
 
+### `[added]`
+
+When each site was added to Yerd, as Unix seconds. The desktop app's Overview uses it for the **Recently added** list; it does not affect routing. The daemon maintains it, so you never need to edit it: linking or creating a site records the time (linking a parked folder keeps its parked time), and a parked site is recorded the first time a scan finds it. **Empty by default**, so the whole `[added]` table is omitted from the file until something is recorded.
+
+| Key                | TOML type                     | Meaning                                                                 |
+| ------------------ | ----------------------------- | ----------------------------------------------------------------------- |
+| `baseline_pending` | array of strings              | Parked roots whose existing sites are still to be recorded as undated. Set by the v33 → v34 migration; a root leaves once a scan finds a site under it. Omitted when empty. |
+| `[added.linked]`   | table (`name → seconds`)      | Added times for **linked** sites, keyed by site name.                   |
+| `[added.parked]`   | table (`docroot → seconds`)   | First-seen times for **parked** sites, keyed by byte-exact document root. |
+
+A value of `0` means the site existed before Yerd recorded added times. It is shown as undated, and keeping the entry stops the site being stamped later. Upgrading to v34 records every parked site that is already served as `0`, so existing projects don't flood the Recently added list; existing linked sites simply have no entry.
+
+Like `[domains]`, parked sites are keyed by document root, so renaming a folder gives the site a fresh time. An entry is dropped when its site is unlinked or no longer served, except while its parked folder is missing (an unmounted drive), so the time survives until it comes back. Unlinking a site that sits inside a parked folder carries its time over to the parked entry.
+
+```toml
+[added.linked]
+blog = 1764100000
+
+[added.parked]
+"/Users/you/Sites/api" = 0
+```
+
 ### `[domains]`
 
 Domain customization for a site **or a whole-host proxy**: the primary (canonical) domain plus any additional aliases, subdomains, and wildcards it answers for. **Empty by default** - the whole `[domains]` table is omitted until you customise something with [`yerd domain`](./cli/domains). An uncustomised site or proxy answers only its default apex `<name>.<tld>`; subdomains do **not** resolve implicitly.
@@ -745,14 +768,14 @@ the desktop app's General settings.
 
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `33`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `34`.
 
 When the daemon loads a file, it routes on the version it finds:
 
 ```text
-found  > CURRENT (32)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (32)   →  parse directly
-found  < CURRENT (32)   →  walk forward migration steps, then parse
+found  > CURRENT (34)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (34)   →  parse directly
+found  < CURRENT (34)   →  walk forward migration steps, then parse
 ```
 
 A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
@@ -789,6 +812,7 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v30 → v31`** is a bare version bump: v31 only **added** the optional `[parked.claims]` map (suffix-stripped names held by parked folders), which defaults to empty when absent.
 - **`v31 → v32`** is a bare version bump: v32 only **added** `[tunnel] default_provider` and the optional `[tunnel.ngrok]` table, both of which default when absent.
 - **`v32 → v33`** is a bare version bump: v33 only **added** the optional `[response_headers.proxy]` table (whole-host proxy response headers), which defaults to empty when absent.
+- **`v33 → v34`** is a small *structural* migration: v34 **added** the optional `[added]` table (per-site added times), and the migration copies the parked roots into `[added] baseline_pending` so the daemon records the parked sites that already exist as undated instead of recently added.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 

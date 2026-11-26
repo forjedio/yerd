@@ -78,7 +78,8 @@ apps/yerd-gui/
     │                       settings/ (SettingsGroup, SettingRow, UpdateActions, ConnectAgentDialog, GuiLogsDialog,
     │                       DiagnosticsDialog, MadeByForjed),
     │                       PhpVersionPanel, AddExtensionModal, DaemonDownHero, DaemonDiagnosticsPanel,
-    │                       overview/ (status, favourites, setup checklist, release notes and contributors cards),
+    │                       overview/ (status strip, sites card with Pinned and Recently added tabs and its OverviewSiteRow,
+    │                       services, setup checklist, release notes and contributors cards),
     │                       ui/ (incl. AsyncState, EmptyState, InfoBanner, ConfirmDialog, DialogFrame,
     │                       SegmentedControl, SuffixInput, FilterChips, InspectorFrame, InspectorFooter (teleported
     │                       into the frame's pinned bar below its scroll area),
@@ -87,7 +88,8 @@ apps/yerd-gui/
     └── lib/                utils (cn, plural / joinWithAnd, humanisers, CHIP_TONE and the run-state dot), theme,
                             desktop chrome, domainValidation,
                             toastActions (copy-to-clipboard and fire-and-forget actions that toast the outcome),
-                            overview (status, health-row and favourites derivations for the Overview),
+                            overview (status, health-row, pinned, recently added, services, contributors and release-notes
+                            derivations for the Overview),
                             sites (Sites list sections, chips, warnings and inspector labels),
                             proxies (Proxies chips, sections, upstream labels and name/prefix checks),
                             services (Services sections, status lines, test-copy grouping, .env snippets),
@@ -569,7 +571,7 @@ the daemon when the window is hidden to the tray - a real cost, since each
 
 The hash router (`createWebHashHistory`, because the webview loads from a
 file/asset origin) maps the in-shell routes - **OverviewView** (`/overview`, the
-default landing dashboard: status, favourites, release notes and contributors), **GeneralView** (`/general`, the **Settings** page),
+default landing dashboard: quick actions, status, pinned and recently added sites, services, contributors and release notes), **GeneralView** (`/general`, the **Settings** page),
 **PhpView**, **NodeView** (`/node`, installed releases, an Install dialog picking from the upstream releases list,
 streamed installs, Update, uninstall, and the global default; in the command
 palette without a digit), **SitesView**, **ToolingView** (`/tooling`; Node is

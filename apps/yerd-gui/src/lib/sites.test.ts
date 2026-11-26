@@ -8,6 +8,7 @@ import {
   groupNameAvailable,
   httpsDetail,
   matchesChip,
+  memberGroup,
   normalizeDomain,
   OVERFLOW_LIMIT,
   servedPath,
@@ -113,6 +114,20 @@ describe("siteAtPath", () => {
     ["/code/foo", [], null],
   ] as const)("%s in %j", (path, sites, want) => {
     expect(siteAtPath(sites, path)?.name ?? null).toBe(want);
+  });
+});
+
+describe("memberGroup", () => {
+  const groups: GroupsState = { order: ["Acme"], members: { blog: "Acme" } };
+
+  it.each([
+    ["blog", "Acme"],
+    ["api", undefined],
+    ["constructor", undefined],
+    ["toString", undefined],
+    ["__proto__", undefined],
+  ])("%s → %s", (name, expected) => {
+    expect(memberGroup(groups, name)).toBe(expected);
   });
 });
 

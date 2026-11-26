@@ -18,6 +18,7 @@ import {
   removeTunnelCopy,
   type ShareItem,
   shareItems,
+  sharedSiteNames,
   siblingShares,
   stateDotClass,
   stateLabel,
@@ -402,5 +403,17 @@ describe("removeTunnelCopy", () => {
     [["a", "b", "c"], "takes a, b and c offline."],
   ])("names the sites %o", (sites, text) => {
     expect(removeTunnelCopy(sites)).toContain(text);
+  });
+});
+
+describe("sharedSiteNames", () => {
+  it.each([
+    ["a running Cloudflare share", [quick("blog")], ["blog"]],
+    ["a connecting and a reconnecting share", [quick("a", { state: "connecting" }), quick("b", { state: "reconnecting" })], ["a", "b"]],
+    ["a failed share is excluded", [quick("blog", { state: "failed" })], []],
+    ["the named tunnel is excluded", [named("running")], []],
+    ["an ngrok share is included", [quick("shop", { provider: "ngrok" })], ["shop"]],
+  ] as const)("%s", (_name, tunnels, expected) => {
+    expect([...sharedSiteNames(tunnels as unknown as TunnelInfo[])].sort()).toEqual(expected);
   });
 });
