@@ -254,6 +254,7 @@ fn encode_then_decode_response_roundtrip() {
             is_laravel: false,
             favourite: false,
             framework: None,
+            added_at: None,
         }],
     });
     assert_response_roundtrips(Response::Sites {
@@ -267,6 +268,7 @@ fn encode_then_decode_response_roundtrip() {
             is_laravel: false,
             favourite: false,
             framework: None,
+            added_at: None,
         }],
     });
     for code in [

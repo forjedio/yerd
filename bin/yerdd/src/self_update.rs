@@ -195,7 +195,7 @@ pub struct UpdateSnapshot {
 
 /// Current wall-clock as Unix epoch seconds (`0` if the clock is before the
 /// epoch, which never happens in practice).
-fn now_epoch() -> u64 {
+pub(crate) fn now_epoch() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())

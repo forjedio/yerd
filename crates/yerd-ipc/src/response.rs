@@ -625,6 +625,11 @@ pub struct SiteEntry {
     /// recognised.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub framework: Option<SiteFramework>,
+    /// When the site was added to Yerd, as Unix seconds: when it was linked or
+    /// created, or when the daemon first discovered it in a parked folder.
+    /// Omitted when unknown, including sites that predate the record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_at: Option<u64>,
 }
 
 /// One whole-host reverse proxy (reply element of [`Response::Proxies`]).

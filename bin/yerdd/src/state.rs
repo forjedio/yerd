@@ -282,6 +282,10 @@ pub struct DaemonState {
     /// `[favourites]` refreshed after each `SetSiteFavourite` save, so
     /// `ListSites` never takes the config mutex.
     pub favourite_sites: RwLock<std::collections::BTreeSet<String>>,
+    /// When each site was added: a copy of the config's `[added]` refreshed
+    /// after every config commit that can change it (a mutation or a
+    /// filesystem-watcher rescan), so `ListSites` never takes the config mutex.
+    pub site_added: RwLock<yerd_config::AddedSection>,
     /// The host's LAN IPv4 discovered **once at startup** when LAN mode is on
     /// (the same value baked into the bootstrap TLS cert's iPAddress SAN). All
     /// runtime consumers (`DaemonInfo`, status, `remote-setup` URL) read this

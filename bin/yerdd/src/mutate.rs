@@ -198,6 +198,9 @@ fn apply_link(
     if let Some(headers) = cfg.response_headers.parked.remove(&docroot_key) {
         cfg.response_headers.linked.insert(name_lc.clone(), headers);
     }
+    if let Some(at) = cfg.added.parked.get(&docroot_key).copied() {
+        cfg.added.linked.insert(name_lc.clone(), at);
+    }
     cfg.linked.push(site);
     Ok(Applied {
         summary: format!("linked {name_lc}"),
@@ -281,8 +284,17 @@ fn apply_unlink(cfg: &mut Config, router: &SiteRouter, name: &str) -> Result<App
     }
     if let Some(headers) = cfg.response_headers.linked.remove(&name_lc) {
         if reparks {
-            cfg.response_headers.parked.insert(docroot_key, headers);
+            cfg.response_headers
+                .parked
+                .insert(docroot_key.clone(), headers);
         }
+    }
+    let added_at = cfg.added.linked.remove(&name_lc);
+    if reparks {
+        cfg.added
+            .parked
+            .entry(docroot_key)
+            .or_insert(added_at.unwrap_or(0));
     }
     Ok(Applied {
         summary: format!("unlinked {name_lc}"),
@@ -2227,6 +2239,70 @@ mod tests {
             cfg.response_headers.parked.get("/srv/app").unwrap().len(),
             1
         );
+    }
+
+    #[test]
+    fn unlink_drops_or_moves_the_added_time() {
+        type Case = (&'static str, Option<u64>, Option<u64>, Option<u64>);
+        let cases: &[Case] = &[
+            ("/other", Some(100), None, None),
+            ("/srv", Some(100), None, Some(100)),
+            ("/srv", None, None, Some(0)),
+            ("/srv", Some(100), Some(5), Some(5)),
+        ];
+        for (parent, linked_at, parked_at, want_parked) in cases {
+            let mut cfg = Config::default();
+            cfg.parked.paths.insert("/srv".to_string());
+            let root = format!("{parent}/app");
+            cfg.linked
+                .push(Site::linked("app", root.as_str(), v(8, 3)).unwrap());
+            if let Some(t) = linked_at {
+                cfg.added.linked.insert("app".to_string(), *t);
+            }
+            if let Some(t) = parked_at {
+                cfg.added.parked.insert(root.clone(), *t);
+            }
+            apply(
+                &mut cfg,
+                &empty_router(),
+                &Request::Unlink { name: "app".into() },
+                None,
+                v(8, 3),
+            )
+            .unwrap();
+            assert!(cfg.added.linked.is_empty(), "{parent} {linked_at:?}");
+            assert_eq!(
+                cfg.added.parked.get(&root).copied(),
+                *want_parked,
+                "{parent} {linked_at:?}"
+            );
+            assert_eq!(cfg.added.parked.len(), usize::from(want_parked.is_some()));
+        }
+    }
+
+    #[test]
+    fn link_carries_over_a_parked_folder_s_added_time() {
+        let cases: &[(Option<u64>, Option<u64>)] =
+            &[(Some(5), Some(5)), (Some(0), Some(0)), (None, None)];
+        for (parked_at, want_linked) in cases {
+            let key = "/srv/app".to_string();
+            let mut cfg = Config::default();
+            cfg.parked.paths.insert("/srv".to_string());
+            if let Some(t) = parked_at {
+                cfg.added.parked.insert(key.clone(), *t);
+            }
+            apply_link(&mut cfg, "app", Some(PathBuf::from(&key)), v(8, 3)).unwrap();
+            assert_eq!(
+                cfg.added.linked.get("app").copied(),
+                *want_linked,
+                "{parked_at:?}"
+            );
+            assert_eq!(
+                cfg.added.parked.get(&key).copied(),
+                *parked_at,
+                "{parked_at:?}"
+            );
+        }
     }
 
     #[test]

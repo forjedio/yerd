@@ -27,7 +27,7 @@ import {
   type ShortcutCtx,
   type WindowScope,
 } from "./registry";
-import { sitesIntent } from "./sitesIntent";
+import { sitesIntent, sitesSelectIntent } from "./sitesIntent";
 import { getViewActions } from "./useViewActions";
 
 export interface UseShortcuts {
@@ -101,7 +101,10 @@ export function useShortcuts(scope: WindowScope): UseShortcuts {
     () => {
       paletteOpen.value = false;
       cheatSheetOpen.value = false;
-      if (router.currentRoute.value.path !== "/sites") sitesIntent.value = null;
+      if (router.currentRoute.value.path !== "/sites") {
+        sitesIntent.value = null;
+        sitesSelectIntent.value = null;
+      }
     },
   );
 

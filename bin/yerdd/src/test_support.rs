@@ -183,6 +183,7 @@ pub fn state_in(tmp: &Path) -> DaemonState {
         laravel_sites: Arc::new(RwLock::new(std::collections::HashMap::new())),
         framework_sites: Arc::new(RwLock::new(std::collections::HashMap::new())),
         favourite_sites: RwLock::new(std::collections::BTreeSet::new()),
+        site_added: RwLock::new(yerd_config::AddedSection::default()),
         lan_ip: None,
         lan_setup_bound: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         remote_setup_code: tokio::sync::Mutex::new(None),

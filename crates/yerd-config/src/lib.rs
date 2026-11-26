@@ -30,10 +30,11 @@ pub use project::{
     SyncDelta, ANY_SERVICE_VERSION, PROJECT_FILE_MAX_BYTES, PROJECT_FILE_NAME,
 };
 pub use schema::{
-    Config, DomainDelta, DomainsSection, DumpsSection, ExtEntry, FavouritesSection, GroupsSection,
-    MailSection, NetworkSection, NgrokSettings, NodeSection, ParkedClaim, ParkedSection,
-    PhpSection, Ports, ResponseHeadersSection, ServiceInstance, ServicesSection, SiteOverride,
-    TunnelSection, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
+    AddedSection, Config, DomainDelta, DomainsSection, DumpsSection, ExtEntry, FavouritesSection,
+    GroupsSection, MailSection, NetworkSection, NgrokSettings, NodeSection, ParkedClaim,
+    ParkedSection, PhpSection, Ports, ResponseHeadersSection, ServiceInstance, ServicesSection,
+    SiteOverride, TunnelSection, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT,
+    RESERVED_GROUP_NAME,
 };
 
 /// The on-disk schema version this crate writes. Bumped together with a new
@@ -136,8 +137,11 @@ pub use schema::{
 /// when absent, so v31→v32 is a bare bump too. v33 added the optional
 /// `[response_headers.proxy]` table of whole-host proxy headers
 /// ([`ResponseHeadersSection::proxy`]); it defaults (empty) when absent, so
-/// v32→v33 is a bare bump too.
+/// v32→v33 is a bare bump too. v34 added the optional `[added]` table
+/// ([`Config::added`]) of per-site added times; v33→v34 is structural because
+/// it copies the parked roots into `[added] baseline_pending` so existing parked
+/// sites are recorded as undated rather than recently added.
 ///
 /// The per-version detail, including how to hand-edit a file back down for an
 /// older binary, lives in `docs/developer/config-schema-history.md`.
-pub const CURRENT_VERSION: u32 = 33;
+pub const CURRENT_VERSION: u32 = 34;

@@ -49,6 +49,7 @@ import {
   versionChoices,
   type VersionChoice,
 } from "@/lib/services";
+import { servicesIntent } from "@/lib/shortcuts/servicesIntent";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { siteUrl } from "@/lib/siteUrl";
 import { toastOnError } from "@/lib/toastActions";
@@ -292,6 +293,16 @@ const addOpen = ref(false);
 function openAdd(): void {
   addOpen.value = true;
 }
+
+watch(
+  servicesIntent,
+  (intent) => {
+    if (intent !== "add") return;
+    servicesIntent.value = null;
+    openAdd();
+  },
+  { immediate: true },
+);
 
 /** Ids of the configured instances. A single-instance engine is listed even
  *  before it is installed, so "saved" means an instance turned configured, not

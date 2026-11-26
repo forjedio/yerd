@@ -1668,6 +1668,7 @@ mod tests {
             is_laravel: false,
             favourite: false,
             framework: None,
+            added_at: None,
         }
     }
 

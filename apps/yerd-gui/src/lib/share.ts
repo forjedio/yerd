@@ -62,6 +62,14 @@ export function siteShare(
   );
 }
 
+const LIVE_STATES: ReadonlySet<TunnelRunState> = new Set(["running", "connecting", "reconnecting"]);
+
+/** The sites with a live per-site share through any provider, matching the
+ *  daemon's `is_live`. Named-tunnel exposure is not counted. */
+export function sharedSiteNames(tunnels: readonly TunnelInfo[]): Set<string> {
+  return new Set(tunnels.filter((t) => t.kind === "quick" && LIVE_STATES.has(t.state)).map((t) => t.site));
+}
+
 /** What a client does when a per-site start reply lacks the share it asked for. */
 export interface ProviderStartCheck {
   /** The daemon ignored the requested provider: report an error, not success. */

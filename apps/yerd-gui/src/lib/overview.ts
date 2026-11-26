@@ -1,4 +1,16 @@
-import type { SiteEntry, SiteFramework, StatusReport } from "@/ipc/types";
+import type {
+  Contributor,
+  GroupsState,
+  ReleaseNoteItem,
+  ReleaseNotesEntry,
+  ReleaseNotesResponse,
+  ServiceStatus,
+  SiteEntry,
+  SiteFramework,
+  StatusReport,
+} from "@/ipc/types";
+import { isInstalled } from "@/lib/services";
+import { asciiLower, memberGroup } from "@/lib/sites";
 import { humaniseUptime, plural } from "@/lib/utils";
 
 /**
@@ -16,7 +28,7 @@ export type StatusKind = "serving" | "not-serving" | "ready";
 /** Tone of one inset health row. */
 export type HealthTone = "ok" | "warn" | "bad";
 
-/** One row of the status card's health well. */
+/** One chip of the environment strip's health row. */
 export interface HealthRow {
   key: string;
   tone: HealthTone;
@@ -83,10 +95,8 @@ export function metaSegments(report: StatusReport): string[] {
     `up ${humaniseUptime(report.uptime_secs)}`,
     `pid ${report.daemon_pid}`,
   ];
-  if (report.services && report.services.length > 0) {
-    const running = report.services.filter((s) => s.state === "running").length;
-    out.push(`${plural(running, "service", "services")} running`);
-  }
+  const { rows, running } = serviceSummary(report.services ?? []);
+  if (rows.length > 0) out.push(`${running} of ${plural(rows.length, "service", "services")} running`);
   if (report.php.length === 0) out.push("no PHP installed");
   return out;
 }
@@ -94,20 +104,20 @@ export function metaSegments(report: StatusReport): string[] {
 const DOCTOR_FIX = { label: "Fix", to: "/doctor" };
 
 /**
- * The health well's rows. Healthy CA and resolver checks collapse into one `ok`
- * row; each failing or unknown check gets its own `warn` row linking to Doctor.
- * A web-port or DNS-port bind failure is a `bad` row linking to Settings (an
- * installed resolver is no comfort while the DNS port is unbound, so it leaves
- * the `ok` row then); a privileged-port fallback without a redirect is a `warn`
- * row linking to Doctor. Healthy ports add nothing.
+ * The environment strip's health chips. Each healthy CA or resolver check is
+ * its own `ok` chip; each failing or unknown check gets a `warn` chip linking
+ * to Doctor. A web-port or DNS-port bind failure is a `bad` chip linking to
+ * Settings (an installed resolver is no comfort while the DNS port is unbound,
+ * so its `ok` chip goes then); a privileged-port fallback without a redirect is
+ * a `warn` chip linking to Doctor. Healthy ports add nothing.
  */
 export function healthRows(report: StatusReport): HealthRow[] {
   const tld = report.tld;
-  const healthy: string[] = [];
+  const healthy: HealthRow[] = [];
   const problems: HealthRow[] = [];
 
   const ca = report.ca.trusted_system;
-  if (ca === true) healthy.push("Local CA trusted");
+  if (ca === true) healthy.push({ key: "trust", tone: "ok", text: "Local CA trusted" });
   else {
     problems.push({
       key: "trust",
@@ -126,7 +136,9 @@ export function healthRows(report: StatusReport): HealthRow[] {
       text: `Couldn't bind DNS port ${dnsUnbound} — .${tld} names won't resolve`,
       link: { label: "Change port", to: "/general" },
     });
-  } else if (resolver === true) healthy.push(`.${tld} resolver installed`);
+  } else if (resolver === true) {
+    healthy.push({ key: "resolver", tone: "ok", text: `.${tld} resolver installed` });
+  }
   if (resolver !== true) {
     problems.push({
       key: "resolver",
@@ -147,32 +159,131 @@ export function healthRows(report: StatusReport): HealthRow[] {
       link: { label: "Change ports", to: "/general" },
     });
   } else if (!portsReady(report)) {
-    const cause = report.foreign_web_listener === true ? "are in use" : "aren't forwarded";
+    const cause = report.foreign_web_listener === true ? "busy" : "not forwarded";
     problems.push({
       key: "ports",
       tone: "warn",
-      text: `Ports 80/443 ${cause} — serving on :${report.http.bound} / :${report.https.bound}`,
+      text: `80/443 ${cause}, serving on :${report.http.bound} / :${report.https.bound}`,
       link: DOCTOR_FIX,
     });
   }
 
-  const rows: HealthRow[] = [];
-  if (healthy.length > 0) rows.push({ key: "ok", tone: "ok", text: healthy.join(" · ") });
-  return [...rows, ...problems];
+  return [...healthy, ...problems];
 }
 
-/** The starred sites, sorted by name. */
-export function favouriteSites(sites: readonly SiteEntry[]): SiteEntry[] {
-  return sites.filter((s) => s.favourite === true).sort((a, b) => a.name.localeCompare(b.name));
+/** One group block of the Pinned view: its starred sites out of all its sites. */
+export interface PinnedGroup {
+  name: string;
+  starred: SiteEntry[];
+  total: number;
 }
 
-/** A favourite row's second line: path, then `linked` and the framework when known. */
-export function siteSubtitle(site: SiteEntry): string {
-  const parts = [site.document_root];
-  if (site.kind === "linked") parts.push("linked");
-  const framework = site.framework ? FRAMEWORK_LABELS[site.framework] : undefined;
-  if (framework) parts.push(framework);
-  return parts.join(" · ");
+/** The Pinned view: group blocks with at least one star, then ungrouped stars. */
+export interface PinnedView {
+  groups: PinnedGroup[];
+  ungrouped: SiteEntry[];
+}
+
+function byName(a: SiteEntry, b: SiteEntry): number {
+  return a.name.localeCompare(b.name);
+}
+
+/**
+ * The starred sites under their groups, in the groups' stored order. Membership
+ * matches a known group ASCII-case-insensitively, like the Sites list; a
+ * membership naming a missing group counts as ungrouped. Groups without a
+ * starred site are left out.
+ */
+export function pinnedView(sites: readonly SiteEntry[], groups: GroupsState): PinnedView {
+  const known = new Set(groups.order.map(asciiLower));
+  const groupOf = (s: SiteEntry): string | null => {
+    const g = memberGroup(groups, s.name);
+    return g && known.has(asciiLower(g)) ? asciiLower(g) : null;
+  };
+  const sorted = [...sites].sort(byName);
+  const blocks = groups.order.map((name) => {
+    const members = sorted.filter((s) => groupOf(s) === asciiLower(name));
+    return { name, starred: members.filter((s) => s.favourite === true), total: members.length };
+  });
+  return {
+    groups: blocks.filter((g) => g.starred.length > 0),
+    ungrouped: sorted.filter((s) => s.favourite === true && groupOf(s) === null),
+  };
+}
+
+/** How many sites the Recently added view lists. */
+export const RECENT_LIMIT = 7;
+
+/** The most recently added sites, newest first (ties by name); undated sites are left out. */
+export function recentlyAdded(sites: readonly SiteEntry[], limit = RECENT_LIMIT): SiteEntry[] {
+  return sites
+    .filter((s) => s.added_at !== undefined)
+    .sort((a, b) => (b.added_at ?? 0) - (a.added_at ?? 0) || byName(a, b))
+    .slice(0, limit);
+}
+
+/** The Services card's installed rows and how many of them are running. */
+export function serviceSummary(services: readonly ServiceStatus[]): {
+  rows: ServiceStatus[];
+  running: number;
+} {
+  const rows = services.filter(isInstalled);
+  return { rows, running: rows.filter((s) => s.state === "running").length };
+}
+
+/** The contributor tiles to show and how many others the "+N more" tile counts. */
+export function contributorTiles(
+  list: readonly Contributor[],
+  total: number,
+  shown: number,
+): { shown: Contributor[]; more: number } {
+  const tiles = list.slice(0, shown);
+  return { shown: tiles, more: Math.max(0, total - tiles.length) };
+}
+
+/** The What's new summary line: a lead item and the faint "and N more" tail. */
+export interface ReleaseSummary {
+  lead: string;
+  more: string | null;
+}
+
+/** The first feature and how many more, else the first fix, else the entry's summary. */
+export function releaseSummary(entry: ReleaseNotesEntry): ReleaseSummary {
+  const pick = (items: readonly ReleaseNoteItem[], one: string, many: string): ReleaseSummary => ({
+    lead: items[0]?.title ?? "",
+    more: items.length > 1 ? `and ${plural(items.length - 1, `more ${one}`, `more ${many}`)}` : null,
+  });
+  if (entry.features.length > 0) return pick(entry.features, "feature", "features");
+  if (entry.fixes.length > 0) return pick(entry.fixes, "fix", "fixes");
+  return { lead: entry.summary, more: null };
+}
+
+/** The expanded release's mono footer segments: items, features, fixes and distinct authors. */
+export function releaseStats(entry: ReleaseNotesEntry): string[] {
+  const all = [...entry.features, ...entry.fixes, ...entry.others];
+  const authors = new Set(all.map((i) => i.author).filter((a): a is string => !!a));
+  return [
+    plural(all.length, "pull request", "pull requests"),
+    plural(entry.features.length, "feature", "features"),
+    plural(entry.fixes.length, "fix", "fixes"),
+    plural(authors.size, "contributor", "contributors"),
+  ];
+}
+
+/** How many features the expanded NEW column lists. */
+export const FEATURES_SHOWN = 6;
+
+/** How many fixes the expanded FIXED column lists. */
+export const FIXES_SHOWN = 4;
+
+/** The first `cap` items and how many are left over. */
+export function cappedList<T>(items: readonly T[], cap: number): { shown: T[]; more: number } {
+  return { shown: items.slice(0, cap), more: Math.max(0, items.length - cap) };
+}
+
+/** Every release the notes hold, the running one first. */
+export function releaseList(notes: Pick<ReleaseNotesResponse, "current" | "earlier">): ReleaseNotesEntry[] {
+  return notes.current ? [notes.current, ...notes.earlier] : [...notes.earlier];
 }
 
 /** The first-run checklist, given the report and the number of parked roots.

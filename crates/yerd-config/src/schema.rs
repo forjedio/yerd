@@ -10,7 +10,9 @@ use std::fmt;
 
 use yerd_core::network::{OutboundProxyMode, ProxyUrl};
 use yerd_core::tunnel_provider::TunnelProvider;
-use yerd_core::{Domain, PhpVersion, ProxyRule, ProxySite, ResponseHeader, RouteRule, Site, Tld};
+use yerd_core::{
+    Domain, PhpVersion, ProxyRule, ProxySite, ResponseHeader, RouteRule, Site, SiteKind, Tld,
+};
 
 /// Top-level on-disk config.
 ///
@@ -113,6 +115,9 @@ pub struct Config {
     pub network: NetworkSection,
     /// Sites the user starred in the GUI. Empty by default.
     pub favourites: FavouritesSection,
+    /// When each site was added to Yerd, for the GUI's "Recently added" list.
+    /// Empty by default.
+    pub added: AddedSection,
 }
 
 impl Default for Config {
@@ -144,6 +149,7 @@ impl Default for Config {
             response_headers: ResponseHeadersSection::default(),
             network: NetworkSection::default(),
             favourites: FavouritesSection::default(),
+            added: AddedSection::default(),
         }
     }
 }
@@ -341,6 +347,56 @@ impl FavouritesSection {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.sites.is_empty()
+    }
+}
+
+/// When each site was added to Yerd (see [`Config::added`]), as Unix seconds.
+///
+/// A GUI overlay keyed like [`DomainsSection`]: **linked** sites by site name,
+/// **parked** sites by document-root string (byte-exact, never canonicalised,
+/// like [`Config::overrides`]), so renaming a parked folder never carries a time
+/// across to a different site. A value of `0` means the site was already
+/// present before Yerd recorded added times; it is kept so the site is not
+/// stamped later, but reported as undated.
+///
+/// `baseline_pending` is filled by the v33 to v34 migration with the parked
+/// roots of the upgraded config. While a root is listed, the daemon records the
+/// parked sites it finds under that root as `0` instead of "now", so upgrading
+/// does not make existing sites look recently added. A root leaves the list once
+/// a scan finds it present with at least one site, so a drive that was
+/// unmounted during the upgrade is baselined when it comes back. A fresh config
+/// never sets it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AddedSection {
+    /// Linked-site added times, keyed by site name. `BTreeMap` for stable order.
+    pub linked: BTreeMap<String, u64>,
+    /// Parked-site first-seen times, keyed by document-root string. `BTreeMap`
+    /// for stable order.
+    pub parked: BTreeMap<String, u64>,
+    /// Parked roots whose existing sites have not yet been recorded as undated
+    /// since a v33 to v34 upgrade. `BTreeSet` for stable order.
+    pub baseline_pending: BTreeSet<String>,
+}
+
+impl AddedSection {
+    /// True when there are no recorded times and no pending baseline, so the
+    /// serialiser omits the `[added]` table and a default config stays
+    /// byte-stable.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.linked.is_empty() && self.parked.is_empty() && self.baseline_pending.is_empty()
+    }
+
+    /// The recorded added time for a site, looked up by `name` when it is
+    /// linked and by `doc_root` when it is parked. `None` when absent or `0`
+    /// (undated).
+    #[must_use]
+    pub fn added_at(&self, kind: SiteKind, name: &str, doc_root: &str) -> Option<u64> {
+        let recorded = match kind {
+            SiteKind::Linked => self.linked.get(name),
+            SiteKind::Parked => self.parked.get(doc_root),
+        };
+        recorded.copied().filter(|t| *t != 0)
     }
 }
 
@@ -908,5 +964,28 @@ mod tests {
                 front_controller: None,
             }
         );
+    }
+
+    #[test]
+    fn added_at_lookup_by_kind() {
+        let added = AddedSection {
+            linked: BTreeMap::from([("blog".to_owned(), 1_700_000_000)]),
+            parked: BTreeMap::from([
+                ("/p/api".to_owned(), 1_700_000_500),
+                ("/p/old".to_owned(), 0),
+            ]),
+            baseline_pending: BTreeSet::new(),
+        };
+        let cases: &[(SiteKind, &str, &str, Option<u64>)] = &[
+            (SiteKind::Linked, "blog", "/x/blog", Some(1_700_000_000)),
+            (SiteKind::Parked, "api", "/p/api", Some(1_700_000_500)),
+            (SiteKind::Parked, "old", "/p/old", None),
+            (SiteKind::Parked, "blog", "/x/blog", None),
+            (SiteKind::Linked, "api", "/p/api", None),
+            (SiteKind::Linked, "missing", "/p/missing", None),
+        ];
+        for (kind, name, root, want) in cases {
+            assert_eq!(added.added_at(*kind, name, root), *want, "{kind:?} {name}");
+        }
     }
 }

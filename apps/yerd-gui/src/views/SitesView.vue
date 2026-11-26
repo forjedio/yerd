@@ -16,7 +16,7 @@ import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import Input from "@/components/ui/Input.vue";
 import Modal from "@/components/ui/Modal.vue";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
-import { sitesIntent } from "@/lib/shortcuts/sitesIntent";
+import { sitesIntent, sitesSelectIntent } from "@/lib/shortcuts/sitesIntent";
 import { matchesSiteFilter } from "@/lib/siteFilter";
 import { slugifySiteName } from "@/lib/siteName";
 import {
@@ -25,6 +25,7 @@ import {
   type ChipKey,
   groupNameAvailable,
   matchesChip,
+  memberGroup,
   parentDir,
   siteAtPath,
   siteChips,
@@ -151,7 +152,7 @@ const { rename: renameCollapse } = useSitesGroupState();
  *  (matched ASCII-case-insensitively, like the daemon), or "" when ungrouped or
  *  the stored group no longer exists. */
 function currentGroupOf(name: string): string {
-  const g = groups.value.members[name];
+  const g = memberGroup(groups.value, name);
   if (!g) return "";
   return groups.value.order.find((o) => asciiLower(o) === asciiLower(g)) ?? "";
 }
@@ -786,6 +787,20 @@ onMounted(() => {
   consumeIntent();
 });
 watch(sitesIntent, consumeIntent);
+
+watch(
+  [sitesSelectIntent, sites, loading],
+  ([name, list, busy]) => {
+    if (!name) return;
+    const found = list.some((s) => s.name === name);
+    if (!found && (busy || data.value === null)) return;
+    sitesSelectIntent.value = null;
+    if (!found) return;
+    if (wide.value) selectSite(name);
+    else activateSite(name);
+  },
+  { immediate: true },
+);
 
 /**
  * Publish a site over a Cloudflare Quick Tunnel. The tunnel is then managed

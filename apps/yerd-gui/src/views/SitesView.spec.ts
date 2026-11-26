@@ -39,6 +39,7 @@ import SiteInspector from "@/components/sites/SiteInspector.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import { resetResourceCache } from "@/composables/useResource";
+import { sitesSelectIntent } from "@/lib/shortcuts/sitesIntent";
 import { resetSitesGroupState } from "@/lib/sitesGroupState";
 import type { GroupsState, SiteEntry, StatusReport } from "@/ipc/types";
 
@@ -379,6 +380,44 @@ describe("SitesView selection", () => {
     expect(openUrl).not.toHaveBeenCalled();
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
     expect(w.get('[data-testid="sites-list"]').attributes("aria-activedescendant")).toBeUndefined();
+  });
+
+  it("opens on the site a select intent names, once the list loads", async () => {
+    serve({ sites: [site("alpha"), site("beta")], parked: ["/srv"] });
+    sitesSelectIntent.value = "beta";
+    await mountSites();
+    expect(document.body.querySelector('[data-testid="site-inspector"]')?.textContent).toContain(
+      "beta.test",
+    );
+    expect(sitesSelectIntent.value).toBeNull();
+  });
+
+  it("drops a select intent for a site the loaded list lacks", async () => {
+    serve({ sites: [site("alpha")], parked: ["/srv"] });
+    sitesSelectIntent.value = "gone";
+    await mountSites();
+    expect(sitesSelectIntent.value).toBeNull();
+    expect(document.body.querySelector('[data-testid="site-inspector"]')).toBeNull();
+  });
+
+  it("selects a wide intent without opening the drawer once narrowed", async () => {
+    let onChange: ((e: { matches: boolean }) => void) | undefined;
+    globalThis.matchMedia = vi.fn(() => ({
+      matches: true,
+      addEventListener: (_: string, fn: (e: { matches: boolean }) => void) => {
+        onChange = fn;
+      },
+      removeEventListener: vi.fn(),
+    })) as unknown as typeof globalThis.matchMedia;
+    serve({ sites: [site("alpha"), site("beta")], parked: ["/srv"] });
+    sitesSelectIntent.value = "beta";
+    const w = await mountSites();
+    expect(w.get('[data-testid="inspector-column"]').text()).toContain("beta.test");
+
+    onChange?.({ matches: false });
+    await flushPromises();
+    expect(w.find('[data-layout="compact"]').exists()).toBe(true);
+    expect(document.body.querySelector('[data-testid="site-inspector"]')).toBeNull();
   });
 
   it.each([" ", "ArrowRight"])("opens the compact drawer for the selected row on %j", async (k) => {

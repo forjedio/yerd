@@ -150,6 +150,10 @@ struct Wire {
     // v30: optional `[favourites]` table; absent in v29 and earlier → empty.
     #[serde(default)]
     favourites: FavouritesSectionWire,
+    // v34: optional `[added]` table; absent in v33 and earlier → empty, then
+    // the v33→v34 migration sets `baseline_pending`.
+    #[serde(default)]
+    added: AddedSectionWire,
 }
 
 /// One `[[proxies]]` table: a whole-host proxy's name, upstream, and HTTPS flag.
@@ -273,6 +277,19 @@ struct GroupsSectionWire {
 struct FavouritesSectionWire {
     #[serde(default)]
     sites: BTreeSet<String>,
+}
+
+/// The `[added]` table. Every key defaults, so an absent table parses to
+/// [`crate::schema::AddedSection::default`].
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddedSectionWire {
+    #[serde(default)]
+    linked: BTreeMap<String, u64>,
+    #[serde(default)]
+    parked: BTreeMap<String, u64>,
+    #[serde(default)]
+    baseline_pending: BTreeSet<String>,
 }
 
 /// The `[tunnel]` table. Every key defaults, so an absent table parses
@@ -751,6 +768,11 @@ impl TryFrom<Wire> for Config {
                     .map(|name| name.trim().to_ascii_lowercase())
                     .filter(|name| !name.is_empty())
                     .collect(),
+            },
+            added: crate::schema::AddedSection {
+                linked: w.added.linked,
+                parked: w.added.parked,
+                baseline_pending: w.added.baseline_pending,
             },
         })
     }
@@ -1673,7 +1695,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 33,
+                current: 34,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -1835,6 +1857,38 @@ mod tests {
         );
         let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
         assert_eq!(back, c);
+    }
+
+    #[test]
+    fn added_absent_table_is_empty() {
+        let c = Config::from_toml("version = 34\n").unwrap();
+        assert!(c.added.is_empty());
+    }
+
+    #[test]
+    fn added_section_parses_and_round_trips() {
+        let s = "version = 34\n[added]\nbaseline_pending = [\"/srv\"]\n\n[added.linked]\nblog = 1764100000\n\n[added.parked]\n\"/srv/api\" = 1764100500\n\"/srv/old\" = 0\n";
+        let c = Config::from_toml(s).unwrap();
+        assert!(c.added.baseline_pending.contains("/srv"));
+        assert_eq!(c.added.linked.get("blog"), Some(&1_764_100_000));
+        assert_eq!(c.added.parked.get("/srv/api"), Some(&1_764_100_500));
+        assert_eq!(c.added.parked.get("/srv/old"), Some(&0));
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn v33_config_gets_a_baseline_for_its_parked_roots() {
+        let c = Config::from_toml("version = 33\n[parked]\npaths = [\"/srv\"]\n").unwrap();
+        assert_eq!(
+            c.added.baseline_pending.iter().collect::<Vec<_>>(),
+            ["/srv"]
+        );
+        assert!(Config::from_toml("version = 33\n")
+            .unwrap()
+            .added
+            .is_empty());
+        assert!(Config::default().added.baseline_pending.is_empty());
     }
 
     #[test]

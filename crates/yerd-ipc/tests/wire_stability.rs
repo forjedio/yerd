@@ -554,6 +554,7 @@ fn plain(site: Site) -> yerd_ipc::SiteEntry {
         is_laravel: false,
         favourite: false,
         framework: None,
+        added_at: None,
     }
 }
 
@@ -613,6 +614,7 @@ fn response_sites_wordpress_byte_shape() {
             is_laravel: false,
             favourite: false,
             framework: None,
+            added_at: None,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -636,6 +638,7 @@ fn response_sites_customized_domains_byte_shape() {
             is_laravel: false,
             favourite: false,
             framework: None,
+            added_at: None,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -661,6 +664,7 @@ fn response_sites_wp_auto_login_byte_shape() {
             is_laravel: false,
             favourite: false,
             framework: None,
+            added_at: None,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -691,6 +695,19 @@ fn response_sites_framework_byte_shape() {
     let r = Response::Sites { sites: vec![entry] };
     let s = serde_json::to_string(&r).unwrap();
     let expected = r#"{"type":"sites","sites":[{"name":"cms","document_root":"/srv/cms","php":"8.3","secure":false,"kind":"parked","uses_front_controller":false,"framework":"statamic"}]}"#;
+    assert_eq!(s, expected);
+    let back: Response = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
+fn response_sites_added_at_byte_shape() {
+    let blog = Site::parked("blog", "/srv/blog", PhpVersion::new(8, 3)).unwrap();
+    let mut entry = plain(blog);
+    entry.added_at = Some(1_764_100_000);
+    let r = Response::Sites { sites: vec![entry] };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","uses_front_controller":false,"added_at":1764100000}]}"#;
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
