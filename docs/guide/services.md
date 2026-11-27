@@ -42,9 +42,11 @@ Service support follows the same model as [PHP versions](./php-versions):
   pools use ([`yerd-supervise`](../developer/crates/yerd-supervise)).
 - **Rootless.** Everything runs as your user with no elevation. See the
   [privilege model](./elevation).
-- **Local-dev posture.** Engines bind to loopback only and accept passwordless
-  connections from your user. This is convenient for local development and is not
-  meant to be exposed to a network.
+- **Local-dev posture.** Engines bind to loopback only, and the database and
+  cache engines accept passwordless connections from your user. S3 storage is
+  the exception: S3 requires signed requests, so it uses
+  [generated access keys](#access-keys). This is convenient for local
+  development and is not meant to be exposed to a network.
 
 ## In the desktop app
 

@@ -81,16 +81,16 @@ fn walk(
         match reader.read_event().map_err(|e| malformed(&e))? {
             Event::Start(e) => {
                 let name = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
-                if path.is_empty() && root.is_empty() {
-                    root.clone_from(&name);
+                if path.is_empty() {
+                    claim_root(&mut root, &name)?;
                 }
                 path.push(name);
                 texts.push(String::new());
             }
             Event::Empty(e) => {
                 let name = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
-                if path.is_empty() && root.is_empty() {
-                    root.clone_from(&name);
+                if path.is_empty() {
+                    claim_root(&mut root, &name)?;
                 }
                 path.push(name);
                 on_end(&path, "")?;
@@ -128,6 +128,18 @@ fn walk(
         )));
     }
     Ok(root)
+}
+
+/// Record `name` as the document's root element, rejecting a second top-level
+/// element.
+fn claim_root(root: &mut String, name: &str) -> Result<(), S3XmlError> {
+    if !root.is_empty() {
+        return Err(S3XmlError::Malformed(format!(
+            "second root element <{name}> after <{root}>"
+        )));
+    }
+    name.clone_into(root);
+    Ok(())
 }
 
 fn ends_with(path: &[String], tail: &[&str]) -> bool {
@@ -330,6 +342,14 @@ mod tests {
         ));
         assert!(matches!(
             parse_list_buckets("<A></B>"),
+            Err(S3XmlError::Malformed(_))
+        ));
+        assert!(matches!(
+            parse_error("<Error><Code>A</Code></Error><Error><Code>B</Code></Error>"),
+            Err(S3XmlError::Malformed(_))
+        ));
+        assert!(matches!(
+            parse_list_buckets("<ListAllMyBucketsResult/><Extra/>"),
             Err(S3XmlError::Malformed(_))
         ));
         assert!(matches!(

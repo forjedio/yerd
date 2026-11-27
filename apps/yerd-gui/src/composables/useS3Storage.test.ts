@@ -129,12 +129,14 @@ describe("useS3Storage", () => {
     expect(storage.state.value.stats).toEqual({ avatars: "error", invoices: sizes.invoices });
   });
 
-  it("removes a dropped bucket", async () => {
+  it("removes a dropped bucket, then lists again", async () => {
     const { s3: storage } = setup(s3());
     await flushPromises();
+    expect(listBuckets).toHaveBeenCalledTimes(1);
     storage.bucketDropped("avatars");
     expect(storage.state.value.buckets.names).toEqual(["invoices"]);
     expect(storage.state.value.stats).toEqual({ invoices: sizes.invoices });
+    expect(listBuckets).toHaveBeenCalledTimes(2);
   });
 
   it("loads non-secret credentials and reloads them when the port changes", async () => {

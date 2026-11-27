@@ -145,14 +145,15 @@ export function useS3Storage(service: Ref<ServiceStatus | null>): S3Storage {
     if (running.value) void load();
   }
 
-  /** Drops the bucket locally; a listing already in flight may predate the
-   *  drop, so it is superseded by a fresh one. */
+  /** Drops the bucket locally, then lists again: a listing or stats fetch
+   *  already in flight may predate the drop, and the fresh listing supersedes
+   *  both. */
   function bucketDropped(name: string): void {
     const names = buckets.value.names;
     if (names) buckets.value = { ...buckets.value, names: names.filter((n) => n !== name) };
     const { [name]: _gone, ...rest } = stats.value;
     stats.value = rest;
-    if (buckets.value.loading && running.value) void load();
+    if (running.value) void load();
   }
 
   const state = computed<S3StorageState>(() => ({

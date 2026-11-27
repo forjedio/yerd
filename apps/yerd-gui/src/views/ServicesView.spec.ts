@@ -117,6 +117,7 @@ interface StubOpts {
 
 function stubIpc(opts: StubOpts = {}) {
   const databases = opts.databases ?? { mysql: ["app", "blog"], postgres: ["main"] };
+  let bucketNames = opts.buckets ?? ["avatars", "codestash-uploads"];
   invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
     const override = opts.commands?.[cmd];
     if (override) return override(args);
@@ -155,7 +156,7 @@ function stubIpc(opts: StubOpts = {}) {
       case "list_buckets":
         return Promise.resolve({
           type: "buckets",
-          buckets: (opts.buckets ?? ["avatars", "codestash-uploads"]).map((name) => ({ name })),
+          buckets: bucketNames.map((name) => ({ name })),
         });
       case "bucket_stats":
         return Promise.resolve({ type: "bucket_stats", ...(BUCKET_STATS[String(args?.name)] ?? { objects: 0, bytes: 0 }) });
@@ -167,6 +168,7 @@ function stubIpc(opts: StubOpts = {}) {
           ...(args?.showSecret ? { secret_key: "s3cr3t" } : {}),
         });
       case "drop_bucket":
+        bucketNames = bucketNames.filter((name) => name !== args?.name);
         return Promise.resolve({ type: "bucket_dropped", objects_removed: 86 });
       case "start_service":
       case "stop_service":

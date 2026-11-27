@@ -8,7 +8,7 @@ use thiserror::Error;
 const MIN_LEN: usize = 3;
 const MAX_LEN: usize = 63;
 const RESERVED_PREFIXES: [&str; 3] = ["xn--", "sthree-", "amzn-s3-demo-"];
-const RESERVED_SUFFIXES: [&str; 4] = ["-s3alias", "--ol-s3", ".mrap", "--x-s3"];
+const RESERVED_SUFFIXES: [&str; 5] = ["-s3alias", "--ol-s3", ".mrap", "--x-s3", "--table-s3"];
 
 /// Why a proposed bucket name was rejected.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -137,6 +137,10 @@ mod tests {
             ),
             ("abc.mrap", BucketNameError::ReservedSuffix(".mrap")),
             ("abc--x-s3", BucketNameError::ReservedSuffix("--x-s3")),
+            (
+                "media--table-s3",
+                BucketNameError::ReservedSuffix("--table-s3"),
+            ),
         ];
         for (name, want) in cases {
             assert_eq!(validate_bucket_name(name), Err(want), "name {name:?}");

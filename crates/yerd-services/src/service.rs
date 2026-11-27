@@ -831,11 +831,12 @@ impl ServiceDefinition for Meilisearch {
 pub struct VersityGw;
 
 /// Inherited env versitygw 1.7.0 reads that would open listeners beyond the S3
-/// port, switch the S3 port to TLS (which the plain-HTTP readiness probe and
-/// admin client cannot speak), make the gateway read-only, or replace the
-/// generated root credentials.
+/// port, mount the web UI on the S3 port, switch the S3 port to TLS (which the
+/// plain-HTTP readiness probe and admin client cannot speak), make the gateway
+/// read-only, or replace the generated root credentials.
 const VERSITYGW_STRIPPED_ENV: &[&str] = &[
     "VGW_WEBUI_PORT",
+    "VGW_WEBUI_S3_PREFIX",
     "VGW_ADMIN_PORT",
     "VGW_WEBSITE_PORT",
     "VGW_PPROF",
@@ -1320,6 +1321,7 @@ mod tests {
             .collect();
         for removed in [
             "VGW_WEBUI_PORT",
+            "VGW_WEBUI_S3_PREFIX",
             "VGW_ADMIN_PORT",
             "VGW_WEBSITE_PORT",
             "VGW_PPROF",

@@ -219,7 +219,7 @@ describe("ServiceBucketsCard", () => {
     expect(w.find('[data-testid="confirm-drop"]').exists()).toBe(false);
   });
 
-  it("toasts a failed delete", async () => {
+  it("toasts a failed delete and refreshes the partly emptied bucket", async () => {
     client.dropBucket.mockRejectedValue(new IpcError("BucketNotEmpty"));
     const w = await mountCard();
     await menu(w, "backups", "drop");
@@ -227,6 +227,7 @@ describe("ServiceBucketsCard", () => {
     await flushPromises();
     expect(toasts()).toContainEqual(["Couldn't delete bucket", "BucketNotEmpty"]);
     expect(w.emitted("dropped")).toBeUndefined();
+    expect(w.emitted("changed")).toEqual([[]]);
   });
 
   it("emits Use in Connect", async () => {

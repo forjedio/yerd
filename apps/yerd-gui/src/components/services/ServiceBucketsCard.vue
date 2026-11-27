@@ -206,6 +206,7 @@ async function doDrop(name: string): Promise<void> {
     emit("dropped", name);
   } catch (e) {
     confirm.value = null;
+    emit("changed");
     toast.error("Couldn't delete bucket", (e as IpcError).message);
   } finally {
     busy.value = false;
