@@ -1,7 +1,7 @@
 {
   "name": "yerd-gui",
   "private": true,
-  "version": "2.1.0-rc.6",
+  "version": "2.1.0",
   "type": "module",
   "description": "Yerd desktop GUI — a thin IPC client of the yerdd daemon.",
   "scripts": {
