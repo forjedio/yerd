@@ -124,28 +124,100 @@ fn between<'a>(s: &'a str, begin: &str, end: &str) -> Option<&'a str> {
 
 #[cfg(unix)]
 async fn capture_path_string() -> Option<String> {
-    use std::process::Stdio;
-
     let shell = user_shell();
     let args = shell_invocation(&shell);
+    capture_until_end(&shell, &args).await
+}
 
-    let mut cmd = tokio::process::Command::new(&shell);
-    cmd.args(&args)
+/// Run `shell` with `args` and return its stdout up to and including [`END`].
+///
+/// Reading stops at the marker rather than at EOF: a background process started
+/// from an rc file (`ssh-agent`, `gpg-agent`, `emacs --daemon`) inherits stdout
+/// and would otherwise hold the pipe open until the timeout.
+#[cfg(unix)]
+async fn capture_until_end(shell: &str, args: &[String]) -> Option<String> {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt as _;
+
+    let mut cmd = tokio::process::Command::new(shell);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    let child = cmd.spawn().ok()?;
-    let out = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait_with_output())
+    let mut child = cmd.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let read = async {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let n = stdout.read(&mut chunk).await.ok()?;
+            buf.extend_from_slice(chunk.get(..n)?);
+            let text = String::from_utf8_lossy(&buf);
+            if n == 0 || text.contains(END) {
+                return Some(text.into_owned());
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(3), read)
         .await
-        .ok()?
-        .ok()?;
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+        .ok()
+        .flatten()
 }
 
 #[cfg(not(unix))]
 async fn capture_path_string() -> Option<String> {
     None
+}
+
+/// Read the `*_proxy` exports of the user's interactive-login shell.
+///
+/// Uncached: `crate::network::NetworkRuntime` owns caching and only probes at
+/// daemon start, on a settings save, and on a connection test. `None` when the
+/// shell could not be run or printed no markers.
+#[cfg(unix)]
+pub async fn capture_user_proxy_env() -> Option<yerd_core::network::SystemProxy> {
+    use yerd_core::network::{from_env_lookup, parse_env_file, PROXY_ENV_NAMES};
+
+    let shell = user_shell();
+    let args = proxy_env_invocation(&shell);
+    let raw = capture_until_end(&shell, &args).await?;
+    let vars = parse_env_file(between(&raw, BEGIN, END)?, &PROXY_ENV_NAMES);
+    Some(from_env_lookup(&|k| {
+        vars.iter()
+            .find(|(name, _)| name == k)
+            .map(|(_, v)| v.clone())
+    }))
+}
+
+/// Non-Unix stub: there is no login shell to probe.
+#[cfg(not(unix))]
+pub async fn capture_user_proxy_env() -> Option<yerd_core::network::SystemProxy> {
+    None
+}
+
+/// Shell args printing `KEY=value` for each of the eight
+/// [`yerd_core::network::PROXY_ENV_NAMES`] between [`BEGIN`]/[`END`]. The
+/// same `printf` script runs under fish (which expands `"$var"` too), so only
+/// the flags differ, chosen as in [`shell_invocation`].
+#[cfg(unix)]
+fn proxy_env_invocation(shell: &str) -> Vec<String> {
+    use yerd_platform::pure::shell_profile::{detect_shell, Shell};
+
+    let base = Path::new(shell)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let lines: Vec<String> = yerd_core::network::PROXY_ENV_NAMES
+        .iter()
+        .map(|name| format!("printf '{name}=%s\\n' \"${name}\""))
+        .collect();
+    let script = format!("printf '{BEGIN}'; {}; printf '{END}'", lines.join("; "));
+    match detect_shell(base) {
+        Some(Shell::Fish) => vec!["-il".to_owned(), "-c".to_owned(), script],
+        Some(Shell::Zsh | Shell::Bash) => vec!["-ilc".to_owned(), script],
+        _ => vec!["-ic".to_owned(), script],
+    }
 }
 
 /// The user's login shell: `$SHELL` → the passwd entry for this uid (launchd /
@@ -295,6 +367,32 @@ mod tests {
     }
 
     #[test]
+    fn external_tool_resolves_pnpm() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("data");
+        let dir = tmp.path().join("opt");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let pnpm = touch_exec(&dir, "pnpm");
+        let found = external_tool(&[dir], Tool::Pnpm, &data.join("bin"), &data).unwrap();
+        assert_eq!(found, pnpm);
+    }
+
+    #[test]
+    fn external_tool_resolves_tunnel_agents() {
+        for (tool, bin) in [(Tool::Ngrok, "ngrok"), (Tool::Zrok, "zrok2")] {
+            let tmp = tempfile::tempdir().unwrap();
+            let data = tmp.path().join("data");
+            let dir = tmp.path().join("opt");
+            std::fs::create_dir_all(&data).unwrap();
+            std::fs::create_dir_all(&dir).unwrap();
+            let want = touch_exec(&dir, bin);
+            let found = external_tool(&[dir], tool, &data.join("bin"), &data);
+            assert_eq!(found, Some(want), "{tool:?}");
+        }
+    }
+
+    #[test]
     fn shell_invocation_picks_interactive_login_flags() {
         assert_eq!(shell_invocation("/bin/zsh")[0], "-ilc");
         assert_eq!(shell_invocation("/usr/bin/bash")[0], "-ilc");
@@ -318,5 +416,69 @@ mod tests {
             Some(v) => std::env::set_var("SHELL", v),
             None => std::env::remove_var("SHELL"),
         }
+    }
+
+    #[test]
+    fn proxy_env_invocation_flags_per_shell() {
+        for (shell, flags) in [
+            ("/bin/zsh", vec!["-ilc"]),
+            ("/usr/bin/bash", vec!["-ilc"]),
+            ("/opt/homebrew/bin/fish", vec!["-il", "-c"]),
+            ("/bin/dash", vec!["-ic"]),
+        ] {
+            let args = proxy_env_invocation(shell);
+            assert_eq!(args.len(), flags.len() + 1, "{shell}");
+            for (got, want) in args.iter().zip(&flags) {
+                assert_eq!(got, want, "{shell}");
+            }
+            let script = args.last().unwrap();
+            assert!(script.contains(BEGIN) && script.contains(END), "{shell}");
+            for name in yerd_core::network::PROXY_ENV_NAMES {
+                assert!(script.contains(&format!("\"${name}\"")), "{shell} {name}");
+            }
+            assert!(!script.contains("NODE_USE_ENV_PROXY"));
+        }
+    }
+
+    #[tokio::test]
+    async fn proxy_env_script_prints_parseable_lines() {
+        let args = proxy_env_invocation("/bin/dash");
+        let script = format!(
+            "http_proxy=http://p:1 NO_PROXY=corp.com; export http_proxy NO_PROXY; {}",
+            args.last().unwrap()
+        );
+        let out = capture_until_end("/bin/sh", &sh(&script)).await.unwrap();
+        let inner = between(&out, BEGIN, END).unwrap();
+        let vars = yerd_core::network::parse_env_file(inner, &yerd_core::network::PROXY_ENV_NAMES);
+        assert!(vars.contains(&("http_proxy".to_owned(), "http://p:1".to_owned())));
+        assert!(vars.contains(&("NO_PROXY".to_owned(), "corp.com".to_owned())));
+        assert!(vars.contains(&("https_proxy".to_owned(), String::new())));
+    }
+
+    fn sh(script: &str) -> Vec<String> {
+        vec!["-c".to_owned(), script.to_owned()]
+    }
+
+    #[tokio::test]
+    async fn capture_stops_at_end_marker_despite_a_background_stdout_holder() {
+        let script = format!("sleep 10 & printf '{BEGIN}/x{END}'");
+        let started = Instant::now();
+        let out = capture_until_end("/bin/sh", &sh(&script)).await.unwrap();
+        assert_eq!(between(&out, BEGIN, END), Some("/x"));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn capture_without_marker_returns_output_at_eof() {
+        let out = capture_until_end("/bin/sh", &sh("printf hi")).await;
+        assert_eq!(out.as_deref(), Some("hi"));
+    }
+
+    #[tokio::test]
+    async fn capture_of_a_missing_shell_is_none() {
+        assert_eq!(
+            capture_until_end("/nonexistent/sh", &sh("true")).await,
+            None
+        );
     }
 }

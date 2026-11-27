@@ -27,7 +27,7 @@ import {
   type ShortcutCtx,
   type WindowScope,
 } from "./registry";
-import { sitesIntent } from "./sitesIntent";
+import { sitesIntent, sitesSelectIntent } from "./sitesIntent";
 import { getViewActions } from "./useViewActions";
 
 export interface UseShortcuts {
@@ -37,6 +37,8 @@ export interface UseShortcuts {
   commands: Command[];
   /** Execute a command against the wired context. */
   run: (cmd: Command) => void;
+  /** Open the command palette (closing the cheat-sheet), as the ⌘K chord does. */
+  openPalette: () => void;
 }
 
 export function useShortcuts(scope: WindowScope): UseShortcuts {
@@ -99,7 +101,10 @@ export function useShortcuts(scope: WindowScope): UseShortcuts {
     () => {
       paletteOpen.value = false;
       cheatSheetOpen.value = false;
-      if (router.currentRoute.value.path !== "/sites") sitesIntent.value = null;
+      if (router.currentRoute.value.path !== "/sites") {
+        sitesIntent.value = null;
+        sitesSelectIntent.value = null;
+      }
     },
   );
 
@@ -130,5 +135,6 @@ export function useShortcuts(scope: WindowScope): UseShortcuts {
     cheatSheetOpen,
     commands,
     run: (cmd: Command) => cmd.run(ctx),
+    openPalette: ctx.openPalette,
   };
 }

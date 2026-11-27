@@ -10,8 +10,8 @@ It is **off by default**. Nothing is exposed until you turn it on.
 
 ## Enable it
 
-Open Yerd → **Settings** → **General** → **AI Agents (MCP)** and turn on
-**Enable Yerd's MCP server**.
+Open Yerd → **Settings** → **Integrations and security** → **AI agents (MCP)** and turn on
+the switch.
 
 The switch writes `mcp_enabled` to your config; Yerd's daemon does not run a
 server for it. Each agent session runs a short-lived `yerd mcp` process that
@@ -34,7 +34,9 @@ it does not isolate Yerd from local software.
 ## Register Yerd with your agent
 
 You only do this once. The `yerd` binary must be on your `PATH` — on macOS use
-Settings → General → **Terminal CLI** → Install to put it there.
+Settings → Integrations and security → **Terminal CLI** → Install to put it there.
+While the MCP server is on, **Connect an agent** on the same row shows the
+commands below with copy buttons.
 
 For Claude Code:
 
@@ -67,7 +69,7 @@ connected, with its tools available.
 | Sites | `list_sites`, `create_site`, `link_site`, `park_directory`, `list_parked`, `set_site_php`, `set_site_secure` |
 | Domains | `add_domain`, `remove_domain` |
 | Proxies | `add_proxy`, `remove_proxy`, `add_proxy_rule`, `remove_proxy_rule`, `list_proxies` (upstreams must be local) |
-| PHP | `list_php`, `list_available_php`, `install_php`, `set_default_php`, `set_php_setting` |
+| PHP | `list_php`, `list_available_php`, `install_php`, `set_default_php`, `set_php_setting`, `set_xdebug` (turn Xdebug on/off for a version, with optional modes and always/trigger start; leave out `enabled` to change only modes or start and keep the current on/off state; at least one of `enabled`, `modes` or `start` is required) |
 | Services | `list_services`, `list_databases`, `create_database` |
 | Mail | `set_mail_enabled`, `list_mails`, `get_mail` |
 | Dumps | `set_dumps_enabled`, `dumps_status`, `list_dumps` |
@@ -99,6 +101,10 @@ new log lines — until `state` reads `succeeded`, `failed`, or `cancelled`. Yer
 tells the agent this in the tool's own description, so it handles the flow
 itself.
 
+`set_xdebug` is the one exception that answers in a single call: turning Xdebug
+on may first download a few MB, so that call is allowed up to two minutes
+instead of the usual ten seconds.
+
 Jobs are held in memory. If the daemon restarts mid-job, the id is gone: the
 agent is told as much and asked to verify the outcome directly (with
 `list_sites` or `list_php`) rather than assuming it failed.
@@ -106,12 +112,12 @@ agent is told as much and asked to verify the outcome directly (with
 ## Troubleshooting
 
 **The server shows as connected but every tool says it is disabled.** The toggle
-is off. Turn it on in Settings → General; the running session picks it up on its
+is off. Turn it on in Settings → Integrations and security; the running session picks it up on its
 next call.
 
 **The server fails to start / shows red.** The agent could not run `yerd mcp` —
 almost always `yerd` not being on the `PATH` the agent inherits. Install the
-Terminal CLI (Settings → General), then restart the agent so it picks up the new
+Terminal CLI (Settings → Integrations and security), then restart the agent so it picks up the new
 `PATH`.
 
 **Tools report the daemon is not running.** Yerd itself is stopped. Open the Yerd

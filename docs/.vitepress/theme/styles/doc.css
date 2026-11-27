@@ -34,6 +34,10 @@
   height: 1px;
   background-color: var(--vp-c-divider);
 }
+/* The hairline is painted after the nav's flyouts, so lift their menus above it. */
+.VPNavBar .VPFlyout .menu {
+  z-index: 1;
+}
 
 .VPNavBarTitle .title {
   font-family: var(--y-display);
@@ -100,6 +104,19 @@
 
 .VPSidebar {
   border-right: 1px solid var(--vp-c-divider);
+}
+/* The default theme runs the sidebar from the top of the window and pads it
+ * below the navbar, so its scrollbar ran up under the blurred bar. Start it
+ * below the bar instead; the curtain that masked items scrolling under the bar
+ * is no longer needed. The doubled class outranks the theme's scoped rule. */
+@media (min-width: 960px) {
+  :root .VPSidebar.VPSidebar {
+    top: calc(var(--vp-layout-top-height, 0px) + var(--vp-nav-height));
+    padding-top: 0;
+  }
+  :root .VPSidebar.VPSidebar .curtain {
+    display: none;
+  }
 }
 .VPSidebarItem.level-0 > .item > .text {
   font-family: var(--y-sans);

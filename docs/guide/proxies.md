@@ -35,7 +35,9 @@ yerd secure reverb
 # https://reverb.test/  (trusted cert, HTTP redirects to HTTPS)
 ```
 
-Remove it with `yerd proxy remove reverb`.
+Point it somewhere else with `yerd proxy edit reverb http://localhost:8081`.
+Its extra domains, wildcards and HTTPS setting stay as they are. Remove it with
+`yerd proxy remove reverb`.
 
 ### Names and extra domains
 
@@ -59,7 +61,9 @@ yerd domain primary account-dev custom-domain.test
 
 `yerd proxy list` shows a customised proxy's domains beneath it and marks the
 primary; `yerd domain list` stays site-only. In the desktop app the same controls
-are the **Manage domains** button on the Proxies page.
+are the **Domains** card in a proxy's inspector on the Proxies page.
+
+<ThemedImage light="/images/proxies-light.png" dark="/images/proxies-dark.png" alt="The Proxies page: whole-domain proxies and paths on sites, with a proxy's route (Forward to with its Edit button), HTTPS switch and domains in the inspector" />
 
 A domain can only be claimed by one site or proxy. If two claim the same one,
 every **site** is considered before any proxy, and a domain added explicitly
@@ -84,12 +88,32 @@ too - your JS client connects to `wss://myapp.test/app` on the same origin. The
 full path is passed through to the upstream unchanged (`/app/...` reaches
 Reverb as `/app/...`), which is what Reverb expects.
 
-Remove a rule with `yerd proxy remove myapp /app`.
+Point a rule at a different upstream with
+`yerd proxy edit myapp /app http://127.0.0.1:8081`; the site and path stay as
+they are. Rules a service manages (such as the `/app` rule a site's Reverb
+service adds) follow the service's port and can't be edited directly: change it
+with `yerd service set-port reverb:myapp <port>` instead. Remove a rule with
+`yerd proxy remove myapp /app`.
+
+In the desktop app, **New proxy** on the Proxies page adds either shape: pick
+**A whole domain** or **A path on a site**, then the name or the site and path,
+and the upstream.
+
+<ThemedImage light="/images/proxies-new-light.png" dark="/images/proxies-new-dark.png" alt="The New proxy dialog in A path on a site mode, forwarding invoicing.test/app to 127.0.0.1:8081" />
+
+To change an existing proxy's or path's upstream, select it and use the
+**Edit** button on its "Forward to" row in the inspector. The dialog takes the
+same `http://` address as New proxy, and **Save** stays disabled until the
+address actually changes. A path a service manages shows "Managed by" in place
+of the button.
+
+<ThemedImage light="/images/proxies-edit-light.png" dark="/images/proxies-edit-dark.png" alt="The Edit upstream dialog for account.test, changing its Forward to address from 127.0.0.1:48087 to 127.0.0.1:48088" />
 
 ## Upstreams and headers
 
-The upstream is `http://host:port` or `https://host:port`. For an `https://`
-upstream, Yerd verifies the certificate for a genuine public host but **skips
+The upstream is `http://host:port` or `https://host:port`. In the desktop app
+a missing scheme means `http://`, and a bare port (`3000`) means that port on
+`127.0.0.1`. For an `https://` upstream, Yerd verifies the certificate for a genuine public host but **skips
 verification for a local host** (`localhost`, a loopback/private IP, or a `.test`
 name) - self-signed dev backends are the norm there.
 
@@ -104,6 +128,29 @@ Yerd's own proxy is listening on - is rejected, because it would loop forever.
 Point the target at the service's real port instead. In rootless mode Yerd binds
 `8080`/`8443`, so a dev server on one of those ports will need to move.
 :::
+
+## Response headers
+
+A whole-host proxy can add its own response headers, the same way a
+[site can](./sites#response-headers). The common case is CORS for a frontend
+dev server or Node app that another local site calls. A site's name takes
+priority over a proxy's: if a site is also named `frontend`, the command below
+changes that site's headers, and the proxy can't be reached by this name until
+the site is removed or renamed.
+
+```sh
+yerd header set frontend Access-Control-Allow-Origin https://app.test
+```
+
+The header goes on every response for the proxy, on all of its domains: the
+upstream's responses, Yerd's `502` when the upstream is down, the HTTPS
+redirect and WebSocket handshakes. A same-named header from the upstream is
+replaced. In the desktop app, a whole-domain proxy's inspector has a
+**Response headers** card with **Add header**, **Edit** and **Remove**. Path
+rules don't take headers. See [Response headers](../reference/cli/headers) for
+the validation rules.
+
+<ThemedImage light="/images/proxies-header-dialog-light.png" dark="/images/proxies-header-dialog-dark.png" alt="The Add response header dialog for the frontend.test proxy, with the name Access-Control-Allow-Origin and the value https://app.test" />
 
 ## Listing what's configured
 

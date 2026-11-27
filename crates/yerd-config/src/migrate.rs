@@ -47,6 +47,17 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v20_to_v21,
     migrate_v21_to_v22,
     migrate_v22_to_v23,
+    migrate_v23_to_v24,
+    migrate_v24_to_v25,
+    migrate_v25_to_v26,
+    migrate_v26_to_v27,
+    migrate_v27_to_v28,
+    migrate_v28_to_v29,
+    migrate_v29_to_v30,
+    migrate_v30_to_v31,
+    migrate_v31_to_v32,
+    migrate_v32_to_v33,
+    migrate_v33_to_v34,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -246,6 +257,105 @@ fn migrate_v22_to_v23(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 23)
 }
 
+/// `v23 → v24`: bump the version. v24 added the optional `[tunnel.passwords]`
+/// table of per-site share passwords, which defaults to empty when absent, so
+/// an in-place version bump is the entire migration.
+fn migrate_v23_to_v24(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 24)
+}
+
+/// `v24 → v25`: bump the version. v25 added the optional `[response_headers]`
+/// table of per-site custom response headers, which defaults to empty when
+/// absent, so an in-place version bump is the entire migration.
+fn migrate_v24_to_v25(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 25)
+}
+
+/// `v25 → v26`: bump the version. v26 added the optional, unseeded
+/// `ffi.enable` PHP setting, which is absent unless the user sets it, so an
+/// in-place version bump is the entire migration.
+fn migrate_v25_to_v26(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 26)
+}
+
+/// `v26 → v27`: bump the version. v27 added the optional `[node]` defaults and
+/// `[node.sites]` per-project preferences, which default to empty when absent,
+/// so an in-place version bump is the entire migration.
+fn migrate_v26_to_v27(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 27)
+}
+
+/// `v27 → v28`: bump the version. v28 added the optional `[network]` outbound
+/// proxy table, which defaults to system detection when absent, so an in-place
+/// version bump is the entire migration.
+fn migrate_v27_to_v28(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 28)
+}
+
+/// `v28 → v29`: bump the version. v29 added the optional `[php.xdebug]`
+/// per-version table, which defaults to empty when absent, so an in-place
+/// version bump is the entire migration.
+fn migrate_v28_to_v29(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 29)
+}
+
+/// `v29 → v30`: bump the version. v30 added the optional `[favourites]` table,
+/// which defaults to empty when absent, so an in-place version bump is the
+/// entire migration.
+fn migrate_v29_to_v30(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 30)
+}
+
+/// `v30 → v31`: bump the version. v31 added the optional `[parked.claims]` map,
+/// which defaults to empty when absent, so an in-place version bump is the
+/// entire migration.
+fn migrate_v30_to_v31(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 31)
+}
+
+/// `v31 → v32`: bare version bump. v32 added `[tunnel] default_provider` and
+/// the optional `[tunnel.ngrok]` table; both default when absent.
+fn migrate_v31_to_v32(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 32)
+}
+
+/// `v32 → v33`: bare version bump. v33 added the optional
+/// `[response_headers.proxy]` table of whole-host proxy headers, which
+/// defaults to empty when absent.
+fn migrate_v32_to_v33(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 33)
+}
+
+/// `v33 → v34`: a structural step, like [`migrate_v14_to_v15`]. v34 added the
+/// optional `[added]` table of per-site added times. Upgrading copies
+/// `[parked] paths` into `[added] baseline_pending` so the daemon records the
+/// sites already under those roots as undated rather than stamping them "now",
+/// which would make an upgrade look like a burst of recently added sites. This
+/// is an upgrade baseline, not a backfill: no times are invented. A config with
+/// no parked roots gains nothing, other keys under `[added]` are left
+/// untouched, and a non-table `added` value is left for the wire
+/// deserialisation to reject.
+fn migrate_v33_to_v34(value: &mut Value) -> Result<(), ConfigError> {
+    let root = value.as_table_mut().ok_or(ConfigError::Migration {
+        reason: MigrationErrorReason::MissingVersion,
+    })?;
+    let roots: Vec<Value> = root
+        .get("parked")
+        .and_then(|p| p.get("paths"))
+        .and_then(Value::as_array)
+        .map(|paths| paths.iter().filter(|p| p.is_str()).cloned().collect())
+        .unwrap_or_default();
+    if !roots.is_empty() {
+        let added = root
+            .entry("added")
+            .or_insert_with(|| Value::Table(toml::Table::new()));
+        if let Some(table) = added.as_table_mut() {
+            table.insert("baseline_pending".to_string(), Value::Array(roots));
+        }
+    }
+    set_version(value, 34)
+}
+
 /// Set the top-level `version` key, erroring if the root is not a table.
 fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
     let table = value.as_table_mut().ok_or(ConfigError::Migration {
@@ -315,7 +425,54 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 23);
+        assert_eq!(crate::CURRENT_VERSION, 34);
+    }
+
+    #[test]
+    fn v33_to_v34_baselines_the_parked_roots() {
+        let mut v: Value =
+            toml::from_str("version = 33\n[parked]\npaths = [\"/a\", \"/srv\"]\n").unwrap();
+        migrate_v33_to_v34(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 34);
+        let pending: Vec<&str> = v
+            .get("added")
+            .and_then(|a| a.get("baseline_pending"))
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(pending, ["/a", "/srv"]);
+        assert!(v.get("parked").and_then(|p| p.get("paths")).is_some());
+    }
+
+    #[test]
+    fn v33_to_v34_without_parked_roots_adds_nothing() {
+        let mut v: Value = toml::from_str("version = 33\n").unwrap();
+        migrate_v33_to_v34(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 34);
+        assert!(v.get("added").is_none());
+    }
+
+    #[test]
+    fn v33_to_v34_keeps_existing_added_keys() {
+        let mut v: Value = toml::from_str(
+            "version = 33\n[parked]\npaths = [\"/srv\"]\n[added.linked]\nblog = 5\n",
+        )
+        .unwrap();
+        migrate_v33_to_v34(&mut v).unwrap();
+        let added = v.get("added").unwrap();
+        assert!(added
+            .get("baseline_pending")
+            .and_then(Value::as_array)
+            .is_some());
+        assert_eq!(
+            added
+                .get("linked")
+                .and_then(|l| l.get("blog"))
+                .and_then(Value::as_integer),
+            Some(5)
+        );
     }
 
     #[test]
@@ -365,6 +522,93 @@ mod tests {
         let mut v: Value = toml::from_str("version = 22\n").unwrap();
         migrate_v22_to_v23(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 23);
+    }
+
+    #[test]
+    fn v23_to_v24_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 23\n").unwrap();
+        migrate_v23_to_v24(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 24);
+    }
+
+    #[test]
+    fn v24_to_v25_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str(
+            "version = 24
+",
+        )
+        .unwrap();
+        migrate_v24_to_v25(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 25);
+    }
+
+    #[test]
+    fn v25_to_v26_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 25\n").unwrap();
+        migrate_v25_to_v26(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 26);
+    }
+
+    #[test]
+    fn v26_to_v27_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 26\n").unwrap();
+        migrate_v26_to_v27(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 27);
+    }
+
+    #[test]
+    fn v27_to_v28_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 27\n").unwrap();
+        migrate_v27_to_v28(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 28);
+    }
+
+    #[test]
+    fn v28_to_v29_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 28\n[php]\ndefault = \"8.4\"\n").unwrap();
+        migrate_v28_to_v29(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 29);
+        assert_eq!(v["php"]["default"].as_str(), Some("8.4"));
+    }
+
+    #[test]
+    fn v32_to_v33_is_a_bare_version_bump() {
+        let mut v: Value =
+            toml::from_str("version = 32\n[tunnel]\ndefault_provider = \"ngrok\"\n").unwrap();
+        migrate_v32_to_v33(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 33);
+        assert_eq!(v["tunnel"]["default_provider"].as_str(), Some("ngrok"));
+    }
+
+    #[test]
+    fn v31_to_v32_is_a_bare_version_bump() {
+        let mut v: Value =
+            toml::from_str("version = 31\n[tunnel.passwords]\nblog = \"pw\"\n").unwrap();
+        migrate_v31_to_v32(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 32);
+        assert_eq!(v["tunnel"]["passwords"]["blog"].as_str(), Some("pw"));
+    }
+
+    #[test]
+    fn v30_to_v31_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 30\n[parked]\npaths = [\"/srv\"]\n").unwrap();
+        migrate_v30_to_v31(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 31);
+        assert_eq!(v["parked"]["paths"][0].as_str(), Some("/srv"));
+    }
+
+    #[test]
+    fn v29_to_v30_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 29\n[php]\ndefault = \"8.4\"\n").unwrap();
+        migrate_v29_to_v30(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 30);
+        assert_eq!(v["php"]["default"].as_str(), Some("8.4"));
+    }
+
+    #[test]
+    fn v27_file_loads_with_default_network() {
+        let c = crate::Config::from_toml("version = 27\n").unwrap();
+        assert_eq!(c.network, crate::NetworkSection::default());
     }
 
     #[test]

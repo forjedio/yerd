@@ -21,6 +21,7 @@ pub fn summary(id: &str, raw: &[u8]) -> MailSummary {
         subject: msg.subject().unwrap_or_default().to_string(),
         date_epoch: date_epoch(&msg),
         read: false,
+        site: None,
     }
 }
 

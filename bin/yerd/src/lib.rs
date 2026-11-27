@@ -16,19 +16,30 @@ pub mod cli_shim;
 pub mod composer_shim;
 #[cfg(unix)]
 pub mod cover_shim;
+pub mod daemon_cmd;
+#[cfg(unix)]
+pub mod debug_shim;
 pub mod elevate;
 pub mod error;
 #[cfg(unix)]
 pub mod exec_cmd;
+pub mod init_cmd;
 #[cfg(unix)]
 pub mod laravel_shim;
 pub mod map;
 pub mod mcp_cmd;
+#[cfg(unix)]
+pub mod node_cmd;
 pub mod path_cmd;
+pub mod secret;
+#[cfg(unix)]
+pub mod service_client_shim;
 #[cfg(unix)]
 pub mod shim;
 #[cfg(unix)]
 pub mod site_scope;
+#[cfg(unix)]
+pub mod tool_shim;
 pub mod transport;
 pub mod uninstall;
 #[cfg(unix)]
@@ -50,7 +61,13 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Elevate { target } => return elevate::run_elevate(*target, false).await,
         Command::Unelevate { target } => return elevate::run_elevate(*target, true).await,
         Command::Path { action } => return path_cmd::run(*action),
+        Command::Daemon { action } => return daemon_cmd::run(*action),
         Command::Mcp => return mcp_cmd::run().await,
+        Command::Init => return init_cmd::run(cli.json).await,
+        #[cfg(unix)]
+        Command::Node {
+            action: crate::cli::NodeAction::List,
+        } => return node_cmd::list(cli.json),
         #[cfg_attr(not(unix), allow(unused_variables))]
         Command::Coverage { args } => {
             #[cfg(unix)]
@@ -93,18 +110,33 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Route {
             action: crate::cli::RouteAction::List { site: Some(site) },
         } => return run_route_list(site, cli.json).await,
+        Command::Header {
+            action: crate::cli::HeaderAction::List { site: Some(site) },
+        } => return run_header_list(site, cli.json).await,
         Command::Uninstall { target: None, yes } => return uninstall::run(*yes),
         Command::Install {
-            target: crate::cli::InstallTarget::Tool { id },
-        } if !cli.json => return stream_install_tool(id, cli.json).await,
-        Command::Tunnel {
-            action: crate::cli::TunnelAction::Install,
+            target: crate::cli::InstallTarget::Tool { .. },
         } if !cli.json => {
-            return stream_tunnel_job(yerd_ipc::Request::InstallCloudflaredStreamed).await
+            return match map::to_request(&cli.command) {
+                Ok(req) => stream_install_tool(map::streamed_install(req), cli.json).await,
+                Err(e) => {
+                    eprintln!("yerd: {e}");
+                    ExitCode::from(2)
+                }
+            };
         }
         Command::Tunnel {
             action: crate::cli::TunnelAction::Login,
         } if !cli.json => return stream_tunnel_job(yerd_ipc::Request::CloudflaredLogin).await,
+        Command::Tunnel {
+            action:
+                crate::cli::TunnelAction::Share {
+                    provider: Some(provider),
+                    ..
+                },
+        } if provider.provider() != yerd_core::tunnel_provider::TunnelProvider::Cloudflare => {
+            return run_provider_share(&cli.command, provider.provider(), cli.json).await;
+        }
         Command::Update {
             target: None,
             yes: true,
@@ -128,6 +160,10 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Link { name_or_path, path } => {
             resolve_link(name_or_path.as_deref(), path.as_deref())
         }
+        Command::Tunnel { action } if map::stdin_secret_prompt(action).is_some() => {
+            secret::read_secret_line(map::stdin_secret_prompt(action).unwrap_or_default())
+                .and_then(|token| map::tunnel_secret_request(action, token))
+        }
         _ => map::to_request(&cli.command)
             .map(canonicalize_unpark)
             .and_then(canonicalize_db_paths)
@@ -143,7 +179,7 @@ pub async fn run(cli: Cli) -> ExitCode {
 
     match transport::exchange(&req).await {
         Ok(resp) => {
-            let r = map::render(&resp, cli.json);
+            let r = render_for(&cli.command, &resp, cli.json);
             if !r.stdout.is_empty() {
                 println!("{}", r.stdout);
             }
@@ -228,6 +264,16 @@ pub async fn run(cli: Cli) -> ExitCode {
     }
 }
 
+/// Render a reply for `command`: `yerd xdebug` shows its `PhpVersions` reply
+/// as the per-version Xdebug table rather than the full PHP listing; every
+/// other command uses the generic renderer.
+fn render_for(command: &Command, resp: &yerd_ipc::Response, json: bool) -> map::Rendered {
+    match command {
+        Command::Xdebug { .. } => map::render_xdebug_status(resp, json),
+        _ => map::render(resp, json),
+    }
+}
+
 /// `yerd lan enable|disable`: a two-request flow that persists the flag then
 /// **enforces** the daemon restart that re-binds the listeners (a listen
 /// socket's bind address is fixed at bind time, so a hint is not enough for a
@@ -296,7 +342,7 @@ async fn run_lan_toggle(enabled: bool, json: bool) -> ExitCode {
         );
         if cfg!(target_os = "macos") {
             println!();
-            println!("The macOS pf LAN redirect is separate privileged state — remove it with:");
+            println!("The macOS LAN port forwarder is separate privileged state — remove it with:");
             println!("    sudo yerd unelevate lan");
             println!("Until you do, `yerd lan status` will flag it as residual.");
         }
@@ -306,7 +352,7 @@ async fn run_lan_toggle(enabled: bool, json: bool) -> ExitCode {
 
 /// `yerd lan status`: a LAN-focused view of the daemon's `Status`, showing
 /// configured-vs-effective state so "enabled but not exposed" (and, on macOS,
-/// "disabled but pf still redirecting") are both visible.
+/// "disabled but the LAN forwarder still installed") are both visible.
 async fn run_lan_status(json: bool) -> ExitCode {
     use yerd_ipc::{Request, Response};
     let report = match transport::exchange(&Request::Status).await {
@@ -340,7 +386,7 @@ async fn run_lan_status(json: bool) -> ExitCode {
         println!("Enable it with:  yerd lan enable");
         #[cfg(target_os = "macos")]
         println!(
-            "Note: if you previously ran `sudo yerd elevate lan`, remove the residual pf rule \
+            "Note: if you previously ran `sudo yerd elevate lan`, remove the residual LAN forwarder \
              with `sudo yerd unelevate lan`."
         );
         return ExitCode::SUCCESS;
@@ -376,7 +422,7 @@ async fn run_lan_status(json: bool) -> ExitCode {
 
 /// Read the running daemon's `boot_id` (a per-process random id used to detect a
 /// completed restart across the pid-preserving re-exec).
-async fn fetch_boot_id() -> Result<Option<u64>, ClientError> {
+pub(crate) async fn fetch_boot_id() -> Result<Option<u64>, ClientError> {
     use yerd_ipc::{Request, Response};
     match transport::exchange(&Request::Status).await? {
         Response::Status { report } => Ok(report.boot_id),
@@ -389,7 +435,7 @@ async fn fetch_boot_id() -> Result<Option<u64>, ClientError> {
 /// Send `RestartDaemon`, then poll `Status` (tolerating the transient
 /// connection failure while the daemon re-execs) until `boot_id` differs from
 /// `before` or a bounded timeout elapses.
-async fn restart_and_await_boot_change(before: Option<u64>) -> Result<(), ClientError> {
+pub(crate) async fn restart_and_await_boot_change(before: Option<u64>) -> Result<(), ClientError> {
     use yerd_ipc::Request;
     // The daemon writes `Ok` and flushes *before* it re-execs, so this returns
     // normally; a transient error is tolerated too (the socket may already be
@@ -422,6 +468,43 @@ async fn run_route_list(site: &str, json: bool) -> ExitCode {
     match transport::exchange(&Request::ListRoutes).await {
         Ok(Response::Routes { rules }) => {
             let r = map::render_routes(&rules, Some(site), json);
+            if !r.stdout.is_empty() {
+                println!("{}", r.stdout);
+            }
+            if !r.stderr.is_empty() {
+                eprintln!("{}", r.stderr);
+            }
+            ExitCode::from(r.code)
+        }
+        Ok(other) => {
+            let r = map::render(&other, json);
+            if !r.stdout.is_empty() {
+                println!("{}", r.stdout);
+            }
+            if !r.stderr.is_empty() {
+                eprintln!("{}", r.stderr);
+            }
+            ExitCode::from(r.code)
+        }
+        Err(e) if e.is_daemon_down() => {
+            eprintln!("yerd: {e}");
+            ExitCode::from(69)
+        }
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            ExitCode::from(74)
+        }
+    }
+}
+
+/// `yerd header list <site>`: one `ListResponseHeaders` round-trip, narrowed
+/// to `site` client-side. The unfiltered form goes through the normal `render`
+/// path.
+async fn run_header_list(site: &str, json: bool) -> ExitCode {
+    use yerd_ipc::{Request, Response};
+    match transport::exchange(&Request::ListResponseHeaders).await {
+        Ok(Response::ResponseHeaders { headers }) => {
+            let r = map::render_response_headers(&headers, Some(site), json);
             if !r.stdout.is_empty() {
                 println!("{}", r.stdout);
             }
@@ -611,12 +694,17 @@ async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool
             target.as_deref().unwrap_or("the update")
         );
     }
-    let (path, kind) = match transport::exchange(&Request::StageUpdate {
+    let (path, kind, daemon_dir) = match transport::exchange(&Request::StageUpdate {
         channel: channel_override,
     })
     .await
     {
-        Ok(Response::Staged { path, kind, .. }) => (path, kind),
+        Ok(Response::Staged {
+            path,
+            kind,
+            install_dir,
+            ..
+        }) => (path, kind, install_dir),
         Ok(Response::Error { message, .. }) => {
             eprintln!("yerd: {message}");
             return ExitCode::from(1);
@@ -635,6 +723,13 @@ async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool
         }
     };
 
+    if kind == yerd_ipc::StagedArtifact::HeadlessTarGz {
+        let own_dir = yerd_platform::install_mode::current_exe_dir();
+        if let Err(e) = apply::check_daemon_dir(daemon_dir.as_deref(), own_dir.as_deref()) {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(1);
+        }
+    }
     tokio::task::spawn_blocking(move || apply::run(std::path::Path::new(&path), kind, false, false))
         .await
         .unwrap_or_else(|e| {
@@ -643,17 +738,15 @@ async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool
         })
 }
 
-/// Install a dev tool as a streamed job, printing its output line by line until
-/// the job reaches a terminal state. Mirrors the GUI's streamed install.
-async fn stream_install_tool(id: &str, json: bool) -> ExitCode {
+/// Install a dev tool or a Node release as a streamed job (`start` is an
+/// `InstallToolStreamed` or `InstallNodeStreamed` request), printing its output
+/// line by line until the job reaches a terminal state. Mirrors the GUI's
+/// streamed install.
+async fn stream_install_tool(start: yerd_ipc::Request, json: bool) -> ExitCode {
     use std::time::Duration;
     use yerd_ipc::{JobState, Request, Response};
 
-    let job_id = match transport::exchange(&Request::InstallToolStreamed {
-        tool: id.to_owned(),
-    })
-    .await
-    {
+    let job_id = match transport::exchange(&start).await {
         Ok(Response::JobStarted { job_id }) => job_id,
         Ok(Response::Error { message, .. }) => {
             eprintln!("yerd: {message}");
@@ -730,18 +823,12 @@ async fn stream_install_tool(id: &str, json: bool) -> ExitCode {
     }
 }
 
-/// Run a streamed tunnel job (`cloudflared` install or account login), printing
-/// progress lines (including the login auth URL) as they arrive. Mirrors
+/// Run the streamed Cloudflare account login job, printing progress lines
+/// (including the login auth URL) as they arrive. Mirrors
 /// [`stream_install_tool`].
 async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
     use std::time::Duration;
     use yerd_ipc::{JobState, Request, Response};
-
-    let noun = if matches!(req, Request::CloudflaredLogin) {
-        "login"
-    } else {
-        "install"
-    };
 
     let job_id = match transport::exchange(&req).await {
         Ok(Response::JobStarted { job_id }) => job_id,
@@ -750,7 +837,7 @@ async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
             return ExitCode::from(1);
         }
         Ok(_) => {
-            eprintln!("yerd: unexpected response starting {noun}");
+            eprintln!("yerd: unexpected response starting login");
             return ExitCode::from(74);
         }
         Err(e) if e.is_daemon_down() => {
@@ -792,7 +879,7 @@ async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
                         return ExitCode::from(1);
                     }
                     JobState::Cancelled => {
-                        eprintln!("yerd: {noun} cancelled");
+                        eprintln!("yerd: login cancelled");
                         return ExitCode::from(1);
                     }
                 }
@@ -802,7 +889,7 @@ async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
                 return ExitCode::from(1);
             }
             Ok(_) => {
-                eprintln!("yerd: unexpected response polling {noun}");
+                eprintln!("yerd: unexpected response polling login");
                 return ExitCode::from(74);
             }
             Err(e) if e.is_daemon_down() => {
@@ -815,6 +902,70 @@ async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
             }
         }
     }
+}
+
+/// `yerd tunnel share --provider ngrok|zrok`: start the share, guarding against
+/// an older daemon that ignores `provider` and starts Cloudflare instead. The
+/// tunnel list is read first so a Cloudflare share that start created can be
+/// stopped again, leaving one the user already had alone. A failed stop is
+/// reported, since that site may still be public.
+async fn run_provider_share(
+    command: &Command,
+    provider: yerd_core::tunnel_provider::TunnelProvider,
+    json: bool,
+) -> ExitCode {
+    use yerd_ipc::{Request, Response};
+    let before = match transport::exchange(&Request::TunnelStatus).await {
+        Ok(Response::Tunnels { tunnels, .. }) => Some(tunnels),
+        _ => None,
+    };
+    let req = match map::to_request(command) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let resp = match transport::exchange(&req).await {
+        Ok(resp) => resp,
+        Err(e) if e.is_daemon_down() => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(69);
+        }
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(74);
+        }
+    };
+    if let Response::Tunnels { tunnels, .. } = &resp {
+        let check = map::check_provider_start(provider, before.as_deref(), tunnels);
+        if check.unsupported {
+            if let Some(name) = check.stop_cloudflare {
+                let stop = Request::StopTunnel {
+                    site: name.clone(),
+                    provider: Some(yerd_core::tunnel_provider::TunnelProvider::Cloudflare),
+                };
+                if matches!(
+                    transport::exchange(&stop).await,
+                    Err(_) | Ok(Response::Error { .. })
+                ) {
+                    eprintln!("yerd: warning: {}", map::cleanup_failed_message(&name));
+                }
+            } else if check.cleanup_unknown {
+                eprintln!("yerd: warning: {}", map::cleanup_unknown_message());
+            }
+            eprintln!("yerd: {}", map::unsupported_provider_message(provider));
+            return ExitCode::from(1);
+        }
+    }
+    let r = render_for(command, &resp, json);
+    if !r.stdout.is_empty() {
+        println!("{}", r.stdout);
+    }
+    if !r.stderr.is_empty() {
+        eprintln!("{}", r.stderr);
+    }
+    ExitCode::from(r.code)
 }
 
 /// Best-effort: rewrite an `Unpark` request's path to its canonical form so a
@@ -945,7 +1096,7 @@ pub fn resolve_link(
             .file_name()
             .map(|s| s.to_string_lossy())
             .unwrap_or_default();
-        yerd_core::slugify_site_name(&folder).ok_or_else(|| {
+        yerd_core::folder_site_name(&folder).ok_or_else(|| {
             ClientError::Usage(format!(
                 "cannot derive a site name from '{}'; run `yerd link <name> {}` to set one explicitly",
                 resolved_path.display(),
@@ -1045,6 +1196,46 @@ mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
     use yerd_ipc::Request;
+
+    #[test]
+    fn render_for_uses_the_xdebug_table_only_for_xdebug_commands() {
+        use clap::Parser;
+        let reply = yerd_ipc::Response::PhpVersions {
+            installed: vec![yerd_core::PhpVersion::new(8, 4)],
+            default: yerd_core::PhpVersion::new(8, 4),
+            updates: Box::default(),
+            settings: std::collections::BTreeMap::new(),
+            version_settings: Box::default(),
+            directives: Box::default(),
+            ffi_versions: Box::default(),
+            libvips_found: None,
+            xdebug: Box::default(),
+            xdebug_versions: Box::new(vec![yerd_core::PhpVersion::new(8, 4)]),
+            pool: Box::default(),
+        };
+        let error = yerd_ipc::Response::Error {
+            code: yerd_ipc::ErrorCode::NotFound,
+            message: "nope".into(),
+        };
+        let xdebug = crate::cli::Cli::try_parse_from(["yerd", "xdebug", "status"]).unwrap();
+        let php = crate::cli::Cli::try_parse_from(["yerd", "status"]).unwrap();
+        for json in [false, true] {
+            for resp in [&reply, &error] {
+                assert_eq!(
+                    render_for(&xdebug.command, resp, json),
+                    map::render_xdebug_status(resp, json)
+                );
+                assert_eq!(
+                    render_for(&php.command, resp, json),
+                    map::render(resp, json)
+                );
+            }
+        }
+        assert_ne!(
+            render_for(&xdebug.command, &reply, false),
+            map::render(&reply, false)
+        );
+    }
 
     // ─── canonicalize_unpark ────────────────────────────────────────
 
@@ -1251,7 +1442,7 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         assert_eq!(path, cwd);
         let folder = cwd.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        assert_eq!(Some(name), yerd_core::slugify_site_name(folder));
+        assert_eq!(Some(name), yerd_core::folder_site_name(folder));
     }
 
     #[test]
@@ -1273,6 +1464,19 @@ mod tests {
         assert_eq!(name, "my-app");
         assert!(path.is_absolute());
         assert!(path.ends_with("../my-app"));
+    }
+
+    #[test]
+    fn resolve_link_strips_public_suffix_from_folder_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("laravel.com");
+        let arg = dir.to_string_lossy().into_owned();
+        let req = resolve_link(Some(&arg), None).unwrap();
+        let Request::Link { name, path } = req else {
+            panic!("expected Link");
+        };
+        assert_eq!(name, "laravel");
+        assert!(path.ends_with("laravel.com"));
     }
 
     #[test]

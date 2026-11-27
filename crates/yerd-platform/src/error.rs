@@ -281,14 +281,18 @@ pub mod ops {
     pub const BIND_PAIR: &str = "bind-pair";
     /// Apply `cap_net_bind_service` to the daemon binary.
     pub const SETCAP: &str = "setcap";
-    /// Install the macOS pf redirect (80/443 → rootless ports).
+    /// Install the macOS loopback port forwarder (80/443 → rootless ports).
     pub const INSTALL_PORT_REDIRECT: &str = "install-port-redirect";
-    /// Remove the macOS pf redirect.
+    /// Remove the macOS loopback port forwarder.
     pub const UNINSTALL_PORT_REDIRECT: &str = "uninstall-port-redirect";
-    /// Install the macOS **LAN** pf redirect (80/443 → rootless on the LAN IP).
+    /// Install the macOS **LAN** port forwarder (80/443 → rootless on the LAN IP).
     pub const INSTALL_LAN_PORT_REDIRECT: &str = "install-lan-port-redirect";
-    /// Remove the macOS LAN pf redirect.
+    /// Remove the macOS LAN port forwarder.
     pub const UNINSTALL_LAN_PORT_REDIRECT: &str = "uninstall-lan-port-redirect";
+    /// Install the macOS headless daemon's system-domain launchd job.
+    pub const INSTALL_DAEMON_JOB: &str = "install-daemon-job";
+    /// Remove the macOS headless daemon's system-domain launchd job.
+    pub const UNINSTALL_DAEMON_JOB: &str = "uninstall-daemon-job";
     /// Open a user terminal in a project directory.
     pub const OPEN_TERMINAL: &str = "open-terminal";
     /// Open a project directory in a selected IDE.

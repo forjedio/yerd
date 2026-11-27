@@ -171,6 +171,7 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `SetPhpVersionSettings { version, settings }` | `{"type":"set_php_version_settings","version":"8.3","settings":{…}}` (per-version overrides; `""` removes → falls back to global) |
 | `SetPhpDirectives { version, directives }` | `{"type":"set_php_directives","version":"8.3","directives":{"xdebug.mode":"debug"}}` (free-form ini directives; `""` removes) |
 | `SetPhpPoolSettings { version, settings }` | `{"type":"set_php_pool_settings","version":"8.4","settings":{"max_children":"32"}}` (FPM pool settings, currently only `max_children` at `1..=1024`; `""` resets to the default of 16; never reaches the CLI ini) |
+| `SetXdebug { version: Option, enabled, modes: Option, start: Option }` | `{"type":"set_xdebug","version":"8.4","enabled":true,"modes":["debug","profile"],"start":"trigger"}` or minimally `{"type":"set_xdebug","enabled":false}` (the [bundled Xdebug](../guide/xdebug) toggle; an omitted `version` means the default PHP, omitted `modes`/`start` keep the version's current value; replies `PhpVersions`) |
 | `AddPhpExtension { version, path, name: Option, zend }` | `{"type":"add_php_extension","version":"8.5","path":"/a/scrypt.so","name":null,"zend":false}` |
 | `RemovePhpExtension { version, name }` | `{"type":"remove_php_extension","version":"8.5","name":"scrypt"}` |
 | `ListPhpExtensions` | `{"type":"list_php_extensions"}` (replies `PhpExtensions { by_version }`) |
@@ -185,6 +186,9 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `AddRouteRule { site, prefix, target }` | `{"type":"add_route_rule","site":"portal","prefix":"/api","target":"api/index.php"}` (target is relative to the served root; never absolute, never containing `..`) |
 | `RemoveRouteRule { site, prefix }` | `{"type":"remove_route_rule","site":"portal","prefix":"/api"}` |
 | `ListRoutes` | `{"type":"list_routes"}` (replies `Routes { rules }`) |
+| `SetResponseHeader { site, name, value }` | `{"type":"set_response_header","site":"api","name":"Access-Control-Allow-Origin","value":"https://app.test"}` (`site` names a site or whole-host proxy, a site winning over a same-named proxy; replaces its existing entry with that name, ignoring case; validated by the daemon) |
+| `RemoveResponseHeader { site, name }` | `{"type":"remove_response_header","site":"api","name":"Access-Control-Allow-Origin"}` (`site` as for `SetResponseHeader`; name matched ignoring case) |
+| `ListResponseHeaders` | `{"type":"list_response_headers"}` (replies `ResponseHeaders { headers }`) |
 | `ServiceLogs { service, lines }` | `{"type":"service_logs","service":"redis","lines":100}` |
 | `ListDatabases { service }` | `{"type":"list_databases","service":"mysql"}` |
 | `CreateDatabase` / `DropDatabase` | `{"type":"create_database","service":"mysql","name":"app"}` (and `drop_database`) |
@@ -212,11 +216,26 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `ListTools` | `{"type":"list_tools"}` |
 | `InstallTool { tool }` | `{"type":"install_tool","tool":"node"}` |
 | `UninstallTool { tool }` | `{"type":"uninstall_tool","tool":"bun"}` |
+| `InstallNode { version }` | `{"type":"install_node","version":"24"}` (blocking; major, minor, exact, `node`, `lts/*`, or `lts/<codename>`; the CLI sends it only with `--json`) |
+| `SetNodeVersion { version, site: Option }` | `{"type":"set_node_version","version":"22.9.0","site":"blog"}` or `…,"site":null` (global default) |
+| `ListNode` | `{"type":"list_node"}` (replies `NodeVersions { installed }`; disk only) |
+| `AvailableNode` | `{"type":"available_node"}` (replies `AvailableNode { majors }`; fetches the nodejs.org index on demand) |
+| `InstallNodeStreamed { version, update }` | `{"type":"install_node_streamed","version":"22"}` (`update` defaults `false` and is skipped; `…,"update":true` may move the global default; replies `JobStarted`) |
+| `UninstallNode { version }` | `{"type":"uninstall_node","version":"22.9.0"}` (one exact release; replies `NodeVersions`) |
+| `ClearNodeVersion { site }` | `{"type":"clear_node_version","site":"blog"}` (removes the saved preference; idempotent; replies `Ok`) |
+| `NodeSite { site }` | `{"type":"node_site","site":"blog"}` (replies `NodeSite`) |
+| `NodeSites` | `{"type":"node_sites"}` (replies `NodeSites { sites }`, one entry per routed site) |
+| `ReleaseNotes` | `{"type":"release_notes"}` (replies `ReleaseNotes`; the running release's notes plus up to 5 earlier stable releases, read from the CDN `release-notes/<tag>.json` files and cached for 6 hours; a failed refresh serves the stale value, and `internal` is returned only with nothing cached) |
+| `Contributors` | `{"type":"contributors"}` (replies `Contributors`; GitHub contributors with bots removed, cached for 24 hours, stale on failure like `ReleaseNotes`) |
+| `SetSiteFavourite { site, favourite }` | `{"type":"set_site_favourite","site":"blog","favourite":true}` (stars or unstars a site in the GUI; idempotent, not validated against live sites; replies `Ok`) |
 | `CreateSite { spec }` | `{"type":"create_site","spec":{"name":"blog","parent_dir":"/srv","php":"8.3","secure":false,"framework":{"framework":"wordpress",…}}}` (replies `JobStarted`; poll `JobStatus`) |
 | `AvailableWordpressVersions` | `{"type":"available_wordpress_versions"}` |
 | `MintWordpressLoginToken { site }` | `{"type":"mint_wordpress_login_token","site":"blog"}` |
 | `SetWordpressAutoLogin { name, enabled, user: Option }` | `{"type":"set_wordpress_auto_login","name":"blog","enabled":true,"user":"admin"}` |
 | `WordpressAdminUsers { site }` | `{"type":"wordpress_admin_users","site":"blog"}` |
+| `ProjectConfigDraft { path }` | `{"type":"project_config_draft","path":"/p/acme"}` (replies `ProjectConfig`; the existing `.yerd.toml`, else a draft from the site at that folder, else defaults) |
+| `ApplyProjectConfig { path, contents: Option }` | `{"type":"apply_project_config","path":"/p/acme"}` or `…,"contents":"php = \"8.4\"\n"}` (`contents` skipped when `None`; replies `JobStarted`; poll `JobStatus`) |
+| `ExportProjectConfig { site }` | `{"type":"export_project_config","site":"acme"}` (writes the site's settings to its `.yerd.toml`; replies `ProjectConfig`) |
 
 Database `name` has operation-specific validation. `CreateDatabase` uses Yerd's
 portable creation allowlist. `DropDatabase`, `BackupDatabase`, and
@@ -238,7 +257,7 @@ version](../guide/php-versions#legacy-php-versions) (7.4 / 8.0 / 8.1) and
 otherwise replies `Response::Error { code: ErrorCode::LegacyRestricted, .. }`.
 :::
 
-`CreateSite { spec: CreateSiteSpec }` is the wizard's entry point (both Laravel and WordPress): `CreateSiteSpec` carries the shared fields (`name`, `parent_dir`, `php`, `secure`) plus a `framework: Framework` enum internally tagged on `"framework"` (`"laravel"` with `LaravelOptions`, `"wordpress"` with `WordPressOptions` - core version, locale, admin credentials, database engine/name/table-prefix). It replies `JobStarted { job_id }` immediately; the caller polls `Request::JobStatus { job_id }` (streamed via `Response::JobProgress`) the same way `InstallPhpStreamed`/`InstallToolStreamed` do. See [`yerdd`'s WordPress support section](./binaries/yerdd#wordpress-support) for what runs behind the job.
+`CreateSite { spec: CreateSiteSpec }` is the wizard's entry point (both Laravel and WordPress): `CreateSiteSpec` carries the shared fields (`name`, `parent_dir`, `php`, `secure`) plus a `framework: Framework` enum internally tagged on `"framework"` (`"laravel"` with `LaravelOptions` - including an optional `node` release to build frontend assets with and save as the site's Node preference, omitted for the default - `"wordpress"` with `WordPressOptions` - core version, locale, admin credentials, database engine/name/table-prefix). It replies `JobStarted { job_id }` immediately; the caller polls `Request::JobStatus { job_id }` (streamed via `Response::JobProgress`) the same way `InstallPhpStreamed`/`InstallToolStreamed` do. See [`yerdd`'s WordPress support section](./binaries/yerdd#wordpress-support) for what runs behind the job.
 
 ### Response (daemon → client)
 
@@ -252,7 +271,7 @@ pub enum Response {
     Error { code: ErrorCode, message: String },
     Parked { paths: Vec<String> },
     Info { dns_addr, tld, ca_path, ca_fingerprint, http_port, https_port },
-    PhpVersions { installed, default, updates, settings, version_settings, directives, pool },
+    PhpVersions { installed, default, updates, settings, version_settings, directives, pool, ffi_versions, libvips_found, xdebug, xdebug_versions },
     AvailablePhp { available, installed, legacy },
     PhpExtensions { by_version },                  // version → [PhpExtInfo{name,path,zend,present}]
     Status { report: Box<StatusReport> },         // boxed: large payload
@@ -262,11 +281,18 @@ pub enum Response {
     AvailableServices { services: Vec<ServiceAvailability> },
     ServiceOverrides { overrides: BTreeMap<String, String> },  // name → value, in name order
     Routes { rules: Vec<RouteRuleEntry> },        // every site's path-prefix routing rules
+    ResponseHeaders { headers: Vec<ResponseHeaderEntry> }, // every site's and whole-host proxy's custom response headers
     ServiceLogs { lines: Vec<String> },
     Databases { databases: Vec<DatabaseSummary> },
     Mails { mails: Vec<MailSummary> },
     Mail { mail: Box<MailDetail> },               // boxed: large payload
     Tools { tools: Vec<ToolStatus> },             // installable dev tools
+    NodeVersions { installed: Vec<NodeRelease> },  // ListNode / UninstallNode
+    AvailableNode { majors: Vec<MajorLine> },     // newest major first
+    NodeSite { preference, project_file, effective, source, error },
+    NodeSites { sites: Vec<NodeSiteEntry> },      // NodeSite fields plus `site`, router order
+    ReleaseNotes { current: Option<Box<ReleaseNotesEntry>>, earlier: Vec<ReleaseNotesEntry> }, // `current` skipped when absent
+    Contributors { contributors: Vec<Contributor>, total: u32 }, // GitHub order, bots excluded
     WordpressVersions { versions: Vec<WordPressVersionInfo> },
     WordpressLoginToken { token: String },
     WordpressAdminUsers { users: Vec<WordPressAdminUser> },
@@ -286,7 +312,7 @@ pub enum Response {
         counts: DumpCounts,
         features: BTreeMap<String, bool>,
     },
-    JobStarted { job_id: JobId },                 // CreateSite / InstallToolStreamed / InstallPhpStreamed
+    JobStarted { job_id: JobId },                 // CreateSite / InstallToolStreamed / InstallPhpStreamed / InstallNodeStreamed
     JobProgress { state: JobState, /* phase label, … */ },  // streamed updates
 }
 ```
@@ -305,8 +331,28 @@ pub enum Response {
 The multi-domain feature adds three more `SiteEntry` fields alongside `is_wordpress`: `primary_domain: Option<String>` (the canonical FQDN, populated only when it differs from the default `{name}.{tld}` apex), `domains: Vec<String>` (the full routable set, populated only for a customized site), and `apex_shadowed_by: Option<String>` (the other site claiming this apex, if any). All three are skipped when default/empty, so a default site's `Response::Sites` bytes are byte-identical to before - same additive, no-bump pattern as `web_subpath`. Separately, `StatusReport` gained `shadows: Vec<DomainShadow>` (skipped when empty): one `DomainShadow { site, shadowed_by }` per site that lost a domain to another when the router was built, which `yerd doctor` surfaces as a `DomainShadowed` warning. The four domain mutators (`AddDomain` / `RemoveDomain` / `SetPrimaryDomain` / `ResetDomains`) reply with the generic `Ok`.
 :::
 
+::: info Favourites on `SiteEntry`
+`SiteEntry` gained `favourite: bool` (last field, skipped when `false`): whether the user starred the site in the GUI, read from the config's `[favourites]` table. The matching mutator is `Request::SetSiteFavourite { site, favourite }`, which replies `Ok`. Same additive, no-bump pattern as `web_subpath`.
+:::
+
+::: info Framework on `SiteEntry`
+`SiteEntry` gained `framework: Option<SiteFramework>` (after `favourite`, skipped when `None`): the framework detected at the site's project root, one of `"laravel"`, `"wordpress"`, `"symfony"`, `"statamic"`, `"craft"` or `"drupal"`. It is served from a daemon cache refreshed on every router rebuild, like `is_wordpress`, and a `WordPress` site always reports `"wordpress"`. A newer daemon may add values, so a strict older client decoding this enum fails closed; the GUI, CLI and daemon ship together.
+:::
+
+::: info Added time on `SiteEntry`
+`SiteEntry` gained `added_at: Option<u64>` (after `framework`, skipped when `None`): when the site was added to Yerd, as Unix seconds - when it was linked or created, or when the daemon first found it in a parked folder. It is read from the config's `[added]` table, and a site that predates the record (stored as `0`) reports `None`, like a site with no entry. The GUI's Overview sorts its **Recently added** list by it. There is no matching mutator; the daemon stamps the time itself. Same additive, no-bump pattern as `web_subpath`.
+:::
+
+::: info Update availability on `ToolStatus` and `CloudflaredStatus`
+`ToolStatus` (in `Response::Tools`) gained `update_available: Option<String>` (last field, skipped when `None`): the newer published version of a Yerd-managed, installed tool, matching `PhpPoolStatus::update_available`. Separately, the `cloudflared` status carried by `Response::Tunnels` (`CloudflaredStatus`) gained the same `update_available` field, set only for the Yerd-managed binary; a `cloudflared` found on `PATH` always omits it. Both are served from a daemon cache that a notify-only poll refreshes every 12 hours, so `ListTools` and `TunnelStatus` never touch the network. Same additive, no-bump pattern as `external_path`.
+:::
+
 ::: info The mail payloads gained read/unread fields additively
 For read/unread tracking, `MailSummary` gained a `read: bool` (last field) and `MailStatus` gained an `unread: u32` (last field), both `#[serde(default)]`. A missing key decodes to `false`/`0`, so old daemons and old clients interoperate without a `PROTOCOL_VERSION` bump; the goldens grew a `,"read":false` / `,"unread":0` suffix. The matching mutator is the additive `Request::MarkMailsRead { ids }`.
+:::
+
+::: info Mail attribution on `MailSummary`
+`MailSummary` gained `site: Option<String>` (last field, skipped when `None`): the site the mail was attributed to from the host the sender announced in SMTP `EHLO`/`HELO`, resolved through the daemon's live router exactly like an HTTP `Host:` header. It is absent when the host does not match a site, for example a mailer that sends `[127.0.0.1]`. The value is stored in the capture store's `index.json`, so older indexes decode it as absent. Same additive, no-bump pattern as `read`.
 :::
 
 ::: info `AvailablePhp` and `DumpExtStatus` gained a `legacy` field additively
@@ -321,7 +367,7 @@ no-`PROTOCOL_VERSION`-bump pattern as `web_subpath`.
 :::
 
 ::: info Reverse proxies are additive requests plus their own response variant
-The proxy feature adds four mutators - `AddProxy { name, url }`, `RemoveProxy { name }`, `AddProxyRule { site, prefix, url }`, `RemoveProxyRule { site, prefix }` (all reply with the generic `Ok`) - and one query, `ListProxies`. Because a whole-host proxy is **not** a `Site`, it can't ride `Response::Sites`/`SiteEntry`; `ListProxies` gets a dedicated `Response::Proxies { proxies: Vec<ProxyEntry>, rules: Vec<ProxyRuleEntry> }` instead, where `ProxyEntry { name, target, secure, primary_domain, domains }` and `ProxyRuleEntry { site, prefix, target }` are built from plain `String`/`bool`/`Option<String>`/`Vec<String>`, so they satisfy the `PartialEq` that `Response` derives (see above: `Response` is `PartialEq` only, never `Eq`). New variants are additive by serde tag, so existing pins are byte-identical and no `PROTOCOL_VERSION` bump is needed. `url` stays a `String` on the wire; the daemon parses and validates it (returning a typed error) rather than the client.
+The proxy feature adds four mutators - `AddProxy { name, url }`, `RemoveProxy { name }`, `AddProxyRule { site, prefix, url }`, `RemoveProxyRule { site, prefix }` (all reply with the generic `Ok`) - and one query, `ListProxies`. Because a whole-host proxy is **not** a `Site`, it can't ride `Response::Sites`/`SiteEntry`; `ListProxies` gets a dedicated `Response::Proxies { proxies: Vec<ProxyEntry>, rules: Vec<ProxyRuleEntry> }` instead, where `ProxyEntry { name, target, secure, primary_domain, domains }` and `ProxyRuleEntry { site, prefix, target, managed_by }` (`managed_by` names the per-site service that owns the rule, omitted otherwise) are built from plain `String`/`bool`/`Option<String>`/`Vec<String>`, so they satisfy the `PartialEq` that `Response` derives (see above: `Response` is `PartialEq` only, never `Eq`). New variants are additive by serde tag, so existing pins are byte-identical and no `PROTOCOL_VERSION` bump is needed. `url` stays a `String` on the wire; the daemon parses and validates it (returning a typed error) rather than the client.
 
 `ProxyEntry` later gained `primary_domain: Option<String>` and `domains: Vec<String>` (FQDNs) so a proxy can carry the extra domains, subdomains and wildcards [`yerd domain`](../reference/cli/domains) now gives it. Both use `#[serde(default, skip_serializing_if = ...)]` and are populated only for a **customised** proxy, so an uncustomised one serialises to the original three-field byte shape and an older client decodes it unchanged - the same additive, no-`PROTOCOL_VERSION`-bump pattern as `web_subpath` and `supports_overrides`. A proxy the router never inserted (one name-shadowed by a site) reports both as empty rather than the shadowing site's domains.
 :::
@@ -332,6 +378,90 @@ Per-site [routing rules](../reference/cli/routes) add three variants - `AddRoute
 `RouteRuleEntry { site, prefix, target }` is field-identical to `ProxyRuleEntry` and is deliberately **not** the same struct: `yerd-ipc` is a byte-pinned contract, so coupling two features' wire evolution to one type would make either one hard to change. The semantic difference is what the `target` is - a proxy rule's target is an HTTP upstream URL, a routing rule's target is a path relative to the site's *served root* (a nested `api/index.php`, or `index.html` for an SPA). The daemon validates it as a safe relative path; an absolute path or one containing `..` is refused.
 
 All three variants are additive by serde tag, so existing pins are byte-identical and no `PROTOCOL_VERSION` bump was needed.
+
+:::
+
+::: info Node version management
+Alongside `InstallNode { version }` and `SetNodeVersion { version, site }`, six additive requests back the GUI's Node page and site Node row (the CLI also uses `InstallNodeStreamed` for `yerd install tool node <selector>`, `UninstallNode` for `yerd node uninstall`, and `ClearNodeVersion` for `yerd node unset`): `ListNode`, `AvailableNode`, `InstallNodeStreamed { version, update }`, `UninstallNode { version }`, `ClearNodeVersion { site }`, and `NodeSite { site }`.
+
+- `NodeVersions { installed }` carries one `NodeRelease { version, lts, codename, default, uninstall_blocked, clears_preferences, update }` per installed release, newest first. `default` marks the release the effective global default resolves to; `uninstall_blocked` and `clears_preferences` (a list of `NodePreferenceRef { root, site }`, `site` set when a registered site has that root) are the daemon's uninstall plan, so the GUI never reimplements the rule. `update` (omitted when none) is the newer patch of that major from the daemon's cached release-index check, set only on the highest installed patch; the cache is refreshed every 12 hours with the PHP update poll, by every `AvailableNode`, and by every Node install (from the index the installer already fetched). `StatusReport.node_updates` (omitted when `0`) counts those releases for the sidebar badge and the tray.
+- `AvailableNode { majors }` is a list of `yerd_core::node::MajorLine { major, latest, codename, eol, installed_latest, update_available }`, re-exported from `yerd-core` like `PhpVersion`. `eol` is absent when the release schedule couldn't be fetched. Majors below 9 and releases without a build for the host are never listed.
+- `NodeSite { preference, project_file, effective, source, error, missing }` reports a site's saved preference, its `NodeProjectFile { kind, selector }`, and the effective version with its `NodeSource`. A resolution failure (unknown site, invalid project file, release not installed) is the `error` field, not a `Response::Error`; when the chosen selector (project file, preference, or default) simply isn't installed, `missing` names it so the GUI can offer to install it.
+- `NodeSource` serialises kebab-case: `nvmrc`, `node-version`, `site`, `default`, the same strings `yerd which --json` prints. `NodeProjectFile.kind` is only ever `nvmrc` or `node-version`.
+- `InstallNodeStreamed`'s `update` flag (skipped when `false`) only controls whether the global default moves to the new patch: it moves when the default currently resolves to an older patch of that major. Site preferences are never repointed.
+- `UninstallNode` is refused with `ErrorCode::InvalidPath` (the same code `uninstall_php` uses for the default) when other releases remain but the default selector would no longer resolve to any of them - for example an exact default pinned to the release being removed; a partial default such as `22` that still matches another 22.x is fine. An unknown or malformed version is `NotFound`.
+
+Fields marked `skip_serializing_if` are omitted when empty: `NodeRelease.codename`, `.clears_preferences` and `.update`, `NodePreferenceRef.site`, the `MajorLine` options (`codename`, `eol`, `installed_latest`), every `NodeSite` field, `InstallNodeStreamed.update` (when `false`), `LaravelOptions.node`, and `StatusReport.node_updates` (when `0`). Others always serialise: `NodeVersions.installed` is `[]` when nothing is installed, and `SetNodeVersion.site` is `null` for the global default. No `PROTOCOL_VERSION` bump.
+:::
+
+::: info Response headers mirror routing rules
+Per-site [response headers](../reference/cli/headers) follow the same pattern: `SetResponseHeader { site, name, value }` and `RemoveResponseHeader { site, name }` (both reply with the generic `Ok`) plus the `ListResponseHeaders` query, answered by `Response::ResponseHeaders { headers: Vec<ResponseHeaderEntry> }` where `ResponseHeaderEntry` is `{ site, name, value }`. The same requests manage a whole-host proxy's headers: `site` may name a proxy (resolved like the domain requests, a site winning over a same-named proxy), and `ListResponseHeaders` also returns proxy entries keyed by proxy name in the existing `site` field; no field was added for this. The daemon validates the name and value with `yerd_core::ResponseHeader` and replies `Error` for a malformed or reserved header. These are additive too, with no `PROTOCOL_VERSION` bump.
+:::
+
+::: info Project files: `.yerd.toml` requests
+Three additive requests back [`yerd init`](../reference/cli/init) and the
+desktop app's [project file](../guide/project-file) actions.
+`ProjectConfigDraft { path }` and `ExportProjectConfig { site }` reply
+`Response::ProjectConfig { file, exists, site, name, contents }`: `file` is the
+`.yerd.toml` path, `exists` whether it is on disk (always `true` after an
+export), `site` the site serving the folder (`null` when none), `name` the
+file's declared name (`null` when absent) and `contents` the TOML text (the
+file itself, or a rendered draft). `site` and `name` always serialise, as
+`null` when absent.
+
+`ApplyProjectConfig { path, contents }` validates synchronously and then
+replies `JobStarted`. With `contents` (the wizard's output) the daemon parses it
+and writes `.yerd.toml` first, refusing with `AlreadyExists` when a file is
+already there; without it, the existing file is applied and a folder without one
+is `NotFound`. A file that fails to parse or validate, is a symlink, or is over
+64 KiB is `ErrorCode::ProjectFileInvalid`, as is invalid `contents`; a folder
+whose name can't be slugged into a site name and a file without `name` is
+`InvalidPath`. `ExportProjectConfig` for an unknown site is `NotFound`. The job's
+log lines start with `applied:`, `installed:`, `started:`, `unchanged:`,
+`warning:` or `failed:`, followed by a `done: …` summary; any `failed:` line
+ends the job `Failed` with "N item(s) could not be applied". All additive, no
+`PROTOCOL_VERSION` bump.
+:::
+
+::: info Outbound proxy settings
+`GetNetworkSettings` and `SetNetworkSettings { mode, http_proxy?, https_proxy?, no_proxy? }` both reply `Response::NetworkSettings { settings: NetworkSettings }` (`mode`, the redacted manual `http_proxy` / `https_proxy`, `no_proxy`, and `effective: Option<EffectiveProxy>` - the mode, `ProxySource`, redacted URLs and bypass list actually in use). `TestNetwork` replies `Response::NetworkTest { result: NetworkTestResult }` (`ok`, `url`, `status?`, `error?`, `via?`, `source`). In `SetNetworkSettings` an omitted field keeps the stored value and an empty one clears it; a URL whose password is the redacted `***` keeps the stored password only while scheme, user, host and port are unchanged, otherwise the daemon replies `ErrorCode::InvalidPath` ("re-enter the proxy password"). Every URL on the wire is redacted, and `OutboundProxyMode` / `ProxySource` are `yerd_core::network` enums serialised `snake_case`. `DiagnosisCode` gained `OutboundProxyUnreachable` and `OutboundProxyPacUnsupported`; reachability and PAC state are a Doctor side channel, not `StatusReport` fields. All additive, no `PROTOCOL_VERSION` bump.
+:::
+
+::: info Tunnel providers: six additive requests and `TunnelProviders`
+`Request::ListTunnelProviders` replies `Response::TunnelProviders { providers, default_provider }`: one `TunnelProviderStatus` per provider (`cloudflare`, `ngrok`, `zrok`, in that order) with `provider`, `readiness` (`not_installed`, `needs_setup`, `ready`), `configured` (Cloudflare logged in, ngrok token saved, zrok environment enabled) and the optional `version`, `source`, `path` (a binary found on `PATH` only), `update_available` (Yerd's copy only), `authtoken_hint` (the ngrok token, masked) and `domain` (ngrok), each skipped when absent. The five mutations reply `Ok`: `SetNgrokAuthtoken { authtoken }` and `SetNgrokDomain { domain }` (`null` clears), `EnableZrok { token }`, `DisableZrok`, and `SetDefaultTunnelProvider { provider }`. Secrets travel only client to daemon and are never echoed back. `source` reuses `CloudflaredSource` (`managed`/`system`), whose meaning widens to "where a tunnel provider binary came from". `TunnelProvider` and `ProviderReadiness` live in `yerd-core::tunnel_provider`, shared with the config. All additive, no `PROTOCOL_VERSION` bump.
+:::
+
+::: info Sharing through a provider: optional `provider` and `random_url`
+`Request::StartQuickTunnel` gained `provider: Option<TunnelProvider>` and `random_url: bool` (each skipped when absent or false): the share goes through `provider`, or the configured default provider when absent, and `random_url` makes an ngrok share ignore the saved static domain. `Request::StopTunnel` gained `provider: Option<TunnelProvider>`: absent stops every per-site share of the site (Cloudflare quick link, ngrok, zrok) and never touches the named tunnel. `TunnelInfo` gained `provider` (omitted for Cloudflare, so an absent field means Cloudflare) and `static_domain` (an ngrok share on the saved static domain, omitted when false). ngrok and zrok shares report `kind: "quick"`, since a new `TunnelKind` variant would break older clients' deserialisation. All additive on the wire, no `PROTOCOL_VERSION` bump: an old client's bytes are unchanged. `StartQuickTunnel` without `provider` keeps its meaning on a daemon whose default provider is Cloudflare. `StopTunnel` without `provider` does not: it now stops every per-site share of the site (Cloudflare quick link, ngrok and zrok), not just the quick link, so an old client's stop also ends that site's ngrok and zrok shares. A new client talking to an older daemon: requests are not `deny_unknown_fields`, so the older daemon ignores `provider` and `random_url`, shares through Cloudflare and stops only the quick link. A client that sends `StartQuickTunnel` with a non-Cloudflare `provider` must therefore check the reply for a share of that site with that provider and never report success without one. When it is missing, the client reads the tunnel list before the start (`TunnelStatus`, or a list it already holds) and, if the site had no Cloudflare quick link then, sends `StopTunnel { site, provider: "cloudflare" }` to undo the stray share; it then reports that the running daemon doesn't support that provider yet and should be restarted. The CLI and GUI both do this.
+:::
+
+::: info Bundled Xdebug: `SetXdebug` and two `PhpVersions` fields
+`SetXdebug` is one shared operation behind `yerd xdebug on|off`, the GUI's Xdebug
+section and the MCP `set_xdebug` tool. `version` (skipped when `None`, meaning the
+daemon's default PHP), `modes` (a list of `debug` / `develop` / `coverage` /
+`profile` / `trace` / `gcstats`, never `off` or empty) and `start` (`"always"` or
+`"trigger"`) are all optional, and so is `enabled`: an omitted or `null`
+`enabled` keeps the version's current on/off state, which is what the GUI's
+**Apply** sends (with only the fields the user edited), while the switch and the
+CLI send an explicit `true`/`false`. MCP's `set_xdebug` passes `enabled` through
+when the agent gives it and omits it otherwise. The reply is the same
+`PhpVersions` as `ListPhp`, which gained two boxed, skip-if-empty fields:
+`xdebug` (a version → `{enabled, modes, start}` map holding only the versions
+whose settings differ from the default; an absent version is off) and
+`xdebug_versions` (installed versions with a bundled Xdebug published for this
+host). Errors: `LegacyRestricted` for enabling on a legacy version,
+`XdebugUnavailable` when nothing is published for the version/platform or the
+download fails, `AlreadyExists` when a hand-registered Xdebug extension is
+loaded for that version, `ExtensionLoadFailed` when the load-probe fails,
+`NotFound` for a version that isn't installed, and `InvalidSetting` for a
+rejected setting such as an empty mode list. The download and load-probe run
+under a 90-second deadline; on expiry the daemon replies `XdebugUnavailable`
+("timed out …, nothing changed") without saving, publishing or restarting
+anything. The desktop app's bridge waits up to 120 seconds for the reply and
+reloads the PHP state after a timeout. A request that changes nothing replies
+without saving or restarting.
+`AddPhpExtension` also refuses an Xdebug `.so` with `AlreadyExists` while that
+version's managed Xdebug is on. All additive, no `PROTOCOL_VERSION` bump.
 :::
 
 ### ErrorCode
@@ -348,13 +478,16 @@ pub enum ErrorCode {
     PortInUse,            // "port_in_use"
     ExtensionLoadFailed,  // "extension_load_failed" - a valid path whose .so failed its load-probe
     LegacyRestricted,     // "legacy_restricted" - a legacy version used somewhere it's disallowed
+    XdebugUnavailable,    // "xdebug_unavailable" - no bundled Xdebug for that version/platform, or its download failed or timed out
+    InvalidSetting,       // "invalid_setting" - a setting value failed validation (e.g. an empty Xdebug mode list)
+    ProjectFileInvalid,   // "project_file_invalid" - a .yerd.toml (or wizard contents) failed to parse or validate
     Internal,             // "internal" - catch-all; expand the enum, don't overload this
 }
 ```
 
 `LegacyRestricted` is returned when a request tries to do something an [out-of-support legacy version](../guide/php-versions#legacy-php-versions)
 (7.4 / 8.0 / 8.1) can't: setting it as the global default, or installing it
-without `confirm_legacy: true`.
+without `confirm_legacy: true`, or turning on Xdebug for it.
 
 There is deliberately **no `#[serde(other)]` catch-all**. An unknown code from a newer daemon fails closed as `IpcError::Decode` rather than silently downgrading - the same signal as an unknown `type` tag, and the placeholder for a real version mismatch until a handshake lands.
 
@@ -424,7 +557,7 @@ The JSON shapes are the **published contract**, pinned three ways so a rename or
    }).unwrap(), r#"{"type":"set_php","name":"foo","version":"8.3"}"#);
    ```
 
-   It also pins additive back-compat: `Response::Info` decodes legacy daemons that omit `http_port`/`https_port` (they default to 0), and `Response::PhpVersions` skips an empty `updates`/`settings`/`version_settings`/`directives`/`pool` on the wire so the bytes match the pre-field shape.
+   It also pins additive back-compat: `Response::Info` decodes legacy daemons that omit `http_port`/`https_port` (they default to 0), and `Response::PhpVersions` skips an empty `updates`/`settings`/`version_settings`/`directives`/`pool`/`ffi_versions` /`xdebug`/`xdebug_versions` and an absent `libvips_found` on the wire so the bytes match the pre-field shape.
 
 2. **Inline `variant_name_pinning` modules** in `request.rs` and `response.rs` contain exhaustive `match` arms over the (in-crate, so matchable despite `#[non_exhaustive]`) enums. A renamed Rust variant fails to compile there - integration tests can't catch this across the crate boundary.
 

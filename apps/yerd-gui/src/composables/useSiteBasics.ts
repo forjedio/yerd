@@ -11,7 +11,7 @@ export interface SiteBasicsForm {
 }
 
 /**
- * The derived values every create wizard shows for its Basics step. The daemon
+ * The derived values the New site dialog shows on its Project step. The daemon
  * lowercases the site name and creates the project folder from it, so the
  * domain, path and browser URL all use the lowercased name. `nameValid` mirrors
  * `validate_and_lowercase_name` in `yerd-core` and checks the name as typed:

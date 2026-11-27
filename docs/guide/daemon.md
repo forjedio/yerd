@@ -18,7 +18,7 @@ For internal architecture (task wiring, shutdown channel, lock ordering) see [ye
 | DNS responder | A loopback-only resolver answering `*.test`. See [DNS & .test Domains](./dns). |
 | PHP-FPM pools | One supervised pool per installed PHP version, started on demand. See [PHP Versions](./php-versions). |
 | IPC server | A Unix-socket listener for the CLI and desktop app. See [the desktop app](./desktop-app). |
-| Update checker | Polls for newer PHP patch releases every 12 hours, and for newer Yerd releases roughly every 4 hours (checked immediately if stale when the desktop app launches). Notify-only - it never installs anything. |
+| Update checker | Polls for newer PHP patch releases every 12 hours (and newer Node patches on the same timer, while any Node release is installed), and for newer Yerd releases roughly every 4 hours (checked immediately if stale when the desktop app launches). Notify-only - it never installs anything. |
 | Local CA | Loads (or on first run generates) the local certificate authority used to issue per-site certs. |
 
 All of this runs as you, never as root. The only operations needing privilege (trusting the CA, configuring the system resolver, granting the port capability) are handled once by a separate audited helper. See [Elevation & Privileges](./elevation).
@@ -61,7 +61,7 @@ Start `yerdd` (via your service manager or `yerdd serve &`) before using the CLI
 
 ## Autostart
 
-How autostart is wired depends on your platform.
+How autostart is wired depends on your platform, and on whether you installed the desktop app or the [headless install](./headless). The sections below describe the desktop app; a headless install registers the daemon itself with `yerd daemon install` (see [Headless installs](#headless-installs)).
 
 ::: tip Starting the daemon from the app is bounded
 When the desktop app starts the daemon - at login or via the tray's Start button - it bounds the underlying service call to 15 seconds. A wedged `launchctl` or `systemctl` call can't hang the app indefinitely; past that, the app reports a timeout instead of spinning forever.
@@ -107,7 +107,7 @@ On a Linux package install (the `.deb`'s post-install, or the Arch package's `.i
 
 ### macOS
 
-The app **bundles the daemon** and registers it as a background **`SMAppService`** agent, so it shows up as **Yerd** in System Settings → General → Login Items → Allow in the Background (attributed to the app, with its icon - not to the signing team). Manage it from **Settings → "Run the Yerd daemon in the background"** in the app; the tray menu's Start/Stop/Restart control the running process for the current session.
+The app **bundles the daemon** and registers it as a background **`SMAppService`** agent, so it shows up as **Yerd** in System Settings → General → Login Items → Allow in the Background (attributed to the app, with its icon - not to the signing team). Manage it from **Settings → "Run the Yerd daemon at login"** in the app; the tray menu's Start/Stop/Restart control the running process for the current session.
 
 ::: tip First-time approval
 The first time the daemon registers, macOS may ask you to enable Yerd in Login Items. The app shows a banner with a button that takes you straight there. A LaunchAgent runs as your user, matching Yerd's rootless model.
@@ -128,6 +128,20 @@ For a from-source / terminal run without the app, start the daemon directly:
 ```sh
 yerdd serve &
 ```
+
+### Headless installs
+
+A [headless install](./headless) has no app to register the daemon, so the CLI does it:
+
+```sh
+yerd daemon install                      # Linux, as your user
+sudo ~/.yerd/bin/yerd daemon install     # macOS
+```
+
+- **Linux** writes the same `~/.config/systemd/user/yerd.service` unit shown above (pointing at the headless `yerdd`), runs `systemctl --user enable --now yerd`, and enables lingering so it starts at boot with nobody logged in. If your distro only lets an administrator enable lingering, the command prints the `sudo loginctl enable-linger <user>` line to run.
+- **macOS** can't use a LaunchAgent, which only runs once someone logs in at the Mac. Instead `yerd-helper` writes a root-owned LaunchDaemon, `/Library/LaunchDaemons/dev.yerd.daemon.plist`, with `UserName` set to you, so launchd starts it at boot but `yerdd` still runs as your user.
+
+`yerd daemon start` and `yerd daemon stop` control it afterwards (on macOS, `start` needs `sudo` because the job lives in launchd's system domain). See [Daemon control](../reference/cli/daemon).
 
 ## Lifecycle: start, stop, restart
 

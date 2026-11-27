@@ -24,26 +24,37 @@ use directories::ProjectDirs;
 
 use crate::error::ops;
 use crate::ide::{DetectedIde, IdeLauncher, LaunchTarget};
+use crate::libvips::LibvipsProbe;
 use crate::metrics::SystemMetrics;
 use crate::opener::SystemOpener;
-use crate::os::unix::{executable_in_directories, spawn_and_check, DEFAULT_STARTUP_WINDOW};
+use crate::os::unix::{
+    capture_stdout_with_timeout, executable_in_directories, process_exists, signal_process_group,
+    spawn_and_check, DEFAULT_STARTUP_WINDOW,
+};
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::{
     loopback_port_reachable, loopback_redirect_reaches_proxy, PortRedirector,
 };
+use crate::process_table::ProcessTable;
 use crate::pure::ide_spec::{
     ide_cli_candidates_macos, mac_app_name_matches, mac_application_locations, spec_for, IdeSpec,
     IDE_SPECS,
 };
-use crate::pure::{pem_match, pf_anchor, port_plan, ps_metrics, resolver_file};
+use crate::pure::libvips;
+use crate::pure::system_proxy::{parse_scutil_proxy, MacProxySettings};
+use crate::pure::{
+    launchd_ports, pem_match, pf_anchor, port_plan, process_signal, ps_metrics, resolver_file,
+};
 use crate::resolver::ResolverInstaller;
+use crate::system_proxy::SystemProxySource;
 use crate::terminal::TerminalLauncher;
 use crate::trust_store::{BrowserCaTrust, CaFingerprint, NssOutcome, TrustStore};
 use crate::{
     BindPairErrorReason, IdeErrorReason, OpenErrorReason, PlatformError, ResolverErrorReason,
     TerminalErrorReason, TrustStoreErrorReason,
 };
+use yerd_core::network::{ProxySource, SystemProxy};
 
 /// macOS terminal launcher.
 #[derive(Debug, Default, Clone, Copy)]
@@ -635,14 +646,14 @@ impl PortBinder for MacosPortBinder {
 }
 
 /// macOS uses the M2 LAN strategy: even in LAN mode the daemon binds the rootless
-/// ports on `0.0.0.0`, and a privileged `pf rdr` (installed by `yerd elevate lan`)
+/// ports on `0.0.0.0`, and the LAN port forwarder (installed by `yerd elevate lan`)
 /// carries inbound 80/443 to `<lan_ip>:<rootless>`. So `lan` here only widens the
 /// bind address; the privileged-port redirect is a separate concern.
 ///
 /// The daemon must never hold a privileged port directly, so a privileged
 /// `desired` pair is replaced by `fallback` before any bind is attempted (see
 /// [`port_plan::strip_privileged_desired`]). This keeps the daemon deterministically
-/// on the rootless ports the `pf rdr` targets, regardless of whether a privileged
+/// on the rootless ports the forwarder targets, regardless of whether a privileged
 /// bind would have been permitted.
 fn bind_pair_impl(
     lan: bool,
@@ -740,6 +751,45 @@ fn bind_pair_impl(
     }
 }
 
+/// macOS `ProcessTable` implementation.
+///
+/// Reads the command line with `/bin/ps -ww -o command= -p <pid>` (an absolute
+/// path, like [`MacosSystemMetrics`], and `-ww` so long arguments are never
+/// truncated), decoded by [`crate::pure::process_signal::decode_ps_command`],
+/// and signals through `killpg`. Best-effort: every failure reads as an absent
+/// process.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MacosProcessTable;
+
+impl MacosProcessTable {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl ProcessTable for MacosProcessTable {
+    fn command_line(&self, pid: u32) -> Option<String> {
+        let output = Command::new("/bin/ps")
+            .args(["-ww", "-o", "command=", "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        process_signal::decode_ps_command(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    fn signal_group(&self, pid: u32, force: bool) {
+        signal_process_group(pid, force);
+    }
+
+    fn is_alive(&self, pid: u32) -> bool {
+        process_exists(pid)
+    }
+}
+
 /// macOS `SystemMetrics` implementation.
 ///
 /// RSS is read from `ps -o rss= -p <pid>` (no `unsafe`-free per-process RSS
@@ -791,35 +841,132 @@ impl MacosPortRedirector {
     }
 }
 
+/// The launchd port forwarder installs 80 and 443 together. `is_active`
+/// requires the HTTP half to reach *this* proxy (the `Server: yerd` marker),
+/// not merely that something answers on :80: launchd keeps accepting on its
+/// socket even when the forwarder can't deliver, and a foreign listener could
+/// also hold the port. The HTTPS half only needs reachability, since confirming
+/// it would need a TLS handshake.
+///
+/// The target readers prefer the forwarder plists and fall back to a legacy pf
+/// anchor file, so stale-redirect findings keep working on machines elevated by
+/// an older Yerd that haven't re-run `elevate` yet.
 impl PortRedirector for MacosPortRedirector {
     fn is_active(&self) -> Option<bool> {
-        // The pf redirect installs 80 and 443 together. Require the HTTP half to
-        // actually reach *this* proxy (the `Server: yerd` marker), not merely
-        // that something answers on :80, which would false-green when a foreign
-        // listener or a stale `pf` rule still holds the port after the user
-        // removed the redirect. The HTTPS half only needs reachability: it's
-        // installed by the same rule, and confirming it would need a TLS
-        // handshake. So a yerd-confirmed :80 plus a reachable :443 means the
-        // redirect is live and ours.
         Some(loopback_redirect_reaches_proxy(80) && loopback_port_reachable(443))
     }
 
     fn redirect_targets(&self) -> Option<(u16, u16)> {
-        anchor_targets_at(Path::new(pf_anchor::ANCHOR_PATH))
+        targets_with_legacy_fallback(
+            Path::new(launchd_ports::PORTS_HTTP_PLIST),
+            Path::new(launchd_ports::PORTS_HTTPS_PLIST),
+            Path::new(pf_anchor::ANCHOR_PATH),
+        )
     }
 
     fn lan_redirect_targets(&self) -> Option<(u16, u16)> {
-        anchor_targets_at(Path::new(pf_anchor::LAN_ANCHOR_PATH))
+        targets_with_legacy_fallback(
+            Path::new(launchd_ports::LAN_PORTS_HTTP_PLIST),
+            Path::new(launchd_ports::LAN_PORTS_HTTPS_PLIST),
+            Path::new(pf_anchor::LAN_ANCHOR_PATH),
+        )
+    }
+
+    fn legacy_pf_redirect(&self) -> Option<bool> {
+        Some(any_path_exists(&[
+            Path::new(pf_anchor::PLIST_PATH),
+            Path::new(pf_anchor::LAN_PLIST_PATH),
+            Path::new(pf_anchor::ANCHOR_PATH),
+            Path::new(pf_anchor::LAN_ANCHOR_PATH),
+        ]))
     }
 }
 
-/// Read and parse the destination ports of an installed pf anchor file. The
-/// helper writes both anchors world-readable, so the unprivileged daemon can
+fn any_path_exists(paths: &[&Path]) -> bool {
+    paths.iter().any(|path| path.exists())
+}
+
+/// Forwarder targets when either forwarder plist exists, otherwise the legacy
+/// pf anchor's targets.
+fn targets_with_legacy_fallback(http: &Path, https: &Path, legacy: &Path) -> Option<(u16, u16)> {
+    if http.exists() || https.exists() {
+        forwarder_targets_at(http, https)
+    } else {
+        anchor_targets_at(legacy)
+    }
+}
+
+/// Read the rootless target ports from the two forwarder plists of one scope.
+/// The helper writes them world-readable; `None` unless both parse.
+fn forwarder_targets_at(http: &Path, https: &Path) -> Option<(u16, u16)> {
+    let read = |path: &Path| {
+        fs::read_to_string(path)
+            .ok()
+            .and_then(|text| launchd_ports::parse_forwarder_target(&text))
+    };
+    Some((read(http)?, read(https)?))
+}
+
+/// Read and parse the destination ports of a legacy pf anchor file. Older
+/// helpers wrote both anchors world-readable, so the unprivileged daemon can
 /// read them; any read or parse failure collapses to `None` (never a false
 /// finding).
 fn anchor_targets_at(path: &Path) -> Option<(u16, u16)> {
     let text = fs::read_to_string(path).ok()?;
     pf_anchor::parse_anchor_targets(&text)
+}
+
+/// macOS libvips probe: stats the macOS candidate paths.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MacosLibvipsProbe;
+
+impl MacosLibvipsProbe {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl LibvipsProbe for MacosLibvipsProbe {
+    fn libvips_found(&self) -> Option<bool> {
+        Some(libvips::any_present(
+            &libvips::candidates_macos(),
+            Path::is_file,
+        ))
+    }
+}
+
+/// How long the `scutil --proxy` read may take before it is abandoned, so the
+/// daemon's awaited startup probe can never hang.
+const SCUTIL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// macOS proxy source: System Settings as reported by `scutil --proxy` (the
+/// `SCDynamicStore` proxy dictionary). The safe Core Foundation bindings cannot
+/// read the `ExceptionsList` array without `unsafe`, so the dictionary is read
+/// through `scutil` and parsed by [`parse_scutil_proxy`].
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MacosSystemProxySource;
+
+impl MacosSystemProxySource {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl SystemProxySource for MacosSystemProxySource {
+    fn kind(&self) -> ProxySource {
+        ProxySource::MacosSystemSettings
+    }
+
+    fn read(&self) -> Option<SystemProxy> {
+        let mut cmd = Command::new("/usr/sbin/scutil");
+        cmd.arg("--proxy");
+        let output = capture_stdout_with_timeout(&mut cmd, SCUTIL_TIMEOUT)?;
+        parse_scutil_proxy(&output).map(MacProxySettings::into_system_proxy)
+    }
 }
 
 #[cfg(test)]
@@ -1184,13 +1331,70 @@ mod tests {
 
     // ---- PortRedirector anchor target reads ---------------------------
 
-    /// A composed anchor file parses to its rootless target ports.
+    const LEGACY_ANCHOR: &str =
+        "rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 8080\n\
+rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 8443\n";
+
+    fn forwarder_plist(from: u16, to: u16) -> String {
+        launchd_ports::compose_forwarder_plist(
+            launchd_ports::Scope::Loopback,
+            "dev.yerd.test",
+            Path::new("/Applications/Yerd.app/Contents/MacOS/yerd-forward"),
+            "someone",
+            from,
+            to,
+        )
+    }
+
+    /// A legacy anchor file parses to its rootless target ports.
     #[test]
-    fn anchor_targets_at_reads_composed_rules() {
+    fn anchor_targets_at_reads_legacy_rules() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("dev.yerd");
-        std::fs::write(&path, pf_anchor::compose_anchor_rules(80, 8080, 443, 8443)).unwrap();
+        std::fs::write(&path, LEGACY_ANCHOR).unwrap();
         assert_eq!(anchor_targets_at(&path), Some((8080, 8443)));
+    }
+
+    #[test]
+    fn forwarder_targets_need_both_plists() {
+        let dir = tempfile::tempdir().unwrap();
+        let http = dir.path().join("http.plist");
+        let https = dir.path().join("https.plist");
+        let legacy = dir.path().join("dev.yerd");
+        std::fs::write(&legacy, LEGACY_ANCHOR).unwrap();
+
+        assert_eq!(
+            targets_with_legacy_fallback(&http, &https, &legacy),
+            Some((8080, 8443)),
+            "no forwarder plists: legacy anchor is read"
+        );
+
+        std::fs::write(&http, forwarder_plist(80, 9080)).unwrap();
+        assert_eq!(
+            targets_with_legacy_fallback(&http, &https, &legacy),
+            None,
+            "one forwarder plist: no legacy fallback, and no targets"
+        );
+
+        std::fs::write(&https, forwarder_plist(443, 9443)).unwrap();
+        assert_eq!(
+            targets_with_legacy_fallback(&http, &https, &legacy),
+            Some((9080, 9443))
+        );
+
+        std::fs::write(&https, "garbage").unwrap();
+        assert_eq!(forwarder_targets_at(&http, &https), None);
+    }
+
+    #[test]
+    fn any_path_exists_detects_a_single_legacy_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let plist = dir.path().join("dev.yerd.pf.plist");
+        let anchor = dir.path().join("dev.yerd.lan");
+        assert!(!any_path_exists(&[&plist, &anchor]));
+        std::fs::write(&anchor, LEGACY_ANCHOR).unwrap();
+        assert!(any_path_exists(&[&plist, &anchor]));
+        assert!(!any_path_exists(&[]));
     }
 
     /// A missing or garbage anchor file collapses to `None`, never a false read.

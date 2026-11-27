@@ -49,12 +49,12 @@ pub fn new_manager(dirs: yerd_platform::PlatformDirs) -> DaemonServiceManager {
 }
 
 /// The built-in service-type registry (cheap - a `Vec` of five `Arc`s).
-fn registry() -> ServiceRegistry {
+pub(crate) fn registry() -> ServiceRegistry {
     ServiceRegistry::builtin()
 }
 
 /// Split an instance wire id into `(type_id, site)`.
-fn parse_wire_id(id: &str) -> (String, Option<String>) {
+pub(crate) fn parse_wire_id(id: &str) -> (String, Option<String>) {
     match id.split_once(':') {
         Some((ty, site)) => (ty.to_owned(), Some(site.to_owned())),
         None => (id.to_owned(), None),
@@ -62,7 +62,7 @@ fn parse_wire_id(id: &str) -> (String, Option<String>) {
 }
 
 /// Format an instance wire id from a type id and optional site.
-fn wire_id(type_id: &str, site: Option<&str>) -> String {
+pub(crate) fn wire_id(type_id: &str, site: Option<&str>) -> String {
     match site {
         Some(s) => format!("{type_id}:{s}"),
         None => type_id.to_owned(),
@@ -132,6 +132,26 @@ pub async fn available_services(state: &DaemonState, dl: &dyn Downloader) -> Res
         })
         .collect();
     Response::AvailableServices { services }
+}
+
+/// Every published version label of `type_id` for this platform, ascending.
+///
+/// # Errors
+/// A message when the platform is unsupported or the listing is unreachable.
+pub(crate) async fn available_labels(
+    type_id: &str,
+    dl: &dyn Downloader,
+) -> Result<Vec<String>, String> {
+    let (os, arch) = current_os_arch().map_err(|e| e.to_string())?;
+    let bytes = dl
+        .download(&listing_url())
+        .await
+        .map_err(|e| format!("couldn't reach the services distribution: {e}"))?;
+    let listing = String::from_utf8_lossy(&bytes);
+    Ok(available_versions(&listing, type_id, os, arch)
+        .iter()
+        .map(ToString::to_string)
+        .collect())
 }
 
 /// `addable-service-types` - the "Add Service" dialog catalog: per-type
@@ -641,6 +661,16 @@ pub async fn set_service_site(service_id: &str, new_site: &str, state: &DaemonSt
 
 /// `start service <wire-id>` - ensure it's running. Does not change autostart.
 pub async fn start_service(service_id: &str, state: &DaemonState) -> Response {
+    start_service_at(service_id, None, state).await
+}
+
+/// Starts a service like [`start_service`], but at installed `version` when
+/// given rather than the configured or newest one. Per-site services ignore it.
+pub(crate) async fn start_service_at(
+    service_id: &str,
+    version: Option<&str>,
+    state: &DaemonState,
+) -> Response {
     let (type_id, site) = parse_wire_id(service_id);
     let reg = registry();
     let Some(def) = reg.get(&type_id) else {
@@ -660,7 +690,8 @@ pub async fn start_service(service_id: &str, state: &DaemonState) -> Response {
             inst.map(|i| i.overrides.clone()).unwrap_or_default(),
         )
     };
-    let version = match resolve_version(&def, configured_version.as_deref(), &state.dirs) {
+    let wanted = version.or(configured_version.as_deref());
+    let version = match resolve_version(&def, wanted, &state.dirs) {
         Ok(v) => v,
         Err(resp) => return resp,
     };
@@ -1251,22 +1282,15 @@ pub(crate) fn resolve_version(
     configured: Option<&str>,
     dirs: &PlatformDirs,
 ) -> Result<ServiceVersion, Response> {
-    let mut installed = installed_versions(def.id(), dirs);
-    if let Some(c) = configured {
-        if let Ok(v) = c.parse::<ServiceVersion>() {
-            if installed.contains(&v) {
-                return Ok(v);
-            }
-        }
-    }
-    installed.pop().ok_or_else(|| Response::Error {
-        code: ErrorCode::NotFound,
-        message: format!(
-            "no {} version installed - run `yerd service install {}` first",
-            def.display_name(),
-            def.id()
-        ),
-    })
+    yerd_services::client::select_version(installed_versions(def.id(), dirs), configured)
+        .ok_or_else(|| Response::Error {
+            code: ErrorCode::NotFound,
+            message: format!(
+                "no {} version installed - run `yerd service install {}` first",
+                def.display_name(),
+                def.id()
+            ),
+        })
 }
 
 /// Apply a mutation to a service instance's config, validate, and persist.

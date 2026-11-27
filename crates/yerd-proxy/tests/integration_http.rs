@@ -2363,6 +2363,310 @@ async fn escaping_static_rule_target_is_403() {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
 }
 
+// ─── Response headers (`yerd header`) ───────────────────────────────
+
+fn header(name: &str, value: &str) -> yerd_core::ResponseHeader {
+    yerd_core::ResponseHeader::new(name, value).unwrap()
+}
+
+/// A router holding one linked site `portal` rooted at `docroot`, answering on
+/// both `portal.test` and `alias.test`, with `headers` attached.
+fn router_with_headers(
+    docroot: &std::path::Path,
+    headers: Vec<yerd_core::ResponseHeader>,
+) -> SiteRouter {
+    let cfg = RouterConfig::with_tld(Tld::new("test").unwrap());
+    let mut router = SiteRouter::new(cfg);
+    let site = Site::linked("portal", docroot.to_path_buf(), PhpVersion::new(8, 3)).unwrap();
+    let apex = yerd_core::Domain::apex("portal");
+    let alias = yerd_core::Domain::parse_subpart("alias").unwrap();
+    router
+        .insert_with_domains(site, vec![apex.clone(), alias], apex)
+        .unwrap();
+    router.set_response_headers("portal", headers);
+    router
+}
+
+fn assert_single_header(headers: &hyper::HeaderMap, name: &str, value: &str) {
+    let values: Vec<_> = headers.get_all(name).iter().collect();
+    assert_eq!(
+        values.len(),
+        1,
+        "{name} must appear exactly once: {values:?}"
+    );
+    assert_eq!(values[0], value, "{name}");
+}
+
+async fn client_get_headers_and_body(
+    addr: SocketAddr,
+    host: &str,
+    path: &str,
+) -> (u16, hyper::HeaderMap, Vec<u8>) {
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake::<_, Empty<Bytes>>(io)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let req = Request::builder()
+        .method("GET")
+        .uri(path)
+        .header("Host", host)
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+    let resp = sender.send_request(req).await.unwrap();
+    let status = resp.status().as_u16();
+    let headers = resp.headers().clone();
+    let body = resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec();
+    (status, headers, body)
+}
+
+/// Replace semantics: the configured value wins over the app's own
+/// `Access-Control-Allow-Origin`, leaving exactly one, while unrelated backend
+/// headers and the body pass through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn php_response_header_replaces_backend_value() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.php"), b"<?php").unwrap();
+
+    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fcgi_addr = fcgi_listener.local_addr().unwrap();
+    let fake_task = tokio::spawn(run_fake_fcgi(
+        fcgi_listener,
+        b"Status: 200 OK\r\nAccess-Control-Allow-Origin: *\r\nX-Backend: kept\r\n\r\nhello"
+            .to_vec(),
+        Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+    ));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let router = router_with_headers(
+        docroot.path(),
+        vec![header("Access-Control-Allow-Origin", "https://app.test")],
+    );
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(StaticResolver {
+            backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+        }),
+    );
+
+    let (status, headers, body) = client_get_headers_and_body(proxy_addr, "portal.test", "/").await;
+    assert_eq!(status, 200);
+    assert_single_header(&headers, "access-control-allow-origin", "https://app.test");
+    assert_single_header(&headers, "x-backend", "kept");
+    assert_eq!(body, b"hello");
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+    let _ = fake_task.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn php_404_carries_configured_header() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.php"), b"<?php").unwrap();
+
+    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fcgi_addr = fcgi_listener.local_addr().unwrap();
+    let fake_task = tokio::spawn(run_fake_fcgi(
+        fcgi_listener,
+        b"Status: 404 Not Found\r\nContent-Type: text/plain\r\n\r\nmissing".to_vec(),
+        Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+    ));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let router = router_with_headers(docroot.path(), vec![header("X-Frame-Options", "DENY")]);
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(StaticResolver {
+            backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+        }),
+    );
+
+    let (status, headers) = client_get_headers(proxy_addr, "portal.test", "/nope").await;
+    assert_eq!(status, 404);
+    assert_single_header(&headers, "x-frame-options", "DENY");
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+    let _ = fake_task.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn static_file_carries_configured_header_on_every_domain() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("app.css"), b"body{}").unwrap();
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let router = router_with_headers(
+        docroot.path(),
+        vec![header("Access-Control-Allow-Origin", "*")],
+    );
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(StaticResolver {
+            backend: unreachable_backend(),
+        }),
+    );
+
+    for host in ["portal.test", "alias.test"] {
+        let (status, headers) = client_get_headers(proxy_addr, host, "/app.css").await;
+        assert_eq!(status, 200, "{host}");
+        assert_single_header(&headers, "access-control-allow-origin", "*");
+    }
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn backend_failure_500_carries_configured_header() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.php"), b"<?php").unwrap();
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let router = router_with_headers(
+        docroot.path(),
+        vec![header("Access-Control-Allow-Origin", "*")],
+    );
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(StaticResolver {
+            backend: unreachable_backend(),
+        }),
+    );
+
+    let (status, headers) = client_get_headers(proxy_addr, "portal.test", "/").await;
+    assert_eq!(status, 500);
+    assert_single_header(&headers, "access-control-allow-origin", "*");
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn https_redirect_carries_configured_header() {
+    let proxy_http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_http_addr = proxy_http_listener.local_addr().unwrap();
+    let https_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+
+    let cfg = RouterConfig::with_tld(Tld::new("test").unwrap());
+    let mut router = SiteRouter::new(cfg);
+    let mut site = Site::linked(
+        "blog",
+        PathBuf::from("/srv/www/blog"),
+        PhpVersion::new(8, 3),
+    )
+    .unwrap();
+    site.set_secure(true);
+    router.insert(site).unwrap();
+    router.set_response_headers("blog", vec![header("Access-Control-Allow-Origin", "*")]);
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+
+    let https = yerd_proxy::HttpsBinding {
+        listener: https_listener,
+        public_port: Arc::new(std::sync::atomic::AtomicU16::new(8443)),
+        cert_store: Arc::new(StubCertStore),
+    };
+
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        let _ = ProxyServer::serve(
+            proxy_http_listener,
+            Some(https),
+            router,
+            Arc::new(StaticResolver {
+                backend: unreachable_backend(),
+            }),
+            Arc::new(NoLoginTokens),
+            None,
+            Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
+            false,
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
+        .await;
+    });
+
+    let (status, headers) = client_get_headers(proxy_http_addr, "blog.test", "/").await;
+    assert_eq!(status, 301);
+    assert_single_header(&headers, "access-control-allow-origin", "*");
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn proxy_https_redirect_carries_configured_header() {
+    let proxy_http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_http_addr = proxy_http_listener.local_addr().unwrap();
+    let https_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+
+    let cfg = RouterConfig::with_tld(Tld::new("test").unwrap());
+    let mut router = SiteRouter::new(cfg);
+    let mut proxy = yerd_core::ProxySite::new(
+        "reverb",
+        yerd_core::UpstreamTarget::from_url_str("http://127.0.0.1:1").unwrap(),
+    )
+    .unwrap();
+    proxy.set_secure(true);
+    router.insert_proxy(proxy).unwrap();
+    router.set_response_headers("reverb", vec![header("Access-Control-Allow-Origin", "*")]);
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+
+    let https = yerd_proxy::HttpsBinding {
+        listener: https_listener,
+        public_port: Arc::new(std::sync::atomic::AtomicU16::new(8443)),
+        cert_store: Arc::new(StubCertStore),
+    };
+
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        let _ = ProxyServer::serve(
+            proxy_http_listener,
+            Some(https),
+            router,
+            Arc::new(StaticResolver {
+                backend: unreachable_backend(),
+            }),
+            Arc::new(NoLoginTokens),
+            None,
+            Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
+            false,
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
+        .await;
+    });
+
+    let (status, headers) = client_get_headers(proxy_http_addr, "reverb.test", "/").await;
+    assert_eq!(status, 301);
+    assert_single_header(&headers, "access-control-allow-origin", "*");
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
 // ─── Hyper client helpers ───────────────────────────────────────────
 
 async fn client_get(addr: SocketAddr, host: &str, path: &str) -> Vec<u8> {

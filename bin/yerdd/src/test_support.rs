@@ -19,6 +19,49 @@ use yerd_platform::PlatformDirs;
 
 use crate::state::DaemonState;
 
+/// A [`yerd_php::CommandRunner`] that never spawns anything and reports a
+/// module list without FFI, so daemon unit tests never exec a fake install's
+/// `bin/php`.
+pub struct NoFfiRunner;
+
+#[async_trait::async_trait]
+impl yerd_php::CommandRunner for NoFfiRunner {
+    async fn run(&self, _cmd: std::process::Command) -> std::io::Result<yerd_php::ProbeOutput> {
+        Ok(yerd_php::ProbeOutput {
+            status_ok: true,
+            stdout: "[PHP Modules]\nCore\n".to_owned(),
+            stderr: String::new(),
+        })
+    }
+}
+
+/// A [`yerd_php::Downloader`] serving fixed bodies by exact URL. Any other URL
+/// fails like an offline network.
+#[derive(Default)]
+pub struct UrlDl(pub std::collections::HashMap<String, Vec<u8>>);
+
+impl UrlDl {
+    /// A downloader serving `body` at `url`, in addition to what it already serves.
+    #[must_use]
+    pub fn with(mut self, url: &str, body: &str) -> Self {
+        self.0.insert(url.to_owned(), body.as_bytes().to_vec());
+        self
+    }
+}
+
+#[async_trait::async_trait]
+impl yerd_php::Downloader for UrlDl {
+    async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
+        self.0
+            .get(url)
+            .cloned()
+            .ok_or_else(|| yerd_php::DownloadError::Transport {
+                url: url.to_owned(),
+                reason: "offline".into(),
+            })
+    }
+}
+
 /// A tempdir-rooted [`PlatformDirs`] for a daemon unit test - five short,
 /// disjoint subdirectories, none of which need to exist on disk beforehand.
 #[must_use]
@@ -30,6 +73,18 @@ pub fn dirs_in(tmp: &Path) -> PlatformDirs {
         cache: tmp.join("ca"),
         runtime: tmp.join("r"),
     }
+}
+
+/// Lay down a fake bundled PHP-FPM binary so `discover_bundled` reports
+/// `version` as installed.
+pub fn fake_php(dirs: &PlatformDirs, version: &str) {
+    let sbin = dirs
+        .data
+        .join("php")
+        .join(format!("php-{version}"))
+        .join("sbin");
+    std::fs::create_dir_all(&sbin).unwrap();
+    std::fs::write(sbin.join("php-fpm"), b"x").unwrap();
 }
 
 /// A fully-populated [`DaemonState`] for a daemon unit test: an empty router,
@@ -63,6 +118,11 @@ pub fn state_in(tmp: &Path) -> DaemonState {
         ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
         php_ca_bundle: None,
         php_updates: RwLock::new(std::collections::HashMap::new()),
+        node_updates: RwLock::new(std::collections::BTreeMap::new()),
+        node_update_count: std::sync::atomic::AtomicU32::new(0),
+        tool_updates: RwLock::new(std::collections::BTreeMap::new()),
+        release_notes_cache: RwLock::new(None),
+        contributors_cache: RwLock::new(None),
         yerd_update: RwLock::new(Vec::new()),
         update_snapshot: RwLock::new(None),
         php_manager,
@@ -88,22 +148,43 @@ pub fn state_in(tmp: &Path) -> DaemonState {
         shutdown_tx: tokio::sync::watch::channel(false).0,
         restart_requested: std::sync::atomic::AtomicBool::new(false),
         detect_cache: Arc::new(crate::detect_cache::DetectCache::new()),
+        ffi_cache: Arc::new(crate::ffi_cache::FfiCache::new(Arc::new(NoFfiRunner))),
+        libvips_probe: Arc::new(yerd_platform::FakeLibvipsProbe { found: None }),
+        network: crate::network::NetworkRuntime::new(
+            Arc::new(yerd_platform::FakeSystemProxySource::default()),
+            false,
+            crate::network::no_env,
+            Arc::new(|| Box::pin(async { None })),
+        ),
         watch_dirty: tokio::sync::Notify::new(),
+        config_unsaved: std::sync::atomic::AtomicBool::new(false),
         dumps: Arc::new(crate::dump_server::DumpStore::new()),
         shim_reconcile: Mutex::new(()),
         tunnel_manager: Arc::new(Mutex::new(crate::tunnel::new_manager())),
         cloudflared_resolution: RwLock::new(None),
+        tunnel_origin_port: None,
+        tunnel_routes: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        tunnel_routes_rebuild: Mutex::new(()),
+        share_warnings: Mutex::new(std::collections::HashMap::new()),
+        named_stop_epoch: std::sync::atomic::AtomicU64::new(0),
+        tunnel_metrics_addr: Arc::new(crate::tunnel::pick_metrics_addr),
         tool_mutate: Mutex::new(()),
         tunnel_mutate: Mutex::new(()),
+        zrok_mutate: Mutex::new(()),
         php_mutate: Mutex::new(()),
         php_settings_mutate: Mutex::new(()),
         jobs: crate::jobs::JobRegistry::default(),
         reserved_names: Mutex::new(std::collections::HashSet::new()),
+        project_file_mutate: Mutex::new(()),
+        url_sync: Mutex::new(()),
         wordpress_versions: RwLock::new(None),
         wordpress_login_tokens: Arc::new(crate::wordpress_login::LoginTokenRegistry::new()),
         wordpress_login_prepend_script: None,
         wordpress_sites: Arc::new(RwLock::new(std::collections::HashMap::new())),
         laravel_sites: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        framework_sites: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        favourite_sites: RwLock::new(std::collections::BTreeSet::new()),
+        site_added: RwLock::new(yerd_config::AddedSection::default()),
         lan_ip: None,
         lan_setup_bound: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         remote_setup_code: tokio::sync::Mutex::new(None),

@@ -182,3 +182,34 @@ fn port_binder_bind_pair_zero_pair_returns_two_distinct_ports() {
     let https_port = pair.https.port().unwrap();
     assert_ne!(http_port, https_port);
 }
+
+#[test]
+fn process_table_reads_this_process_command_line() {
+    use yerd_platform::{ActiveProcessTable, ProcessTable};
+    let table = ActiveProcessTable::new();
+    let pid = std::process::id();
+
+    let cmdline = table.command_line(pid).unwrap();
+
+    assert!(cmdline.contains("macos_smoke"), "{cmdline}");
+    assert!(table.is_alive(pid));
+    assert!(!table.is_alive(0));
+    assert!(!table.is_alive(1));
+}
+
+#[test]
+fn libvips_probe_checks_this_host() {
+    use yerd_platform::{ActiveLibvipsProbe, LibvipsProbe};
+    assert!(ActiveLibvipsProbe.libvips_found().is_some());
+}
+
+#[test]
+fn system_proxy_source_reads_without_panicking() {
+    use yerd_platform::{ActiveSystemProxySource, SystemProxySource};
+    let source = ActiveSystemProxySource::new();
+    assert_eq!(
+        source.kind(),
+        yerd_core::network::ProxySource::MacosSystemSettings
+    );
+    let _ = source.read();
+}

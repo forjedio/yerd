@@ -4,18 +4,22 @@
 //! go, and may already be down. The flow is, in order:
 //!
 //! 1. Resolve the *invoking* user (under `sudo`, `$HOME`/`$SHELL` point at root,
-//!    so the user is recovered from `SUDO_UID` + the passwd database).
+//!    so the user is recovered from `SUDO_UID` + the passwd database). On macOS,
+//!    refuse without root when a headless system launchd daemon is registered:
+//!    only root can remove it, and launchd would restart a killed `yerdd`.
 //! 2. Capture the facts a manual/automatic unelevate needs (`tld`, CA
 //!    fingerprint) from disk **before** anything is deleted - otherwise deleting
 //!    the data dir would strand a trusted root CA with no way to identify it.
 //! 3. Confirm (unless `--yes`).
 //! 4. Root only: revert the system changes from `yerd elevate` (CA trust, DNS
-//!    resolver, macOS pf redirect) by driving `yerd-helper` directly. Without
+//!    resolver, macOS port forwarder) by driving `yerd-helper` directly. Without
 //!    root we print the exact manual steps and continue.
 //! 5. Stop + disable the daemon service and reap the daemon (a graceful SIGTERM
 //!    lets it reap its php-fpm / DB / mail children).
 //! 6. Remove the PATH block, the service unit files, the user dirs, and the
-//!    binaries (or advise `apt purge` for a `.deb` install).
+//!    binaries (or advise `apt purge` for a `.deb` install). A headless install
+//!    also loses its install receipt and, once empty, its install dir; on macOS
+//!    its system launchd daemon is removed by the helper.
 
 use std::process::ExitCode;
 
@@ -35,6 +39,7 @@ pub fn run(_yes: bool) -> ExitCode {
 
 #[cfg(unix)]
 mod unix_impl {
+    use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
     use std::process::{Command, ExitCode};
 
@@ -82,6 +87,11 @@ mod unix_impl {
         let dirs = PlatformDirs::for_user(&actor.home, actor.uid);
         let root = elevate::is_root();
 
+        if let Some(refusal) = system_job_refusal(root, system_daemon_job_registered()) {
+            eprintln!("yerd: {refusal}");
+            return ExitCode::from(77);
+        }
+
         let facts = CapturedFacts::capture(&dirs);
 
         print_header(&actor, &dirs, root);
@@ -95,8 +105,19 @@ mod unix_impl {
         }
 
         let mut residue: Vec<String> = Vec::new();
+        let headless = matches!(
+            yerd_platform::install_mode::detect(),
+            Ok(yerd_platform::pure::install_receipt::InstallMode::Headless)
+        );
 
         if root {
+            if let Err(e) = remove_daemon_job() {
+                eprintln!(
+                    "yerd: could not remove the headless daemon job: {e}. Nothing else was \
+                     removed; fix that and re-run `yerd uninstall`"
+                );
+                return ExitCode::from(1);
+            }
             revert_system_changes(&facts, &mut residue);
         } else {
             residue.push(
@@ -106,7 +127,7 @@ mod unix_impl {
             );
         }
 
-        stop_daemon_service(&actor, root);
+        let unit_fragment = stop_daemon_service(&actor, root, &mut residue);
         reap_daemon(actor.uid);
 
         let touched = path_cmd::remove_block_for_user(&actor.home, &shell_basename(&actor.shell));
@@ -114,7 +135,7 @@ mod unix_impl {
             println!("  removed PATH entry from {}", f.display());
         }
 
-        remove_service_unit(&actor);
+        remove_service_unit(&actor, root, unit_fragment.as_deref(), &mut residue);
 
         for dir in dirs_to_delete(&dirs, actor.uid) {
             match std::fs::remove_dir_all(&dir) {
@@ -126,6 +147,9 @@ mod unix_impl {
 
         remove_binaries(&actor, &mut residue);
 
+        if headless {
+            print_linger_note(&actor);
+        }
         print_summary(&residue);
         ExitCode::SUCCESS
     }
@@ -209,19 +233,103 @@ mod unix_impl {
         run_helper(
             &helper,
             &HelperInvocation::UninstallPortRedirect,
-            "remove the pf port redirect",
+            "remove the port forwarder",
             residue,
         );
 
-        // The LAN pf redirect is a separate anchor (`dev.yerd.lan`); tear it down
-        // too so a full uninstall leaves no dangling `/etc/pf.conf` reference.
         #[cfg(target_os = "macos")]
         run_helper(
             &helper,
             &HelperInvocation::UninstallLanPortRedirect,
-            "remove the pf LAN redirect",
+            "remove the LAN port forwarder",
             residue,
         );
+    }
+
+    /// Remove a headless install's system launchd daemon (macOS, root). Runs
+    /// before anything else is deleted and is fatal on failure: deleting the
+    /// daemon's files (and the helper that can remove the job) while launchd
+    /// keeps the job would leave a registration nothing can clean up.
+    #[cfg_attr(not(target_os = "macos"), allow(clippy::unnecessary_wraps))]
+    fn remove_daemon_job() -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        {
+            if !system_daemon_job_registered() {
+                return Ok(());
+            }
+            let (helper, _yerdd) = elevate::sibling_binaries().map_err(|e| e.to_string())?;
+            print!("==> remove the headless daemon job … ");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            match elevate::spawn_helper(&helper, &HelperInvocation::UninstallDaemonJob) {
+                Ok(Some(0)) => {
+                    println!("ok");
+                    Ok(())
+                }
+                Ok(Some(code)) => {
+                    println!("failed");
+                    Err(format!("yerd-helper exited {code}"))
+                }
+                Ok(None) => {
+                    println!("failed");
+                    Err("yerd-helper was killed by a signal".to_owned())
+                }
+                Err(e) => {
+                    println!("failed");
+                    Err(e.to_string())
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Ok(())
+        }
+    }
+
+    /// Whether a headless install's system launchd daemon is registered
+    /// (macOS): its plist exists, or the job is loaded even though its plist
+    /// is gone.
+    fn system_daemon_job_registered() -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            use yerd_platform::pure::launchd_daemon::{DAEMON_LABEL, DAEMON_PLIST};
+            Path::new(DAEMON_PLIST).exists()
+                || run_quiet("launchctl", &["print", &format!("system/{DAEMON_LABEL}")])
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+
+    /// Without root, a registered system launchd daemon can't be removed, and
+    /// launchd restarts a killed `yerdd` (`KeepAlive` on unclean exit), so
+    /// refuse before anything is deleted.
+    fn system_job_refusal(root: bool, system_job: bool) -> Option<String> {
+        (system_job && !root).then(|| {
+            let yerd = std::env::current_exe()
+                .map_or_else(|_| PathBuf::from("yerd"), |exe| exe.with_file_name("yerd"));
+            system_job_refusal_message(&yerd)
+        })
+    }
+
+    fn system_job_refusal_message(yerd: &Path) -> String {
+        format!(
+            "the daemon is registered as a system launchd job; run `sudo {} uninstall`",
+            yerd.display()
+        )
+    }
+
+    /// Linux headless installs enabled linger for the daemon; uninstall leaves
+    /// it, since other user services may rely on it.
+    fn print_linger_note(actor: &Actor) {
+        #[cfg(target_os = "linux")]
+        println!(
+            "  note: linger was left enabled for {0}; turn it off with \
+             `sudo loginctl disable-linger {0}` if nothing else needs it",
+            actor.name
+        );
+        #[cfg(not(target_os = "linux"))]
+        let _ = actor;
     }
 
     /// Spawn the helper for one operation and classify the outcome.
@@ -247,45 +355,84 @@ mod unix_impl {
     }
 
     /// Stop and disable the per-user daemon service, in the invoking user's
-    /// session. Best-effort - the service may not be installed.
-    fn stop_daemon_service(actor: &Actor, root: bool) {
+    /// session. On Linux, returns the unit file systemd loaded `yerd` from
+    /// (asked before disabling it), so cleanup finds a unit under an
+    /// `$XDG_CONFIG_HOME` that sudo's environment no longer carries. A failed
+    /// stop is residue, unless systemd confirmed there is no `yerd` unit.
+    fn stop_daemon_service(
+        actor: &Actor,
+        root: bool,
+        residue: &mut Vec<String>,
+    ) -> Option<PathBuf> {
         #[cfg(target_os = "linux")]
         {
-            if root && elevate::sudo_uid().is_some() {
-                let xdg = format!("XDG_RUNTIME_DIR=/run/user/{}", actor.uid);
-                let dbus = format!(
-                    "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{}/bus",
-                    actor.uid
-                );
-                let _ = run_quiet(
-                    "runuser",
-                    &[
-                        "-u",
-                        &actor.name,
-                        "--",
-                        "env",
-                        &xdg,
-                        &dbus,
-                        "systemctl",
-                        "--user",
-                        "disable",
-                        "--now",
-                        "yerd",
-                    ],
-                );
-            } else {
-                let _ = run_quiet("systemctl", &["--user", "disable", "--now", "yerd"]);
+            let show = user_systemctl(
+                actor,
+                root,
+                &["show", "yerd", "-p", "FragmentPath", "--value"],
+            );
+            let fragment = show
+                .as_ref()
+                .ok()
+                .map(|out| PathBuf::from(out.trim()))
+                .filter(|p| !p.as_os_str().is_empty());
+            let confirmed_absent = show.as_ref().is_ok_and(|out| out.trim().is_empty());
+            if let Err(e) = user_systemctl(actor, root, &["disable", "--now", "yerd"]) {
+                if !confirmed_absent {
+                    residue.push(format!(
+                        "stopping and disabling the yerd user service ({e})"
+                    ));
+                }
             }
+            fragment
         }
         #[cfg(target_os = "macos")]
         {
-            let _ = root;
+            let _ = (root, residue);
             let target = format!("gui/{}/dev.yerd.daemon", actor.uid);
             let _ = run_quiet("launchctl", &["bootout", &target]);
+            None
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
-            let _ = (actor, root);
+            let _ = (actor, root, residue);
+            None
+        }
+    }
+
+    /// Whether this is a sudo run, where user-owned files are changed with the
+    /// invoking user's authority rather than root's.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn as_sudo(root: bool) -> bool {
+        root && elevate::sudo_uid().is_some()
+    }
+
+    /// Run `systemctl --user <args>` in the invoking user's manager (through
+    /// `runuser` under sudo). Returns stdout on success, or why it failed.
+    #[cfg(target_os = "linux")]
+    fn user_systemctl(actor: &Actor, root: bool, args: &[&str]) -> Result<String, String> {
+        let mut cmd = if as_sudo(root) {
+            let mut cmd = Command::new("runuser");
+            cmd.args(["-u", &actor.name, "--", "env"])
+                .arg(format!("XDG_RUNTIME_DIR=/run/user/{}", actor.uid))
+                .arg(format!(
+                    "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{}/bus",
+                    actor.uid
+                ))
+                .arg("systemctl");
+            cmd
+        } else {
+            Command::new("systemctl")
+        };
+        let out = cmd
+            .arg("--user")
+            .args(args)
+            .output()
+            .map_err(|e| format!("running systemctl: {e}"))?;
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
         }
     }
 
@@ -320,24 +467,115 @@ mod unix_impl {
             .is_ok_and(|o| o.status.success())
     }
 
-    /// Remove the daemon's service unit file (best-effort).
-    fn remove_service_unit(actor: &Actor) {
+    /// Remove the daemon's service unit file. `fragment` is where systemd
+    /// said it loaded the unit from (Linux). Under sudo, Linux unit files are
+    /// deleted as the invoking user (through `runuser`), never as root, so a
+    /// path in a user-writable dir can't redirect a root delete. A unit that
+    /// exists but can't be removed is reported as residue.
+    fn remove_service_unit(
+        actor: &Actor,
+        root: bool,
+        fragment: Option<&Path>,
+        residue: &mut Vec<String>,
+    ) {
         #[cfg(target_os = "linux")]
-        let unit = actor.home.join(".config/systemd/user/yerd.service");
+        let units = {
+            let mut units: Vec<PathBuf> = fragment
+                .filter(|p| is_user_unit(p))
+                .map(Path::to_path_buf)
+                .into_iter()
+                .collect();
+            units.extend(linux_unit_paths(
+                &actor.home,
+                std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+                elevate::sudo_uid().is_some(),
+            ));
+            dedup(units)
+        };
         #[cfg(target_os = "macos")]
-        let unit = actor
-            .home
-            .join("Library/LaunchAgents/dev.yerd.daemon.plist");
+        let units = {
+            let _ = fragment;
+            vec![actor
+                .home
+                .join("Library/LaunchAgents/dev.yerd.daemon.plist")]
+        };
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        let unit: PathBuf = {
-            let _ = actor;
-            return;
+        let units: Vec<PathBuf> = {
+            let _ = (actor, fragment);
+            Vec::new()
         };
 
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if std::fs::remove_file(&unit).is_ok() {
-            println!("  removed {}", unit.display());
+        for unit in units {
+            if std::fs::symlink_metadata(&unit).is_err() {
+                continue;
+            }
+            match remove_user_file(actor, root, &unit) {
+                Ok(()) => println!("  removed {}", unit.display()),
+                Err(e) => residue.push(format!("{} ({e})", unit.display())),
+            }
         }
+    }
+
+    /// Delete a user-owned file: as the invoking user through `runuser` under
+    /// sudo on Linux, otherwise directly.
+    fn remove_user_file(actor: &Actor, root: bool, path: &Path) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        if as_sudo(root) {
+            let out = Command::new("runuser")
+                .args(["-u", &actor.name, "--", "rm", "--"])
+                .arg(path)
+                .output()
+                .map_err(|e| format!("running runuser: {e}"))?;
+            return if out.status.success() {
+                Ok(())
+            } else {
+                Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
+            };
+        }
+        let _ = (actor, root);
+        std::fs::remove_file(path).map_err(|e| e.to_string())
+    }
+
+    /// Whether `path` is a `yerd.service` in a user unit dir (`…/systemd/user`)
+    /// outside the system's own unit trees, so a path reported by systemd is
+    /// only deleted when it is a user's unit file.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn is_user_unit(path: &Path) -> bool {
+        const SYSTEM_TREES: [&str; 4] = ["/etc", "/usr", "/lib", "/run"];
+        path.is_absolute()
+            && path.file_name() == Some(OsStr::new("yerd.service"))
+            && path
+                .parent()
+                .is_some_and(|dir| dir.ends_with(Path::new("systemd").join("user")))
+            && !SYSTEM_TREES.iter().any(|tree| path.starts_with(tree))
+            && path.components().all(|c| {
+                matches!(
+                    c,
+                    std::path::Component::RootDir | std::path::Component::Normal(_)
+                )
+            })
+            && path.components().all(|c| {
+                matches!(
+                    c,
+                    std::path::Component::RootDir | std::path::Component::Normal(_)
+                )
+            })
+    }
+
+    /// Where a `yerd.service` user unit may have been written: under
+    /// `$XDG_CONFIG_HOME` (both the desktop app and `yerd daemon install` honour
+    /// it) and under `~/.config`, deduplicated. Under sudo the environment may
+    /// be root's, so `$XDG_CONFIG_HOME` is only trusted inside the user's home.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn linux_unit_paths(home: &Path, xdg_config: Option<&OsStr>, sudo: bool) -> Vec<PathBuf> {
+        let unit = Path::new("systemd").join("user").join("yerd.service");
+        let xdg = xdg_config
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute() && (!sudo || p.starts_with(home)));
+        let mut paths: Vec<PathBuf> = xdg.into_iter().map(|base| base.join(&unit)).collect();
+        paths.push(home.join(".config").join(&unit));
+        dedup(paths)
     }
 
     /// Remove the yerd binaries across the candidate dirs (the running exe's
@@ -349,10 +587,18 @@ mod unix_impl {
     /// removed last - unlinking a running executable is safe on Unix.
     fn remove_binaries(actor: &Actor, residue: &mut Vec<String>) {
         let mut dirs: Vec<PathBuf> = Vec::new();
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(d) = exe.parent() {
-                dirs.push(d.to_path_buf());
-            }
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf));
+        let headless_dir = yerd_platform::install_mode::current_exe_dir().filter(|d| {
+            d.join(yerd_platform::pure::install_receipt::RECEIPT_FILE)
+                .is_file()
+        });
+        if let Some(d) = exe_dir {
+            dirs.push(d);
+        }
+        if let Some(d) = &headless_dir {
+            dirs.push(d.clone());
         }
         dirs.push(actor.home.join(".local").join("bin"));
         dirs.push(PathBuf::from("/usr/local/bin"));
@@ -360,7 +606,7 @@ mod unix_impl {
         let dirs = dedup(dirs);
 
         let mut packaged = false;
-        for name in ["yerdd", "yerd-helper", "yerd"] {
+        for name in INSTALLED_FILES {
             for dir in &dirs {
                 let path = dir.join(name);
                 let Ok(md) = std::fs::symlink_metadata(&path) else {
@@ -382,6 +628,12 @@ mod unix_impl {
                 }
             }
         }
+        if let Some(dir) = headless_dir {
+            remove_headless_extras(&dir, residue);
+            if std::fs::remove_dir(&dir).is_ok() {
+                println!("  removed {}", dir.display());
+            }
+        }
         if packaged {
             #[cfg(target_os = "linux")]
             residue.push(
@@ -395,7 +647,51 @@ mod unix_impl {
         }
     }
 
+    /// Remove the `yerd-` prefixed regular files a newer headless release added
+    /// to a receipt-marked install dir (and any leftover swap backups), so the
+    /// dir can be removed. Files without the prefix are never touched, since
+    /// `YERD_INSTALL_DIR` may point at a dir shared with the user's own files.
+    fn remove_headless_extras(dir: &Path, residue: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let names: Vec<String> = entries
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect();
+        for name in headless_extras(&names) {
+            let path = dir.join(&name);
+            match std::fs::remove_file(&path) {
+                Ok(()) => println!("  removed {}", path.display()),
+                Err(e) => residue.push(format!("{} ({e})", path.display())),
+            }
+        }
+    }
+
     // ── pure helpers (unit-tested) ───────────────────────────────────────────
+
+    /// The names in a headless install dir that uninstall removes beyond
+    /// [`INSTALLED_FILES`]: anything carrying the extra-file prefix the
+    /// applier enforces (`crate::apply::EXTRA_PREFIX`).
+    fn headless_extras(names: &[String]) -> Vec<String> {
+        names
+            .iter()
+            .filter(|n| n.starts_with(crate::apply::EXTRA_PREFIX))
+            .filter(|n| !INSTALLED_FILES.contains(&n.as_str()))
+            .cloned()
+            .collect()
+    }
+
+    /// Files an install puts beside the binaries, removal order: `yerd` (this
+    /// running binary) last.
+    const INSTALLED_FILES: [&str; 5] = [
+        "yerdd",
+        "yerd-helper",
+        "yerd-forward",
+        yerd_platform::pure::install_receipt::RECEIPT_FILE,
+        "yerd",
+    ];
 
     /// The user dirs to delete, de-duplicated. On macOS config/data/state all
     /// coincide; both Linux runtime candidates are included since the active one
@@ -479,7 +775,9 @@ mod unix_impl {
         );
         println!("  • cache:   {}", dirs.cache.display());
         println!("  • the yerd PATH entry from your shell startup files");
-        println!("  • the yerd daemon service and the yerd / yerdd / yerd-helper binaries");
+        println!(
+            "  • the yerd daemon service and the yerd / yerdd / yerd-helper / yerd-forward binaries"
+        );
         if root {
             println!("  • system changes from `yerd elevate` (CA trust, DNS resolver, ports)");
         }
@@ -519,9 +817,22 @@ mod unix_impl {
         #[cfg(target_os = "macos")]
         {
             eprintln!("    • resolver: sudo rm /etc/resolver/{tld}");
+            for label in [
+                yerd_platform::pure::launchd_ports::PORTS_HTTP_LABEL,
+                yerd_platform::pure::launchd_ports::PORTS_HTTPS_LABEL,
+                yerd_platform::pure::launchd_ports::LAN_PORTS_HTTP_LABEL,
+                yerd_platform::pure::launchd_ports::LAN_PORTS_HTTPS_LABEL,
+            ] {
+                eprintln!(
+                    "    • ports:    sudo launchctl bootout system/{label} 2>/dev/null; \
+                     sudo rm -f /Library/LaunchDaemons/{label}.plist"
+                );
+            }
             eprintln!(
-                "    • ports:    sudo launchctl bootout system/dev.yerd.pf 2>/dev/null; \
-                 sudo rm -f /Library/LaunchDaemons/dev.yerd.pf.plist"
+                "    • legacy:   sudo launchctl bootout system/dev.yerd.pf 2>/dev/null; \
+                 sudo launchctl bootout system/dev.yerd.lan.pf 2>/dev/null; \
+                 sudo rm -f /Library/LaunchDaemons/dev.yerd.pf.plist \
+                 /Library/LaunchDaemons/dev.yerd.lan.pf.plist"
             );
         }
         #[cfg(not(target_os = "macos"))]
@@ -553,6 +864,102 @@ mod unix_impl {
     #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn installed_files_include_the_receipt_and_end_with_yerd() {
+            assert!(INSTALLED_FILES.contains(&"yerd-install-receipt"));
+            for bin in ["yerdd", "yerd-helper", "yerd-forward"] {
+                assert!(INSTALLED_FILES.contains(&bin), "{bin}");
+            }
+            assert_eq!(INSTALLED_FILES.last(), Some(&"yerd"));
+        }
+
+        #[test]
+        fn headless_extras_takes_only_prefixed_non_core_files() {
+            let names: Vec<String> = [
+                "yerd",
+                "yerdd",
+                "yerd-helper",
+                "yerd-install-receipt",
+                "yerd-mcp",
+                "yerd-helper.yerd-old-42",
+                "README.md",
+                "my-script",
+                "yerdx",
+            ]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+            assert_eq!(
+                headless_extras(&names),
+                vec!["yerd-mcp".to_owned(), "yerd-helper.yerd-old-42".to_owned()]
+            );
+        }
+
+        #[test]
+        fn system_job_refusal_only_without_root() {
+            for (root, job, refused) in [
+                (false, true, true),
+                (true, true, false),
+                (false, false, false),
+                (true, false, false),
+            ] {
+                assert_eq!(
+                    system_job_refusal(root, job).is_some(),
+                    refused,
+                    "root={root} job={job}"
+                );
+            }
+            assert_eq!(
+                system_job_refusal_message(Path::new("/Users/me/.yerd/bin/yerd")),
+                "the daemon is registered as a system launchd job; \
+                 run `sudo /Users/me/.yerd/bin/yerd uninstall`"
+            );
+        }
+
+        #[test]
+        fn linux_unit_paths_table() {
+            let home = Path::new("/home/u");
+            let dot = PathBuf::from("/home/u/.config/systemd/user/yerd.service");
+            let xdg = PathBuf::from("/home/u/xdg/systemd/user/yerd.service");
+            let other = PathBuf::from("/srv/cfg/systemd/user/yerd.service");
+            let cases: [(Option<&str>, bool, Vec<PathBuf>); 8] = [
+                (None, false, vec![dot.clone()]),
+                (Some(""), false, vec![dot.clone()]),
+                (Some("relative/cfg"), false, vec![dot.clone()]),
+                (Some("/home/u/xdg"), false, vec![xdg.clone(), dot.clone()]),
+                (Some("/home/u/.config"), false, vec![dot.clone()]),
+                (Some("/srv/cfg"), false, vec![other, dot.clone()]),
+                (Some("/home/u/xdg"), true, vec![xdg, dot.clone()]),
+                (Some("/root/.config"), true, vec![dot]),
+            ];
+            for (xdg_config, sudo, want) in cases {
+                assert_eq!(
+                    linux_unit_paths(home, xdg_config.map(OsStr::new), sudo),
+                    want,
+                    "{xdg_config:?} sudo={sudo}"
+                );
+            }
+        }
+
+        #[test]
+        fn is_user_unit_table() {
+            let cases = [
+                ("/home/u/xdg/systemd/user/yerd.service", true),
+                ("/home/u/.config/systemd/user/yerd.service", true),
+                ("/srv/cfg/systemd/user/yerd.service", true),
+                ("/etc/systemd/user/yerd.service", false),
+                ("/usr/lib/systemd/user/yerd.service", false),
+                ("/run/user/1000/systemd/user/yerd.service", false),
+                ("/home/u/xdg/systemd/user/other.service", false),
+                ("/home/u/xdg/yerd.service", false),
+                ("/home/u/../v/systemd/user/yerd.service", false),
+                ("relative/systemd/user/yerd.service", false),
+            ];
+            for (path, want) in cases {
+                assert_eq!(is_user_unit(Path::new(path)), want, "{path}");
+            }
+        }
 
         #[test]
         fn shell_basename_takes_file_name() {

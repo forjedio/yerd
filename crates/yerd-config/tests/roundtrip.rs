@@ -8,7 +8,7 @@
 )]
 
 use yerd_config::{Config, PhpSection, Ports, ServiceInstance, SiteOverride};
-use yerd_core::{PhpVersion, RouteRule, Site, Tld};
+use yerd_core::{PhpVersion, ResponseHeader, RouteRule, Site, Tld};
 
 const POPULATED: &str = r#"
 version = 1
@@ -48,6 +48,14 @@ target = "api/index.php"
 [[route_rules.parked."docroot-a"]]
 prefix = "/"
 target = "index.html"
+
+[[response_headers.linked.api]]
+name = "Access-Control-Allow-Origin"
+value = "https://app.test"
+
+[[response_headers.parked."docroot-a"]]
+name = "X-Frame-Options"
+value = "DENY"
 "#;
 
 fn populated_expected() -> Config {
@@ -66,6 +74,7 @@ fn populated_expected() -> Config {
         version_settings: std::collections::BTreeMap::new(),
         directives: std::collections::BTreeMap::new(),
         pool: std::collections::BTreeMap::new(),
+        xdebug: std::collections::BTreeMap::new(),
     };
     c.parked.paths.insert("docroot-a".to_string());
     c.parked.paths.insert("docroot-b".to_string());
@@ -98,6 +107,15 @@ fn populated_expected() -> Config {
         "docroot-a".to_string(),
         vec![RouteRule::new("/", "index.html").unwrap()],
     );
+    c.response_headers.linked.insert(
+        "api".to_string(),
+        vec![ResponseHeader::new("Access-Control-Allow-Origin", "https://app.test").unwrap()],
+    );
+    c.response_headers.parked.insert(
+        "docroot-a".to_string(),
+        vec![ResponseHeader::new("X-Frame-Options", "DENY").unwrap()],
+    );
+    c.added.baseline_pending = c.parked.paths.clone();
     c
 }
 
@@ -147,4 +165,22 @@ fn default_to_toml_then_from_toml_pins_php_version_default() {
     let s = Config::default().to_toml().unwrap();
     let back = Config::from_toml(&s).unwrap();
     assert_eq!(back.php.default, PhpVersion::new(8, 3));
+}
+
+#[test]
+fn node_preferences_round_trip_and_old_configs_default_to_none() {
+    let mut cfg = Config::default();
+    cfg.node.default = Some("24.1.0".to_owned());
+    cfg.node
+        .sites
+        .insert("/srv/example".to_owned(), "22.9.0".to_owned());
+    let text = cfg.to_toml().unwrap();
+    assert!(text.contains("[node.sites]"));
+    assert_eq!(Config::from_toml(&text).unwrap(), cfg);
+    let old = Config::from_toml("version = 23\n").unwrap();
+    assert_eq!(old.node, yerd_config::NodeSection::default());
+    for invalid in ["../24", "latest", "24.x"] {
+        cfg.node.default = Some(invalid.to_owned());
+        assert!(cfg.validate().is_err());
+    }
 }

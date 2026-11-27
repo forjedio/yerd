@@ -86,11 +86,12 @@ fn run(spec: &CoverSpec, forward: &[OsString]) -> ExitCode {
         Err(msg) => return fail(msg),
     };
 
-    let err = Command::new(&php_bin)
-        .env("PHPRC", &cover_ini_path)
+    let mut cmd = Command::new(&php_bin);
+    cmd.env("PHPRC", &cover_ini_path)
         .env("YERD_COVER", "1")
-        .args(forward)
-        .exec();
+        .args(forward);
+    crate::shim::apply_network_env(&mut cmd, &dirs);
+    let err = cmd.exec();
     if err.kind() == std::io::ErrorKind::NotFound {
         return fail(format!(
             "PHP binary not found at {} ({err}) — reinstall with `yerd install php {minor}`",
@@ -151,8 +152,9 @@ pub(crate) fn prepare_cover_ini(dirs: &PlatformDirs, minor: &str) -> Result<Path
 /// rename). `bin/yerd` doesn't otherwise depend on `yerd-php` (the FPM/
 /// site-pool crate), so this ~15-line helper is duplicated here rather than
 /// pulling in that whole crate for it - the same trade `yerd-php`'s own
-/// `io::atomic_write` already made against `yerd-config`'s equivalent.
-fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// `io::atomic_write` already made against `yerd-config`'s equivalent. Also
+/// used by the debug shims.
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
     })?;

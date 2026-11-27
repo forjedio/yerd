@@ -14,6 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use yerd_php::Downloader;
 use yerd_platform::PlatformDirs;
 
 use super::{drain, move_dir_contents, stage_and_swap, tool_dir, ProgressTx, Tool, ToolError};
@@ -79,6 +80,16 @@ pub(crate) fn quiet_deprecations_scan_dir_env(dir: &Path) -> String {
     format!(":{}", dir.display())
 }
 
+/// The package whose version the `.version` marker records (see
+/// `read_wp_cli_version`), so the update poll compares like with like.
+const CORE_PACKAGE: &str = "wp-cli/wp-cli";
+
+/// The latest stable `wp-cli/wp-cli` on Packagist, for the update poll. The
+/// bundle is deliberately not consulted: the marker holds the core version.
+pub(crate) async fn latest(dl: &dyn Downloader) -> Result<String, ToolError> {
+    super::fetch_packagist_latest(dl, CORE_PACKAGE).await
+}
+
 /// `{data}/tools/wp-cli/vendor/wp-cli/wp-cli/php/boot-fs.php` - the filesystem
 /// entry point the `wp` shim execs under the managed PHP. `wp-cli-bundle`
 /// requires `wp-cli/wp-cli` as a regular dependency, so it lands under
@@ -96,7 +107,11 @@ pub fn boot_path(dirs: &PlatformDirs) -> PathBuf {
 
 /// Build + install the latest WP-CLI via the managed Composer, streaming
 /// Composer's output to `progress` when attached.
-pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Result<(), ToolError> {
+pub async fn install(
+    dirs: &PlatformDirs,
+    proxy_env: &yerd_core::network::ChildEnvPlan,
+    progress: Option<&ProgressTx>,
+) -> Result<(), ToolError> {
     let Some(php_version) = installed_versions(dirs)
         .into_iter()
         .max_by_key(|v| (v.major, v.minor))
@@ -123,8 +138,8 @@ pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Resu
     let build = tools_root.join(format!(".wp-cli-build-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&build);
 
-    let mut child = tokio::process::Command::new(&php)
-        .arg(&phar)
+    let mut cmd = tokio::process::Command::new(&php);
+    cmd.arg(&phar)
         .arg("create-project")
         .arg("--prefer-dist")
         .arg("--no-interaction")
@@ -136,7 +151,9 @@ pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Resu
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    crate::network::apply_plan(&mut cmd, proxy_env);
+    let mut child = cmd
         .spawn()
         .map_err(|e| ToolError::Io(format!("spawn composer: {e}")))?;
 

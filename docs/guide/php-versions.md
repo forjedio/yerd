@@ -6,14 +6,28 @@ Yerd runs **any number of PHP versions side by side** and lets you pick which on
 
 The fastest way to manage PHP is the **PHP** page (under the **Environment** group) in the [desktop app](./desktop-app#php). It's a live view of every installed version and the controls to change them, with no commands to remember.
 
-<ThemedImage light="/images/php-light.png" dark="/images/php-dark.png" alt="The PHP page in the Yerd desktop app" />
+<ThemedImage light="/images/php-light.png" dark="/images/php-dark.png" alt="The PHP page: Shared defaults and PHP 8.4, 8.3 and 7.4 in the list, an update banner for 8.3, and PHP 8.4's inspector with its settings grid, extra extensions, ini directives and Xdebug switch" />
 
-- A table of installed versions shows live FPM pool state, patch level, pool memory (RSS), and whether an update is available.
-- **Install** opens a picker of installable versions (already-installed ones are hidden); progress streams live next to the Install button as the prebuilt static build downloads. An **Install a legacy version** toggle (off by default) swaps the picker over to the [legacy minors](#legacy-php-versions) (7.4 / 8.0 / 8.1) behind a warning block and a mandatory confirmation checkbox; when every current version is already installed the toggle starts on and locks there, since legacy is all that's left to add.
-- **Refresh** re-checks for updates and **Update all** updates every version with one pending - [updates are notify-only](#updates-are-notify-only).
-- Each row's `⋯` menu offers **Restart**, **Set default** (marks it with a star; disabled for legacy rows, which are tagged with a `legacy` badge), **Update** (when available), and **Uninstall**; **Restart all** restarts every running pool.
-- A **Default settings** card edits the [global ini defaults](#tuning-php-settings) applied to every version; leave a field blank to use PHP's built-in default, and saving restarts running pools to apply.
-- A **Per-version configuration** card lists your versions down the side, newest first; picking one shows everything scoped to it: the settings form (empty fields inherit the defaults; see [Per-version configuration](#per-version-configuration)), its [custom extensions](#custom-extensions), an **FPM pool size** field (how many PHP workers that version may run at once), and a free-form ini-directive editor (e.g. `xdebug.mode = debug`). Each row badges how much that version has configured and marks unsaved edits, so switching versions never loses work. Saving restarts only that version's pool.
+- The list starts with a **Shared defaults** row, then your installed versions, newest first. Each version shows a **Default** or **Legacy** chip, its patch and live FPM pool state (running, idle or failed), **Xdebug on** when its pool loads [Xdebug](./xdebug), and either an update chip (e.g. `↑ 8.4.15`) or a faint **customised** tag when it has its own configuration. **Install another version** sits at the end. On a narrower window the list becomes a table (patch, FPM, memory (RSS), Xdebug and update columns) and picking a row opens its details in a drawer.
+
+  <ThemedImage light="/images/php-compact-light.png" dark="/images/php-compact-dark.png" alt="The PHP page at a narrower window size: a table with patch, FPM, memory, Xdebug and update columns for each version" />
+
+- **Check for updates** re-checks for patch updates. When any are pending, a banner under the list offers **Update** (one version) or **Update all** - [updates are notify-only](#updates-are-notify-only).
+- **Install PHP** opens one list of installable versions: supported ones first, then the [legacy minors](#legacy-php-versions) (7.4 / 8.0 / 8.1), with installed versions marked. Picking a legacy version shows an out-of-support warning and an **I understand — install it anyway** checkbox that must be ticked before **Install** is enabled. A progress dialog shows the download; you can close it and Yerd keeps installing in the background (the sidebar shows the install, and a notification says when it's done).
+
+  <ThemedImage light="/images/php-install-light.png" dark="/images/php-install-dark.png" alt="The Install PHP dialog: supported versions 8.5 to 8.2 above the legacy 8.1, 8.0 and 7.4, with legacy 8.1 picked and its out-of-support warning and confirmation checkbox" />
+
+- Picking a version shows its inspector: its status, **Restart pool** (when the pool is running or failed), and a `···` menu with **Make default** (disabled for the default and for legacy versions), **Update to …** (when available) and **Uninstall PHP …**.
+- The inspector's **Settings** grid overrides the [shared defaults](#tuning-php-settings) for that version (empty fields inherit them; see [Per-version configuration](#per-version-configuration)). Changed rows get a blue dot, and **Reset to shared** blanks them all. The grid also holds **FPM workers** (how many PHP workers that version may run at once) and, when the build includes FFI, **FFI in web requests**. **Save changes**, in a bar pinned to the bottom of the inspector, applies the fields you changed (anything set meanwhile from the CLI is kept) and restarts only that version's pool.
+
+  <ThemedImage light="/images/php-version-settings-light.png" dark="/images/php-version-settings-dark.png" alt="PHP 8.3's inspector with two unsaved changes: Memory limit 1G and FPM workers 24 marked with blue dots, the other fields showing the inherited shared values, and the pinned Save changes bar" />
+
+- Below the grid, **Extra extensions** registers [custom extensions](#custom-extensions) and **Other ini directives** edits free-form directives (e.g. `apc.shm_size = 128M`); both apply as you add, edit or remove. The **Xdebug** section holds the [bundled Xdebug](./xdebug) switch, its modes and its start trigger.
+- The **Shared defaults** pane edits the [global ini defaults](#tuning-php-settings) applied to every version, plus the FFI switch and **Restart all pools**. Leave a field blank to use PHP's built-in default; **Save changes** (pinned at the bottom) applies only the fields you changed and restarts every running pool.
+
+  <ThemedImage light="/images/php-shared-defaults-light.png" dark="/images/php-shared-defaults-dark.png" alt="The Shared defaults pane: memory, upload, execution and error settings applied to every version, the FFI in web requests switch and Restart all pools" />
+
+- Unsaved edits are marked in the list and survive switching between versions; closing the drawer with unsaved edits asks first.
 
 ## From the command line
 
@@ -50,16 +64,16 @@ yerd install php 7.4 --legacy
 ```
 
 Running `yerd install php 7.4` without `--legacy` refuses and prints an
-out-of-support warning instead of installing. In the desktop app, the Install
-picker's **Install a legacy version** toggle replaces the version list with the
-legacy minors and opens a warning block and a mandatory confirmation checkbox
-("I understand and want to install this legacy version anyway.") before the
-Install button is enabled.
+out-of-support warning instead of installing. In the desktop app, the
+**Install PHP** dialog lists the legacy minors under their own **Legacy**
+heading; picking one shows an out-of-support warning and a mandatory
+confirmation checkbox ("I understand — install it anyway") before the Install
+button is enabled.
 
 A legacy version carries hard restrictions once installed:
 
 - **Cannot be the global default.** `yerd use 7.4` is refused; the desktop app
-  disables **Set default** for legacy rows.
+  disables **Make default** for legacy versions.
 - **No code coverage.** `phpcover`, `php7.4cover` / `php8.0cover` / `php8.1cover`,
   and `yerd coverage` all error rather than run - see [Code Coverage](./code-coverage).
 - **No yerd-dumps capture.** The Dumps view flags legacy rows as unsupported -
@@ -107,6 +121,7 @@ on 8.4, as noted.
 | `dom` | *(core)* Tree-based DOM API for reading and manipulating XML and HTML documents. |
 | `event` | libevent bindings for event-driven, non-blocking I/O loops. |
 | `exif` | Reads EXIF metadata (camera, orientation, GPS) embedded in image files. |
+| `ffi` | Foreign Function Interface: call native C libraries from PHP, as php-vips does with libvips. See [FFI and php-vips](#ffi-and-php-vips). |
 | `fileinfo` | *(core)* Detects a file's MIME type from its contents rather than its name. |
 | `filter` | *(core)* Validates and sanitizes data with `filter_var()` (emails, URLs, ints, …). |
 | `ftp` | Client-side FTP protocol support. |
@@ -118,6 +133,7 @@ on 8.4, as noted.
 | `imap` | Access to IMAP, POP3, and NNTP mailboxes. |
 | `intl` | Unicode/ICU internationalization: number and date formatting, collation, transliteration - required by Laravel's `Number` helper. |
 | `json` | *(core)* JSON encoding and decoding. |
+| `ldap` | LDAP directory client (OpenLDAP), including paged-results controls for Active Directory and similar servers. |
 | `lexbor` | **New in PHP 8.5.** The Lexbor HTML5 engine powering the new `\Dom\HTMLDocument` parser. |
 | `libxml` | *(core)* The shared libxml2 foundation the other XML extensions build on. |
 | `mbstring` | Multibyte-safe string functions for UTF-8 and other encodings. |
@@ -158,7 +174,7 @@ on 8.4, as noted.
 | `xmlreader` | *(core)* Pull-based streaming reader for large XML documents. |
 | `xmlwriter` | *(core)* Streaming writer for generating XML. |
 | `xsl` | XSLT 1.0 stylesheet transformations over the DOM. |
-| `Zend OPcache` | Caches compiled PHP bytecode in shared memory so scripts aren't re-parsed each request (a Zend extension). |
+| `Zend OPcache` | Caches compiled PHP bytecode in shared memory so scripts aren't re-parsed each request (a Zend extension). The JIT works alongside `swoole`. |
 | `zip` | Reading and writing ZIP archives. |
 | `zlib` | gzip / deflate stream compression. |
 
@@ -168,8 +184,8 @@ Need something not in this set? Register your own with
 [`yerd php ext`](#custom-extensions).
 
 [Legacy versions](#legacy-php-versions) (7.4 / 8.0 / 8.1) ship a smaller, uniform
-extension set built once across all three EOL minors, dropping a few extensions
-that need PHP 8.0+ or a newer `swoole` than 7.4 can run.
+extension set built once across all three EOL minors, dropping `ffi` and a few
+extensions that need PHP 8.0+ or a newer `swoole` than 7.4 can run.
 
 <details>
 <summary><b>Legacy build extension list</b> (7.4 / 8.0 / 8.1 - identical across all three)</summary>
@@ -195,6 +211,7 @@ that need PHP 8.0+ or a newer `swoole` than 7.4 can run.
 | `imagick` | ImageMagick bindings for advanced image processing and a wide range of formats. |
 | `imap` | Access to IMAP, POP3, and NNTP mailboxes. |
 | `intl` | Unicode/ICU internationalization: number and date formatting, collation, transliteration. |
+| `ldap` | LDAP directory client (OpenLDAP), including paged-results controls for Active Directory and similar servers. |
 | `mbregex` | Multibyte-aware regular expressions (the `mb_ereg*` functions). |
 | `mbstring` | Multibyte-safe string functions for UTF-8 and other encodings. |
 | `mysqli` | The improved, feature-complete MySQL/MariaDB driver. |
@@ -237,6 +254,9 @@ Dropped versus the stable builds:
   fragment across the three EOL minors, so it's dropped to keep one uniform
   legacy set.
 - **`swoole-hook-mysql`** - depends on `swoole`.
+- **`ffi`** - only the stable builds ship it, which is why the
+  [Allow FFI in web requests](#ffi-and-php-vips) setting doesn't apply to legacy
+  versions.
 - **`pcov` and `yerd-dump`** - the external `.so` partners from
   [`forjedio/yerd-php-ext`](https://github.com/forjedio/yerd-php-ext) aren't
   built for EOL PHP, which is why [coverage](./code-coverage) and
@@ -250,12 +270,18 @@ When you need an extension Yerd's builds don't ship (a PECL module like `scrypt`
 or your own compiled `.so`), register it with `yerd php ext`. Yerd loads it into
 **both** the web (FPM) runtime and the CLI for that version, so `extension_loaded()`
 returns `true` on a `.test` route and `php -m` lists it - the two used to diverge.
+Composer and the Laravel installer run with the same per-version CLI ini, so
+Composer's platform check sees the extension too.
 
 ```sh
 yerd php ext add 8.5 /opt/homebrew/lib/php/pecl/20250925/scrypt.so
 yerd php ext list
 yerd php ext remove 8.5 scrypt
 ```
+
+In the desktop app, **Add extension** in a version's inspector does the same: choose the `.so`, optionally name it, and switch on **Load as a Zend extension** for Zend extensions.
+
+<ThemedImage light="/images/php-add-extension-light.png" dark="/images/php-add-extension-dark.png" alt="The Add an extension to PHP 8.4 dialog, with a swoole.so path chosen, the name swoole and the Zend extension switch off" />
 
 - **Extensions are tied to a PHP version.** A native `.so` is compiled against one
   PHP *minor*, so you register it under the version it was built for (`8.5` above);
@@ -264,19 +290,25 @@ yerd php ext remove 8.5 scrypt
   that version's PHP and rejects it if it can't load - a wrong-version build, a
   missing dependency, or a Zend extension registered without `--zend` fails with a
   clear message instead of silently breaking your pools.
-- **Zend extensions** (xdebug/opcache-style) use `--zend`:
-  `yerd php ext add 8.5 /path/xdebug.so --zend`.
+- **Zend extensions** (opcache-style) use `--zend`:
+  `yerd php ext add 8.5 /path/ioncube_loader.so --zend`.
+- **Xdebug is built in.** Don't register your own `xdebug.so`: turn on the
+  bundled one with `yerd xdebug on` (see [Debugging with Xdebug](./xdebug)).
+  Yerd refuses to load Xdebug twice for the same version.
 - **Naming.** The removal handle defaults to the `.so` filename (`scrypt` above);
   override it with `--name`.
 - **Missing files** are handled gracefully: if a registered `.so` later disappears
   (e.g. Homebrew bumps its PECL directory on upgrade), Yerd skips it with a warning
   rather than failing to start the pool, and `yerd php ext list` marks it
   `(missing!)`.
+- **Now bundled?** If you registered your own build of an extension Yerd now
+  ships (such as `ldap` or `ffi`), remove it with `yerd php ext remove`. Loading
+  it twice makes PHP warn `Module "ldap" is already loaded`.
 
 Adding or removing an extension restarts that version's running FPM pool to apply
-it. In the desktop app, the same registry lives in the **Extensions** section of
-the **Per-version configuration** card on the **PHP** page: pick the version's
-tab, then **Add…** to browse for a `.so`. An extension whose file has gone
+it. In the desktop app, the same registry lives in the **Extra extensions** card
+of a version's inspector on the **PHP** page: pick the version in the list, then
+**Add extension** and **Choose** to browse for a `.so`. An extension whose file has gone
 missing is flagged, and its `⋯` menu can seed a matching ini directive. Registered
 extensions are stored per version in the config file - see the
 [Configuration Reference](../reference/configuration#php).
@@ -309,7 +341,7 @@ A fresh config defaults to **PHP 8.3**, but you'll usually set your own right af
 ::: warning Legacy versions can't be the default
 A [legacy version](#legacy-php-versions) (7.4 / 8.0 / 8.1) is ineligible as the
 global default - `yerd use 7.4` is refused client-side, and the desktop app
-disables **Set default** for legacy rows. It can still be pinned to an
+disables **Make default** for legacy versions. It can still be pinned to an
 individual site.
 :::
 
@@ -472,6 +504,32 @@ reference](../reference/cli/php#global-php-ini-settings) for the full list and t
 [Configuration Reference](../reference/configuration#php) for how they're stored
 and rendered into FPM config.
 
+#### FFI and php-vips
+
+The stable builds (8.2+) include the `ffi` extension, so FFI libraries such as
+[php-vips](https://github.com/libvips/php-vips) work. PHP's default
+`ffi.enable=preload` already allows FFI from the CLI (artisan, queue workers,
+tests), but php-vips doesn't support preloading, so web requests fail until you
+turn on **Allow FFI in web requests**:
+
+```sh
+yerd set php ffi.enable on               # every version whose build has FFI
+yerd set php ffi.enable on --only 8.5    # just one version
+yerd unset php ffi.enable                # back to PHP's preload default
+```
+
+It's off by default. When on, Yerd writes `php_admin_value[ffi.enable] = true`
+into the FPM pools of 8.2+ versions that include FFI, and never into
+[legacy](#legacy-php-versions) pools. Turning it on lets site code call native C
+libraries, so leave it off unless you need it. The same switch is on the
+**PHP** page of the desktop app, and agents can set it globally through the
+MCP `set_php_setting` tool.
+
+Native libraries aren't bundled. Install libvips yourself: `brew install vips`
+on macOS, `libvips42` (or `libvips42t64`) on Debian/Ubuntu, `vips` on Fedora,
+or `libvips` on Arch. The desktop app shows a hint when FFI is on but libvips
+isn't found.
+
 ### Per-version configuration
 
 Every setting can also be pinned for a **single** installed version with the
@@ -484,13 +542,17 @@ yerd unset php memory_limit --only 8.3    # 8.3 inherits the global value again
 ```
 
 Beyond the allowlist, `yerd php ini` sets **free-form ini directives** per
-version - typically the settings of a custom extension. The classic xdebug
-setup is two commands:
+version - typically the settings of a custom extension. Loading and
+configuring one is two commands:
 
 ```sh
-yerd php ext add 8.3 /opt/php/xdebug.so --zend   # load the extension
-yerd php ini set 8.3 xdebug.mode debug           # configure it
+yerd php ext add 8.3 /opt/php/pecl/mongodb.so   # load the extension
+yerd php ini set 8.3 mongodb.debug stderr       # configure it
 ```
+
+For Xdebug, use the built-in toggle instead: `yerd xdebug on 8.3` downloads and
+loads it with sensible defaults, and `yerd php ini` is only needed to override
+those (see [Debugging with Xdebug](./xdebug#changing-the-port-and-other-settings)).
 
 Directive names and values are shape-checked so they can never corrupt the
 generated config, but Yerd doesn't second-guess their meaning - a directive PHP
@@ -515,10 +577,10 @@ behind long-running work - queue workers, parallel test runs, or a lot of open
 tabs hitting the same site. Note that `pm.*` names are pool settings rather than
 ini directives, so `yerd php ini` refuses them and points here.
 
-In the desktop app the same lives in the
-**Per-version configuration** card on the PHP page: pick a version from the list
-to get the settings form (empty fields inherit the defaults), an **FPM pool
-size** field, that version's extensions, and a directive editor. A version that still has extensions
+In the desktop app the same lives in a version's inspector on the PHP page: pick
+a version from the list to get its **Settings** grid (empty fields inherit the
+shared defaults, and **FPM workers** is the pool size), its **Extra extensions**
+and its **Other ini directives**. A version that still has extensions
 registered after being uninstalled stays in the list, so those registrations can
 be removed. See the
 [PHP CLI reference](../reference/cli/php#custom-ini-directives) for the rules
@@ -540,7 +602,7 @@ and the denylist of directives Yerd manages elsewhere.
 | `yerd restart php [<version>]` | Restart one (or all) running FPM pools. |
 | `yerd set php <setting> <value> [--only <version>]` | Set a global PHP ini default, or a per-version override with `--only`. |
 | `yerd unset php <setting> [--only <version>]` | Reset a global setting to PHP's built-in value. With `--only`, remove one version's override so the global value applies again. |
-| `yerd php ini set <version> <name> <value>` | Set a free-form ini directive (e.g. `xdebug.mode`) for one version. |
+| `yerd php ini set <version> <name> <value>` | Set a free-form ini directive (e.g. `apc.shm_size`) for one version. |
 | `yerd php ini unset <version> <name>` | Remove a free-form ini directive. |
 | `yerd php ini list` | Show per-version overrides, directives, and pool sizes. |
 | `yerd php pool set <version> max_children <n>` | Set how many PHP workers that version may run at once (1-1024, default 16). |
@@ -549,6 +611,9 @@ and the denylist of directives Yerd manages elsewhere.
 | `yerd php ext add <version> <path> [--zend] [--name <name>]` | Register a custom extension (load-probed) for a version. |
 | `yerd php ext remove <version> <name>` | Remove a registered extension. |
 | `yerd php ext list` | List registered custom extensions, grouped by version. |
+| `yerd xdebug on [<version>] [--mode …] [--trigger\|--always]` | Turn on the [bundled Xdebug](./xdebug) for a version (default PHP when omitted). |
+| `yerd xdebug off [<version>]` | Turn it off again. |
+| `yerd xdebug status` | Show Xdebug state for every installed version. |
 
 Add `--json` to any command for machine-readable output.
 

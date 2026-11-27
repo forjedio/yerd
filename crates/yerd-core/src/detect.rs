@@ -20,6 +20,8 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 /// Candidate web-root subdirectories, in generic-fallback priority order. The
 /// I/O signal-gatherer probes each for an `index.php`; [`detect`] consults the
 /// same list so the two never drift.
@@ -197,6 +199,64 @@ fn detect_drupal(sig: &ProjectSignals) -> Option<Detection> {
     None
 }
 
+/// The PHP framework a site is built on, as reported by [`detect_framework`].
+///
+/// Serialised in `snake_case` (`Wordpress` is spelled `wordpress`, matching the
+/// site-creation wizard's tag). An unknown value decodes as [`Self::Other`],
+/// so an older client reading a newer daemon's variant keeps the rest of the
+/// reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SiteFramework {
+    /// Laravel (`laravel/framework` or an `artisan` marker).
+    Laravel,
+    /// `WordPress` (`wp-config.php` or `wp-load.php`).
+    Wordpress,
+    /// Symfony (`symfony/framework-bundle` or a `bin/console` marker).
+    Symfony,
+    /// Statamic (`statamic/cms`).
+    Statamic,
+    /// Craft CMS (`craftcms/cms`).
+    Craft,
+    /// Drupal (any `drupal/core*` package).
+    Drupal,
+    /// A framework this build doesn't know. Decode-only fallback; detection
+    /// never produces it.
+    #[serde(other)]
+    Other,
+}
+
+/// Identify the framework a project is built on. Pure; no I/O.
+///
+/// First match wins: Statamic, Craft, Laravel, Drupal, Symfony, `WordPress`.
+/// Statamic comes before Laravel because a Statamic site is also a Laravel
+/// app, and Drupal comes before Symfony because Drupal pulls in Symfony
+/// components. Unlike [`detect`], no web-root `index.php` is required.
+#[must_use]
+pub fn detect_framework(sig: &ProjectSignals) -> Option<SiteFramework> {
+    let requires = |p: &str| sig.composer_requires.contains(p);
+    let marker = |m: &str| sig.markers.contains(m);
+    if requires("statamic/cms") {
+        Some(SiteFramework::Statamic)
+    } else if requires("craftcms/cms") {
+        Some(SiteFramework::Craft)
+    } else if requires("laravel/framework") || marker("artisan") {
+        Some(SiteFramework::Laravel)
+    } else if sig
+        .composer_requires
+        .iter()
+        .any(|p| p.starts_with("drupal/core"))
+    {
+        Some(SiteFramework::Drupal)
+    } else if requires("symfony/framework-bundle") || marker("bin/console") {
+        Some(SiteFramework::Symfony)
+    } else if marker("wp-config.php") || marker("wp-load.php") {
+        Some(SiteFramework::Wordpress)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -253,6 +313,70 @@ mod tests {
     fn cakephp_webroot() {
         let d = detect(&signals(&["cakephp/cakephp"], &["bin/cake"], &["webroot"]));
         assert_eq!(sub(&d), std::path::Path::new("webroot"));
+    }
+
+    #[test]
+    fn detect_framework_table() {
+        use SiteFramework as F;
+        type Case<'a> = (&'a str, &'a [&'a str], &'a [&'a str], Option<SiteFramework>);
+        let cases: &[Case] = &[
+            (
+                "laravel composer",
+                &["laravel/framework"],
+                &[],
+                Some(F::Laravel),
+            ),
+            ("laravel artisan", &[], &["artisan"], Some(F::Laravel)),
+            (
+                "wordpress config",
+                &[],
+                &["wp-config.php"],
+                Some(F::Wordpress),
+            ),
+            ("wordpress load", &[], &["wp-load.php"], Some(F::Wordpress)),
+            (
+                "symfony composer",
+                &["symfony/framework-bundle"],
+                &[],
+                Some(F::Symfony),
+            ),
+            (
+                "symfony bare console",
+                &[],
+                &["bin/console"],
+                Some(F::Symfony),
+            ),
+            ("statamic", &["statamic/cms"], &[], Some(F::Statamic)),
+            (
+                "statamic over laravel",
+                &["laravel/framework", "statamic/cms"],
+                &["artisan"],
+                Some(F::Statamic),
+            ),
+            ("craft", &["craftcms/cms"], &[], Some(F::Craft)),
+            ("drupal", &["drupal/core-recommended"], &[], Some(F::Drupal)),
+            (
+                "drupal with symfony components",
+                &["drupal/core", "symfony/framework-bundle"],
+                &["bin/console"],
+                Some(F::Drupal),
+            ),
+            (
+                "codeigniter is not reported",
+                &["codeigniter4/framework"],
+                &["spark"],
+                None,
+            ),
+            ("plain php", &[], &["index.php"], None),
+            ("empty", &[], &[], None),
+        ];
+        for (name, reqs, markers, want) in cases {
+            assert_eq!(
+                detect_framework(&signals(reqs, markers, &[])),
+                *want,
+                "{name}"
+            );
+        }
     }
 
     #[test]

@@ -26,8 +26,8 @@ function fakeCtx(view: ViewActions = {}): ShortcutCtx {
 }
 
 describe("VIEW_TARGETS", () => {
-  it("covers the main views in sidebar order, About excluded", () => {
-    expect(VIEW_TARGETS).toHaveLength(11);
+  it("covers the main views as palette navigation targets", () => {
+    expect(VIEW_TARGETS).toHaveLength(12);
     expect(VIEW_TARGETS[0]?.path).toBe("/overview");
     expect(VIEW_TARGETS[VIEW_TARGETS.length - 1]?.path).toBe("/doctor");
     expect(VIEW_TARGETS.map((v) => v.path)).not.toContain("/about");
@@ -40,6 +40,12 @@ describe("VIEW_TARGETS", () => {
     expect(withDigit).toHaveLength(9);
     expect(withDigit.map((v) => v.digit)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
     expect(VIEW_TARGETS.find((v) => v.path === "/integrations")?.digit).toBeUndefined();
+  });
+
+  it("lists Node after PHP without a digit chord", () => {
+    const paths = VIEW_TARGETS.map((v) => v.path);
+    expect(paths.indexOf("/node")).toBe(paths.indexOf("/php") + 1);
+    expect(VIEW_TARGETS.find((v) => v.path === "/node")).toEqual({ path: "/node", title: "Node" });
   });
 });
 
@@ -66,7 +72,7 @@ describe("commandsForScope", () => {
     const main = commandsForScope(all, "main", false).filter((c) =>
       c.id.startsWith("nav:"),
     );
-    expect(main).toHaveLength(11);
+    expect(main).toHaveLength(12);
     expect(main.filter((c) => c.chord)).toHaveLength(9);
     const integrations = main.find((c) => c.id === "nav:/integrations");
     const proxies = main.find((c) => c.id === "nav:/proxies");

@@ -28,8 +28,11 @@
 //!
 //! On either wake the task rebuilds the router from the *current* config under
 //! the config lock (same lock order as the mutation path: config → router), so
-//! it never races a concurrent mutation, and it **never writes config** - so it
-//! cannot feed back into its own fs events.
+//! it never races a concurrent mutation. It saves config only when the parked
+//! name claims, a renamed site's settings or the parked added times changed
+//! (or an earlier save failed);
+//! the config file lives outside the watched directories, so a save never
+//! feeds back into its own fs events.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -64,7 +67,10 @@ pub async fn run(state: Arc<DaemonState>, mut shutdown_rx: watch::Receiver<bool>
     };
 
     let mut watched: HashSet<PathBuf> = HashSet::new();
-    if let Some(desired) = recompute(&state).await {
+    let mut unsaved = state
+        .config_unsaved
+        .load(std::sync::atomic::Ordering::Relaxed);
+    if let Some(desired) = recompute(&state, &mut unsaved).await {
         reconcile(debouncer.watcher(), &mut watched, &desired);
     }
 
@@ -77,36 +83,74 @@ pub async fn run(state: Arc<DaemonState>, mut shutdown_rx: watch::Receiver<bool>
         if !wake {
             break;
         }
-        if let Some(desired) = recompute(&state).await {
+        if let Some(desired) = recompute(&state, &mut unsaved).await {
             reconcile(debouncer.watcher(), &mut watched, &desired);
         }
     }
 }
 
 /// Rebuild the router from the current config and return the desired watch set
-/// (every parked root + every unresolved project root). Returns `None` if the
-/// rebuild failed (the previous router is left in place).
-async fn recompute(state: &DaemonState) -> Option<HashSet<PathBuf>> {
-    let guard = state.config.lock().await;
-    let (router, wordpress_sites, laravel_sites, watch_roots) = match startup::build_routing(
-        &guard,
-        &state.dirs,
-        &state.detect_cache,
-    ) {
-        Ok(r) => r,
-        Err(e) => {
+/// (every parked root + every unresolved project root). A parked site renamed
+/// by the rebuild (see [`startup::live_parked_renames`]) has its name-keyed
+/// settings moved to the new name and its app-side URL synced, and the parked
+/// name claims and first-seen times are brought in line with the new router.
+/// Config is saved when any of them changed, or when an earlier save failed
+/// (`unsaved`, cleared only by a successful save). The tunnel route map is then rebuilt (after the config
+/// lock is released), so a shared site that just appeared becomes routable.
+/// Returns `None` if the rebuild failed (the previous router is left in place).
+async fn recompute(state: &DaemonState, unsaved: &mut bool) -> Option<HashSet<PathBuf>> {
+    let mut guard = state.config.lock().await;
+    let rebuild = |cfg: &yerd_config::Config| {
+        startup::build_routing(cfg, &state.dirs, &state.detect_cache).map_err(|e| {
             tracing::warn!(error = %e, "watcher router rebuild failed; keeping previous routing");
-            return None;
-        }
+        })
     };
+    let mut routing = rebuild(&guard).ok()?;
+    let renames = startup::live_parked_renames(
+        &*state.router.read().await,
+        &routing.0,
+        &guard.parked.claims,
+    );
+    let mut next = guard.clone();
+    let moved = startup::rekey_parked_names(&mut next, &renames);
+    if moved {
+        routing = rebuild(&next).ok()?;
+    }
+    let pending: HashSet<&str> = renames.iter().map(|r| r.doc_root.as_str()).collect();
+    let claimed = startup::reconcile_parked_claims(&mut next, &routing.0, &pending);
+    let stamped = startup::reconcile_parked_added(
+        &mut next,
+        &routing.0,
+        crate::self_update::now_epoch(),
+        |p| std::path::Path::new(p).is_dir(),
+    );
+    if moved || claimed || stamped {
+        *state.site_added.write().await = next.added.clone();
+        *state.favourite_sites.write().await = next.favourites.sites.clone();
+        *guard = next;
+        *unsaved = true;
+    }
+    if *unsaved {
+        match guard.save(&state.config_path) {
+            Ok(()) => *unsaved = false,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not persist parked site names; retrying on the next rescan");
+            }
+        }
+    }
+    let (router, wordpress_sites, laravel_sites, framework_sites, watch_roots) = routing;
     *state.router.write().await = router;
     *state.wordpress_sites.write().await = wordpress_sites;
     *state.laravel_sites.write().await = laravel_sites;
+    *state.framework_sites.write().await = framework_sites;
 
     let mut desired: HashSet<PathBuf> = watch_roots.into_iter().collect();
     for p in &guard.parked.paths {
         desired.insert(PathBuf::from(p));
     }
+    drop(guard);
+    crate::tunnel::rebuild_routes(state).await;
+    startup::sync_renamed_site_urls(state, &startup::renamed_sites(&renames)).await;
     Some(desired)
 }
 
@@ -136,5 +180,145 @@ fn reconcile(
                 tracing::debug!(path = %path.display(), error = %e, "watch failed (will retry)");
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::test_support::state_in;
+
+    #[tokio::test]
+    async fn recompute_routes_a_shared_site_that_appears_in_a_parked_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parked = tmp.path().join("Sites");
+        std::fs::create_dir_all(&parked).unwrap();
+        let state = state_in(tmp.path());
+        {
+            let mut cfg = state.config.lock().await;
+            cfg.parked
+                .paths
+                .insert(parked.to_string_lossy().into_owned());
+            cfg.tunnel
+                .sites
+                .insert("blog".into(), "blog.example.com".into());
+        }
+        recompute(&state, &mut false).await.unwrap();
+        assert!(state.tunnel_routes.read().await.is_empty());
+
+        std::fs::create_dir_all(parked.join("blog")).unwrap();
+        recompute(&state, &mut false).await.unwrap();
+
+        assert_eq!(
+            state
+                .tunnel_routes
+                .read()
+                .await
+                .get("blog.example.com")
+                .map(|r| r.site.as_str()),
+            Some("blog")
+        );
+    }
+
+    #[tokio::test]
+    async fn recompute_moves_settings_when_a_contested_name_frees_up() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parked = tmp.path().join("Sites");
+        std::fs::create_dir_all(parked.join("laravel.com")).unwrap();
+        std::fs::create_dir_all(parked.join("laravel.app")).unwrap();
+        let state = state_in(tmp.path());
+        {
+            let mut cfg = state.config.lock().await;
+            cfg.parked
+                .paths
+                .insert(parked.to_string_lossy().into_owned());
+            cfg.favourites.sites.insert("laravel-com".to_owned());
+        }
+        recompute(&state, &mut false).await.unwrap();
+        assert!(state.router.read().await.get("laravel-com").is_some());
+
+        std::fs::remove_dir(parked.join("laravel.app")).unwrap();
+        recompute(&state, &mut false).await.unwrap();
+
+        assert!(state.router.read().await.get("laravel").is_some());
+        let mirror = state.favourite_sites.read().await.clone();
+        assert!(mirror.contains("laravel") && !mirror.contains("laravel-com"));
+        let cfg = state.config.lock().await;
+        assert!(cfg.favourites.sites.contains("laravel"));
+        assert!(!cfg.favourites.sites.contains("laravel-com"));
+        let root = parked.join("laravel.com").to_string_lossy().into_owned();
+        let claim = cfg.parked.claims.get(&root).unwrap();
+        assert_eq!(claim.name, "laravel");
+        assert!(claim.url_synced);
+    }
+
+    #[tokio::test]
+    async fn recompute_gives_a_new_folder_no_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parked = tmp.path().join("Sites");
+        std::fs::create_dir_all(&parked).unwrap();
+        let state = state_in(tmp.path());
+        {
+            let mut cfg = state.config.lock().await;
+            cfg.parked
+                .paths
+                .insert(parked.to_string_lossy().into_owned());
+            cfg.favourites.sites.insert("laravel-com".to_owned());
+        }
+        recompute(&state, &mut false).await.unwrap();
+
+        std::fs::create_dir_all(parked.join("laravel.com")).unwrap();
+        recompute(&state, &mut false).await.unwrap();
+
+        let cfg = state.config.lock().await;
+        assert!(cfg.favourites.sites.contains("laravel-com"));
+        assert!(!cfg.favourites.sites.contains("laravel"));
+    }
+
+    #[tokio::test]
+    async fn recompute_retries_an_unsaved_config_until_it_saves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        state
+            .config
+            .lock()
+            .await
+            .favourites
+            .sites
+            .insert("blog".to_owned());
+        let mut unsaved = true;
+
+        recompute(&state, &mut unsaved).await.unwrap();
+
+        assert!(!unsaved);
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert!(reloaded.favourites.sites.contains("blog"));
+    }
+
+    #[tokio::test]
+    async fn recompute_stamps_a_new_parked_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parked = tmp.path().join("Sites");
+        std::fs::create_dir_all(&parked).unwrap();
+        let state = state_in(tmp.path());
+        state
+            .config
+            .lock()
+            .await
+            .parked
+            .paths
+            .insert(parked.to_string_lossy().into_owned());
+        recompute(&state, &mut false).await.unwrap();
+        assert!(state.site_added.read().await.parked.is_empty());
+
+        std::fs::create_dir_all(parked.join("blog")).unwrap();
+        recompute(&state, &mut false).await.unwrap();
+
+        let root = parked.join("blog").to_string_lossy().into_owned();
+        let cached = state.site_added.read().await.parked.get(&root).copied();
+        assert!(cached.is_some_and(|t| t > 0), "got {cached:?}");
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert_eq!(reloaded.added.parked.get(&root).copied(), cached);
     }
 }

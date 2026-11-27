@@ -13,6 +13,10 @@
 //! - `latest.json` - a [`LatestManifest`] envelope carrying the latest stable
 //!   and RC releases (GitHub has no two-channel "latest" equivalent).
 //!
+//! Each release also gets a categorised notes file at
+//! `release-notes/<tag>.json` ([`ReleaseNotesFile`], built by
+//! [`release_notes`]), outside the reconciled `releases/` folder.
+//!
 //! Version precedence and pre-release classification are borrowed from
 //! [`yerd_update`] (`parse_tag` + semver ordering + the flag-or-semver
 //! pre-release rule) so this crate cannot drift from the self-update decision
@@ -325,6 +329,256 @@ pub fn reconcile(
     }
 
     plan
+}
+
+/// The release-notes file schema version. Bumped only on a breaking change.
+pub const RELEASE_NOTES_SCHEMA: u32 = 1;
+
+/// The CDN object path of one release's notes file: `release-notes/<tag>.json`.
+///
+/// The folder sits outside `releases/`, so the CDN reconcile never lists or
+/// prunes it.
+#[must_use]
+pub fn release_notes_path(tag: &str) -> String {
+    format!("release-notes/{tag}.json")
+}
+
+/// The subset of the GitHub Releases API that release notes are built from.
+/// Unknown fields are ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct GithubRelease {
+    /// The release tag, verbatim.
+    pub tag_name: String,
+    /// Whether this is an unpublished draft.
+    #[serde(default)]
+    pub draft: bool,
+    /// Whether the source flagged this as a pre-release.
+    #[serde(default)]
+    pub prerelease: bool,
+    /// The release body (markdown), if any.
+    #[serde(default)]
+    pub body: Option<String>,
+    /// The RFC 3339 publish time; absent on drafts.
+    #[serde(default)]
+    pub published_at: Option<String>,
+}
+
+/// One change listed in a release's notes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteItem {
+    /// The change title, with any `[Feat]`/`[Fix]` prefix removed.
+    pub title: String,
+    /// The GitHub login of the author, without the `@`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    /// The pull request URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// One release's categorised notes, published at [`release_notes_path`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseNotesFile {
+    /// File schema version ([`RELEASE_NOTES_SCHEMA`]).
+    pub schema: u32,
+    /// The release tag, verbatim (e.g. `v2.1.0-rc.3`).
+    pub tag: String,
+    /// The bare semver version (e.g. `2.1.0-rc.3`).
+    pub version: String,
+    /// True when the release is flagged as, or versioned as, a pre-release.
+    pub prerelease: bool,
+    /// The RFC 3339 publish time.
+    pub published_at: String,
+    /// New features.
+    pub features: Vec<NoteItem>,
+    /// Bug fixes.
+    pub fixes: Vec<NoteItem>,
+    /// Everything else that is user-facing.
+    pub others: Vec<NoteItem>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Features,
+    Fixes,
+    Others,
+    Changelog,
+    Skip,
+}
+
+fn heading_section(line: &str) -> Option<Section> {
+    if let Some(rest) = line.strip_prefix("###") {
+        let name = rest.trim().to_ascii_lowercase();
+        return Some(match name.as_str() {
+            "features" => Section::Features,
+            "fixes" => Section::Fixes,
+            "others" => Section::Others,
+            _ => Section::Skip,
+        });
+    }
+    let rest = line.strip_prefix("##")?;
+    let normalised: String = rest
+        .to_ascii_lowercase()
+        .replace('\'', "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(if normalised == "whats changed" {
+        Section::Changelog
+    } else {
+        Section::Skip
+    })
+}
+
+fn is_housekeeping(entry: &str) -> bool {
+    entry.starts_with("[Docs] ") || entry.starts_with("[Meta] ")
+}
+
+fn single_token(s: &str) -> bool {
+    !s.is_empty() && !s.chars().any(char::is_whitespace)
+}
+
+/// Split `title by @login in https://...` into its parts. A line that does not
+/// have that shape becomes a title-only item.
+fn note_item(entry: &str) -> NoteItem {
+    let whole = || NoteItem {
+        title: entry.to_string(),
+        author: None,
+        url: None,
+    };
+    let Some((left, url_rest)) = entry.rsplit_once(" in https://") else {
+        return whole();
+    };
+    let Some((title, author)) = left.rsplit_once(" by @") else {
+        return whole();
+    };
+    if title.trim().is_empty() || !single_token(author) || !single_token(url_rest) {
+        return whole();
+    }
+    NoteItem {
+        title: title.trim().to_string(),
+        author: Some(author.to_string()),
+        url: Some(format!("https://{url_rest}")),
+    }
+}
+
+/// Split a GitHub release body into `(features, fixes, others)`.
+///
+/// Handles both shapes the releases have used: the grouped body written by
+/// `group-release-notes.sh` (`### Features` / `### Fixes` / `### Others`) and
+/// GitHub's raw `## What's Changed` list, where `[Feat]` and `[Fix]` items are
+/// routed and stripped and everything else lands in others. `[Docs]` and
+/// `[Meta]` items are dropped in every section. Indented lines (sub-bullets,
+/// wrapped continuations) are ignored. Any other heading, or a plain paragraph
+/// line, ends collection until the next recognised heading.
+#[must_use]
+pub fn parse_notes_body(body: &str) -> (Vec<NoteItem>, Vec<NoteItem>, Vec<NoteItem>) {
+    let mut features = Vec::new();
+    let mut fixes = Vec::new();
+    let mut others = Vec::new();
+    let mut section = Section::Skip;
+
+    for raw in body.lines() {
+        let line = raw.trim_end();
+        if let Some(next) = heading_section(line) {
+            section = next;
+            continue;
+        }
+        if section == Section::Skip || line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let entry = line
+            .strip_prefix("* ")
+            .or_else(|| line.strip_prefix("- "))
+            .map(str::trim);
+        let Some(entry) = entry else {
+            if !line.trim().is_empty() {
+                section = Section::Skip;
+            }
+            continue;
+        };
+        if entry.is_empty() || is_housekeeping(entry) {
+            continue;
+        }
+        match section {
+            Section::Features => features.push(note_item(entry)),
+            Section::Fixes => fixes.push(note_item(entry)),
+            Section::Others => others.push(note_item(entry)),
+            Section::Changelog => {
+                if let Some(rest) = entry.strip_prefix("[Feat] ") {
+                    features.push(note_item(rest.trim_start()));
+                } else if let Some(rest) = entry.strip_prefix("[Fix] ") {
+                    fixes.push(note_item(rest.trim_start()));
+                } else {
+                    others.push(note_item(entry));
+                }
+            }
+            Section::Skip => {}
+        }
+    }
+
+    (features, fixes, others)
+}
+
+/// Build the notes file for one GitHub release.
+///
+/// Returns `None` for a draft, a tag that is not valid semver (which also keeps
+/// the CDN path safe), or a release with no publish time.
+#[must_use]
+pub fn release_notes(r: &GithubRelease) -> Option<ReleaseNotesFile> {
+    if r.draft {
+        return None;
+    }
+    let version = yerd_update::parse_tag(&r.tag_name)?;
+    let published_at = r.published_at.clone()?;
+    let (features, fixes, others) = parse_notes_body(r.body.as_deref().unwrap_or_default());
+    Some(ReleaseNotesFile {
+        schema: RELEASE_NOTES_SCHEMA,
+        tag: r.tag_name.clone(),
+        prerelease: r.prerelease || !version.pre.is_empty(),
+        version: version.to_string(),
+        published_at,
+        features,
+        fixes,
+        others,
+    })
+}
+
+/// A one-line summary of a release: the first feature title, else the first
+/// fix, else the first other item, else empty.
+#[must_use]
+pub fn notes_summary(f: &ReleaseNotesFile) -> String {
+    f.features
+        .first()
+        .or_else(|| f.fixes.first())
+        .or_else(|| f.others.first())
+        .map(|i| i.title.clone())
+        .unwrap_or_default()
+}
+
+/// The stable tags strictly older than `current_tag`, newest first, capped at
+/// `limit`. Drafts, pre-releases and non-semver tags are skipped; a current tag
+/// that is not semver gives an empty list.
+#[must_use]
+pub fn earlier_tags(releases: &[ReleaseEntry], current_tag: &str, limit: usize) -> Vec<String> {
+    let Some(current) = yerd_update::parse_tag(current_tag) else {
+        return Vec::new();
+    };
+    let mut older: Vec<(semver::Version, &str)> = releases
+        .iter()
+        .filter(|r| !r.draft)
+        .filter_map(|r| {
+            let v = r.version()?;
+            (!r.is_prerelease(&v) && v < current).then_some((v, r.tag_name.as_str()))
+        })
+        .collect();
+    older.sort_by(|a, b| b.0.cmp(&a.0));
+    older.dedup_by(|a, b| a.0 == b.0);
+    older
+        .into_iter()
+        .take(limit)
+        .map(|(_, t)| t.to_string())
+        .collect()
 }
 
 #[cfg(test)]
@@ -660,6 +914,19 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_never_touches_release_notes_folder() {
+        let expected = vec![exp("v2.0.4", "a.deb", 4, None)];
+        let cdn_objs = vec![
+            cdn("releases/v2.0.4/a.deb", 4, None),
+            cdn("release-notes/v2.0.4.json", 4, None),
+        ];
+        let plan = reconcile(&expected, &cdn_objs, &tags(&["v2.0.4"]), &tags(&["v2.0.4"]));
+        assert!(plan.to_delete.is_empty(), "got {:?}", plan.to_delete);
+        assert!(plan.to_upload.is_empty());
+        assert!(plan.to_update.is_empty());
+    }
+
+    #[test]
     fn reconcile_ignores_malformed_paths() {
         let expected = vec![exp("v2.0.4", "a.deb", 4, None)];
         let cdn_objs = vec![
@@ -672,5 +939,305 @@ mod tests {
             plan.to_delete.is_empty(),
             "malformed/other-prefix paths kept"
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod notes_tests {
+    use super::*;
+
+    const GROUPED_RC3: &str = "### Features\n\n* Project-aware Node version management by @totov in https://github.com/forjedio/yerd/pull/244\n* Outbound proxy support by @RichardAnderson in https://github.com/forjedio/yerd/pull/267\n* Support xdebug by @RichardAnderson in https://github.com/forjedio/yerd/pull/268\n\n### Fixes\n\n* Check the login shell's real PATH for the Doctor bin-dir warning by @ralphschindler in https://github.com/forjedio/yerd/pull/251\n\n## New Contributors\n* @ralphschindler made their first contribution in https://github.com/forjedio/yerd/pull/251\n\n**Full Changelog**: https://github.com/forjedio/yerd/compare/v2.1.0-rc.2...v2.1.0-rc.3";
+
+    const RAW_RC10: &str = "## What's Changed\n* [Fix] Open menubar window on the active Space (macOS) by @saeedvaziry in https://github.com/forjedio/yerd/pull/43\n* [Fix] Cmd+W not closing borderless windows on macOS by @saeedvaziry in https://github.com/forjedio/yerd/pull/45\n* [Feat] GitHub templates & documentation updates by @RichardAnderson in https://github.com/forjedio/yerd/pull/46\n* [Fix] Simplify comments by @RichardAnderson in https://github.com/forjedio/yerd/pull/47\n* [Fix] Resolves timeout warning for daemon upgrades/installs by @RichardAnderson in https://github.com/forjedio/yerd/pull/49\n* [Task] Unit test coverage by @RichardAnderson in https://github.com/forjedio/yerd/pull/50\n* [Fix] Linux .deb install, PHP install hang/progress, and Linux-native window chrome by @RichardAnderson in https://github.com/forjedio/yerd/pull/51\n* [Feat] Arch linux support by @RichardAnderson in https://github.com/forjedio/yerd/pull/54\n* [Feat] In-app keyboard shortcuts: command palette, view navigation, and contextual actions by @RichardAnderson in https://github.com/forjedio/yerd/pull/55\n* [Docs] Social card & doc updates by @RichardAnderson in https://github.com/forjedio/yerd/pull/56\n* [Feat] Dynamic system-tray dropdown, unread-mail indicators, and frontend state layer by @RichardAnderson in https://github.com/forjedio/yerd/pull/57\n* [Feat] Share sites publicly via Cloudflare Tunnel by @RichardAnderson in https://github.com/forjedio/yerd/pull/58\n* [Feat] Various UI updates by @RichardAnderson in https://github.com/forjedio/yerd/pull/61\n* [Fix] Resolve libcurl issue with resolving .test locally by @RichardAnderson in https://github.com/forjedio/yerd/pull/62\n* [Fix] PHP trusts Yerd's CA by @RichardAnderson in https://github.com/forjedio/yerd/pull/63\n\n## New Contributors\n* @saeedvaziry made their first contribution in https://github.com/forjedio/yerd/pull/43\n\n**Full Changelog**: https://github.com/forjedio/yerd/compare/v2.0.2-rc.9...v2.0.2-rc.10";
+
+    const GROUPED_V202: &str = "### Fixes\n\n* Onboarding Auto Install by @RichardAnderson in https://github.com/forjedio/yerd/pull/106\n* Linux titlebar not triggering actions by @RichardAnderson in https://github.com/forjedio/yerd/pull/105\n\n### Others\n\n* [Docs] LLM support for the docs by @RichardAnderson in https://github.com/forjedio/yerd/pull/103\n* [Docs] Updates for the v2 release by @RichardAnderson in https://github.com/forjedio/yerd/pull/104\n\n**Full Changelog**: https://github.com/forjedio/yerd/compare/v2.0.2-rc.13...v2.0.2";
+
+    fn titles(items: &[NoteItem]) -> Vec<&str> {
+        items.iter().map(|i| i.title.as_str()).collect()
+    }
+
+    fn gh(tag: &str, draft: bool, prerelease: bool, body: Option<&str>) -> GithubRelease {
+        GithubRelease {
+            tag_name: tag.to_string(),
+            draft,
+            prerelease,
+            body: body.map(str::to_string),
+            published_at: Some("2026-11-18T16:34:09Z".to_string()),
+        }
+    }
+
+    fn rel(tag: &str, prerelease: bool, draft: bool) -> ReleaseEntry {
+        ReleaseEntry {
+            tag_name: tag.to_string(),
+            prerelease,
+            draft,
+            body: None,
+            assets: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn release_notes_path_is_outside_releases_folder() {
+        assert_eq!(release_notes_path("v2.0.4"), "release-notes/v2.0.4.json");
+    }
+
+    #[test]
+    fn parses_grouped_body() {
+        let (features, fixes, others) = parse_notes_body(GROUPED_RC3);
+        assert_eq!(
+            titles(&features),
+            vec![
+                "Project-aware Node version management",
+                "Outbound proxy support",
+                "Support xdebug"
+            ]
+        );
+        assert_eq!(
+            titles(&fixes),
+            vec!["Check the login shell's real PATH for the Doctor bin-dir warning"]
+        );
+        assert!(others.is_empty());
+        let first = features.first().unwrap();
+        assert_eq!(first.author.as_deref(), Some("totov"));
+        assert_eq!(
+            first.url.as_deref(),
+            Some("https://github.com/forjedio/yerd/pull/244")
+        );
+    }
+
+    #[test]
+    fn parses_raw_whats_changed_body() {
+        let (features, fixes, others) = parse_notes_body(RAW_RC10);
+        assert_eq!(features.len(), 6);
+        assert_eq!(fixes.len(), 7);
+        assert_eq!(titles(&others), vec!["[Task] Unit test coverage"]);
+        assert_eq!(
+            features.first().unwrap().title,
+            "GitHub templates & documentation updates"
+        );
+        assert_eq!(
+            fixes.first().unwrap().title,
+            "Open menubar window on the active Space (macOS)"
+        );
+        assert!(features
+            .iter()
+            .chain(&fixes)
+            .chain(&others)
+            .all(|i| !i.title.contains("Social card")));
+    }
+
+    #[test]
+    fn drops_docs_items_under_grouped_others() {
+        let (features, fixes, others) = parse_notes_body(GROUPED_V202);
+        assert!(features.is_empty());
+        assert_eq!(
+            titles(&fixes),
+            vec![
+                "Onboarding Auto Install",
+                "Linux titlebar not triggering actions"
+            ]
+        );
+        assert!(others.is_empty());
+    }
+
+    #[test]
+    fn note_item_shapes() {
+        let cases: &[(&str, &str, Option<&str>, Option<&str>)] = &[
+            (
+                "Fix by-pass by @a in https://x.test/pull/1",
+                "Fix by-pass",
+                Some("a"),
+                Some("https://x.test/pull/1"),
+            ),
+            (
+                "Use @mentions by @me by @bob in https://x.test/2",
+                "Use @mentions by @me",
+                Some("bob"),
+                Some("https://x.test/2"),
+            ),
+            ("Just a title", "Just a title", None, None),
+            (
+                "No author in https://x.test/3",
+                "No author in https://x.test/3",
+                None,
+                None,
+            ),
+            (
+                "Spaced by @a b in https://x.test/4",
+                "Spaced by @a b in https://x.test/4",
+                None,
+                None,
+            ),
+        ];
+        for (line, title, author, url) in cases {
+            let item = note_item(line);
+            assert_eq!(item.title, *title, "{line}");
+            assert_eq!(item.author.as_deref(), *author, "{line}");
+            assert_eq!(item.url.as_deref(), *url, "{line}");
+        }
+    }
+
+    #[test]
+    fn parse_body_edge_cases() {
+        let cases: &[(&str, usize, usize, usize)] = &[
+            ("", 0, 0, 0),
+            ("* stray item before any heading", 0, 0, 0),
+            (
+                "## What's Changed\r\n* [Feat] A by @a in https://x/1\r\n",
+                1,
+                0,
+                0,
+            ),
+            ("## whats   changed\n- [Fix] B\n", 0, 1, 0),
+            ("## What's Changed\n* [Meta] C\n* D\n", 0, 0, 1),
+            ("### Features\n* A\nSome paragraph\n* B\n", 1, 0, 0),
+            ("### Features\n* A\n### Highlights\n* B\n", 1, 0, 0),
+            ("### Features\n* A\n  * detail\n* B\n", 2, 0, 0),
+            ("### Fixes\n* A wraps\n  onto a second line\n* B\n", 0, 2, 0),
+            (
+                "### Fixes\n* A\n## New Contributors\n* @x made it\n",
+                0,
+                1,
+                0,
+            ),
+        ];
+        for (body, f, x, o) in cases {
+            let (features, fixes, others) = parse_notes_body(body);
+            assert_eq!(
+                (features.len(), fixes.len(), others.len()),
+                (*f, *x, *o),
+                "{body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn release_notes_builds_file() {
+        let file = release_notes(&gh("v2.1.0-rc.3", false, false, Some(GROUPED_RC3))).unwrap();
+        assert_eq!(file.schema, RELEASE_NOTES_SCHEMA);
+        assert_eq!(file.tag, "v2.1.0-rc.3");
+        assert_eq!(file.version, "2.1.0-rc.3");
+        assert!(file.prerelease);
+        assert_eq!(file.published_at, "2026-11-18T16:34:09Z");
+        assert_eq!(file.features.len(), 3);
+        assert_eq!(file.fixes.len(), 1);
+        assert!(file.others.is_empty());
+    }
+
+    #[test]
+    fn release_notes_rejections() {
+        let mut unpublished = gh("v2.0.4", false, false, None);
+        unpublished.published_at = None;
+        let cases = [
+            (gh("v2.0.4", true, false, Some(GROUPED_V202)), false),
+            (gh("nightly", false, false, Some(GROUPED_V202)), false),
+            (gh("../evil", false, false, None), false),
+            (unpublished, false),
+            (gh("v2.0.4", false, false, None), true),
+        ];
+        for (release, kept) in cases {
+            assert_eq!(
+                release_notes(&release).is_some(),
+                kept,
+                "{}",
+                release.tag_name
+            );
+        }
+    }
+
+    #[test]
+    fn release_notes_prerelease_flag_or_semver() {
+        let flagged = release_notes(&gh("v2.0.4", false, true, None)).unwrap();
+        let stable = release_notes(&gh("v2.0.4", false, false, None)).unwrap();
+        assert!(flagged.prerelease);
+        assert!(!stable.prerelease);
+    }
+
+    #[test]
+    fn file_json_shape_and_roundtrip() {
+        let file = release_notes(&gh("v2.0.2", false, false, Some(GROUPED_V202))).unwrap();
+        let json = serde_json::to_string(&file).unwrap();
+        assert!(json.starts_with(
+            r#"{"schema":1,"tag":"v2.0.2","version":"2.0.2","prerelease":false,"published_at":"2026-11-18T16:34:09Z","features":[],"fixes":[{"title":"Onboarding Auto Install","author":"RichardAnderson","url":"https://github.com/forjedio/yerd/pull/106"}"#
+        ));
+        assert!(json.ends_with(r#"],"others":[]}"#));
+        let back: ReleaseNotesFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, file);
+        let bare = serde_json::to_string(&NoteItem {
+            title: "t".into(),
+            author: None,
+            url: None,
+        })
+        .unwrap();
+        assert_eq!(bare, r#"{"title":"t"}"#);
+    }
+
+    #[test]
+    fn github_release_ignores_unknown_fields() {
+        let json = r#"[{"tag_name":"v2.0.4","id":1,"published_at":"2026-07-25T15:49:58Z","assets":[]},{"tag_name":"v2.0.5","draft":true}]"#;
+        let list: Vec<GithubRelease> = serde_json::from_str(json).unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(release_notes(list.first().unwrap()).is_some());
+        assert!(release_notes(list.get(1).unwrap()).is_none());
+    }
+
+    #[test]
+    fn notes_summary_picks_first_available() {
+        let item = |t: &str| NoteItem {
+            title: t.to_string(),
+            author: None,
+            url: None,
+        };
+        let base = release_notes(&gh("v2.0.4", false, false, None)).unwrap();
+        let mut all = base.clone();
+        all.features = vec![item("feat")];
+        all.fixes = vec![item("fix")];
+        all.others = vec![item("other")];
+        let mut fix_only = base.clone();
+        fix_only.fixes = vec![item("fix")];
+        fix_only.others = vec![item("other")];
+        let mut other_only = base.clone();
+        other_only.others = vec![item("other")];
+        let cases = [
+            (all, "feat"),
+            (fix_only, "fix"),
+            (other_only, "other"),
+            (base, ""),
+        ];
+        for (file, want) in cases {
+            assert_eq!(notes_summary(&file), want);
+        }
+    }
+
+    #[test]
+    fn earlier_tags_table() {
+        let releases = vec![
+            rel("v2.1.0-rc.3", true, false),
+            rel("v2.1.0-rc.2", true, false),
+            rel("v2.0.4", false, false),
+            rel("v2.0.4-rc.1", true, false),
+            rel("v2.0.3", false, false),
+            rel("v2.0.2", false, false),
+            rel("v2.0.1", false, true),
+            rel("v2.0.0-rc.1", false, false),
+            rel("v1.9.0", false, false),
+            rel("junk", false, false),
+        ];
+        let cases: &[(&str, usize, &[&str])] = &[
+            ("v2.1.0-rc.3", 5, &["v2.0.4", "v2.0.3", "v2.0.2", "v1.9.0"]),
+            ("v2.0.4", 5, &["v2.0.3", "v2.0.2", "v1.9.0"]),
+            ("v2.1.0-rc.3", 2, &["v2.0.4", "v2.0.3"]),
+            ("v1.9.0", 5, &[]),
+            ("unknown", 5, &[]),
+            ("v9.0.0", 0, &[]),
+        ];
+        for (current, limit, want) in cases {
+            assert_eq!(
+                earlier_tags(&releases, current, *limit),
+                want.iter().map(|t| (*t).to_string()).collect::<Vec<_>>(),
+                "{current} limit {limit}"
+            );
+        }
     }
 }

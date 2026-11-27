@@ -12,10 +12,15 @@
  * (the daemon keeps running), so a JS Quit would only duplicate Close. macOS
  * keeps a real Cmd+Q via its native menu.
  */
+import type { InjectionKey } from "vue";
+
 import type { Chord } from "./chord";
 import type { ViewActions } from "./useViewActions";
 
 export type WindowScope = "main" | "dumps" | "mails";
+
+/** Opens the main window's command palette; provided by the app shell, injected by the toolbar. */
+export const OPEN_PALETTE_KEY: InjectionKey<() => void> = Symbol("openPalette");
 
 const ALL: WindowScope[] = ["main", "dumps", "mails"];
 
@@ -54,12 +59,13 @@ export interface Command {
   run: (ctx: ShortcutCtx) => void;
 }
 
-/** Main-window views in sidebar order (About omitted). The first nine bind
- *  ⌘1…⌘9 via an explicit `digit`; Share has no digit (the digit slots are full),
- *  so it is reachable from the command palette only. */
+/** Main-window palette navigation targets (not in sidebar order). Nine bind
+ *  ⌘1…⌘9 via an explicit `digit`; Node, Proxies and Share have no digit (the
+ *  digit slots are full), so they are reachable from the command palette only. */
 export const VIEW_TARGETS: { path: string; title: string; digit?: number }[] = [
   { path: "/overview", title: "Overview", digit: 1 },
   { path: "/php", title: "PHP", digit: 2 },
+  { path: "/node", title: "Node" },
   { path: "/sites", title: "Sites", digit: 3 },
   { path: "/tooling", title: "Tooling", digit: 4 },
   { path: "/services", title: "Services", digit: 5 },

@@ -12,7 +12,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tauri::Manager;
-use yerd_core::PhpVersion;
+use yerd_core::{PhpVersion, XdebugMode, XdebugStart};
 use yerd_ipc::{ErrorCode, Request, Response, SiteEntry};
 use yerd_platform::{
     DetectedIde, IdeErrorReason, IdeLauncher, PlatformError, SystemOpener, TerminalLauncher,
@@ -27,6 +27,16 @@ use crate::ipc::{exchange, exchange_timeout};
 /// trips for a wedged/crash-looping daemon - letting the poller advance instead
 /// of hanging. Heavy/mutating commands deliberately stay unbounded.
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Bound for `set_xdebug`: above the daemon's own 90s fetch-and-probe
+/// deadline, so a slow download normally comes back as a typed daemon error
+/// and this only trips for a wedged daemon.
+const XDEBUG_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Bound for `list_php`: a local read that normally answers in milliseconds,
+/// so this only trips for a wedged daemon. It keeps the PHP panel's recovery
+/// read, issued after a `set_xdebug` timeout, from holding a socket forever.
+const LIST_PHP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Cached mail attachment files older than this are removed on the next save.
 const MAIL_ATTACHMENT_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
@@ -81,6 +91,14 @@ pub async fn link(name: String, path: String) -> Result<Response, GuiError> {
         })
         .await?,
     )
+}
+
+/// Suggest a site name for a project folder name (its public suffix stripped,
+/// the rest slugified), so the Link dialog names folders exactly as `yerd link`
+/// and the daemon do. `None` when the folder yields no valid name.
+#[tauri::command]
+pub fn suggest_site_name(folder: String) -> Option<String> {
+    yerd_core::folder_site_name(&folder)
 }
 
 #[tauri::command]
@@ -172,6 +190,23 @@ pub async fn remove_proxy_rule(site: String, prefix: String) -> Result<Response,
     finish(exchange(&Request::RemoveProxyRule { site, prefix }).await?)
 }
 
+/// Replace the upstream of the whole-host proxy `name`, keeping its domains and
+/// HTTPS setting.
+#[tauri::command]
+pub async fn update_proxy(name: String, url: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::UpdateProxy { name, url }).await?)
+}
+
+/// Replace the upstream of `site`'s path-prefix rule `prefix`.
+#[tauri::command]
+pub async fn update_proxy_rule(
+    site: String,
+    prefix: String,
+    url: String,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::UpdateProxyRule { site, prefix, url }).await?)
+}
+
 // ── routing rules ──────────────────────────────────────────────────────────
 
 /// List every site's path-prefix routing rules.
@@ -204,6 +239,63 @@ pub async fn remove_route_rule(site: String, prefix: String) -> Result<Response,
     finish(exchange(&Request::RemoveRouteRule { site, prefix }).await?)
 }
 
+// ── response headers ───────────────────────────────────────────────────────
+
+/// List every site's custom response headers.
+#[tauri::command]
+pub async fn list_response_headers() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListResponseHeaders).await?)
+}
+
+/// Set the custom response header `name` on `site`, replacing any existing
+/// entry with that name.
+#[tauri::command]
+pub async fn set_response_header(
+    site: String,
+    name: String,
+    value: String,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetResponseHeader { site, name, value }).await?)
+}
+
+/// Remove the custom response header `name` from `site`.
+#[tauri::command]
+pub async fn remove_response_header(site: String, name: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::RemoveResponseHeader { site, name }).await?)
+}
+
+// ── project file (.yerd.toml) ──────────────────────────────────────────────
+
+/// Read the `.yerd.toml` in `path`, or draft one when the folder has none.
+#[tauri::command]
+pub async fn project_config_draft(path: String) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::ProjectConfigDraft {
+            path: PathBuf::from(path),
+        })
+        .await?,
+    )
+}
+
+/// Apply the existing `.yerd.toml` in `path` as a background job; replies
+/// `JobStarted` for the client to poll via `job_status`.
+#[tauri::command]
+pub async fn apply_project_config(path: String) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::ApplyProjectConfig {
+            path: PathBuf::from(path),
+            contents: None,
+        })
+        .await?,
+    )
+}
+
+/// Write `site`'s current settings to `.yerd.toml` in its folder.
+#[tauri::command]
+pub async fn export_project_config(site: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::ExportProjectConfig { site }).await?)
+}
+
 // ── site groups ────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -231,6 +323,12 @@ pub async fn set_site_group(site: String, group: Option<String>) -> Result<Respo
     finish(exchange(&Request::SetSiteGroup { site, group }).await?)
 }
 
+/// Star or unstar a site.
+#[tauri::command]
+pub async fn set_site_favourite(site: String, favourite: bool) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetSiteFavourite { site, favourite }).await?)
+}
+
 #[tauri::command]
 pub async fn rename_group(from: String, to: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::RenameGroup { from, to }).await?)
@@ -240,7 +338,7 @@ pub async fn rename_group(from: String, to: String) -> Result<Response, GuiError
 
 #[tauri::command]
 pub async fn list_php() -> Result<Response, GuiError> {
-    finish(exchange(&Request::ListPhp).await?)
+    finish(exchange_timeout(&Request::ListPhp, LIST_PHP_TIMEOUT).await?)
 }
 
 #[tauri::command]
@@ -431,6 +529,31 @@ pub async fn set_php_pool_settings(
     settings: std::collections::BTreeMap<String, String>,
 ) -> Result<Response, GuiError> {
     finish(exchange(&Request::SetPhpPoolSettings { version, settings }).await?)
+}
+
+/// Turn the bundled Xdebug on or off for one PHP version (`None` means the
+/// default PHP). Absent `enabled`/`modes`/`start` keep the version's current
+/// values. Bounded by [`XDEBUG_TIMEOUT`]; on elapse the reply is an
+/// `unreachable` error and the frontend reloads PHP state.
+#[tauri::command]
+pub async fn set_xdebug(
+    version: Option<PhpVersion>,
+    enabled: Option<bool>,
+    modes: Option<Vec<XdebugMode>>,
+    start: Option<XdebugStart>,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange_timeout(
+            &Request::SetXdebug {
+                version,
+                enabled,
+                modes,
+                start,
+            },
+            XDEBUG_TIMEOUT,
+        )
+        .await?,
+    )
 }
 
 #[tauri::command]
@@ -749,6 +872,36 @@ pub async fn set_mcp_enabled(enabled: bool) -> Result<Response, GuiError> {
     finish(exchange(&Request::SetMcpEnabled { enabled }).await?)
 }
 
+// ── outbound proxy ─────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn get_network_settings() -> Result<Response, GuiError> {
+    finish(exchange(&Request::GetNetworkSettings).await?)
+}
+
+#[tauri::command]
+pub async fn set_network_settings(
+    mode: yerd_core::network::OutboundProxyMode,
+    http_proxy: Option<String>,
+    https_proxy: Option<String>,
+    no_proxy: Option<Vec<String>>,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::SetNetworkSettings {
+            mode,
+            http_proxy,
+            https_proxy,
+            no_proxy,
+        })
+        .await?,
+    )
+}
+
+#[tauri::command]
+pub async fn test_network() -> Result<Response, GuiError> {
+    finish(exchange(&Request::TestNetwork).await?)
+}
+
 // ── status / doctor / info ─────────────────────────────────────────────────
 
 #[tauri::command]
@@ -922,24 +1075,98 @@ pub async fn install_tool_streamed(tool: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::InstallToolStreamed { tool }).await?)
 }
 
+// ── Node versions ────────────────────────────────────────────────────────────
+
+/// Installed Node releases with their default marker, update, and uninstall effects.
+#[tauri::command]
+pub async fn list_node() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListNode).await?)
+}
+
+/// The nodejs.org release index grouped by major (fetched on demand).
+#[tauri::command]
+pub async fn available_node() -> Result<Response, GuiError> {
+    finish(exchange(&Request::AvailableNode).await?)
+}
+
+/// Install a Node release as a background job; `update` may move the global default.
+#[tauri::command]
+pub async fn install_node_streamed(version: String, update: bool) -> Result<Response, GuiError> {
+    finish(exchange(&Request::InstallNodeStreamed { version, update }).await?)
+}
+
+/// Uninstall one exact Node release and return the remaining releases.
+#[tauri::command]
+pub async fn uninstall_node(version: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::UninstallNode { version }).await?)
+}
+
+/// Set the global Node default (`site` is `None`) or a site's saved preference.
+#[tauri::command]
+pub async fn set_node_version(version: String, site: Option<String>) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetNodeVersion { version, site }).await?)
+}
+
+/// Clear a site's saved Node preference.
+#[tauri::command]
+pub async fn clear_node_version(site: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::ClearNodeVersion { site }).await?)
+}
+
+/// A site's Node preference, project file, and the release it resolves to.
+#[tauri::command]
+pub async fn node_site(site: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::NodeSite { site }).await?)
+}
+
+/// Every site's Node resolution in one call.
+#[tauri::command]
+pub async fn node_sites() -> Result<Response, GuiError> {
+    finish(exchange(&Request::NodeSites).await?)
+}
+
+// ── about (release notes, contributors) ──────────────────────────────────────
+
+/// The running release's notes and a few earlier stable releases.
+#[tauri::command]
+pub async fn release_notes() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ReleaseNotes).await?)
+}
+
+/// The human contributors to the Yerd repository.
+#[tauri::command]
+pub async fn contributors() -> Result<Response, GuiError> {
+    finish(exchange(&Request::Contributors).await?)
+}
+
 // ── tunnels (Cloudflare Tunnel integration) ──────────────────────────────────
 
-/// Install the `cloudflared` binary as a streamed job (returns a job id).
+/// Share a site through `provider` (the configured default when absent);
+/// `random_url` makes an ngrok share ignore the configured static domain.
 #[tauri::command]
-pub async fn install_cloudflared_streamed() -> Result<Response, GuiError> {
-    finish(exchange(&Request::InstallCloudflaredStreamed).await?)
+pub async fn start_quick_tunnel(
+    site: String,
+    provider: Option<yerd_core::tunnel_provider::TunnelProvider>,
+    random_url: Option<bool>,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::StartQuickTunnel {
+            site,
+            provider,
+            random_url: random_url.unwrap_or(false),
+        })
+        .await?,
+    )
 }
 
-/// Publish a site at a temporary `*.trycloudflare.com` Quick Tunnel URL.
+/// Stop a site's share through `provider`, or every per-site share of it
+/// when absent.
 #[tauri::command]
-pub async fn start_quick_tunnel(site: String) -> Result<Response, GuiError> {
-    finish(exchange(&Request::StartQuickTunnel { site }).await?)
-}
-
-/// Tear down a site's running tunnel.
-#[tauri::command]
-pub async fn stop_tunnel(site: String) -> Result<Response, GuiError> {
-    finish(exchange(&Request::StopTunnel { site }).await?)
+pub async fn stop_tunnel(
+    site: String,
+    provider: Option<yerd_core::tunnel_provider::TunnelProvider>,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::StopTunnel { site, provider }).await?)
 }
 
 /// Report the live tunnels plus `cloudflared` install/login status.
@@ -984,7 +1211,55 @@ pub async fn set_site_tunnel(site: String, hostname: Option<String>) -> Result<R
     finish(exchange(&Request::SetSiteTunnel { site, hostname }).await?)
 }
 
-/// (Re)start the consolidated named tunnel serving every enabled site.
+/// Set (or clear, with `None`) a site's share password.
+#[tauri::command]
+pub async fn set_tunnel_password(
+    site: String,
+    password: Option<String>,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetTunnelPassword { site, password }).await?)
+}
+
+/// List the tunnel providers with their readiness and settings.
+#[tauri::command]
+pub async fn list_tunnel_providers() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListTunnelProviders).await?)
+}
+
+/// Save (or clear, with `None`) the ngrok authtoken.
+#[tauri::command]
+pub async fn set_ngrok_authtoken(authtoken: Option<String>) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetNgrokAuthtoken { authtoken }).await?)
+}
+
+/// Save (or clear, with `None`) the ngrok static domain.
+#[tauri::command]
+pub async fn set_ngrok_domain(domain: Option<String>) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetNgrokDomain { domain }).await?)
+}
+
+/// Enable Yerd's zrok environment with an account token.
+#[tauri::command]
+pub async fn enable_zrok(token: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::EnableZrok { token }).await?)
+}
+
+/// Disable Yerd's zrok environment.
+#[tauri::command]
+pub async fn disable_zrok() -> Result<Response, GuiError> {
+    finish(exchange(&Request::DisableZrok).await?)
+}
+
+/// Set the provider new shares use by default.
+#[tauri::command]
+pub async fn set_default_tunnel_provider(
+    provider: yerd_core::tunnel_provider::TunnelProvider,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetDefaultTunnelProvider { provider }).await?)
+}
+
+/// Start the consolidated named tunnel if it is not running. Idempotent: a live
+/// connector is never restarted.
 #[tauri::command]
 pub async fn start_named_tunnel() -> Result<Response, GuiError> {
     finish(exchange(&Request::StartNamedTunnel).await?)
@@ -1391,7 +1666,23 @@ mod tests {
             apex_shadowed_by: None,
             uses_front_controller: false,
             is_laravel: false,
+            favourite: false,
+            framework: None,
+            added_at: None,
         }
+    }
+
+    #[test]
+    fn xdebug_timeout_outlasts_the_daemon_deadline() {
+        assert!(XDEBUG_TIMEOUT > Duration::from_secs(90));
+        assert!(XDEBUG_TIMEOUT > PROBE_TIMEOUT);
+    }
+
+    #[test]
+    fn list_php_timeout_is_bounded_but_generous() {
+        assert_eq!(LIST_PHP_TIMEOUT, Duration::from_secs(30));
+        assert!(LIST_PHP_TIMEOUT > PROBE_TIMEOUT);
+        assert!(LIST_PHP_TIMEOUT < XDEBUG_TIMEOUT);
     }
 
     #[test]

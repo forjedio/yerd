@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use yerd_php::Downloader;
 use yerd_platform::PlatformDirs;
 
 use super::{drain, move_dir_contents, stage_and_swap, tool_dir, ProgressTx, Tool, ToolError};
@@ -37,7 +38,11 @@ pub fn composer_home(dirs: &PlatformDirs) -> PathBuf {
 
 /// Build + install the latest Laravel installer via the managed Composer,
 /// streaming Composer's output to `progress` when attached.
-pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Result<(), ToolError> {
+pub async fn install(
+    dirs: &PlatformDirs,
+    proxy_env: &yerd_core::network::ChildEnvPlan,
+    progress: Option<&ProgressTx>,
+) -> Result<(), ToolError> {
     let Some(php_version) = installed_versions(dirs)
         .into_iter()
         .max_by_key(|v| (v.major, v.minor))
@@ -64,8 +69,8 @@ pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Resu
     let build = tools_root.join(format!(".laravel-build-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&build);
 
-    let mut child = tokio::process::Command::new(&php)
-        .arg(&phar)
+    let mut cmd = tokio::process::Command::new(&php);
+    cmd.arg(&phar)
         .arg("create-project")
         .arg("--prefer-dist")
         .arg("--no-interaction")
@@ -76,7 +81,9 @@ pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Resu
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    crate::network::apply_plan(&mut cmd, proxy_env);
+    let mut child = cmd
         .spawn()
         .map_err(|e| ToolError::Io(format!("spawn composer: {e}")))?;
 
@@ -114,6 +121,38 @@ pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Resu
     Ok(())
 }
 
+/// The latest stable `laravel/installer` on Packagist, for the update poll.
+pub(crate) async fn latest(dl: &dyn Downloader) -> Result<String, ToolError> {
+    super::fetch_packagist_latest(dl, PACKAGE).await
+}
+
+/// The installed installer's real version, read from Composer's
+/// `vendor/composer/installed.php`. Used only for the update comparison: the
+/// `.version` marker stays `installed`.
+pub(crate) fn installed_installer_version(dirs: &PlatformDirs) -> Option<String> {
+    let path = tool_dir(dirs, Tool::Laravel)
+        .join("vendor")
+        .join("composer")
+        .join("installed.php");
+    installed_php_root_version(&std::fs::read_to_string(path).ok()?)
+}
+
+/// The root package's `pretty_version` in a Composer `installed.php`. Only the
+/// `'root'` block (before `'versions'`) is searched, so a dependency's version
+/// is never returned.
+pub(crate) fn installed_php_root_version(text: &str) -> Option<String> {
+    const ROOT: &str = "'root' => array(";
+    const KEY: &str = "'pretty_version' => '";
+    let after_root = text.get(text.find(ROOT)? + ROOT.len()..)?;
+    let root = after_root
+        .find("'versions' =>")
+        .and_then(|end| after_root.get(..end))
+        .unwrap_or(after_root);
+    let value = root.get(root.find(KEY)? + KEY.len()..)?;
+    let version = value.get(..value.find('\'')?)?;
+    (!version.is_empty()).then(|| version.to_owned())
+}
+
 /// Pull `laravel/installer`'s resolved version out of the built `composer.lock`.
 fn read_installer_version(build: &Path) -> Option<String> {
     let text = std::fs::read_to_string(build.join("composer.lock")).ok()?;
@@ -145,6 +184,66 @@ mod tests {
         assert_eq!(
             read_installer_version(tmp.path()).as_deref(),
             Some("v5.6.1")
+        );
+    }
+
+    const INSTALLED_PHP: &str = r"<?php return array(
+    'root' => array(
+        'name' => 'laravel/installer',
+        'pretty_version' => 'v5.32.0',
+        'version' => '5.32.0.0',
+        'reference' => null,
+        'type' => 'library',
+        'install_path' => __DIR__ . '/../../',
+        'aliases' => array(),
+        'dev' => true,
+    ),
+    'versions' => array(
+        'carbonphp/carbon-doctrine-types' => array(
+            'pretty_version' => '3.2.1',
+            'version' => '3.2.1.0',
+            'aliases' => array(),
+            'dev_requirement' => false,
+        ),
+    ),
+);
+";
+
+    #[test]
+    fn installed_php_root_version_cases() {
+        let no_root_version = "<?php return array(
+    'root' => array(
+        'name' => 'laravel/installer',
+    ),
+    'versions' => array(
+        'a/b' => array(
+            'pretty_version' => '3.2.1',
+        ),
+    ),
+);";
+        let cases: &[(&str, Option<&str>)] = &[
+            (INSTALLED_PHP, Some("v5.32.0")),
+            (no_root_version, None),
+            ("<?php return array('versions' => array());", None),
+            ("", None),
+        ];
+        for (text, want) in cases {
+            assert_eq!(installed_php_root_version(text).as_deref(), *want);
+        }
+    }
+
+    #[test]
+    fn installed_installer_version_reads_vendor_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = crate::test_support::dirs_in(tmp.path());
+        let composer = tool_dir(&dirs, Tool::Laravel)
+            .join("vendor")
+            .join("composer");
+        std::fs::create_dir_all(&composer).unwrap();
+        std::fs::write(composer.join("installed.php"), INSTALLED_PHP).unwrap();
+        assert_eq!(
+            installed_installer_version(&dirs).as_deref(),
+            Some("v5.32.0")
         );
     }
 

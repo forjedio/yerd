@@ -204,6 +204,32 @@ pub(crate) fn fail(msg: String) -> ExitCode {
     ExitCode::FAILURE
 }
 
+/// Fill in the daemon's resolved proxy environment (`{data}/network.env`) on a
+/// shim's child, so Composer, npm, and friends reach the network the way
+/// Yerd does. Nothing is added when the caller already names a proxy
+/// (`http_proxy`, `https_proxy`, `all_proxy`, either case): the user's own
+/// proxy always wins. A caller `no_proxy` alone is merged with Yerd's bypass
+/// list. A missing or unreadable file is a no-op.
+pub(crate) fn apply_network_env(cmd: &mut std::process::Command, dirs: &PlatformDirs) {
+    apply_network_env_with(cmd, dirs, &|key| {
+        std::env::var(key).ok().filter(|v| !v.is_empty())
+    });
+}
+
+fn apply_network_env_with(
+    cmd: &mut std::process::Command,
+    dirs: &PlatformDirs,
+    caller: &dyn Fn(&str) -> Option<String>,
+) {
+    use yerd_core::network::{parse_env_file, shim_fill_in, ENV_FILE_NAME, SHIM_ENV_NAMES};
+    let Ok(text) = std::fs::read_to_string(dirs.data.join(ENV_FILE_NAME)) else {
+        return;
+    };
+    for (key, value) in shim_fill_in(&parse_env_file(&text, &SHIM_ENV_NAMES), caller) {
+        cmd.env(key, value);
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -302,5 +328,54 @@ mod tests {
         let per_version = dirs.data.join("php-cli-8.4.ini");
         std::fs::write(&per_version, "; per-version\n").unwrap();
         assert_eq!(cli_phprc(&dirs, "8.4"), Some(per_version));
+    }
+
+    fn added_env(cmd: &std::process::Command) -> Vec<(String, String)> {
+        cmd.get_envs()
+            .filter_map(|(k, v)| Some((k.to_str()?.to_owned(), v?.to_str()?.to_owned())))
+            .collect()
+    }
+
+    #[test]
+    fn network_env_fill_in_cases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_at(tmp.path());
+        let mut cmd = std::process::Command::new("true");
+        apply_network_env_with(&mut cmd, &dirs, &|_| None);
+        assert!(added_env(&cmd).is_empty(), "no file is a no-op");
+
+        std::fs::create_dir_all(&dirs.data).unwrap();
+        std::fs::write(
+            dirs.data.join("network.env"),
+            "HTTPS_PROXY=http://p:1\nNO_PROXY=localhost\nNODE_USE_ENV_PROXY=1\nEVIL=1\n",
+        )
+        .unwrap();
+        let mut cmd = std::process::Command::new("true");
+        apply_network_env_with(&mut cmd, &dirs, &|_| None);
+        let mut got = added_env(&cmd);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("HTTPS_PROXY".to_owned(), "http://p:1".to_owned()),
+                ("NODE_USE_ENV_PROXY".to_owned(), "1".to_owned()),
+                ("NO_PROXY".to_owned(), "localhost".to_owned()),
+            ]
+        );
+
+        let mut cmd = std::process::Command::new("true");
+        apply_network_env_with(&mut cmd, &dirs, &|k| {
+            (k == "https_proxy").then(|| "http://mine:1".to_owned())
+        });
+        assert!(added_env(&cmd).is_empty());
+
+        let mut cmd = std::process::Command::new("true");
+        apply_network_env_with(&mut cmd, &dirs, &|k| {
+            (k == "NO_PROXY").then(|| "corp.com".to_owned())
+        });
+        let got = added_env(&cmd);
+        assert!(got.contains(&("HTTPS_PROXY".to_owned(), "http://p:1".to_owned())));
+        assert!(got.contains(&("no_proxy".to_owned(), "corp.com,localhost".to_owned())));
+        assert!(got.contains(&("NO_PROXY".to_owned(), "corp.com,localhost".to_owned())));
     }
 }

@@ -6,6 +6,10 @@ Yerd stores all of its persistent state in a single TOML file: `yerd.toml`. This
 The daemon (`yerdd`) owns `yerd.toml`. Day to day you change it through the [CLI](./cli/) or the [desktop app](../guide/desktop-app), and the daemon rewrites the file atomically. Hand-editing works too - Yerd parses and re-validates the file on every load - but the CLI is the safer path.
 :::
 
+::: tip Looking for `.yerd.toml`?
+This page is about Yerd's own per-user `yerd.toml`. The `.yerd.toml` you commit inside a project (site name, PHP, services and more for `yerd init`) is documented in the [project file reference](./project-file).
+:::
+
 ## Where the config file lives
 
 The file is always named `yerd.toml` and sits in your per-OS, user-owned config directory:
@@ -29,7 +33,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 
 | Key         | TOML type            | Meaning                                                            | Default        |
 | ----------- | -------------------- | ----------------------------------------------------------------- | -------------- |
-| `version`   | integer              | On-disk schema version. **Mandatory**; written as `23` by this release. | `n/a (required)` |
+| `version`   | integer              | On-disk schema version. **Mandatory**; written as `34` by this release. | `n/a (required)` |
 | `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
 | `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
 | `update_channel` | string          | Self-update channel: `"stable"` or `"edge"`.                      | `"stable"`     |
@@ -45,22 +49,26 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 | `services`  | table                | Per-service `[services.<id>]` tables; every installed engine auto-starts on boot. | empty          |
 | `mail`      | table                | Built-in mail-capture SMTP server.                                | on / `2525`    |
 | `dumps`     | table                | Laravel ▸ Dumps telemetry settings.                               | off / `2304`   |
-| `tunnel`    | table                | Cloudflare Named Tunnel persistence.                              | empty          |
+| `tunnel`    | table                | Site sharing: Cloudflare named tunnels, share passwords, tunnel providers. | empty          |
 | `groups`    | table                | User-defined site groups and per-site membership.                 | empty          |
 | `domains`   | table                | Per-site and per-proxy domain sets (primary, aliases, subdomains, wildcards). | empty |
 | `proxies`   | array of tables      | Whole-host reverse proxies (`reverb.test` → an upstream URL).      | empty          |
 | `proxy_rules` | table              | Per-site path-prefix reverse-proxy rules.                         | empty          |
 | `route_rules` | table              | Per-site path-prefix routing rules (prefix → a file inside the site). | empty       |
+| `response_headers` | table         | Per-site and per-proxy custom response headers (name + value) added to every response. | empty       |
+| `network`   | table                | Outbound HTTP proxy for Yerd's downloads and the tools it runs.   | system detection |
+| `favourites` | table              | Sites starred in the desktop app.                                 | empty          |
+| `added`     | table                | When each site was added, for the desktop app's Recently added list. | empty       |
 
 ::: warning Unknown keys are rejected
-The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, `[mail]`, `[dumps]`, `[dumps.features]`, `[domains]`, a `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` / `[domains.proxy.<name>]` entry, `[proxy_rules]`, `[route_rules]`, a `[[proxies]]` entry, a `[services.<id>]` table, a `[[linked]]` entry, an `[[overrides]]` entry, or a `[[php.extensions.<version>]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
+The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, a `[parked.claims."<docroot>"]` entry, `[mail]`, `[dumps]`, `[dumps.features]`, `[domains]`, a `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` / `[domains.proxy.<name>]` entry, `[proxy_rules]`, `[route_rules]`, `[response_headers]`, `[network]`, `[favourites]`, `[added]`, a `[[proxies]]` entry, a `[services.<id>]` table, a `[[linked]]` entry, an `[[overrides]]` entry, or a `[[php.extensions.<version>]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
 
 The free-form maps are the exception, because their keys *are* the data. `[services.<id>.overrides]` (like `[php.directives."<version>"]`) takes arbitrary directive names, so `deny_unknown_fields` does not apply *inside* it - the keys are shape-checked instead, and a bad one is dropped rather than failing the load. It still applies to the enclosing `[services.<id>]` table.
 :::
 
 ### `version`
 
-The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `23`, and Yerd always writes `version = 23`. Older `version = 1` through `version = 22` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `34`, and Yerd always writes `version = 34`. Older `version = 1` through `version = 33` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
 
 ### `tld`
 
@@ -128,6 +136,7 @@ PHP defaults applied across sites.
 | `version_settings` | table     | Sparse per-version overrides of `settings`, keyed by PHP version. | empty   |
 | `directives`       | table     | Free-form per-version ini directives, keyed by PHP version.  | empty   |
 | `pool`             | table     | Per-version FPM pool settings, keyed by PHP version.         | empty   |
+| `xdebug`           | table     | Per-version bundled Xdebug settings, keyed by PHP version.   | empty   |
 | `extensions`       | table     | Custom `.so` extensions to load, keyed by PHP version.       | empty   |
 
 `default` is a `MAJOR.MINOR` version string validated by `yerd-core`'s `PhpVersion`; an out-of-range minor or a non-numeric value is rejected. See [PHP Versions](../guide/php-versions).
@@ -144,6 +153,7 @@ PHP defaults applied across sites.
 | `post_max_size`       | byte size (`64M`)                                             |
 | `display_errors`      | boolean flag (`On` / `Off`, rendered as a `php_flag`)         |
 | `error_reporting`     | integer or constant expression (e.g. `E_ALL & ~E_DEPRECATED`) |
+| `ffi.enable`          | on/off; absent by default (PHP's `preload`). On renders `php_admin_value[ffi.enable] = true` into FPM pools only, never into legacy (< 8.2) pools |
 
 ```toml
 [php.settings]
@@ -151,6 +161,8 @@ memory_limit = "512M"
 max_execution_time = "300"
 upload_max_filesize = "64M"
 ```
+
+`ffi.enable` contains a dot, so its TOML key must be quoted: `"ffi.enable" = "On"`. Yerd writes it that way itself.
 
 ::: warning Setting an unsupported directive fails the load
 An unknown directive name or a malformed value makes the whole config invalid (`InvalidPhpSetting`). Stick to the table above.
@@ -200,6 +212,41 @@ Setting values through the CLI/GUI still validates strictly. A malformed
 
 Manage these with [`yerd set php --only <version>`, `yerd php ini`, and `yerd php pool`](cli/php#custom-ini-directives) or the desktop app's **Per-version configuration** card.
 
+`[php.xdebug."<version>"]` (schema v29) holds the settings of the
+[bundled Xdebug](../guide/xdebug) toggle for one installed version.
+
+| Key       | TOML type       | Meaning                                                                 |
+| --------- | --------------- | ----------------------------------------------------------------------- |
+| `enabled` | bool            | Whether that version's FPM pool loads Xdebug.                          |
+| `modes`   | array of string | The `xdebug.mode` list: any of `debug`, `develop`, `coverage`, `profile`, `trace`, `gcstats`. Must not be empty; `off` is not a mode. |
+| `start`   | string          | `always` (`xdebug.start_with_request = yes`) or `trigger` (`= trigger`). |
+
+```toml
+[php.xdebug."8.4"]
+enabled = true
+modes = ["debug"]
+start = "always"
+```
+
+An entry is written only when it differs from the default (off, `["debug"]`,
+`always`), so turning Xdebug off with the default modes removes the version's
+table, and an untouched config has no `[php.xdebug]` at all. Modes are stored
+sorted and de-duplicated. Like the three tables above, the table loads
+leniently: an entry with an unknown or empty mode list, an unknown or missing
+`start`, a missing `modes`, or a [legacy](../guide/php-versions#legacy-php-versions)
+version key is silently dropped (a missing `enabled` reads as `false`). A
+malformed version key, or a key other than these three inside an entry, is
+still a hard error. Uninstalling a version removes its entry.
+
+While a version's Xdebug is on, Yerd passes `xdebug.mode`,
+`xdebug.start_with_request` and `opcache.jit` on the FPM command line, so any
+free-form `[php.directives]` entry with one of those three names is **not
+rendered** into that version's pool (it comes back when Xdebug is turned off).
+Other `xdebug.*` directives, such as `xdebug.client_port` or `xdebug.idekey`,
+still apply and override the managed values. Manage this table with
+[`yerd xdebug`](cli/xdebug) or the Xdebug section of the desktop app's
+**Per-version configuration** card.
+
 `[php.extensions]` maps a **PHP version string** to an array of custom extensions to load into both that version's FPM pool and its CLI. It is written as an array-of-tables per version and omitted entirely when empty. Because a native `.so` is ABI-bound to a PHP minor, an entry only applies to the version it is keyed under.
 
 | Field  | TOML type | Meaning                                                                 |
@@ -224,12 +271,21 @@ Directories you have "parked" - every immediate subdirectory becomes a site serv
 | Key     | TOML type        | Meaning                              | Default |
 | ------- | ---------------- | ------------------------------------ | ------- |
 | `paths` | array of strings | Parked directory paths.              | `[]`    |
+| `claims` | table (`docroot → claim`) | Suffix-stripped names held by parked folders. Daemon-maintained. | empty |
 
 Paths are stored **verbatim** as UTF-8 strings and are **not canonicalised** by the config layer - `"/srv/foo"` and `"/srv/foo/"` are distinct entries. They are kept in sorted order with no duplicates. An empty-string path is rejected (`ParkedPathEmpty`).
 
 ```toml
 [parked]
 paths = ["/Users/you/Sites", "/Users/you/work"]
+```
+
+`claims` is written by the daemon, not by hand. A folder named after a domain (`laravel.com`) is served under its stripped name (`laravel`), and each such folder gets a `[parked.claims."<docroot>"]` entry keyed by its byte-exact document root, with the `name` it holds and `url_synced` (`false` only while a site renamed on upgrade still waits for its one-time `WordPress`/`CodeIgniter` URL update). A claim keeps the name with that folder when another folder later wants it; the daemon adds and prunes entries after every scan. An entry with an invalid `name` is dropped at load. See [Sites](../guide/sites#parking-a-directory).
+
+```toml
+[parked.claims."/Users/you/Sites/laravel.com"]
+name = "laravel"
+url_synced = true
 ```
 
 ### `[[linked]]`
@@ -424,22 +480,37 @@ queries = false   # absent keys default to on; only the off ones need listing
 
 ### `[tunnel]`
 
-Persisted state for [sharing sites](../guide/sharing) through Cloudflare Tunnel. Two maps, both **empty by default** - the whole `[tunnel]` table is omitted from the file until you create a named tunnel or expose a site. Quick-tunnel state is never persisted (it lives only in the running daemon).
+Persisted state for [sharing sites](../guide/sharing): Cloudflare named tunnels, share passwords and the [tunnel providers](../guide/sharing#tunnel-providers). Everything is **empty or default by default** - the whole `[tunnel]` table is omitted from the file until you create a named tunnel, expose a site, set a share password, pick a default provider or configure ngrok. Quick-tunnel state is never persisted (it lives only in the running daemon).
 
-| Sub-table        | Shape                     | Meaning                                                        |
+| Key / sub-table  | Shape                     | Meaning                                                        |
 | ---------------- | ------------------------- | ------------------------------------------------------------- |
+| `default_provider` | `cloudflare` \| `ngrok` \| `zrok` | The provider new shares use. Default `cloudflare` (omitted from the file while it is). |
 | `[tunnel.named]` | map `name → uuid`         | The named tunnels created on your Cloudflare account.         |
 | `[tunnel.sites]` | map `site → hostname`     | Per-site public hostnames exposed through the named tunnel.   |
+| `[tunnel.passwords]` | map `site → password` | Per-site share passwords (HTTP basic auth, any username) for every tunnel kind. |
+| `[tunnel.ngrok]` | `authtoken`, `domain` (both optional strings) | The ngrok agent authtoken and an optional static domain as a bare hostname (`name.ngrok-free.app`). |
 
-Validation rejects empty keys/values (`TunnelEntryEmpty`), a `[tunnel.sites]` hostname that isn't a plausible DNS name (`TunnelHostnameInvalid`), and any key or UUID containing path- or YAML-unsafe characters (`TunnelKeyInvalid`). The account certificate and per-tunnel credentials are **not** stored here - they live in a daemon-owned `0700` directory, never in the config file.
+Validation rejects empty keys/values (`TunnelEntryEmpty`), a `[tunnel.sites]` hostname that isn't a plausible DNS name (`TunnelHostnameInvalid`), any key or UUID containing path- or YAML-unsafe characters (`TunnelKeyInvalid`), and a password that is empty, longer than 128 bytes, or contains a control character (`TunnelPasswordInvalid`). Passwords are stored as plain text in the `0600` config file and are never returned over IPC; set them with `yerd tunnel password` rather than by hand. A `[tunnel.ngrok]` authtoken must be 1-256 visible ASCII characters with no whitespace and not starting with `-` (`TunnelNgrokAuthtokenInvalid`), and its domain must be a plausible DNS name (`TunnelNgrokDomainInvalid`). The authtoken is plain text in the `0600` config file and only ever returned masked over IPC; set it with `yerd tunnel ngrok token` rather than by hand. The zrok account token is not stored here: zrok keeps it in its own environment under the data directory. The account certificate and per-tunnel credentials are **not** stored here - they live in a daemon-owned `0700` directory, never in the config file.
 
 ```toml
+[tunnel]
+default_provider = "ngrok"
+
 [tunnel.named]
 my-tunnel = "6ff42ae2-765d-4adf-8112-31c55c1551ef"
 
 [tunnel.sites]
 app = "app.example.com"
+
+[tunnel.passwords]
+app = "let-me-in"
+
+[tunnel.ngrok]
+authtoken = "2fXk..."
+domain = "demo.ngrok-free.app"
 ```
+
+While at least one `[tunnel.sites]` entry exists (and you are logged in with a tunnel created), the daemon starts the named tunnel on every launch. Clearing the last hostname stops it and keeps it off across restarts.
 
 ### `[groups]`
 
@@ -450,7 +521,7 @@ User-defined site groups for the desktop app's Sites view. Purely an organisatio
 | `order`   | array of strings  | Group display names, in display order.                        |
 | `members` | table (`site → group`) | Per-site group membership, keyed by site name.           |
 
-Membership is keyed by **site name**, not document-root, so a group applies to parked and linked sites alike without touching either site's own record. A site absent from `members` is "Unallocated" - the GUI's synthetic bucket for ungrouped sites, which is never itself persisted here.
+Membership is keyed by **site name**, not document-root, so a group applies to parked and linked sites alike without touching either site's own record. A site absent from `members` is ungrouped: the GUI lists it in its parked folder's section, or under Linked. `Unallocated` is still reserved as a group name.
 
 Validation rules (enforced by `Config::validate`): every name in `order` must be non-empty (`GroupNameEmpty`) and unique, ASCII-case-insensitively (`GroupDuplicate`); the name `Unallocated` is reserved in any casing and rejected (`GroupNameReserved`); and every `members` value must reference a group present in `order`, also folding case (`GroupMemberDangling`). Whether a keyed site still exists is not checked - parked sites are discovered from disk on each scan and have no config record to check against.
 
@@ -460,6 +531,43 @@ order = ["Blog", "Shop"]
 
 [groups.members]
 api = "Blog"
+```
+
+### `[favourites]`
+
+Sites starred in the desktop app. Purely an organisational overlay - favourites do not affect routing. **Empty by default**, so the whole `[favourites]` table is omitted from the file until you star a site.
+
+| Key     | TOML type        | Meaning                                         |
+| ------- | ---------------- | ----------------------------------------------- |
+| `sites` | array of strings | Lowercased names of the favourite sites.        |
+
+Like `[groups]` membership, entries are keyed by **site name** and are not checked against live sites, so a favourite for a site that has since been unlinked or unparked is simply ignored.
+
+```toml
+[favourites]
+sites = ["blog"]
+```
+
+### `[added]`
+
+When each site was added to Yerd, as Unix seconds. The desktop app's Overview uses it for the **Recently added** list; it does not affect routing. The daemon maintains it, so you never need to edit it: linking or creating a site records the time (linking a parked folder keeps its parked time), and a parked site is recorded the first time a scan finds it. **Empty by default**, so the whole `[added]` table is omitted from the file until something is recorded.
+
+| Key                | TOML type                     | Meaning                                                                 |
+| ------------------ | ----------------------------- | ----------------------------------------------------------------------- |
+| `baseline_pending` | array of strings              | Parked roots whose existing sites are still to be recorded as undated. Set by the v33 → v34 migration; a root leaves once a scan finds a site under it. Omitted when empty. |
+| `[added.linked]`   | table (`name → seconds`)      | Added times for **linked** sites, keyed by site name.                   |
+| `[added.parked]`   | table (`docroot → seconds`)   | First-seen times for **parked** sites, keyed by byte-exact document root. |
+
+A value of `0` means the site existed before Yerd recorded added times. It is shown as undated, and keeping the entry stops the site being stamped later. Upgrading to v34 records every parked site that is already served as `0`, so existing projects don't flood the Recently added list; existing linked sites simply have no entry.
+
+Like `[domains]`, parked sites are keyed by document root, so renaming a folder gives the site a fresh time. An entry is dropped when its site is unlinked or no longer served, except while its parked folder is missing (an unmounted drive), so the time survives until it comes back. Unlinking a site that sits inside a parked folder carries its time over to the parked entry.
+
+```toml
+[added.linked]
+blog = 1764100000
+
+[added.parked]
+"/Users/you/Sites/api" = 0
 ```
 
 ### `[domains]`
@@ -589,20 +697,85 @@ to a file inside the site's own tree. When a site has both on the same prefix,
 the proxy rule wins - it intercepts before PHP resolution runs at all.
 :::
 
-Manage these with [`yerd route`](cli/routes), or the **Routing** tab of the
-desktop app's site details sidebar. A site whose web root holds an `index.html`
+Manage these with [`yerd route`](cli/routes), or **Routing rules…** in the
+desktop app's site inspector. A site whose web root holds an `index.html`
 and no `index.php` gets SPA routing automatically, with no rule stored here.
+
+### `[response_headers]`
+
+Per-site custom **response headers** (schema v25) and per-proxy ones (schema
+v33) - each one is added to every response Yerd produces for the site or
+whole-host proxy, replacing any same-named header. **Empty by default** (the
+whole table is omitted) until you set a header. Site headers are split by site
+class exactly like `[route_rules]`: linked headers key by site name, parked
+headers by byte-exact document-root. Proxy headers key by proxy name.
+
+| Key                         | TOML type                         | Meaning                                         |
+| --------------------------- | --------------------------------- | ----------------------------------------------- |
+| `[response_headers.linked]` | table (`name → array of headers`) | Headers for **linked** sites, keyed by name.    |
+| `[response_headers.parked]` | table (`docroot → array`)         | Headers for **parked** sites, keyed by docroot. |
+| `[response_headers.proxy]`  | table (`name → array of headers`) | Headers for **whole-host proxies**, keyed by proxy name. |
+
+Each header is a `{ name, value }` table, kept in the order it was set. Removing
+a site's last header drops its key entirely, so the file round-trips
+byte-identically.
+
+```toml
+# CORS for a frontend on app.test calling the api site
+[[response_headers.linked.api]]
+name = "Access-Control-Allow-Origin"
+value = "https://app.test"
+```
+
+Every entry is validated at load: the name must be a valid HTTP header name and
+not one Yerd manages (`Connection`, `Keep-Alive`, `Transfer-Encoding`,
+`Upgrade`, `TE`, `Trailer`, `Content-Length`, `Host`, or any `Proxy-*`), and the
+value must be non-empty with no control characters. A hand-edited entry that
+fails is a hard parse error, and two entries for one site sharing a name
+(ignoring case) fail validation. A proxy key naming no configured proxy is
+ignored, and removing a proxy drops its key.
+
+Manage these with [`yerd header`](cli/headers), or the **Response headers** card
+in the desktop app's site and proxy inspectors.
+
+### `[network]`
+
+The outbound HTTP proxy (schema v28) Yerd uses for its own downloads, update
+checks, and the tools it runs. **Omitted** while it holds the defaults (system
+detection, no manual URLs, no bypass entries). See the
+[Outbound Proxy guide](../guide/corporate-networks).
+
+| Key           | TOML type        | Meaning                                                                 | Default    |
+| ------------- | ---------------- | ----------------------------------------------------------------------- | ---------- |
+| `mode`        | string           | `"system"` (detect), `"manual"` (use the URLs below) or `"off"` (direct). | `"system"` |
+| `http_proxy`  | string           | Manual proxy for `http://` requests, e.g. `"http://user:pass@proxy.corp:3128"`. | absent |
+| `https_proxy` | string           | Manual proxy for `https://` requests. Falls back to `http_proxy` when absent. | absent |
+| `no_proxy`    | array of strings | Your bypass entries, stored normalised (`*.corp.com` becomes `.corp.com`, ports are dropped). Loopback and `.<tld>` are always bypassed and are not stored here. | `[]` |
+
+```toml
+[network]
+mode = "manual"
+http_proxy = "http://alice:s3cret@proxy.corp:3128"
+no_proxy = [".corp.com", "10.0.0.0/8"]
+```
+
+URLs must be `http://` or `https://` with no path; a bad URL is a hard load
+error that never echoes the URL. `mode = "manual"` with neither URL set fails
+validation (`ManualProxyMissingUrl`). URLs are kept with their credentials, which
+is one reason the file is written owner-only (see [Atomic saves](#atomic-saves)).
+Manage this with [`yerd network proxy`](cli/network) or the **Network** card in
+the desktop app's General settings.
 
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `23`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `34`.
 
 When the daemon loads a file, it routes on the version it finds:
 
 ```text
-found  > CURRENT (18)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (18)   →  parse directly
-found  < CURRENT (18)   →  walk forward migration steps, then parse
+found  > CURRENT (34)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (34)   →  parse directly
+found  < CURRENT (34)   →  walk forward migration steps, then parse
 ```
 
 A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
@@ -629,6 +802,17 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v20 → v21`** is a bare version bump: v21 only **added** the optional `[route_rules]` table (per-site path-prefix routing rules), which defaults to empty when absent.
 - **`v21 → v22`** is a bare version bump: v22 only **added** the optional `[services.<id>.overrides]` sub-table (free-form engine config directives), which defaults to empty when absent.
 - **`v22 → v23`** is a bare version bump: v23 only **added** the optional `[domains.proxy]` table (routable-domain deltas for whole-host proxies), which defaults to empty when absent.
+- **`v23 → v24`** is a bare version bump: v24 only **added** the optional `[tunnel.passwords]` table (per-site share passwords), which defaults to empty when absent.
+- **`v24 → v25`** is a bare version bump: v25 only **added** the optional `[response_headers]` table (per-site custom response headers), which defaults to empty when absent.
+- **`v25 → v26`** is a bare version bump: v26 only **added** the optional `"ffi.enable"` key in `[php.settings]` and `[php.version_settings."<version>"]` (the Allow FFI in web requests switch), which is absent unless set.
+- **`v26 → v27`** is a bare version bump: v27 only **added** the optional `[node]` table (global Node default) and `[node.sites]` (per-project Node preferences), which default to empty when absent.
+- **`v27 → v28`** is a bare version bump: v28 only **added** the optional `[network]` table (outbound proxy), which defaults to system detection when absent.
+- **`v28 → v29`** is a bare version bump: v29 only **added** the optional `[php.xdebug]` table (per-version bundled Xdebug settings), which defaults to empty when absent.
+- **`v29 → v30`** is a bare version bump: v30 only **added** the optional `[favourites]` table (starred sites), which defaults to empty when absent.
+- **`v30 → v31`** is a bare version bump: v31 only **added** the optional `[parked.claims]` map (suffix-stripped names held by parked folders), which defaults to empty when absent.
+- **`v31 → v32`** is a bare version bump: v32 only **added** `[tunnel] default_provider` and the optional `[tunnel.ngrok]` table, both of which default when absent.
+- **`v32 → v33`** is a bare version bump: v33 only **added** the optional `[response_headers.proxy]` table (whole-host proxy response headers), which defaults to empty when absent.
+- **`v33 → v34`** is a small *structural* migration: v34 **added** the optional `[added]` table (per-site added times), and the migration copies the parked roots into `[added] baseline_pending` so the daemon records the parked sites that already exist as undated instead of recently added.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 
@@ -639,6 +823,35 @@ Because later versions changed shapes the parser checks strictly (keys *inside* 
 ::: tip Forward-compatible by design
 The parser tolerates older shapes: a v1 file written before `web_subpath`/`web_root` existed migrates to v2 and parses fine (the new fields default). New optional fields are added additively, so upgrades don't break your existing config.
 :::
+
+## Node preferences
+
+The optional `[node]` section stores the global default. `[node.sites]` stores
+preferences for linked and parked projects, keyed by their canonical absolute
+project root. The daemon saves exact installed releases when using `yerd node use`.
+
+```toml
+[node]
+default = "24.2.0"
+
+[node.sites]
+"/srv/example" = "22.9.0"
+```
+
+A project `.nvmrc` or `.node-version` overrides its saved preference. Absent
+preferences use the global default; an old single-version Node installation
+remains the default until one is saved. Stored selectors must be numeric and
+project keys absolute. A value may be a partial selector (`"22"` or `"22.9"`),
+resolved to the highest matching installed release when used.
+
+Uninstalling a release (the desktop app's Node page or `yerd node uninstall`)
+clears any preference that resolves only to that release, and, while others
+remain, refuses to remove a release when `default` would then resolve to nothing.
+`yerd node unset --site <name>` removes one site's preference. `yerd uninstall tool
+node` removes every release and clears both `default` and all of `[node.sites]`.
+An Update moves `default` to the new patch only when it named an older patch of
+that major; preferences are never changed. A plain `yerd install tool node` sets
+`default` only when none exists. See [Node resolution](./cli/exec#node-resolution).
 
 ## Atomic saves
 
@@ -652,11 +865,11 @@ Yerd does not `fsync` the file or its parent directory after a save. For a devel
 
 ## A complete annotated example
 
-This is a valid `yerd.toml` covering the core fields (see the sections above for the newer optional tables - `update_channel`, `[tunnel]`, `[groups]`, `[php.extensions]`, `[php.pool]`, `[domains]`, `[[proxies]]`, `[proxy_rules]`, `[route_rules]`, `[services.<id>.overrides]`, `wp_auto_login` - omitted here for brevity):
+This is a valid `yerd.toml` covering the core fields (see the sections above for the newer optional tables - `update_channel`, `[tunnel]`, `[groups]`, `[php.extensions]`, `[php.pool]`, `[domains]`, `[[proxies]]`, `[proxy_rules]`, `[route_rules]`, `[response_headers]`, `[services.<id>.overrides]`, `wp_auto_login` - omitted here for brevity):
 
 ```toml
-# Schema version - mandatory, always written as 23 by this release.
-version = 23
+# Schema version - mandatory, always written as 24 by this release.
+version = 24
 
 # TLD served by the resolver; sites resolve as <name>.test
 tld = "test"

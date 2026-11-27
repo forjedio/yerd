@@ -10,6 +10,8 @@
 //! and is a pure function so the classification is unit-tested without spawning
 //! PHP.
 
+use std::collections::BTreeSet;
+
 use thiserror::Error;
 
 /// Why a candidate extension failed its load-probe.
@@ -38,6 +40,10 @@ pub enum ExtLoadError {
     /// Never returned by [`interpret_probe`] itself; produced at the I/O edge.
     #[error("could not run the extension load-probe")]
     SpawnFailed,
+    /// PHP ran cleanly but did not list the extension among its loaded Zend
+    /// modules. Returned by [`require_zend_module`].
+    #[error("PHP started but did not list the extension as loaded")]
+    NotListed,
 }
 
 /// Classify a probe result from `(exit-was-success, combined stdout+stderr)`.
@@ -72,6 +78,64 @@ pub fn interpret_probe(exit_ok: bool, diagnostics: &str) -> Result<(), ExtLoadEr
         return Err(ExtLoadError::Unknown);
     }
     Ok(())
+}
+
+/// Whether `php -m` output lists `module` under its `[Zend Modules]` heading:
+/// some trimmed line after that heading (and before the next `[...]` heading)
+/// equals `module` exactly.
+#[must_use]
+pub fn zend_module_listed(modules_output: &str, module: &str) -> bool {
+    let mut in_zend = false;
+    for line in modules_output.lines().map(str::trim) {
+        if line.starts_with('[') && line.ends_with(']') {
+            in_zend = line == "[Zend Modules]";
+        } else if in_zend && line == module {
+            return true;
+        }
+    }
+    false
+}
+
+/// Classify a Zend-extension probe positively: [`interpret_probe`] must pass
+/// and `module` must be listed under `[Zend Modules]` in `stdout`.
+///
+/// # Errors
+/// The [`interpret_probe`] failure, else [`ExtLoadError::NotListed`].
+pub fn require_zend_module(
+    exit_ok: bool,
+    stdout: &str,
+    stderr: &str,
+    module: &str,
+) -> Result<(), ExtLoadError> {
+    interpret_probe(exit_ok, &format!("{stdout}{stderr}"))?;
+    if zend_module_listed(stdout, module) {
+        Ok(())
+    } else {
+        Err(ExtLoadError::NotListed)
+    }
+}
+
+/// Whether `php -m` output lists the FFI extension: true when some line,
+/// trimmed (so `\r\n` endings work), is exactly `FFI`.
+#[must_use]
+pub fn ffi_listed(modules_output: &str) -> bool {
+    modules_output.lines().any(|line| line.trim() == "FFI")
+}
+
+/// Every module name `php -m` output lists, raw and trimmed, across all of its
+/// sections. Blank lines and `[...]` section headings are skipped.
+#[must_use]
+pub fn listed_modules(modules_output: &str) -> BTreeSet<String> {
+    modules_output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !is_section_heading(line))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn is_section_heading(line: &str) -> bool {
+    line.starts_with('[') && line.ends_with(']')
 }
 
 #[cfg(test)]
@@ -152,5 +216,85 @@ mod tests {
             interpret_probe(false, "segfault"),
             Err(ExtLoadError::Unknown)
         );
+    }
+
+    #[test]
+    fn zend_module_listed_cases() {
+        let cases: &[(&str, bool)] = &[
+            ("[PHP Modules]\nCore\n\n[Zend Modules]\nXdebug\n", true),
+            (
+                "[PHP Modules]\r\nCore\r\n\r\n[Zend Modules]\r\nXdebug\r\n",
+                true,
+            ),
+            (
+                "[PHP Modules]\nCore\n\n[Zend Modules]\nZend OPcache\nXdebug\n",
+                true,
+            ),
+            ("[PHP Modules]\nXdebug\n\n[Zend Modules]\n", false),
+            ("[PHP Modules]\nCore\n\n[Zend Modules]\nxdebug\n", false),
+            ("[Zend Modules]\nXdebug3\n", false),
+            ("Xdebug\n", false),
+            ("", false),
+        ];
+        for (output, want) in cases {
+            assert_eq!(zend_module_listed(output, "Xdebug"), *want, "{output:?}");
+        }
+    }
+
+    #[test]
+    fn require_zend_module_is_positive() {
+        let listed = "[PHP Modules]\nCore\n\n[Zend Modules]\nXdebug\n";
+        let unlisted = "[PHP Modules]\nCore\n\n[Zend Modules]\n";
+        assert_eq!(require_zend_module(true, listed, "", "Xdebug"), Ok(()));
+        assert_eq!(
+            require_zend_module(true, unlisted, "", "Xdebug"),
+            Err(ExtLoadError::NotListed)
+        );
+        assert_eq!(
+            require_zend_module(true, listed, "Failed loading /x/xdebug.so", "Xdebug"),
+            Err(ExtLoadError::NotLoadable)
+        );
+        assert_eq!(
+            require_zend_module(false, listed, "", "Xdebug"),
+            Err(ExtLoadError::Unknown)
+        );
+    }
+
+    #[test]
+    fn ffi_listed_matches_only_an_exact_ffi_line() {
+        let cases: &[(&str, bool)] = &[
+            (
+                "[PHP Modules]\nCore\nctype\nFFI\nzlib\n\n[Zend Modules]\nZend OPcache\n",
+                true,
+            ),
+            (
+                "[PHP Modules]\nCore\nctype\nzlib\n\n[Zend Modules]\nZend OPcache\n",
+                false,
+            ),
+            ("[PHP Modules]\r\nCore\r\nFFI\r\nzlib\r\n", true),
+            ("[PHP Modules]\nFFI_extra\nffi\n", false),
+            ("", false),
+        ];
+        for (output, want) in cases {
+            assert_eq!(ffi_listed(output), *want, "{output:?}");
+        }
+    }
+
+    #[test]
+    fn listed_modules_collects_every_section() {
+        let cases: &[(&str, &[&str])] = &[
+            (
+                "[PHP Modules]\nCore\nFFI\nzlib\n\n[Zend Modules]\nZend OPcache\n",
+                &["Core", "FFI", "Zend OPcache", "zlib"],
+            ),
+            ("[PHP Modules]\r\nCore\r\nredis\r\n", &["Core", "redis"]),
+            ("  imagick  \n\n", &["imagick"]),
+            ("[PHP Modules]\n[Zend Modules]\n", &[]),
+            ("", &[]),
+        ];
+        for (output, want) in cases {
+            let want: BTreeSet<String> = want.iter().map(|s| (*s).to_owned()).collect();
+            assert_eq!(listed_modules(output), want, "{output:?}");
+        }
     }
 }

@@ -8,15 +8,15 @@ on:
   workflow_dispatch:
     inputs:
       macos:
-        description: "macOS (Apple Silicon) — .dmg / .app.tar.gz"
+        description: "macOS (Apple Silicon) — .dmg / .app.tar.gz + headless .tar.gz"
         type: boolean
         default: true
       linux_x64:
-        description: "Linux x86_64 — .deb"
+        description: "Linux x86_64 — .deb + headless .tar.gz"
         type: boolean
         default: false
       linux_arm64:
-        description: "Linux arm64 — .deb"
+        description: "Linux arm64 — .deb + headless .tar.gz"
         type: boolean
         default: false
       arch:
@@ -78,7 +78,7 @@ jobs:
           targets='[]'
           add() { targets=$(printf '%s' "$targets" | jq -c --argjson o "$1" '. + [$o]'); }
           if [ "$IN_MACOS" = "true" ]; then
-            add '{"id":"macos","runner":"macos-14","container":"","kind":"gui"}'
+            add '{"id":"macos","runner":"macos-latest","container":"","kind":"gui"}'
           fi
           if [ "$IN_LINUX_X64" = "true" ]; then
             add '{"id":"linux-x86_64","runner":"ubuntu-22.04","container":"","kind":"gui"}'
@@ -162,13 +162,16 @@ jobs:
         run: |
           set -euo pipefail
           find . -mindepth 2 -type f \
-            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' -o -name '*.rpm' \) \
+            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' -o -name '*.rpm' -o -name '*.headless.tar.gz' \) \
             -exec mv -t . {} +
           find . -mindepth 1 -type d -exec rm -rf {} +
           ver="v${VERSION}"
           for f in Yerd_* yerd-gui_* yerd_*; do
             [ -e "$f" ] || continue
             case "$f" in
+              *.headless.tar.gz)
+                ext="headless.tar.gz"
+                case "$f" in *MacOS*) os="MacOS" ;; *) os="Linux" ;; esac ;;
               *.app.tar.gz)  ext="app.tar.gz";  os="MacOS" ;;
               *.pkg.tar.zst) ext="pkg.tar.zst"; os="Linux" ;;
               *.dmg)         ext="dmg";         os="MacOS" ;;
@@ -189,7 +192,7 @@ jobs:
         working-directory: dist
         run: |
           find . -maxdepth 1 -type f \
-            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' -o -name '*.rpm' \) \
+            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' -o -name '*.rpm' -o -name '*.headless.tar.gz' \) \
             -printf '%P\n' | sort | xargs -r sha256sum > SHA256SUMS
           cat SHA256SUMS
 

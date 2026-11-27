@@ -31,7 +31,7 @@ yerd service available    # what you could install
 | Command | Description | Example |
 | --- | --- | --- |
 | `yerd service install <SVC> <VERSION>` | Download and install a service build, then start and enable it. | `yerd service install redis 8` |
-| `yerd service change-version <SVC> <VERSION>` | Switch an installed service to a different version (the data directory is kept). | `yerd service change-version postgres 16.2` |
+| `yerd service change-version <SVC> <VERSION>` | Switch an installed service to a different version. The data directory is kept, except across PostgreSQL majors: each major has its own, so a new major starts with an empty cluster and the old one stays on disk for switching back. Engines can't open data written by a newer version, so don't downgrade MySQL, MariaDB or PostgreSQL. | `yerd service change-version postgres 16.2` |
 | `yerd service uninstall <SVC> <VERSION> [--purge]` | Remove an installed version. Add `--purge` to also delete the engine's stored data (destructive). | `yerd service uninstall mysql 8.4 --purge` |
 
 ```sh

@@ -80,17 +80,42 @@ export function resolveExternalHref(rawHref: string | null | undefined): string 
 }
 
 /** What to do with a click on an `<a href>` inside the email body: `open` it in
- *  the OS browser, let a same-document `#` anchor `scroll`, or `block` an
- *  in-document navigation the preview must never perform. */
+ *  the OS browser, `scroll` the reader to a same-document `#fragment` (empty for
+ *  a bare `#`), or `block` an in-document navigation the preview must never
+ *  perform. The handler always cancels the default action: the app uses a hash
+ *  router, so letting a `#` link through would navigate the app itself. */
 export type FrameLinkAction =
   | { kind: "open"; url: string }
-  | { kind: "scroll" }
+  | { kind: "scroll"; fragment: string }
   | { kind: "block" };
 
-/** True for an in-page fragment link (`#`, `#section`): activating it only
- *  scrolls the current document, so the handler must let it proceed. */
-function isInPageFragment(rawHref: string | null): boolean {
-  return (rawHref?.trim() ?? "").startsWith("#");
+/** The decoded fragment of an in-page link (`#`, `#section`), or `null` when the
+ *  href is not a same-document anchor. */
+function inPageFragment(rawHref: string | null): string | null {
+  const href = rawHref?.trim() ?? "";
+  if (!href.startsWith("#")) return null;
+  const raw = href.slice(1);
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * The element a `#fragment` link points at inside the rendered mail: the first
+ * element with that `id`, else an `<a name>` anchor (common in older templates).
+ * Matched by attribute comparison rather than a selector so a fragment never
+ * needs CSS escaping. Returns `null` for an empty fragment.
+ */
+export function findFragmentTarget(root: ParentNode, fragment: string): Element | null {
+  if (!fragment) return null;
+  const candidates = [...root.querySelectorAll("[id], a[name]")];
+  return (
+    candidates.find((el) => el.getAttribute("id") === fragment) ??
+    candidates.find((el) => el.tagName === "A" && el.getAttribute("name") === fragment) ??
+    null
+  );
 }
 
 const NODE_TEXT = 3;
@@ -113,7 +138,7 @@ export function eventTargetElement(target: EventTarget | null): Element | null {
  * Classify a click that landed on `target` inside an email body. Returns `null`
  * when the click isn't on a link (leave it alone); otherwise a
  * {@link FrameLinkAction}: openable schemes go to the OS browser, same-document
- * `#` anchors are left to scroll, and everything else is blocked.
+ * `#` anchors scroll the reader, and everything else is blocked.
  * Prefers `data-yerd-url` (stamped by {@link buildMailFrameDocument}) over the
  * visible `href`.
  */
@@ -127,7 +152,8 @@ export function resolveFrameLink(target: EventTarget | null): FrameLinkAction | 
   const href = anchor.getAttribute("href");
   const url = resolveExternalHref(stamped) ?? resolveExternalHref(href);
   if (url) return { kind: "open", url };
-  return isInPageFragment(href) ? { kind: "scroll" } : { kind: "block" };
+  const fragment = inPageFragment(href);
+  return fragment === null ? { kind: "block" } : { kind: "scroll", fragment };
 }
 
 /** DOMPurify config for captured HTML email (head + body). */
@@ -207,6 +233,12 @@ export type BuildMailFrameOptions = {
    * phone home (IP / read-receipt style tracking).
    */
   loadRemoteContent?: boolean;
+  /**
+   * Yerd's site TLD (e.g. `test`). Resources on that TLD, `localhost` or a
+   * loopback address are served by this machine, so they load even while remote
+   * content is blocked.
+   */
+  localTld?: string;
 };
 
 export type RemoteContentKind = "stylesheet" | "image" | "css-url";
@@ -232,6 +264,28 @@ function isRemoteHttpUrl(value: string | null | undefined): boolean {
   }
 }
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/** Whether a remote URL points at this machine: a Yerd site on `localTld`, `localhost` or loopback. */
+export function isLocalUrl(value: string, localTld?: string): boolean {
+  try {
+    const { hostname } = new URL(value.trim().startsWith("//") ? `https:${value.trim()}` : value.trim());
+    const host = hostname.toLowerCase().replace(/\.$/, "");
+    if (LOOPBACK_HOSTS.has(host) || host.endsWith(".localhost")) return true;
+    const tld = localTld?.toLowerCase().replace(/^\.+|\.+$/g, "");
+    return !!tld && (host === tld || host.endsWith(`.${tld}`));
+  } catch {
+    return false;
+  }
+}
+
+/** A remote URL the viewer blocks until the user opts in: remote and not local. */
+type BlockedUrl = (value: string | null | undefined) => boolean;
+
+function blockedUrl(localTld?: string): BlockedUrl {
+  return (value) => isRemoteHttpUrl(value) && !isLocalUrl(value!, localTld);
+}
+
 function normalizeRemoteUrl(raw: string): string {
   const trimmed = raw.trim();
   if (trimmed.startsWith("//")) {
@@ -249,6 +303,14 @@ function normalizeRemoteUrl(raw: string): string {
 }
 
 const CSS_URL_PATTERN = /url\s*\(\s*(['"]?)([^)'"]+)\1\s*\)/gi;
+/** `image-set()` / `-webkit-image-set()`, whose candidates may be bare strings
+ *  (no `url()`) that the url pattern never sees. One level of nested parens
+ *  covers `url(...)` and `type(...)` candidates. */
+const CSS_IMAGE_SET_PATTERN = /(?:-webkit-)?image-set\s*\(((?:[^()]|\([^()]*\))*)\)/gi;
+const CSS_STRING_PATTERN = /(['"])(.*?)\1/g;
+/** `:host`, `:host(...)` and `:host-context(...)`: mail CSS must not restyle the
+ *  reader's shadow host. */
+const CSS_HOST_PATTERN = /:host(?:-context)?\b/gi;
 /** String or url() form: `@import "https://…"` / `@import url(https://…)`. */
 const CSS_IMPORT_PATTERN =
   /@import\s+(?:url\s*\(\s*)?(['"]?)([^)'";\s]+)\1[^;]*;?/gi;
@@ -263,35 +325,74 @@ function stripCssComments(css: string): string {
   return css.replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
-/** Blank remote `url(...)` / `@import` references inside CSS text. */
-function neutralizeRemoteCss(css: string): string {
+function imageSetStrings(inner: string): string[] {
+  return [...inner.matchAll(CSS_STRING_PATTERN)].map((m) => m[2] ?? "");
+}
+
+/** Blank blocked `url(...)` / `@import` / `image-set()` references inside CSS text. */
+function neutralizeRemoteCss(css: string, blocked: BlockedUrl): string {
   let out = stripCssComments(css).replace(CSS_IMPORT_PATTERN, (full, _q, raw: string) => {
-    return isRemoteHttpUrl(raw) ? "" : full;
+    return blocked(raw) ? "" : full;
+  });
+  out = out.replace(CSS_IMAGE_SET_PATTERN, (full, inner: string) => {
+    return imageSetStrings(inner).some((raw) => blocked(raw)) ? "none" : full;
   });
   out = out.replace(CSS_URL_PATTERN, (full, _q, raw: string) => {
-    return isRemoteHttpUrl(raw) ? "none" : full;
+    return blocked(raw) ? "none" : full;
   });
   return out;
 }
 
-function collectCssRemoteUrls(css: string, add: (url: string, kind: RemoteContentKind) => void): void {
+function collectCssRemoteUrls(
+  css: string,
+  blocked: BlockedUrl,
+  add: (url: string, kind: RemoteContentKind) => void,
+): void {
   const cleaned = stripCssComments(css);
   for (const match of cleaned.matchAll(CSS_IMPORT_PATTERN)) {
     const raw = match[2];
-    if (isRemoteHttpUrl(raw)) add(raw, "stylesheet");
+    if (blocked(raw)) add(raw, "stylesheet");
+  }
+  for (const match of cleaned.matchAll(CSS_IMAGE_SET_PATTERN)) {
+    for (const raw of imageSetStrings(match[1] ?? "")) {
+      if (blocked(raw)) add(raw, "css-url");
+    }
   }
   for (const match of cleaned.matchAll(CSS_URL_PATTERN)) {
     const raw = match[2];
-    if (isRemoteHttpUrl(raw)) add(raw, "css-url");
+    if (blocked(raw)) add(raw, "css-url");
   }
 }
 
 /**
- * List remote (`http`/`https`/`//`) resources in captured HTML without loading them.
- * Dedupes by normalized URL. Used by the Mails sidebar so the user can inspect
- * what would be fetched before opting in.
+ * Make `<style>` text safe to serialize and re-parse after we edited it. A
+ * `<style>` body is raw text, so `innerHTML` writes it out unescaped; editing it
+ * after DOMPurify (removing a blocked `@import`) could splice a `</style>` out
+ * of harmless fragments and turn the rest into live markup when the reader
+ * re-parses the string. CSS never needs a literal `<` outside strings, and
+ * `\3c ` is its escape inside them, so escaping every `<` rules that out.
+ * `:host` selectors are disabled too, so mail CSS cannot restyle the reader's
+ * shadow host (the reader's containment covers anything this misses).
  */
-export function listRemoteContentUrls(html: string): RemoteContentRef[] {
+function sealStyleText(css: string): string {
+  return css.replace(/</g, "\\3c ").replace(CSS_HOST_PATTERN, ":not(*)");
+}
+
+function sealStyles(doc: Document): void {
+  for (const styleEl of doc.querySelectorAll("style")) {
+    const css = styleEl.textContent;
+    if (css) styleEl.textContent = sealStyleText(css);
+  }
+}
+
+/**
+ * List remote (`http`/`https`/`//`) resources in captured HTML without loading
+ * them, leaving out local ones (see {@link isLocalUrl}), which load anyway.
+ * Dedupes by normalized URL. Used by the reader so the user can inspect what
+ * would be fetched before opting in.
+ */
+export function listRemoteContentUrls(html: string, localTld?: string): RemoteContentRef[] {
+  const blocked = blockedUrl(localTld);
   const cleaned = DOMPurify.sanitize(html, MAIL_PURIFY_CONFIG);
   const doc = new DOMParser().parseFromString(cleaned, "text/html");
   filterHeadHazards(doc);
@@ -307,24 +408,28 @@ export function listRemoteContentUrls(html: string): RemoteContentRef[] {
 
   for (const link of doc.querySelectorAll("link[href]")) {
     const href = link.getAttribute("href");
-    if (isRemoteHttpUrl(href)) add(href!, "stylesheet");
+    if (blocked(href)) add(href!, "stylesheet");
+  }
+  for (const el of doc.querySelectorAll("[background]")) {
+    const background = el.getAttribute("background");
+    if (blocked(background)) add(background!, "image");
   }
   for (const img of doc.querySelectorAll("img")) {
     const src = img.getAttribute("src");
-    if (isRemoteHttpUrl(src)) add(src!, "image");
+    if (blocked(src)) add(src!, "image");
     const srcset = img.getAttribute("srcset");
     if (srcset) {
       for (const part of srcset.split(",")) {
         const candidate = part.trim().split(/\s+/)[0];
-        if (isRemoteHttpUrl(candidate)) add(candidate, "image");
+        if (blocked(candidate)) add(candidate, "image");
       }
     }
   }
   for (const el of doc.querySelectorAll("[style]")) {
-    collectCssRemoteUrls(el.getAttribute("style") ?? "", add);
+    collectCssRemoteUrls(el.getAttribute("style") ?? "", blocked, add);
   }
   for (const styleEl of doc.querySelectorAll("style")) {
-    collectCssRemoteUrls(styleEl.textContent ?? "", add);
+    collectCssRemoteUrls(styleEl.textContent ?? "", blocked, add);
   }
   return out;
 }
@@ -332,26 +437,33 @@ export function listRemoteContentUrls(html: string): RemoteContentRef[] {
 /**
  * Remove sender-controlled remote resources so viewing mail does not fetch
  * them until the user opts in via {@link BuildMailFrameOptions.loadRemoteContent}.
+ * Local resources (see {@link isLocalUrl}) are kept.
  */
-function stripRemoteResources(doc: Document): void {
+function stripRemoteResources(doc: Document, blocked: BlockedUrl): void {
   for (const link of [...doc.querySelectorAll("link[href]")]) {
-    if (isRemoteHttpUrl(link.getAttribute("href"))) link.remove();
+    if (blocked(link.getAttribute("href"))) link.remove();
+  }
+  for (const el of [...doc.querySelectorAll("[background]")]) {
+    if (blocked(el.getAttribute("background"))) el.removeAttribute("background");
   }
   for (const img of [...doc.querySelectorAll("img")]) {
-    if (isRemoteHttpUrl(img.getAttribute("src"))) {
+    if (blocked(img.getAttribute("src"))) {
       img.removeAttribute("src");
     }
-    if (img.hasAttribute("srcset")) img.removeAttribute("srcset");
+    const srcset = img.getAttribute("srcset");
+    if (srcset && srcset.split(",").some((part) => blocked(part.trim().split(/\s+/)[0]))) {
+      img.removeAttribute("srcset");
+    }
   }
   for (const el of [...doc.querySelectorAll("[style]")]) {
     const style = el.getAttribute("style");
     if (!style) continue;
-    el.setAttribute("style", neutralizeRemoteCss(style));
+    el.setAttribute("style", neutralizeRemoteCss(style, blocked));
   }
   for (const styleEl of [...doc.querySelectorAll("style")]) {
     const css = styleEl.textContent;
     if (!css) continue;
-    styleEl.textContent = neutralizeRemoteCss(css);
+    styleEl.textContent = neutralizeRemoteCss(css, blocked);
   }
 }
 
@@ -405,8 +517,9 @@ function bodyPresentationStyle(doc: Document): string {
 
 /**
  * Sanitize a captured HTML email with DOMPurify and stamp openable anchors.
- * Preserves inline `<style>` blocks. Remote stylesheets, images, and CSS URLs
- * are stripped unless `loadRemoteContent` is true.
+ * Preserves inline `<style>` blocks, sealed so no CSS edit can create markup
+ * (see {@link sealStyleText}). Remote stylesheets, images, and CSS URLs
+ * are stripped unless `loadRemoteContent` is true; local ones always stay.
  */
 export function buildMailFrameDocument(
   html: string,
@@ -415,7 +528,8 @@ export function buildMailFrameDocument(
   const cleaned = DOMPurify.sanitize(html, MAIL_PURIFY_CONFIG);
   const doc = new DOMParser().parseFromString(cleaned, "text/html");
   filterHeadHazards(doc);
-  if (!options.loadRemoteContent) stripRemoteResources(doc);
+  if (!options.loadRemoteContent) stripRemoteResources(doc, blockedUrl(options.localTld));
+  sealStyles(doc);
   stampOpenableAnchors(doc);
   return {
     head: doc.head?.innerHTML ?? "",

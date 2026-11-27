@@ -144,18 +144,45 @@ pub enum ValidationReason {
     #[cfg(target_os = "linux")]
     #[error("no recognised CA anchor directory")]
     NoAnchorDir,
-    /// A port-redirect port argument was zero. macOS-only: the pf-redirect op
-    /// that validates it is `#[cfg(target_os = "macos")]`, so the variant is
+    /// A port-redirect port argument was zero. macOS-only: the forwarder ops
+    /// that validate it are `#[cfg(target_os = "macos")]`, so the variant is
     /// gated to match - otherwise it is dead code on Linux/Windows.
     #[cfg(target_os = "macos")]
     #[error("port must be non-zero (flag {0})")]
     PortInvalid(&'static str),
-    /// The `--lan-ip` for the LAN pf redirect was loopback or unspecified - a
-    /// redirect target must be a real routable address. macOS-only (the LAN
-    /// redirect op is `#[cfg(target_os = "macos")]`).
+    /// A forwarded-from port was not privileged, or both privileged ports
+    /// were the same. macOS-only.
     #[cfg(target_os = "macos")]
-    #[error("--lan-ip must be a routable address, not loopback/unspecified")]
-    LanIpInvalid,
+    #[error("{0} must be a privileged port (< 1024) distinct from the other privileged port")]
+    ForwardSourceInvalid(&'static str),
+    /// A forward target was privileged, equal to a privileged port (which
+    /// would loop back into the forwarder), or equal to the other target.
+    /// macOS-only.
+    #[cfg(target_os = "macos")]
+    #[error(
+        "{0} must be a rootless port (>= 1024) distinct from the privileged ports and the other target"
+    )]
+    ForwardTargetInvalid(&'static str),
+    /// `--uid` was root, unknown, or resolved to a root account. macOS-only.
+    #[cfg(target_os = "macos")]
+    #[error("--uid must name an existing non-root user")]
+    UidInvalid,
+    /// `yerd-forward` next to the helper is missing, not a regular file,
+    /// group- or world-writable, or on a path that won't survive a reboot
+    /// (App Translocation). macOS-only.
+    #[cfg(target_os = "macos")]
+    #[error("forwarder binary unusable: {}", .0.display())]
+    ForwarderInvalid(PathBuf),
+    /// `yerdd` next to the helper is missing, not a regular file, group- or
+    /// world-writable, or on a path that won't survive a reboot. macOS-only.
+    #[cfg(target_os = "macos")]
+    #[error("daemon binary unusable: {}", .0.display())]
+    DaemonBinaryInvalid(PathBuf),
+    /// The helper's directory has no `headless` install receipt, so it is not
+    /// a headless install and must not get a system daemon job. macOS-only.
+    #[cfg(target_os = "macos")]
+    #[error("not a headless install (no valid install receipt beside the helper); reinstall with the install script")]
+    NotHeadlessInstall,
 }
 
 /// Specific failure modes for [`HelperError::Command`].

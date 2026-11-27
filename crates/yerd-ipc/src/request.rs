@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use yerd_core::PhpVersion;
+use yerd_core::tunnel_provider::TunnelProvider;
+use yerd_core::{PhpVersion, XdebugMode, XdebugStart};
 
 // IMPORTANT: per-field serde renames are forbidden in this crate. Add
 // new variants/fields additively; let rename_all handle casing. See
@@ -144,6 +145,24 @@ pub enum Request {
         /// The path prefix to remove.
         prefix: String,
     },
+    /// Replace a whole-host proxy's upstream in place, keeping its domains and
+    /// HTTPS setting. Replies `Ok`.
+    UpdateProxy {
+        /// The proxy name to update.
+        name: String,
+        /// The new upstream URL (validated by the daemon).
+        url: String,
+    },
+    /// Replace a site path rule's upstream in place, keeping its site and
+    /// prefix. Replies `Ok`.
+    UpdateProxyRule {
+        /// The site the rule is on.
+        site: String,
+        /// The path prefix of the rule to update.
+        prefix: String,
+        /// The new upstream URL (validated by the daemon).
+        url: String,
+    },
     /// Enumerate whole-host proxies and per-site path-prefix rules.
     ListProxies,
     /// Fetch read-only daemon runtime facts (DNS address, TLD, CA path +
@@ -228,6 +247,25 @@ pub enum Request {
         /// Setting name → value; currently only `"max_children"` (`1..=1024`).
         /// `""` resets to the default.
         settings: BTreeMap<String, String>,
+    },
+    /// Turn the bundled Xdebug on or off for one PHP version, optionally
+    /// changing its modes and start trigger. Absent (or `null`)
+    /// `enabled`/`modes`/`start` keep the version's current value (or the
+    /// default). The reply is [`crate::Response::PhpVersions`].
+    SetXdebug {
+        /// The installed PHP version; `None` means the daemon's default PHP.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<PhpVersion>,
+        /// Whether that version's FPM pool loads Xdebug; `None` keeps the
+        /// current state, so a settings-only edit can't race a toggle.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+        /// The `xdebug.mode` list; must be non-empty when present.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        modes: Option<Vec<XdebugMode>>,
+        /// When a debug session starts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start: Option<XdebugStart>,
     },
     /// Register a custom PHP extension for a version: the daemon validates and
     /// load-probes the `.so`, persists it, and loads it into that version's FPM
@@ -571,12 +609,68 @@ pub enum Request {
         /// The desired enabled state.
         enabled: bool,
     },
-    /// List the installable dev tools (Composer, Node, Bun) with install status.
+    /// List the installable dev tools (Composer, Node, Bun, pnpm) with install status.
     ListTools,
+    /// Install a Node release selector alongside existing releases.
+    InstallNode {
+        /// Major, minor, exact numeric selector, `node`, `lts/*`, or
+        /// `lts/<codename>`.
+        version: String,
+    },
+    /// Select an installed Node release globally or for a named site.
+    SetNodeVersion {
+        /// Installed release selector.
+        version: String,
+        /// Named site; absent selects the global default.
+        site: Option<String>,
+    },
+    /// List installed Node releases with default and uninstall effects.
+    /// Returns [`super::Response::NodeVersions`].
+    ListNode,
+    /// List published Node releases grouped by major.
+    /// Returns [`super::Response::AvailableNode`].
+    AvailableNode,
+    /// Install a Node release as a background job. Returns
+    /// [`super::Response::JobStarted`]; progress is polled via [`Self::JobStatus`].
+    InstallNodeStreamed {
+        /// Major, minor, exact numeric selector, `node`, `lts/*`, or
+        /// `lts/<codename>`.
+        version: String,
+        /// An Update: move the global default to the new patch when it is on an
+        /// older patch of the same major. A plain install never moves it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        update: bool,
+    },
+    /// Remove one installed Node release. Returns [`super::Response::NodeVersions`].
+    UninstallNode {
+        /// Exact installed version, with or without a leading `v`.
+        version: String,
+    },
+    /// Clear a site's saved Node preference. Idempotent; returns
+    /// [`super::Response::Ok`].
+    ClearNodeVersion {
+        /// Site name.
+        site: String,
+    },
+    /// Report a site's effective Node version and where it comes from.
+    /// Returns [`super::Response::NodeSite`].
+    NodeSite {
+        /// Site name.
+        site: String,
+    },
+    /// Report every site's effective Node version and its source in one call.
+    /// Returns [`super::Response::NodeSites`].
+    NodeSites,
+    /// Report the running release's notes and a few earlier stable releases.
+    /// Returns [`super::Response::ReleaseNotes`].
+    ReleaseNotes,
+    /// Report the human contributors to the Yerd repository.
+    /// Returns [`super::Response::Contributors`].
+    Contributors,
     /// Download + install a dev tool's latest release into yerd's data dir and
     /// expose its commands on `PATH`. Idempotent (reinstalls/updates to latest).
     InstallTool {
-        /// Tool id (`"composer"`, `"node"`, `"bun"`).
+        /// Tool id (`"composer"`, `"node"`, `"bun"`, `"pnpm"`).
         tool: String,
     },
     /// Remove a dev tool's files and its `PATH` shims.
@@ -589,7 +683,7 @@ pub enum Request {
     /// stdout/stderr) is polled via [`Self::JobStatus`]. The streaming sibling of
     /// [`Self::InstallTool`].
     InstallToolStreamed {
-        /// Tool id (`"composer"`, `"node"`, `"bun"`, `"laravel"`).
+        /// Tool id (`"composer"`, `"node"`, `"bun"`, `"pnpm"`, `"laravel"`).
         tool: String,
     },
     /// Scaffold and register a brand-new site (e.g. `laravel new`). Long-running:
@@ -644,23 +738,37 @@ pub enum Request {
         /// Override the configured channel for this stage only.
         channel: Option<crate::Channel>,
     },
-    /// Download + install the `cloudflared` binary as a streamed background job
-    /// (the Cloudflare Tunnel integration's prerequisite). Replies
+    /// Kept for older clients: equivalent to
+    /// `InstallToolStreamed { tool: "cloudflared" }`. Replies
     /// [`super::Response::JobStarted`] immediately; progress is polled via
-    /// [`Self::JobStatus`]. The streaming-only sibling of the dev-tool installers.
+    /// [`Self::JobStatus`].
     InstallCloudflaredStreamed,
-    /// Start a Quick Tunnel for a site, publishing it at a random
-    /// `*.trycloudflare.com` URL. Replies [`super::Response::Tunnels`] with the
-    /// live tunnel (including its URL once captured). Requires `cloudflared` to be
-    /// installed.
+    /// Share a site through a tunnel provider: a Cloudflare Quick Tunnel at a
+    /// random `*.trycloudflare.com` URL, an ngrok share, or a zrok public
+    /// share. Replies [`super::Response::Tunnels`] with the live tunnels
+    /// (including this share's URL once captured). Requires the provider to be
+    /// installed and set up.
     StartQuickTunnel {
         /// The site name to share.
         site: String,
+        /// The provider to share through; absent means the configured default
+        /// provider.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<TunnelProvider>,
+        /// ngrok only: don't use the configured static domain; the share gets
+        /// the URL ngrok assigns to the account instead.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        random_url: bool,
     },
-    /// Stop and tear down the tunnel for a site. No-op if none is running.
+    /// Stop and tear down a site's share. No-op if none is running.
     StopTunnel {
-        /// The site whose tunnel to stop.
+        /// The site whose share to stop.
         site: String,
+        /// The provider whose share to stop; absent stops every per-site share
+        /// of the site (Cloudflare quick link, ngrok, zrok). The site's
+        /// named-tunnel mapping is never touched.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<TunnelProvider>,
     },
     /// Fetch the live tunnel state plus `cloudflared` install status. Returns
     /// [`super::Response::Tunnels`].
@@ -697,11 +805,13 @@ pub enum Request {
         /// The public hostname, or `None` to remove the mapping.
         hostname: Option<String>,
     },
-    /// (Re)start the single consolidated Named Tunnel serving every enabled site
-    /// (one process, one config with one ingress rule per site). Returns
-    /// [`super::Response::Tunnels`].
+    /// Ensure the single consolidated Named Tunnel serving every enabled site is
+    /// running. Idempotent: it starts the connector when none exists and never
+    /// restarts a live one. Returns [`super::Response::Tunnels`].
     StartNamedTunnel,
-    /// Stop the consolidated Named Tunnel. Returns [`super::Response::Tunnels`].
+    /// Stop the consolidated Named Tunnel until the next hostname change or
+    /// daemon start (the configured hostnames are kept, so it is not a
+    /// persistent "off" switch). Returns [`super::Response::Tunnels`].
     StopNamedTunnel,
     /// Delete a named tunnel from the Cloudflare account and forget it locally
     /// (stops the process, removes its credentials, and clears the persisted
@@ -709,6 +819,48 @@ pub enum Request {
     DeleteNamedTunnel {
         /// The tunnel name to delete.
         name: String,
+    },
+    /// Set or clear a site's share password. Tunnelled requests to a protected
+    /// site must carry HTTP basic auth with this password (any username).
+    /// `None` clears it. Replies [`super::Response::Ok`].
+    SetTunnelPassword {
+        /// The site name.
+        site: String,
+        /// The share password, or `None` to remove it.
+        password: Option<String>,
+    },
+    /// List the tunnel providers with their readiness and settings. Returns
+    /// [`super::Response::TunnelProviders`].
+    ListTunnelProviders,
+    /// Save or clear the ngrok authtoken (`None` clears it). The token is
+    /// stored in the config and never echoed back. Replies
+    /// [`super::Response::Ok`].
+    SetNgrokAuthtoken {
+        /// The authtoken, or `None` to remove it.
+        authtoken: Option<String>,
+    },
+    /// Save or clear the ngrok static domain (`None` or an empty value clears
+    /// it). A scheme and trailing slash are stripped. Replies
+    /// [`super::Response::Ok`].
+    SetNgrokDomain {
+        /// The static domain, or `None` to remove it.
+        domain: Option<String>,
+    },
+    /// Enable this machine with a zrok account token in Yerd's own zrok
+    /// environment. The token is handed to zrok and never echoed back.
+    /// Replies [`super::Response::Ok`].
+    EnableZrok {
+        /// The zrok account token.
+        token: String,
+    },
+    /// Disable Yerd's zrok environment, releasing this machine from the zrok
+    /// account. Replies [`super::Response::Ok`].
+    DisableZrok,
+    /// Set the provider new shares use by default. Replies
+    /// [`super::Response::Ok`].
+    SetDefaultTunnelProvider {
+        /// The provider to use.
+        provider: TunnelProvider,
     },
     /// List the user-defined site groups (ordered) and per-site membership.
     /// Returns [`super::Response::Groups`]. Groups are a GUI organisational
@@ -742,6 +894,15 @@ pub enum Request {
         site: String,
         /// The group to assign, or `None` to unassign.
         group: Option<String>,
+    },
+    /// Star or unstar a site in the GUI. `favourite: true` marks it, `false`
+    /// clears it; both are idempotent. Like [`Request::SetSiteGroup`] the name
+    /// is not validated against live sites. Replies [`super::Response::Ok`].
+    SetSiteFavourite {
+        /// The site name.
+        site: String,
+        /// Whether the site is a favourite.
+        favourite: bool,
     },
     /// Rename a site group, preserving its display position and moving every
     /// member with it. Replies [`super::Response::Ok`]. Rejected if `to` is
@@ -824,6 +985,79 @@ pub enum Request {
     },
     /// Enumerate every site's path-prefix routing rules.
     ListRoutes,
+    /// Set a custom response header on a PHP site or whole-host proxy. The
+    /// proxy adds it to every response for the site or proxy, replacing any
+    /// same-named header. Setting a name it already has (ignoring case)
+    /// replaces that entry.
+    SetResponseHeader {
+        /// The site or whole-host proxy the header attaches to (a site wins
+        /// over a same-named proxy, as for domains).
+        site: String,
+        /// The header name (validated by the daemon).
+        name: String,
+        /// The header value (validated by the daemon).
+        value: String,
+    },
+    /// Remove a custom response header from a PHP site or whole-host proxy.
+    RemoveResponseHeader {
+        /// The site or whole-host proxy the header is on.
+        site: String,
+        /// The header name to remove, matched ignoring case.
+        name: String,
+    },
+    /// Enumerate every site's and whole-host proxy's custom response headers.
+    ListResponseHeaders,
+    /// Read the outbound-proxy settings and the proxy they resolve to. Replies
+    /// [`crate::Response::NetworkSettings`]; every URL is redacted.
+    GetNetworkSettings,
+    /// Save the outbound-proxy settings, then re-detect (login shell included).
+    /// A `None` field keeps the stored value; `Some("")` or `Some(vec![])`
+    /// clears it. A URL whose password is the redacted `***` keeps the stored
+    /// password only while scheme, user, host and port are unchanged. Replies
+    /// [`crate::Response::NetworkSettings`].
+    SetNetworkSettings {
+        /// The mode to use.
+        mode: yerd_core::network::OutboundProxyMode,
+        /// Manual proxy for `http://` requests.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        http_proxy: Option<String>,
+        /// Manual proxy for `https://` requests; empty falls back to the HTTP
+        /// proxy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        https_proxy: Option<String>,
+        /// User bypass entries.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        no_proxy: Option<Vec<String>>,
+    },
+    /// Re-detect the proxy (login shell included) and fetch Yerd's release
+    /// manifest through it. Replies [`crate::Response::NetworkTest`].
+    TestNetwork,
+    /// Read the `.yerd.toml` in a project directory, or draft one from the
+    /// site at that directory (or defaults) when there is none. Replies
+    /// [`crate::Response::ProjectConfig`]; an unparseable file is
+    /// [`crate::ErrorCode::ProjectFileInvalid`].
+    ProjectConfigDraft {
+        /// The project directory (canonicalised by the daemon).
+        path: PathBuf,
+    },
+    /// Apply a project directory's `.yerd.toml` as a background job. Replies
+    /// [`crate::Response::JobStarted`]; progress is polled via
+    /// [`Self::JobStatus`].
+    ApplyProjectConfig {
+        /// The project directory (canonicalised by the daemon).
+        path: PathBuf,
+        /// Wizard output to write as `.yerd.toml` first; refused when the
+        /// file already exists. `None` applies the existing file.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contents: Option<String>,
+    },
+    /// Write a site's current settings to `.yerd.toml` in its directory,
+    /// keeping the file's `name`, services and extensions. Replies
+    /// [`crate::Response::ProjectConfig`].
+    ExportProjectConfig {
+        /// Site name.
+        site: String,
+    },
 }
 
 #[cfg(test)]
@@ -869,6 +1103,7 @@ mod variant_name_pinning {
             Request::SetPhpVersionSettings { .. } => {}
             Request::SetPhpDirectives { .. } => {}
             Request::SetPhpPoolSettings { .. } => {}
+            Request::SetXdebug { .. } => {}
             Request::AddPhpExtension { .. } => {}
             Request::RemovePhpExtension { .. } => {}
             Request::ListPhpExtensions => {}
@@ -923,6 +1158,17 @@ mod variant_name_pinning {
             Request::SetDnsPort { .. } => {}
             Request::SetMailEnabled { .. } => {}
             Request::ListTools => {}
+            Request::InstallNode { .. } => {}
+            Request::SetNodeVersion { .. } => {}
+            Request::ListNode => {}
+            Request::AvailableNode => {}
+            Request::InstallNodeStreamed { .. } => {}
+            Request::UninstallNode { .. } => {}
+            Request::ClearNodeVersion { .. } => {}
+            Request::NodeSite { .. } => {}
+            Request::NodeSites => {}
+            Request::ReleaseNotes => {}
+            Request::Contributors => {}
             Request::InstallTool { .. } => {}
             Request::UninstallTool { .. } => {}
             Request::InstallToolStreamed { .. } => {}
@@ -945,11 +1191,19 @@ mod variant_name_pinning {
             Request::StartNamedTunnel => {}
             Request::StopNamedTunnel => {}
             Request::DeleteNamedTunnel { .. } => {}
+            Request::SetTunnelPassword { .. } => {}
+            Request::ListTunnelProviders => {}
+            Request::SetNgrokAuthtoken { .. } => {}
+            Request::SetNgrokDomain { .. } => {}
+            Request::EnableZrok { .. } => {}
+            Request::DisableZrok => {}
+            Request::SetDefaultTunnelProvider { .. } => {}
             Request::ListGroups => {}
             Request::CreateGroup { .. } => {}
             Request::DeleteGroup { .. } => {}
             Request::SetGroupOrder { .. } => {}
             Request::SetSiteGroup { .. } => {}
+            Request::SetSiteFavourite { .. } => {}
             Request::RenameGroup { .. } => {}
             Request::SetSymlinkProtection { .. } => {}
             Request::SetFrontController { .. } => {}
@@ -957,14 +1211,25 @@ mod variant_name_pinning {
             Request::RemoveProxy { .. } => {}
             Request::AddProxyRule { .. } => {}
             Request::RemoveProxyRule { .. } => {}
+            Request::UpdateProxy { .. } => {}
+            Request::UpdateProxyRule { .. } => {}
             Request::ListProxies => {}
             Request::SetMcpEnabled { .. } => {}
+            Request::GetNetworkSettings => {}
+            Request::SetNetworkSettings { .. } => {}
+            Request::TestNetwork => {}
             Request::SetLanEnabled { .. } => {}
             Request::MintRemoteSetupCode => {}
             Request::TrustBrowsers { .. } => {}
             Request::AddRouteRule { .. } => {}
             Request::RemoveRouteRule { .. } => {}
             Request::ListRoutes => {}
+            Request::SetResponseHeader { .. } => {}
+            Request::RemoveResponseHeader { .. } => {}
+            Request::ListResponseHeaders => {}
+            Request::ProjectConfigDraft { .. } => {}
+            Request::ApplyProjectConfig { .. } => {}
+            Request::ExportProjectConfig { .. } => {}
         }
     }
 
@@ -1148,6 +1413,31 @@ mod variant_name_pinning {
         });
         pin(Request::SetMailEnabled { enabled: true });
         pin(Request::ListTools);
+        pin(Request::InstallNode {
+            version: "22".into(),
+        });
+        pin(Request::SetNodeVersion {
+            version: "22.9.0".into(),
+            site: Some("blog".into()),
+        });
+        pin(Request::ListNode);
+        pin(Request::AvailableNode);
+        pin(Request::InstallNodeStreamed {
+            version: "22".into(),
+            update: true,
+        });
+        pin(Request::UninstallNode {
+            version: "22.9.0".into(),
+        });
+        pin(Request::ClearNodeVersion {
+            site: "blog".into(),
+        });
+        pin(Request::NodeSite {
+            site: "blog".into(),
+        });
+        pin(Request::NodeSites);
+        pin(Request::ReleaseNotes);
+        pin(Request::Contributors);
         pin(Request::InstallTool {
             tool: "node".into(),
         });
@@ -1184,8 +1474,24 @@ mod variant_name_pinning {
         });
         pin(Request::StageUpdate { channel: None });
         pin(Request::InstallCloudflaredStreamed);
-        pin(Request::StartQuickTunnel { site: "app".into() });
-        pin(Request::StopTunnel { site: "app".into() });
+        pin(Request::StartQuickTunnel {
+            site: "app".into(),
+            provider: None,
+            random_url: false,
+        });
+        pin(Request::StartQuickTunnel {
+            site: "app".into(),
+            provider: Some(TunnelProvider::Ngrok),
+            random_url: true,
+        });
+        pin(Request::StopTunnel {
+            site: "app".into(),
+            provider: None,
+        });
+        pin(Request::StopTunnel {
+            site: "app".into(),
+            provider: Some(TunnelProvider::Zrok),
+        });
         pin(Request::TunnelStatus);
         pin(Request::CloudflaredLogin);
         pin(Request::CreateNamedTunnel {
@@ -1205,6 +1511,22 @@ mod variant_name_pinning {
         pin(Request::DeleteNamedTunnel {
             name: "mysite".into(),
         });
+        pin(Request::SetTunnelPassword {
+            site: "app".into(),
+            password: Some("secret".into()),
+        });
+        pin(Request::ListTunnelProviders);
+        pin(Request::SetNgrokAuthtoken {
+            authtoken: Some("tok".into()),
+        });
+        pin(Request::SetNgrokDomain {
+            domain: Some("demo.ngrok-free.app".into()),
+        });
+        pin(Request::EnableZrok { token: "t".into() });
+        pin(Request::DisableZrok);
+        pin(Request::SetDefaultTunnelProvider {
+            provider: TunnelProvider::Zrok,
+        });
         pin(Request::ListGroups);
         pin(Request::CreateGroup {
             name: "Blog".into(),
@@ -1218,6 +1540,10 @@ mod variant_name_pinning {
         pin(Request::SetSiteGroup {
             site: "app".into(),
             group: Some("Blog".into()),
+        });
+        pin(Request::SetSiteFavourite {
+            site: "app".into(),
+            favourite: true,
         });
         pin(Request::RenameGroup {
             from: "Blog".into(),
@@ -1244,6 +1570,15 @@ mod variant_name_pinning {
             site: "app".to_owned(),
             prefix: "/app".to_owned(),
         });
+        pin(Request::UpdateProxy {
+            name: "reverb".to_owned(),
+            url: "http://localhost:8081".to_owned(),
+        });
+        pin(Request::UpdateProxyRule {
+            site: "app".to_owned(),
+            prefix: "/app".to_owned(),
+            url: "http://127.0.0.1:8081".to_owned(),
+        });
         pin(Request::ListProxies);
         pin(Request::AddRouteRule {
             site: "portal".to_owned(),
@@ -1255,9 +1590,37 @@ mod variant_name_pinning {
             prefix: "/api".to_owned(),
         });
         pin(Request::ListRoutes);
+        pin(Request::SetResponseHeader {
+            site: "api".to_owned(),
+            name: "Access-Control-Allow-Origin".to_owned(),
+            value: "https://app.test".to_owned(),
+        });
+        pin(Request::RemoveResponseHeader {
+            site: "api".to_owned(),
+            name: "Access-Control-Allow-Origin".to_owned(),
+        });
+        pin(Request::ListResponseHeaders);
         pin(Request::SetMcpEnabled { enabled: true });
+        pin(Request::GetNetworkSettings);
+        pin(Request::SetNetworkSettings {
+            mode: yerd_core::network::OutboundProxyMode::Manual,
+            http_proxy: Some("http://proxy:3128".to_owned()),
+            https_proxy: None,
+            no_proxy: Some(vec![".corp.com".to_owned()]),
+        });
+        pin(Request::TestNetwork);
         pin(Request::SetLanEnabled { enabled: true });
         pin(Request::MintRemoteSetupCode);
+        pin(Request::ProjectConfigDraft {
+            path: PathBuf::from("/p/acme"),
+        });
+        pin(Request::ApplyProjectConfig {
+            path: PathBuf::from("/p/acme"),
+            contents: Some("php = \"8.4\"\n".into()),
+        });
+        pin(Request::ExportProjectConfig {
+            site: "acme".into(),
+        });
     }
 
     fn laravel_options_fixture() -> crate::LaravelOptions {
@@ -1271,6 +1634,7 @@ mod variant_name_pinning {
             js: crate::JsRuntime::Npm,
             git: true,
             boost: false,
+            node: None,
         }
     }
 }

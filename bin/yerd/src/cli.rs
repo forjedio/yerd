@@ -76,7 +76,7 @@ pub enum Command {
         #[command(subcommand)]
         target: UnsetTarget,
     },
-    /// Install a component (currently: a PHP version).
+    /// Install a PHP version or developer tool.
     Install {
         /// What to install.
         #[command(subcommand)]
@@ -135,8 +135,15 @@ pub enum Command {
     },
     /// List local managed services and their status.
     Services,
-    /// List installable dev tools (Composer, Node, Bun) and their install status.
+    /// List installable dev tools (Composer, Node, Bun, pnpm, Laravel, WP-CLI,
+    /// cloudflared, ngrok, zrok) and their install status.
     Tools,
+    /// Manage installed Node versions and defaults.
+    Node {
+        /// What to do.
+        #[command(subcommand)]
+        action: NodeAction,
+    },
     /// Manage a local service (redis, mysql, mariadb, postgres, meilisearch, rustfs).
     Service {
         /// What to do.
@@ -224,6 +231,14 @@ pub enum Command {
         #[command(subcommand)]
         action: RouteAction,
     },
+    /// Manage a site's or whole-host proxy's custom response headers, added to
+    /// every response it serves except those from path-prefix proxy rules (for
+    /// example `Access-Control-Allow-Origin` for CORS).
+    Header {
+        /// What to do.
+        #[command(subcommand)]
+        action: HeaderAction,
+    },
     /// Grant yerd OS-level privileges (run via `sudo`). No subcommand = all.
     Elevate {
         /// Which privilege to grant; omit to grant all.
@@ -243,6 +258,13 @@ pub enum Command {
         #[command(subcommand)]
         action: PathAction,
     },
+    /// Register and control the daemon service for a headless install. Local -
+    /// does not talk to the daemon.
+    Daemon {
+        /// What to do.
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
     /// Run a script under the default PHP version with pcov coverage enabled -
     /// the discoverable front door to the `phpcover` shim. Everything after
     /// `coverage` is passed straight through to PHP. To pin a specific version,
@@ -258,23 +280,22 @@ pub enum Command {
         )]
         args: Vec<std::ffi::OsString>,
     },
-    /// Run a tool under the PHP version pinned to a site - the one its web
-    /// requests use - instead of the global default. The site is the one
-    /// containing the current directory, or `--site <name>`; outside any site,
-    /// the global default is used. Everything after the tool is passed
-    /// straight through, so `--site`/`--json` must come *before* it (e.g.
-    /// `yerd exec --site blog php -v`). The bare `php` and `composer` shims are
-    /// unaffected and still use the global default. `-h`/`--help` go to the
-    /// tool, so use `yerd help exec` for this command's own help. Local -
-    /// execs PHP directly. (Unix only.)
+    /// Run a tool under the project's selected PHP or Node version. PHP uses
+    /// the site's pinned version; Node uses .nvmrc or .node-version (nearest
+    /// directory; .nvmrc wins in the same directory), then the saved site
+    /// preference, then the global default. Use --site <name> to select a
+    /// named project's root. Node resolution requires a running daemon.
+    /// Everything after the tool is passed through, so Yerd flags must come
+    /// before it (e.g. `yerd exec --site blog npm install`). Bare managed
+    /// commands still use the global default. -h/--help go to the tool; use
+    /// `yerd help exec` for this command's own help. (Unix only.)
     // `disable_help_flag` because clap otherwise matches `-h`/`--help` before
     // `trailing_var_arg` starts collecting, so `yerd exec composer --help`
     // would print yerd's help instead of Composer's.
     #[command(disable_help_flag = true)]
     Exec {
-        /// Run under this site's pinned version instead of the current
-        /// directory's. Unlike the cwd lookup this never falls back: an
-        /// unknown name is an error.
+        /// Resolve this site's project instead of the current directory.
+        /// An unknown name is an error.
         #[arg(long, value_name = "NAME")]
         site: Option<String>,
         /// Which tool to run.
@@ -304,6 +325,11 @@ pub enum Command {
     /// `claude mcp add --scope user yerd -- yerd mcp`. Tools are served only
     /// when AI Agents is enabled in Yerd's General settings.
     Mcp,
+    /// Set up the project in the current directory from its `.yerd.toml`.
+    /// With a file, applies it (links the folder, sets PHP, HTTPS, domains,
+    /// headers, proxy rules, Node and services). Without one, runs a short
+    /// wizard prefilled from the current site, writes the file, then applies it.
+    Init,
     /// Expose your `.test` sites to other devices on the LAN, or check/disable
     /// that exposure. See `yerd remote-setup` to provision a device.
     Lan {
@@ -314,6 +340,88 @@ pub enum Command {
     /// Mint a one-time bootstrap command to provision another device (installs
     /// Yerd's CA and points its `.test` resolver here). Requires LAN mode on.
     RemoteSetup,
+    /// Outbound network settings for Yerd's own downloads, updates, and the
+    /// tools it runs.
+    Network {
+        /// What to configure.
+        #[command(subcommand)]
+        action: NetworkAction,
+    },
+    /// Turn the bundled Xdebug on or off for a PHP version's sites, or show
+    /// its state. Use `phpdebug` / `php<ver>debug` for a single CLI run.
+    Xdebug {
+        /// What to do.
+        #[command(subcommand)]
+        action: XdebugAction,
+    },
+}
+
+/// `yerd xdebug <action>`.
+#[derive(clap::Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum XdebugAction {
+    /// Load Xdebug into a version's FPM pool (downloads it on first use) and
+    /// restart that pool.
+    On {
+        /// PHP version (e.g. `8.4`); defaults to the default PHP.
+        version: Option<String>,
+        /// Xdebug modes, comma-separated: debug, develop, coverage, profile,
+        /// trace, gcstats. Keeps the current modes when omitted.
+        #[arg(long, value_name = "MODES", value_delimiter = ',')]
+        mode: Option<Vec<String>>,
+        /// Start a session only when a trigger (cookie, query or env) is
+        /// present.
+        #[arg(long, conflicts_with = "always")]
+        trigger: bool,
+        /// Start a session on every request (the default).
+        #[arg(long)]
+        always: bool,
+    },
+    /// Stop loading Xdebug into a version's FPM pool and restart that pool.
+    Off {
+        /// PHP version (e.g. `8.4`); defaults to the default PHP.
+        version: Option<String>,
+    },
+    /// Show each installed version's Xdebug state.
+    Status,
+}
+
+/// `yerd network <action>`.
+#[derive(clap::Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum NetworkAction {
+    /// Outbound HTTP proxy (corporate networks).
+    Proxy {
+        /// What to do.
+        #[command(subcommand)]
+        action: OutboundProxyAction,
+    },
+}
+
+/// `yerd network proxy <action>`.
+#[derive(clap::Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum OutboundProxyAction {
+    /// Show the mode, the proxy in use and where it came from, and the bypass
+    /// list.
+    Status,
+    /// Use a manual proxy, e.g. `http://user:pass@proxy.corp:3128`. HTTPS
+    /// requests use the same proxy unless `--https` is given.
+    Set {
+        /// Proxy for `http://` (and, by default, `https://`) requests.
+        url: String,
+        /// A different proxy for `https://` requests.
+        #[arg(long, value_name = "URL")]
+        https: Option<String>,
+        /// Hosts to reach directly, comma-separated (e.g. `corp.com,10.0.0.0/8`).
+        /// Loopback and the site TLD are always bypassed.
+        #[arg(long = "no-proxy", value_name = "HOSTS", value_delimiter = ',')]
+        no_proxy: Option<Vec<String>>,
+    },
+    /// Detect the proxy automatically (environment, System Settings or GNOME,
+    /// then your login shell). The default.
+    System,
+    /// Connect directly, ignoring any proxy environment.
+    Off,
+    /// Re-detect the proxy and fetch Yerd's release manifest through it.
+    Test,
 }
 
 /// `yerd lan <action>`.
@@ -328,13 +436,19 @@ pub enum LanAction {
     Status,
 }
 
-/// A tool `yerd exec` can run under a site's pinned PHP version.
+/// A tool `yerd exec` can run under a project's selected PHP or Node version.
 #[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecTool {
     /// The PHP CLI itself.
     Php,
     /// The bundled Composer phar, run under that PHP.
     Composer,
+    /// Managed Node.js.
+    Node,
+    /// npm bundled with the selected Node.
+    Npm,
+    /// npx bundled with the selected Node.
+    Npx,
 }
 
 /// A tool `yerd which` can report the path of. Deliberately separate from
@@ -344,6 +458,12 @@ pub enum ExecTool {
 pub enum WhichTool {
     /// The PHP CLI binary.
     Php,
+    /// Managed Node.js binary.
+    Node,
+    /// Selected npm entry point.
+    Npm,
+    /// Selected npx entry point.
+    Npx,
 }
 
 /// A binary on/off toggle argument (e.g. `yerd front-controller <name> on`).
@@ -374,6 +494,19 @@ pub enum PathAction {
     Print,
 }
 
+/// Action of `yerd daemon`.
+#[derive(clap::Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonAction {
+    /// Register the daemon to start at boot and start it now (headless installs
+    /// only). Linux: a systemd user service plus linger. macOS: a system
+    /// launchd daemon, so run it with `sudo`.
+    Install,
+    /// Start the registered daemon (macOS headless installs need `sudo`).
+    Start,
+    /// Stop the running daemon (run as yourself, not with `sudo`).
+    Stop,
+}
+
 /// Action of `yerd proxy`.
 #[derive(clap::Subcommand, Debug, Clone)]
 pub enum ProxyAction {
@@ -398,6 +531,19 @@ pub enum ProxyAction {
         target: String,
         /// The path prefix, when removing a site's path rule.
         prefix: Option<String>,
+    },
+    /// Change a proxy's upstream in place, keeping its domains, wildcards and
+    /// HTTPS setting. Two arguments update a whole-host proxy
+    /// (`yerd proxy edit grafana http://localhost:3001`); three update a site's
+    /// path rule (`yerd proxy edit codestash /live http://127.0.0.1:8082`).
+    Edit {
+        /// A proxy name, which may be dotted (`api.account`), or a site name
+        /// (path rule).
+        first: String,
+        /// The new upstream URL (whole-host), or the path prefix (path rule).
+        second: String,
+        /// The new upstream URL, when the second argument is a path prefix.
+        third: Option<String>,
     },
     /// List whole-host proxies and per-site path rules.
     List,
@@ -432,6 +578,36 @@ pub enum RouteAction {
     /// `index.php` already gets SPA routing automatically, with no rule.
     List {
         /// Site name; omit to list every site's rules.
+        site: Option<String>,
+    },
+}
+
+/// Action of `yerd header`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum HeaderAction {
+    /// Set a header on every response for the site or whole-host proxy,
+    /// including errors and redirects, except responses from path-prefix proxy
+    /// rules. Replaces a same-named header from PHP, the upstream or Yerd, and
+    /// replaces the existing entry for that name.
+    Set {
+        /// Site or whole-host proxy name.
+        site: String,
+        /// Header name, e.g. `Access-Control-Allow-Origin`.
+        name: String,
+        /// Header value, e.g. `https://app.test`.
+        value: String,
+    },
+    /// Remove a header from a site or whole-host proxy by name
+    /// (case-insensitive).
+    Remove {
+        /// Site or whole-host proxy name.
+        site: String,
+        /// Header name to remove.
+        name: String,
+    },
+    /// List custom response headers.
+    List {
+        /// Site or proxy name; omit to list every site's and proxy's headers.
         site: Option<String>,
     },
 }
@@ -610,18 +786,28 @@ pub enum ServiceAction {
 /// Action of `yerd tunnel`.
 #[derive(clap::Subcommand, Debug, Clone)]
 pub enum TunnelAction {
-    /// Download the `cloudflared` binary (required before sharing a site).
-    Install,
-    /// Share a site publicly via a Quick Tunnel (a random `*.trycloudflare.com`
-    /// URL). Requires `cloudflared` to be installed.
+    /// Share a site publicly through a tunnel provider: a Cloudflare quick
+    /// link (a random `*.trycloudflare.com` URL), ngrok, or zrok. Without
+    /// `--provider` the default provider is used (`yerd tunnel default`).
     Share {
         /// Site name (e.g. `app` or `app.test`).
         site: String,
+        /// The provider to share through.
+        #[arg(long, value_enum)]
+        provider: Option<TunnelProviderArg>,
+        /// ngrok only: don't use the configured static domain; the share gets
+        /// the URL ngrok assigns to the account instead.
+        #[arg(long)]
+        random_url: bool,
     },
-    /// Stop sharing a site.
+    /// Stop sharing a site. Without `--provider` every share of the site is
+    /// stopped, except its own-domain (named tunnel) mapping.
     Stop {
-        /// Site name whose tunnel to stop.
+        /// Site name whose share to stop.
         site: String,
+        /// Stop only the share through this provider.
+        #[arg(long, value_enum)]
+        provider: Option<TunnelProviderArg>,
     },
     /// Show live tunnels and `cloudflared` install status.
     Status,
@@ -658,11 +844,108 @@ pub enum TunnelAction {
         #[arg(long, conflicts_with = "hostname")]
         clear: bool,
     },
-    /// (Re)start the named tunnel, exposing every site that has a hostname set.
-    /// Requires login and a created tunnel.
+    /// Set (or clear, with `--clear`) a site's share password. Visitors to the
+    /// shared site must then sign in with HTTP basic auth (any username).
+    Password {
+        /// Site name.
+        site: String,
+        /// The share password. Required unless `--clear` is given, so forgetting
+        /// it can't silently remove protection.
+        #[arg(required_unless_present = "clear")]
+        password: Option<String>,
+        /// Remove the site's share password instead of setting one.
+        #[arg(long, conflicts_with = "password")]
+        clear: bool,
+    },
+    /// Start the named tunnel if it is not running, exposing every site that has
+    /// a hostname set. Never restarts a live tunnel. Requires login and a
+    /// created tunnel.
     Publish,
-    /// Stop the named tunnel (takes every named site offline).
+    /// Stop the named tunnel until the daemon next starts (takes every named
+    /// site offline). Clear every hostname to keep it offline across restarts.
     Unpublish,
+    /// Show tunnel providers, their readiness and settings.
+    Providers,
+    /// Configure ngrok (authtoken and static domain).
+    Ngrok {
+        /// The ngrok setting to change.
+        #[command(subcommand)]
+        action: NgrokAction,
+    },
+    /// Enable or disable this machine for zrok.
+    Zrok {
+        /// The zrok action.
+        #[command(subcommand)]
+        action: ZrokAction,
+    },
+    /// Set the provider new shares use by default.
+    Default {
+        /// The provider.
+        provider: TunnelProviderArg,
+    },
+}
+
+/// Action of `yerd tunnel ngrok`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum NgrokAction {
+    /// Save (or clear, with `--clear`) the ngrok authtoken. When the token is
+    /// omitted it is read from stdin, which keeps it out of shell history.
+    Token {
+        /// The authtoken. Read from stdin when omitted.
+        token: Option<String>,
+        /// Remove the saved authtoken instead of setting one.
+        #[arg(long, conflicts_with = "token")]
+        clear: bool,
+    },
+    /// Save (or clear, with `--clear`) the ngrok static domain.
+    Domain {
+        /// The static domain (`name.ngrok-free.app`). Required unless `--clear`
+        /// is given.
+        #[arg(required_unless_present = "clear")]
+        domain: Option<String>,
+        /// Remove the saved static domain instead of setting one.
+        #[arg(long, conflicts_with = "domain")]
+        clear: bool,
+    },
+}
+
+/// Action of `yerd tunnel zrok`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum ZrokAction {
+    /// Enable this machine with a zrok account token, in Yerd's own zrok
+    /// environment. When the token is omitted it is read from stdin.
+    Enable {
+        /// The zrok account token. Read from stdin when omitted.
+        token: Option<String>,
+    },
+    /// Disable Yerd's zrok environment, releasing this machine from the
+    /// account.
+    Disable,
+}
+
+/// A tunnel provider argument (`yerd tunnel default <provider>`,
+/// `--provider`).
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunnelProviderArg {
+    /// Cloudflare Tunnel.
+    Cloudflare,
+    /// ngrok.
+    Ngrok,
+    /// zrok.
+    Zrok,
+}
+
+impl TunnelProviderArg {
+    /// The wire provider.
+    #[must_use]
+    pub fn provider(self) -> yerd_core::tunnel_provider::TunnelProvider {
+        use yerd_core::tunnel_provider::TunnelProvider;
+        match self {
+            Self::Cloudflare => TunnelProvider::Cloudflare,
+            Self::Ngrok => TunnelProvider::Ngrok,
+            Self::Zrok => TunnelProvider::Zrok,
+        }
+    }
 }
 
 /// Action of `yerd db`.
@@ -886,9 +1169,11 @@ pub enum UninstallTarget {
         /// PHP version, e.g. `8.5`.
         version: String,
     },
-    /// Uninstall a dev tool (`composer`, `node`, `bun`, `laravel`, `wp-cli`).
+    /// Uninstall a dev tool (`composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`,
+    /// `cloudflared`, `ngrok`, `zrok`).
     Tool {
-        /// Tool id: `composer`, `node`, `bun`, `laravel`, or `wp-cli`.
+        /// Tool id: `composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`,
+        /// `cloudflared`, `ngrok`, or `zrok`.
         id: String,
     },
 }
@@ -906,11 +1191,14 @@ pub enum InstallTarget {
         #[arg(long)]
         legacy: bool,
     },
-    /// Install a dev tool (`composer`, `node`, `bun`, `laravel`, `wp-cli`) at
-    /// its latest release.
+    /// Install a dev tool (`composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`,
+    /// `cloudflared`, `ngrok`, `zrok`) at its latest release.
     Tool {
-        /// Tool id: `composer`, `node`, `bun`, `laravel`, or `wp-cli`.
+        /// Tool id: `composer`, `node`, `bun`, `pnpm`, `laravel`, `wp-cli`,
+        /// `cloudflared`, `ngrok`, or `zrok`.
         id: String,
+        /// Optional Node release selector, e.g. 24, v24.1.0, lts/* or lts/iron.
+        version: Option<String>,
     },
 }
 
@@ -950,12 +1238,41 @@ pub enum ElevateTarget {
     Trust,
     /// Route `*.<tld>` queries to yerd's DNS responder.
     Resolver,
-    /// Allow the daemon to bind privileged ports 80/443 (setcap).
+    /// Serve privileged ports 80/443: setcap on Linux, the launchd port
+    /// forwarder on macOS.
     Ports,
-    /// Install the macOS LAN pf redirect so other devices reach 80/443 (macOS
-    /// only; on Linux this reuses the `ports` setcap grant). Run after
+    /// Install the macOS LAN port forwarder so other devices reach 80/443
+    /// (macOS only; on Linux this reuses the `ports` setcap grant). Run after
     /// `yerd lan enable`.
     Lan,
+}
+
+/// Node version management.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum NodeAction {
+    /// Select an installed version globally, or for a named site.
+    Use {
+        /// Numeric major, minor, or exact version (optional v prefix), `node`,
+        /// `lts/*`, or `lts/<codename>`.
+        version: String,
+        /// Save a preference for this site instead of the global default.
+        #[arg(long)]
+        site: Option<String>,
+    },
+    /// Clear a site's saved preference, so it follows its project file or the
+    /// global default.
+    Unset {
+        /// Site whose preference is cleared.
+        #[arg(long)]
+        site: String,
+    },
+    /// Uninstall one installed release (refused while it is the global default).
+    Uninstall {
+        /// Exact installed version, e.g. 22.12.0.
+        version: String,
+    },
+    /// List installed versions and the global default.
+    List,
 }
 
 #[cfg(test)]
@@ -1034,7 +1351,182 @@ mod tests {
     }
 
     #[test]
+    fn tunnel_install_is_no_longer_a_subcommand() {
+        assert!(Cli::try_parse_from(["yerd", "tunnel", "install"]).is_err());
+    }
+
+    #[test]
+    fn daemon_parses_its_three_verbs() {
+        for (verb, want) in [
+            ("install", DaemonAction::Install),
+            ("start", DaemonAction::Start),
+            ("stop", DaemonAction::Stop),
+        ] {
+            let cli = parse(&["yerd", "daemon", verb]);
+            let Command::Daemon { action } = cli.command else {
+                panic!("expected Daemon");
+            };
+            assert_eq!(action, want);
+        }
+        assert!(Cli::try_parse_from(["yerd", "daemon"]).is_err());
+        assert!(Cli::try_parse_from(["yerd", "daemon", "uninstall"]).is_err());
+    }
+
+    #[test]
     fn exec_rejects_an_unknown_tool() {
         assert!(Cli::try_parse_from(["yerd", "exec", "artisan"]).is_err());
+    }
+
+    #[test]
+    fn tunnel_password_parses_a_value_or_clear() {
+        let cli = parse(&["yerd", "tunnel", "password", "app", "s3cret"]);
+        let Command::Tunnel {
+            action:
+                TunnelAction::Password {
+                    site,
+                    password,
+                    clear,
+                },
+        } = cli.command
+        else {
+            panic!("expected Tunnel Password");
+        };
+        assert_eq!(site, "app");
+        assert_eq!(password.as_deref(), Some("s3cret"));
+        assert!(!clear);
+
+        let cli = parse(&["yerd", "tunnel", "password", "app", "--clear"]);
+        let Command::Tunnel {
+            action: TunnelAction::Password {
+                password, clear, ..
+            },
+        } = cli.command
+        else {
+            panic!("expected Tunnel Password");
+        };
+        assert_eq!(password, None);
+        assert!(clear);
+    }
+
+    /// Omitting both the password and `--clear` must fail rather than silently
+    /// removing protection, and giving both is contradictory.
+    #[test]
+    fn tunnel_password_requires_exactly_one_of_value_or_clear() {
+        assert!(Cli::try_parse_from(["yerd", "tunnel", "password", "app"]).is_err());
+        assert!(
+            Cli::try_parse_from(["yerd", "tunnel", "password", "app", "x", "--clear"]).is_err()
+        );
+    }
+
+    #[test]
+    fn tunnel_provider_commands_parse() {
+        let cli = parse(&["yerd", "tunnel", "ngrok", "token", "--clear"]);
+        assert!(matches!(
+            cli.command,
+            Command::Tunnel {
+                action: TunnelAction::Ngrok {
+                    action: NgrokAction::Token {
+                        token: None,
+                        clear: true
+                    }
+                }
+            }
+        ));
+        let cli = parse(&["yerd", "tunnel", "ngrok", "token"]);
+        assert!(matches!(
+            cli.command,
+            Command::Tunnel {
+                action: TunnelAction::Ngrok {
+                    action: NgrokAction::Token {
+                        token: None,
+                        clear: false
+                    }
+                }
+            }
+        ));
+        let cli = parse(&["yerd", "tunnel", "default", "zrok"]);
+        assert!(matches!(
+            cli.command,
+            Command::Tunnel {
+                action: TunnelAction::Default {
+                    provider: TunnelProviderArg::Zrok
+                }
+            }
+        ));
+        let cli = parse(&["yerd", "tunnel", "zrok", "enable"]);
+        assert!(matches!(
+            cli.command,
+            Command::Tunnel {
+                action: TunnelAction::Zrok {
+                    action: ZrokAction::Enable { token: None }
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn tunnel_share_and_stop_take_a_provider() {
+        let cli = parse(&[
+            "yerd",
+            "tunnel",
+            "share",
+            "app",
+            "--provider",
+            "ngrok",
+            "--random-url",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Command::Tunnel {
+                action: TunnelAction::Share {
+                    provider: Some(TunnelProviderArg::Ngrok),
+                    random_url: true,
+                    ..
+                }
+            }
+        ));
+        let cli = parse(&["yerd", "tunnel", "stop", "app", "--provider", "zrok"]);
+        assert!(matches!(
+            cli.command,
+            Command::Tunnel {
+                action: TunnelAction::Stop {
+                    provider: Some(TunnelProviderArg::Zrok),
+                    ..
+                }
+            }
+        ));
+        let cli = parse(&["yerd", "tunnel", "share", "app"]);
+        assert!(matches!(
+            cli.command,
+            Command::Tunnel {
+                action: TunnelAction::Share {
+                    provider: None,
+                    random_url: false,
+                    ..
+                }
+            }
+        ));
+        assert!(
+            Cli::try_parse_from(["yerd", "tunnel", "share", "app", "--provider", "bogus"]).is_err()
+        );
+    }
+
+    #[test]
+    fn tunnel_provider_commands_reject_bad_input() {
+        for args in [
+            &["yerd", "tunnel", "ngrok", "domain"][..],
+            &[
+                "yerd",
+                "tunnel",
+                "ngrok",
+                "domain",
+                "x.ngrok.app",
+                "--clear",
+            ][..],
+            &["yerd", "tunnel", "ngrok", "token", "tok", "--clear"][..],
+            &["yerd", "tunnel", "default", "bogus"][..],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
+        }
     }
 }

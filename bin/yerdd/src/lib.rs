@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::doc_markdown)]
 
+pub mod about;
 pub mod ansi;
 pub mod args;
 pub mod backend_resolver;
@@ -21,14 +22,19 @@ pub mod detect_cache;
 pub mod dump_server;
 pub mod error;
 pub mod ext_install;
+pub mod ffi_cache;
 pub mod fs_watch;
 pub mod ipc_server;
 pub mod jobs;
 pub mod lan_setup;
 pub mod laravel_detect;
+pub mod mail_site;
 pub mod mutate;
+pub mod network;
+pub mod node_updates;
 pub mod php_install;
 pub mod php_updates;
+pub mod project_file;
 pub mod public_url;
 pub mod secure_fs;
 pub mod self_update;
@@ -39,6 +45,7 @@ pub mod single_instance;
 pub mod site_domains;
 pub mod startup;
 pub mod state;
+pub mod tool_updates;
 pub mod tools;
 pub mod tracing_init;
 pub mod tunnel;
@@ -47,6 +54,7 @@ pub mod wordpress_login;
 pub mod wordpress_url_sync;
 pub mod wordpress_users;
 pub mod wordpress_versions;
+pub mod xdebug;
 
 #[cfg(test)]
 pub mod test_support;
@@ -95,6 +103,47 @@ fn build_proxy_client_tls() -> Result<Arc<yerd_proxy::ProxyClientTls>, rustls::E
     Ok(Arc::new(yerd_proxy::ProxyClientTls::new(
         local,
         Arc::new(public),
+    )))
+}
+
+/// Spawn the loopback tunnel origin listener `cloudflared` dials, serving it
+/// with the shared router and the public host route map
+/// ([`state::DaemonState::tunnel_routes`]). `None` when the listener failed to
+/// bind at startup or the proxy client TLS bundle could not be built; sharing
+/// is then unavailable but the daemon keeps running.
+fn spawn_tunnel_listener(
+    listener: Option<tokio::net::TcpListener>,
+    public_url_prepend: Option<std::path::PathBuf>,
+    state: &Arc<state::DaemonState>,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Option<tokio::task::JoinHandle<Result<(), yerd_proxy::ProxyError>>> {
+    let listener = listener?;
+    let client_tls = match build_proxy_client_tls() {
+        Ok(tls) => tls,
+        Err(e) => {
+            tracing::warn!(error = %e, "tunnel origin listener disabled: client TLS setup failed");
+            return None;
+        }
+    };
+    let resolver = Arc::new(DaemonBackendResolver {
+        php_manager: state.php_manager.clone(),
+        wordpress_sites: state.wordpress_sites.clone(),
+    });
+    let binding = yerd_proxy::TunnelBinding {
+        listener,
+        routes: state.tunnel_routes.clone(),
+        public_url_prepend,
+    };
+    let mut rx = shutdown_rx;
+    Some(tokio::spawn(yerd_proxy::ProxyServer::serve_tunnel(
+        binding,
+        state.router.clone(),
+        resolver,
+        state.symlink_protection.clone(),
+        client_tls,
+        async move {
+            let _ = rx.changed().await;
+        },
     )))
 }
 
@@ -200,6 +249,16 @@ async fn run_until_shutdown(
         None
     };
 
+    let tunnel_handle = spawn_tunnel_listener(
+        daemon.tunnel_listener,
+        daemon.tunnel_wp_prepend,
+        &daemon.state,
+        shutdown_rx.clone(),
+    );
+    crate::tunnel::orphans::reap(&daemon.state.dirs).await;
+    crate::tools::cloudflared::migrate_cloudflared_now(&daemon.state.dirs).await;
+    crate::tunnel::rebuild_routes(&daemon.state).await;
+
     let redirect_probe_handle =
         spawn_redirect_probe(proxy_handle.is_some(), &daemon.state, shutdown_rx.clone());
 
@@ -225,24 +284,68 @@ async fn run_until_shutdown(
         tokio::spawn(crate::dump_server::run(state, shutdown_rx.clone()))
     };
 
+    let _network_probe = {
+        let state = daemon.state.clone();
+        tokio::spawn(async move {
+            state
+                .network
+                .refresh(&state, crate::network::LoginShell::Probe)
+                .await;
+            state.network.mark_ready();
+        })
+    };
+
+    let network_refresher = {
+        let state = daemon.state.clone();
+        let mut rx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(crate::network::RESOLVE_TTL);
+            tick.tick().await;
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        state
+                            .network
+                            .refresh(&state, crate::network::LoginShell::UseCached)
+                            .await;
+                    }
+                    _ = rx.changed() => break,
+                }
+            }
+        })
+    };
+
     let update_check_handle = {
         let state = daemon.state.clone();
         let mut rx = shutdown_rx.clone();
         tokio::spawn(async move {
-            let dl = crate::php_install::ReqwestDownloader::new();
+            if !state.network.wait_ready_or_shutdown(&mut rx).await {
+                return;
+            }
             let mut php_tick = tokio::time::interval(Duration::from_secs(12 * 60 * 60));
             let mut self_tick = tokio::time::interval(SELF_UPDATE_WAKE);
             loop {
                 tokio::select! {
                     _ = php_tick.tick() => {
-                        crate::php_updates::poll_and_refresh(
-                            &state,
-                            &dl,
-                            yerd_update::PHP_LISTING_PUBLIC_KEY,
-                        )
-                        .await;
+                        let dl = crate::network::downloader(&state).await;
+                        let polls = async {
+                            tokio::join!(
+                                crate::php_updates::poll_and_refresh(
+                                    &state,
+                                    &dl,
+                                    yerd_update::PHP_LISTING_PUBLIC_KEY,
+                                ),
+                                crate::node_updates::poll_and_refresh(&state, &dl),
+                                crate::tool_updates::poll_and_refresh(&state, &dl),
+                            )
+                        };
+                        tokio::select! {
+                            _ = polls => {}
+                            _ = rx.changed() => break,
+                        }
                     }
                     _ = self_tick.tick() => {
+                        let dl = crate::network::downloader(&state).await;
                         crate::self_update::poll_if_due(&state, &dl, yerd_update::UPDATE_PUBLIC_KEY)
                             .await;
                     }
@@ -261,18 +364,39 @@ async fn run_until_shutdown(
     let mail_handle = daemon.mail_listener.map(|listener| {
         let store = daemon.state.mail_store.clone();
         let mut rx = shutdown_rx.clone();
-        tokio::spawn(yerd_mail::serve(listener, store, async move {
+        let resolver = Arc::new(crate::mail_site::RouterSiteResolver {
+            router: daemon.state.router.clone(),
+        });
+        tokio::spawn(yerd_mail::serve(listener, store, resolver, async move {
             let _ = rx.changed().await;
         }))
     });
 
-    let _autostart = tokio::spawn(crate::services::auto_start_installed(daemon.state.clone()));
+    let _autostart = {
+        let state = daemon.state.clone();
+        let renamed = daemon.renamed_sites;
+        tokio::spawn(async move {
+            crate::services::auto_start_installed(state.clone()).await;
+            crate::startup::sync_renamed_site_urls(&state, &renamed).await;
+        })
+    };
+    let _tunnel_resume = tokio::spawn(crate::tunnel::supervise::resume(
+        daemon.state.clone(),
+        daemon
+            .state
+            .named_stop_epoch
+            .load(std::sync::atomic::Ordering::SeqCst),
+    ));
 
     let _ext_install = {
         let state = daemon.state.clone();
+        let mut rx = shutdown_rx.clone();
         tokio::spawn(async move {
+            if !state.network.wait_ready_or_shutdown(&mut rx).await {
+                return;
+            }
             if state.config.lock().await.dumps.enabled {
-                let dl = crate::php_install::ReqwestDownloader::new();
+                let dl = crate::network::downloader(&state).await;
                 crate::ext_install::ensure_for_installed(&state.dirs, &dl).await;
             }
         })
@@ -280,9 +404,32 @@ async fn run_until_shutdown(
 
     let _pcov_shims = {
         let state = daemon.state.clone();
+        let mut rx = shutdown_rx.clone();
         tokio::spawn(async move {
+            if !state.network.wait_ready_or_shutdown(&mut rx).await {
+                return;
+            }
             crate::ipc_server::refresh_pcov_and_shims(&state).await;
             crate::ipc_server::write_cli_ini_now(&state).await;
+        })
+    };
+
+    let _xdebug_refresh = {
+        let state = daemon.state.clone();
+        let mut rx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if !state.network.wait_ready_or_shutdown(&mut rx).await {
+                return;
+            }
+            let dl = crate::network::downloader(&state).await;
+            crate::xdebug::refresh_enabled(
+                &state,
+                &dl,
+                &yerd_php::TokioCommandRunner,
+                crate::ext_install::host_os_arch(),
+                crate::xdebug::FETCH_DEADLINE,
+            )
+            .await;
         })
     };
 
@@ -290,6 +437,7 @@ async fn run_until_shutdown(
         let state = daemon.state.clone();
         tokio::spawn(async move {
             crate::ipc_server::reconcile_tool_shims_now(&state).await;
+            crate::ipc_server::reconcile_client_shims_now(&state).await;
         })
     };
 
@@ -302,6 +450,9 @@ async fn run_until_shutdown(
     if let Some(proxy_handle) = proxy_handle {
         let _ = tokio::time::timeout(Duration::from_secs(10), proxy_handle).await;
     }
+    if let Some(tunnel_handle) = tunnel_handle {
+        let _ = tokio::time::timeout(Duration::from_secs(10), tunnel_handle).await;
+    }
     if let Some(redirect_probe_handle) = redirect_probe_handle {
         let _ = tokio::time::timeout(Duration::from_secs(5), redirect_probe_handle).await;
     }
@@ -311,6 +462,7 @@ async fn run_until_shutdown(
     let _ = tokio::time::timeout(Duration::from_secs(5), ipc_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), dump_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), update_check_handle).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), network_refresher).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), watch_handle).await;
     if let Some(mail_handle) = mail_handle {
         let _ = tokio::time::timeout(Duration::from_secs(5), mail_handle).await;
@@ -340,7 +492,8 @@ async fn run_until_shutdown(
 
 /// Spawns the background task that keeps
 /// [`crate::state::DaemonState::redirect_https_port`] in sync with a live
-/// privileged-port redirect (macOS `pf`, installed by `yerd elevate ports`) -
+/// privileged-port redirect (the macOS port forwarder, installed by
+/// `yerd elevate ports`) -
 /// the only case where the daemon's own bound HTTPS port can diverge from
 /// what's actually reachable without a restart. Returns `None` (spawning
 /// nothing) when the proxy isn't running or the HTTPS listener bound its
@@ -466,7 +619,7 @@ fn spawn_redirect_probe(
 ///
 /// When the daemon bound the well-known port directly there's nothing to
 /// correct. When it fell back to a rootless port, a live privileged-port
-/// redirect (macOS `pf`, installed by `yerd elevate ports`) makes the
+/// redirect (the macOS port forwarder, installed by `yerd elevate ports`) makes the
 /// well-known port reachable too, so the redirect should advertise it instead
 /// of leaking the internal fallback port into the browser's address bar. This
 /// holds in LAN mode too: the loopback probe measures exactly whether `:443` is

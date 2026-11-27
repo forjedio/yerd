@@ -26,6 +26,7 @@ description = "Pure domain model and host→site routing for Yerd."
 [dependencies]
 serde     = { workspace = true }
 thiserror = { workspace = true }
+psl       = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
@@ -33,8 +34,9 @@ serde_test = { workspace = true }
 toml       = { workspace = true }
 ```
 
-The only runtime dependencies are `serde` (for wire serialisation) and
-`thiserror` (for the error enum). There are no internal dependencies - this is
+The only runtime dependencies are `serde` (for wire serialisation),
+`thiserror` (for the error enum) and `psl` (the compiled-in Public Suffix List
+behind `folder_site_name` / `parked_folder_site_name`; pure and `no_std`). There are no internal dependencies - this is
 the bottom of the dependency graph. The crate root opens with:
 
 ```rust
@@ -55,12 +57,14 @@ mod domain;
 mod error;
 mod host;
 mod net;
+pub mod network;
 mod php;
 pub mod php_directives;
 pub mod php_extensions;
 pub mod php_pool;
 pub mod php_settings;
 mod proxy;
+mod response_header;
 mod route_rule;
 mod router;
 pub mod service_directives;
@@ -77,9 +81,13 @@ pub use php_extensions::{ExtError, NameErrorReason, PathErrorReason};
 pub use php_pool::{PoolNameErrorReason, PoolSettingError, PoolValueErrorReason};
 pub use php_settings::{PhpSettingError, ValueErrorReason};
 pub use proxy::{match_rule, validate_proxy_name, ProxyRule, ProxySite, UpstreamTarget};
+pub use response_header::ResponseHeader;
 pub use route_rule::RouteRule;
 pub use router::{Route, RouterConfig, SiteRouter};
-pub use site::{normalize_site_name, slugify_site_name, Site, SiteKind};
+pub use site::{
+    folder_site_name, normalize_site_name, parked_folder_site_name, slugify_site_name, Site,
+    SiteKind,
+};
 pub use tld::Tld;
 ```
 
@@ -87,10 +95,11 @@ pub use tld::Tld;
 | -------------------- | ------------- | --------------------------------------------------------- |
 | `error`              | re-exported   | `CoreError` + the typed `*Reason` sub-enums               |
 | `php`                | re-exported   | `PhpVersion` `(major, minor)` value type                  |
-| `site`               | re-exported   | `Site` / `SiteKind` + name normalisation/slugification    |
+| `site`               | re-exported   | `Site` / `SiteKind` + name normalisation/slugification + folder-name suffix stripping |
 | `tld`                | re-exported   | `Tld` validated DNS-suffix newtype                        |
 | `domain`             | re-exported   | `Domain` sub-part + `effective_domains` / `choose_primary` algebra |
 | `proxy`              | re-exported   | whole-host proxies + path-prefix rules (`match_rule`)     |
+| `response_header`    | re-exported   | `ResponseHeader` - a validated per-site custom response header |
 | `route_rule`         | re-exported   | `RouteRule` - a path prefix resolved to a file inside the site |
 | `router`             | re-exported   | `RouterConfig` + `SiteRouter` (the resolve algorithm)     |
 | `net`                | re-exported   | `is_lan_source` - whether a peer address is LAN, not loopback |
@@ -320,15 +329,18 @@ The allowlist (extend here to support more directives):
 | `post_max_size`       | byte size                     | `php_value` |
 | `display_errors`      | flag (boolean)                | `php_flag`  |
 | `error_reporting`     | int or constant expression    | `php_value` |
+| `ffi.enable`          | admin switch (on/off, unseeded) | `php_admin_value` (`true` when on, omitted when off or for legacy versions) |
 
 Public surface:
 
 ```rust
 pub fn is_supported(name: &str) -> bool;
 pub fn supported_names() -> Vec<&'static str>;       // declaration order
-pub fn directive(name: &str) -> Option<&'static str>; // "php_flag" | "php_value"
+pub fn directive(name: &str) -> Option<&'static str>; // "php_flag" | "php_admin_value" | "php_value"
 pub fn validate_value(name: &str, value: &str) -> Result<(), PhpSettingError>;
 pub fn canonical_value(name: &str, value: &str) -> String;
+pub fn fpm_value(name: &str, value: &str) -> Option<String>; // None = emit no line
+pub fn applies_to_version(name: &str, version: PhpVersion) -> bool;
 ```
 
 `validate_value` enforces a global invariant *before* the per-kind shape:
@@ -416,6 +428,39 @@ mean either one's rules could not move without the other's. Each keeps its own
 table tests, which is what catches drift.
 :::
 
+## `response_header` - per-site custom response headers {#response-header}
+
+A `ResponseHeader` is a name and value the proxy sets on every response for a
+PHP site or whole-host proxy, replacing any same-named header. Like `RouteRule` it carries no serde
+impls; `yerd-config` and `yerd-ipc` own the wire structs.
+
+```rust
+pub struct ResponseHeader { /* private: name + value */ }
+
+impl ResponseHeader {
+    pub fn new(name: &str, value: &str) -> Result<Self, CoreError>;
+    #[must_use] pub fn name(&self) -> &str;
+    #[must_use] pub fn value(&self) -> &str;
+    #[must_use] pub fn has_name(&self, other: &str) -> bool;
+}
+```
+
+`new` requires the name to be a non-empty RFC 9110 token and refuses the
+headers Yerd manages itself (`Connection`, `Keep-Alive`, `Transfer-Encoding`,
+`Upgrade`, `TE`, `Trailer`, `Content-Length`, `Host`, and any `Proxy-*`) plus
+those whose replacement breaks the response (`Set-Cookie`, `Content-Encoding`,
+`Content-Range`, `Location`), compared ignoring case. The value is trimmed of surrounding spaces and tabs,
+must be non-empty, and may hold no control character other than a tab: exactly
+the set `http::HeaderValue` accepts, so a validated header always converts in
+the proxy. The name keeps the user's casing for display; `has_name` is the
+case-insensitive comparison the daemon and config use for "the same header".
+Validation is hand-rolled over bytes so this crate needs no `http` dependency.
+
+`SiteRouter` stores the lists per site or whole-host proxy name (the two
+namespaces are disjoint; `response_headers_for` / `set_response_headers`, and
+`remove_proxy` clears a proxy's list), like routing rules, but behind an `Arc` so the proxy
+takes a per-request handle with `shared_response_headers` instead of copying.
+
 ## `service_directives` - free-form service config overrides {#service-directives}
 
 Yerd regenerates a config-backed service's own config file on every start, so a
@@ -469,6 +514,33 @@ never rewrites) and returns one `LocalOverrideIssue` per line that names a
 reserved directive or parses as no directive at all. [`yerd-doctor`](./yerd-doctor)
 turns each into a `ServiceOverrideInvalid` warning; the remedy is the user's own
 editor, since rewriting the file would undo their work.
+
+## `network` - outbound proxy model {#network}
+
+Every outbound-proxy decision, with no I/O:
+
+- `OutboundProxyMode` (`system` / `manual` / `off`) and `ProxySource` (which
+  source won), both serialised `snake_case` and pinned in `wire_stability.rs`.
+- `ProxyUrl::parse` validates `http[s]://[user[:password]@]host[:port]` (scheme
+  defaults to `http`; SOCKS, paths and queries are rejected). Its `Debug` prints
+  `redacted()`, so a derived `Debug` on a containing struct never leaks a
+  password. Parse errors are `CoreError::InvalidProxyUrl { reason }` with no
+  input.
+- `normalize_bypass_entry` / `bypass_list` build the bypass list:
+  `MANDATORY_BYPASS` (`localhost`, `127.0.0.1`, `127.0.0.0/8`, `::1`), then
+  `.<tld>`, then user and source entries, normalised by
+  `normalize_bypass_entries` (`*.x` becomes `.x`; plain hosts, leading-dot
+  entries, IPs and CIDRs are kept; duplicates dropped in order).
+- `from_env_lookup` reads `*_proxy` variables through an injected lookup;
+  `resolve` takes the manual URLs (HTTPS falls back to HTTP) or the first
+  non-empty reading among env, OS and login shell.
+- `scrub` and `merge_submitted` keep passwords out of messages and stop a
+  redacted `***` from ever being stored.
+- `child_env_plan`, `render_env_file`, `parse_env_file` and `shim_fill_in`
+  define the child-process environment, the `network.env` format, and the rule
+  that a shim adds nothing when the caller already names a proxy
+  (`http_proxy`, `https_proxy`, `all_proxy`, either case), and merges a
+  caller-only `no_proxy` with Yerd's bypass list.
 
 ## `detect`
 

@@ -6,7 +6,8 @@ import llmstxt from 'vitepress-plugin-llms'
 const SITE_TITLE = 'Yerd - Local PHP development environment for macOS & Linux'
 const SITE_DESCRIPTION =
   'A fast, rootless, open-source local PHP development environment for macOS and Linux. Serve .test sites over HTTP and HTTPS, run a different PHP version per site, and manage databases, mail, and tooling from one tiny daemon - a Laravel Herd alternative.'
-const OG_IMAGE = 'https://yerd.app/images/social-card.png'
+// The query string busts social-platform caches; bump it whenever the card changes.
+const OG_IMAGE = 'https://yerd.app/images/social-card.png?v=2'
 
 // Site config for the Yerd documentation (https://yerd.app).
 // Run with `npm run dev` from the `docs/` directory.
@@ -50,6 +51,16 @@ export default withMermaid({
         href: '/fonts/space-grotesk-latin.woff2',
         crossorigin: '',
       },
+    ],
+    // Plausible analytics (self-hosted at annie.forjed.io).
+    [
+      'script',
+      { async: '', src: 'https://annie.forjed.io/js/pa-DCYl0BxgJ-QjKNq6qzmUd.js' },
+    ],
+    [
+      'script',
+      {},
+      'window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};\nplausible.init()',
     ],
     ['meta', { name: 'author', content: 'Forjed' }],
     [
@@ -149,8 +160,9 @@ export default withMermaid({
         activeMatch: '/developer/',
       },
       {
-        text: 'v2.x',
+        text: 'v2.1.x',
         items: [
+          { text: "What's new in 2.1", link: '/releases/v2-1-0' },
           {
             text: 'Changelog',
             link: 'https://github.com/forjedio/yerd/releases',
@@ -167,6 +179,7 @@ export default withMermaid({
           items: [
             { text: 'What is Yerd?', link: '/guide/introduction' },
             { text: 'Getting Started', link: '/guide/getting-started' },
+            { text: 'Headless (Servers)', link: '/guide/headless' },
             { text: 'Guides', link: '/guide/guides' },
             { text: 'Switching to Yerd', link: '/guide/switching-to-yerd' },
             { text: 'Upgrade Guide', link: '/guide/upgrading-from-v1' },
@@ -177,9 +190,12 @@ export default withMermaid({
           text: 'Using Yerd',
           items: [
             { text: 'Sites', link: '/guide/sites' },
+            { text: 'Project File', link: '/guide/project-file' },
             { text: 'Reverse Proxies', link: '/guide/proxies' },
             { text: 'PHP Versions', link: '/guide/php-versions' },
             { text: 'Code Coverage', link: '/guide/code-coverage' },
+            { text: 'Debugging with Xdebug', link: '/guide/xdebug' },
+            { text: 'Node.js', link: '/guide/node' },
             { text: 'Tooling', link: '/guide/tooling' },
             { text: 'Services & Databases', link: '/guide/services' },
             { text: 'Mail Capture', link: '/guide/mail' },
@@ -190,6 +206,7 @@ export default withMermaid({
             { text: 'DNS & .test Domains', link: '/guide/dns' },
             { text: 'Elevation & Privileges', link: '/guide/elevation' },
             { text: 'Localhost Access', link: '/guide/localhost-access' },
+            { text: 'Outbound Proxy', link: '/guide/corporate-networks' },
             { text: 'The Daemon', link: '/guide/daemon' },
             { text: 'Diagnostics', link: '/guide/diagnostics' },
           ],
@@ -202,19 +219,23 @@ export default withMermaid({
           items: [
             { text: 'Overview', link: '/reference/cli/' },
             { text: 'Sites', link: '/reference/cli/sites' },
+            { text: 'Init', link: '/reference/cli/init' },
             { text: 'Domains', link: '/reference/cli/domains' },
             { text: 'Proxies', link: '/reference/cli/proxies' },
             { text: 'Routing rules', link: '/reference/cli/routes' },
+            { text: 'Response headers', link: '/reference/cli/headers' },
             { text: 'HTTPS', link: '/reference/cli/https' },
             { text: 'PHP', link: '/reference/cli/php' },
             { text: 'Exec and Which', link: '/reference/cli/exec' },
             { text: 'Coverage', link: '/reference/cli/coverage' },
+            { text: 'Xdebug', link: '/reference/cli/xdebug' },
             { text: 'Tooling', link: '/reference/cli/tooling' },
             { text: 'Services', link: '/reference/cli/services' },
             { text: 'Databases', link: '/reference/cli/db' },
             { text: 'Mail', link: '/reference/cli/mail' },
             { text: 'MCP', link: '/reference/cli/mcp' },
             { text: 'LAN sharing', link: '/reference/cli/lan' },
+            { text: 'Network', link: '/reference/cli/network' },
             { text: 'Tunnel', link: '/reference/cli/tunnel' },
             { text: 'Diagnostics', link: '/reference/cli/diagnostics' },
             { text: 'Elevation', link: '/reference/cli/elevation' },
@@ -227,6 +248,7 @@ export default withMermaid({
           text: 'Configuration',
           items: [
             { text: 'Config file', link: '/reference/configuration' },
+            { text: 'Project file (.yerd.toml)', link: '/reference/project-file' },
           ],
         },
       ],
@@ -282,6 +304,10 @@ export default withMermaid({
             {
               text: 'yerd-helper (privileged)',
               link: '/developer/binaries/yerd-helper',
+            },
+            {
+              text: 'yerd-forward (macOS ports)',
+              link: '/developer/binaries/yerd-forward',
             },
           ],
         },

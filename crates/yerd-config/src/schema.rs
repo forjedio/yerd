@@ -6,8 +6,13 @@
 //! accidental serde contract that downstream consumers might rely on.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
-use yerd_core::{Domain, PhpVersion, ProxyRule, ProxySite, RouteRule, Site, Tld};
+use yerd_core::network::{OutboundProxyMode, ProxyUrl};
+use yerd_core::tunnel_provider::TunnelProvider;
+use yerd_core::{
+    Domain, PhpVersion, ProxyRule, ProxySite, ResponseHeader, RouteRule, Site, SiteKind, Tld,
+};
 
 /// Top-level on-disk config.
 ///
@@ -60,6 +65,8 @@ pub struct Config {
     pub ports: Ports,
     /// PHP defaults.
     pub php: PhpSection,
+    /// Global and per-project Node selections.
+    pub node: NodeSection,
     /// Parked directories.
     pub parked: ParkedSection,
     /// Explicitly linked sites. Order is preserved on round-trip.
@@ -100,6 +107,17 @@ pub struct Config {
     /// Per-site path-prefix routing rules (`app.test/api` → `api/index.php`),
     /// split by site class. Empty by default.
     pub route_rules: RouteRulesSection,
+    /// Custom response headers (`Access-Control-Allow-Origin: *`) for sites,
+    /// split by site class, and for whole-host proxies. Empty by default.
+    pub response_headers: ResponseHeadersSection,
+    /// Outbound proxy for Yerd's own downloads and network subprocesses.
+    /// Default: system detection.
+    pub network: NetworkSection,
+    /// Sites the user starred in the GUI. Empty by default.
+    pub favourites: FavouritesSection,
+    /// When each site was added to Yerd, for the GUI's "Recently added" list.
+    /// Empty by default.
+    pub added: AddedSection,
 }
 
 impl Default for Config {
@@ -115,6 +133,7 @@ impl Default for Config {
             lan_setup_port: DEFAULT_LAN_SETUP_PORT,
             ports: Ports::default(),
             php: PhpSection::default(),
+            node: NodeSection::default(),
             parked: ParkedSection::default(),
             linked: Vec::new(),
             overrides: BTreeMap::new(),
@@ -127,6 +146,10 @@ impl Default for Config {
             proxies: Vec::new(),
             proxy_rules: ProxyRulesSection::default(),
             route_rules: RouteRulesSection::default(),
+            response_headers: ResponseHeadersSection::default(),
+            network: NetworkSection::default(),
+            favourites: FavouritesSection::default(),
+            added: AddedSection::default(),
         }
     }
 }
@@ -191,6 +214,28 @@ impl RouteRulesSection {
             .chain(self.parked.values())
             .all(Vec::is_empty)
     }
+}
+
+/// Custom response headers for sites and whole-host proxies (see
+/// [`Config::response_headers`]).
+///
+/// Keyed exactly like [`RouteRulesSection`]: **linked** headers by site name,
+/// **parked** headers by document-root string (byte-exact, never canonicalised -
+/// see [`SiteOverride`]), and **proxy** headers by proxy name like
+/// [`DomainsSection::proxy`]. A site or proxy with no headers has no entry, so an
+/// uncustomised config omits the whole section. The daemon applies these onto
+/// [`yerd_core::SiteRouter`] at build time.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResponseHeadersSection {
+    /// Linked-site headers, keyed by site name. `BTreeMap` for stable order.
+    pub linked: BTreeMap<String, Vec<ResponseHeader>>,
+    /// Parked-site headers, keyed by document-root string. `BTreeMap` for
+    /// stable order.
+    pub parked: BTreeMap<String, Vec<ResponseHeader>>,
+    /// Whole-host proxy headers, keyed by proxy name (name-stable, like
+    /// [`DomainsSection::proxy`]). A key naming no current proxy is inert and
+    /// tolerated, as in `[domains.proxy]`. `BTreeMap` for stable order.
+    pub proxy: BTreeMap<String, Vec<ResponseHeader>>,
 }
 
 /// Per-site routable-domain customisations (see [`Config::domains`]).
@@ -285,22 +330,130 @@ impl GroupsSection {
     }
 }
 
+/// Favourite (starred) sites (see [`Config::favourites`]).
+///
+/// A GUI overlay like [`GroupsSection`]: keyed by lowercased site name and never
+/// validated against live sites, so a favourite for a site that later
+/// disappears is simply ignored.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FavouritesSection {
+    /// Lowercased names of the favourite sites.
+    pub sites: BTreeSet<String>,
+}
+
+impl FavouritesSection {
+    /// True when no site is a favourite, so the serialiser omits the
+    /// `[favourites]` table and a default config stays byte-stable.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.sites.is_empty()
+    }
+}
+
+/// When each site was added to Yerd (see [`Config::added`]), as Unix seconds.
+///
+/// A GUI overlay keyed like [`DomainsSection`]: **linked** sites by site name,
+/// **parked** sites by document-root string (byte-exact, never canonicalised,
+/// like [`Config::overrides`]), so renaming a parked folder never carries a time
+/// across to a different site. A value of `0` means the site was already
+/// present before Yerd recorded added times; it is kept so the site is not
+/// stamped later, but reported as undated.
+///
+/// `baseline_pending` is filled by the v33 to v34 migration with the parked
+/// roots of the upgraded config. While a root is listed, the daemon records the
+/// parked sites it finds under that root as `0` instead of "now", so upgrading
+/// does not make existing sites look recently added. A root leaves the list once
+/// a scan finds it present with at least one site, so a drive that was
+/// unmounted during the upgrade is baselined when it comes back. A fresh config
+/// never sets it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AddedSection {
+    /// Linked-site added times, keyed by site name. `BTreeMap` for stable order.
+    pub linked: BTreeMap<String, u64>,
+    /// Parked-site first-seen times, keyed by document-root string. `BTreeMap`
+    /// for stable order.
+    pub parked: BTreeMap<String, u64>,
+    /// Parked roots whose existing sites have not yet been recorded as undated
+    /// since a v33 to v34 upgrade. `BTreeSet` for stable order.
+    pub baseline_pending: BTreeSet<String>,
+}
+
+impl AddedSection {
+    /// True when there are no recorded times and no pending baseline, so the
+    /// serialiser omits the `[added]` table and a default config stays
+    /// byte-stable.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.linked.is_empty() && self.parked.is_empty() && self.baseline_pending.is_empty()
+    }
+
+    /// The recorded added time for a site, looked up by `name` when it is
+    /// linked and by `doc_root` when it is parked. `None` when absent or `0`
+    /// (undated).
+    #[must_use]
+    pub fn added_at(&self, kind: SiteKind, name: &str, doc_root: &str) -> Option<u64> {
+        let recorded = match kind {
+            SiteKind::Linked => self.linked.get(name),
+            SiteKind::Parked => self.parked.get(doc_root),
+        };
+        recorded.copied().filter(|t| *t != 0)
+    }
+}
+
 /// The reserved group name for the GUI's synthetic ungrouped bucket. It is never
 /// a real stored group, so [`Config::validate`] (and the daemon's create-group
 /// mutation) reject it case-insensitively.
 pub const RESERVED_GROUP_NAME: &str = "Unallocated";
 
-/// Cloudflare Tunnel persistence (the Named Tunnels feature).
+/// Site sharing persistence: Cloudflare named tunnels and per-site hostnames,
+/// share passwords, the default provider for new shares, and ngrok settings.
 ///
-/// Both maps are empty by default, so a config without a `[tunnel]` table is the
-/// common case. Keyed by **site name** (not document-root) so the per-site
-/// hostname applies to parked and linked sites alike.
+/// Everything is empty or default by default, so a config without a `[tunnel]`
+/// table is the common case. Maps are keyed by **site name** (not
+/// document-root) so per-site settings apply to parked and linked sites alike.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TunnelSection {
     /// Named tunnels created locally, by tunnel name → tunnel UUID.
     pub named: BTreeMap<String, String>,
     /// Per-site public hostname mapping, by site name → hostname.
     pub sites: BTreeMap<String, String>,
+    /// Per-site share passwords (HTTP basic auth on tunnelled requests), by site
+    /// name → password. One password protects every tunnel kind for that site.
+    pub passwords: BTreeMap<String, String>,
+    /// The provider new shares use unless one is picked explicitly.
+    pub default_provider: TunnelProvider,
+    /// ngrok account settings (`[tunnel.ngrok]`).
+    pub ngrok: NgrokSettings,
+}
+
+/// ngrok account settings.
+///
+/// The authtoken is stored in plain text like the share passwords (the config
+/// file is `0600`) and is handed to ngrok in its environment, never on argv.
+/// `Debug` redacts it so a logged `Config` never leaks it.
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct NgrokSettings {
+    /// The ngrok agent authtoken, if saved.
+    pub authtoken: Option<String>,
+    /// An optional static domain as a bare hostname (`name.ngrok-free.app`).
+    pub domain: Option<String>,
+}
+
+impl NgrokSettings {
+    /// Whether neither a token nor a domain is set.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.authtoken.is_none() && self.domain.is_none()
+    }
+}
+
+impl fmt::Debug for NgrokSettings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NgrokSettings")
+            .field("authtoken", &self.authtoken.as_ref().map(|_| "***"))
+            .field("domain", &self.domain)
+            .finish()
+    }
 }
 
 /// Default loopback port for the dump server (see [`DumpsSection::port`]).
@@ -503,6 +656,12 @@ pub struct PhpSection {
     /// dropped rather than failing the load. Empty by default, so
     /// `[php.pool.*]` tables are omitted from a default config.
     pub pool: BTreeMap<PhpVersion, BTreeMap<String, String>>,
+    /// Per-version bundled Xdebug settings (see [`yerd_core::php_xdebug`]).
+    /// Only versions whose settings differ from the default are stored, so a
+    /// fresh install has no `[php.xdebug.*]` tables. Entries that fail to parse
+    /// or validate, or that name a legacy version, are dropped leniently at
+    /// load time.
+    pub xdebug: BTreeMap<PhpVersion, yerd_core::XdebugSettings>,
 }
 
 /// One registered custom PHP extension (see [`PhpSection::extensions`]).
@@ -530,6 +689,7 @@ impl Default for PhpSection {
             version_settings: BTreeMap::new(),
             directives: BTreeMap::new(),
             pool: BTreeMap::new(),
+            xdebug: BTreeMap::new(),
         }
     }
 }
@@ -551,6 +711,28 @@ pub struct ParkedSection {
     /// `BTreeSet` so the serialiser yields stable lexicographic order and
     /// duplicates are structurally impossible.
     pub paths: BTreeSet<String>,
+    /// Suffix-stripped names held by parked folders, keyed by the folder's
+    /// document-root string (byte-exact, the same key as [`Config::overrides`]).
+    ///
+    /// A parked folder named after a domain (`laravel.com`) is served under its
+    /// stripped name (`laravel`). Recording that here lets the daemon keep the
+    /// name stable when another folder later wants it (a new `laravel` or
+    /// `laravel.app` folder), so a site's settings never move to a different
+    /// project. The daemon adds and prunes entries after each scan. Empty by
+    /// default; `BTreeMap` for stable serialisation order.
+    pub claims: BTreeMap<String, ParkedClaim>,
+}
+
+/// A parked folder's hold on its suffix-stripped site name (see
+/// [`ParkedSection::claims`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParkedClaim {
+    /// The site name the folder is served under.
+    pub name: String,
+    /// Whether the site's app-side URL (`WordPress` `siteurl`/`home`,
+    /// `CodeIgniter` `app.baseURL`) has been pointed at `name`. `false` only for
+    /// a site renamed on upgrade whose one-time URL sync is still pending.
+    pub url_synced: bool,
 }
 
 /// A per-site override applied to a **parked** site (see [`Config::overrides`]).
@@ -687,6 +869,31 @@ impl Default for MailSection {
     }
 }
 
+/// Outbound proxy settings (see [`Config::network`]).
+///
+/// `Debug` stays derived: [`ProxyUrl`] redacts its own password.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NetworkSection {
+    /// How the proxy is chosen.
+    pub mode: OutboundProxyMode,
+    /// Manual proxy for `http://` requests.
+    pub http_proxy: Option<ProxyUrl>,
+    /// Manual proxy for `https://` requests; falls back to
+    /// [`Self::http_proxy`] when unset.
+    pub https_proxy: Option<ProxyUrl>,
+    /// User bypass entries, normalised to `.domain` / IP / CIDR form.
+    pub no_proxy: Vec<String>,
+}
+
+/// Node defaults and project preferences, keyed by canonical project root.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NodeSection {
+    /// Exact global version. `None` preserves legacy installation discovery.
+    pub default: Option<String>,
+    /// Exact versions for linked and parked projects.
+    pub sites: BTreeMap<String, String>,
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -757,5 +964,28 @@ mod tests {
                 front_controller: None,
             }
         );
+    }
+
+    #[test]
+    fn added_at_lookup_by_kind() {
+        let added = AddedSection {
+            linked: BTreeMap::from([("blog".to_owned(), 1_700_000_000)]),
+            parked: BTreeMap::from([
+                ("/p/api".to_owned(), 1_700_000_500),
+                ("/p/old".to_owned(), 0),
+            ]),
+            baseline_pending: BTreeSet::new(),
+        };
+        let cases: &[(SiteKind, &str, &str, Option<u64>)] = &[
+            (SiteKind::Linked, "blog", "/x/blog", Some(1_700_000_000)),
+            (SiteKind::Parked, "api", "/p/api", Some(1_700_000_500)),
+            (SiteKind::Parked, "old", "/p/old", None),
+            (SiteKind::Parked, "blog", "/x/blog", None),
+            (SiteKind::Linked, "api", "/p/api", None),
+            (SiteKind::Linked, "missing", "/p/missing", None),
+        ];
+        for (kind, name, root, want) in cases {
+            assert_eq!(added.added_at(*kind, name, root), *want, "{kind:?} {name}");
+        }
     }
 }

@@ -82,7 +82,8 @@ pub enum Op {
         #[arg(long, value_name = "PATH")]
         binary: PathBuf,
     },
-    /// Install a pf redirect 80/443 → rootless ports (macOS only).
+    /// Install the launchd port forwarder 127.0.0.1:80/443 → rootless ports
+    /// (macOS only).
     InstallPortRedirect {
         /// Privileged HTTP port to redirect from (80).
         #[arg(long, value_name = "PORT")]
@@ -96,15 +97,16 @@ pub enum Op {
         /// Rootless HTTPS port the daemon listens on.
         #[arg(long, value_name = "PORT")]
         https_to: u16,
+        /// The non-root user the forwarder runs as.
+        #[arg(long, value_name = "UID", value_parser = clap::value_parser!(u32).range(1..))]
+        uid: u32,
     },
-    /// Remove the pf redirect (macOS only).
+    /// Remove the loopback port forwarder and any legacy pf redirect (macOS
+    /// only).
     UninstallPortRedirect,
-    /// Install the LAN pf redirect 80/443 → rootless ports on the LAN IP
-    /// (macOS only).
+    /// Install the LAN port forwarder 0.0.0.0:80/443 → rootless ports (macOS
+    /// only).
     InstallLanPortRedirect {
-        /// The host's LAN IPv4 (redirect destination + source-scope match).
-        #[arg(long, value_name = "IP")]
-        lan_ip: std::net::Ipv4Addr,
         /// Privileged HTTP port to redirect from (80).
         #[arg(long, value_name = "PORT")]
         http_from: u16,
@@ -117,9 +119,21 @@ pub enum Op {
         /// Rootless HTTPS port the daemon listens on.
         #[arg(long, value_name = "PORT")]
         https_to: u16,
+        /// The non-root user the forwarder runs as.
+        #[arg(long, value_name = "UID", value_parser = clap::value_parser!(u32).range(1..))]
+        uid: u32,
     },
-    /// Remove the LAN pf redirect (macOS only).
+    /// Remove the LAN port forwarder and any legacy pf redirect (macOS only).
     UninstallLanPortRedirect,
+    /// Register the headless daemon as a system-domain launchd job running as
+    /// `uid` (macOS only).
+    InstallDaemonJob {
+        /// The non-root user the daemon runs as.
+        #[arg(long, value_name = "UID", value_parser = clap::value_parser!(u32).range(1..))]
+        uid: u32,
+    },
+    /// Remove the headless daemon's launchd job (macOS only).
+    UninstallDaemonJob,
 }
 
 /// Parse argv into a typed [`HelperInvocation`] (plus the
@@ -200,27 +214,31 @@ impl Op {
                 http_to,
                 https_from,
                 https_to,
+                uid,
             } => Ok(HelperInvocation::InstallPortRedirect {
                 http_from,
                 http_to,
                 https_from,
                 https_to,
+                uid,
             }),
             Self::UninstallPortRedirect => Ok(HelperInvocation::UninstallPortRedirect),
             Self::InstallLanPortRedirect {
-                lan_ip,
                 http_from,
                 http_to,
                 https_from,
                 https_to,
+                uid,
             } => Ok(HelperInvocation::InstallLanPortRedirect {
-                lan_ip,
                 http_from,
                 http_to,
                 https_from,
                 https_to,
+                uid,
             }),
             Self::UninstallLanPortRedirect => Ok(HelperInvocation::UninstallLanPortRedirect),
+            Self::InstallDaemonJob { uid } => Ok(HelperInvocation::InstallDaemonJob { uid }),
+            Self::UninstallDaemonJob => Ok(HelperInvocation::UninstallDaemonJob),
         }
     }
 }
@@ -254,6 +272,8 @@ fn invocation_tag(inv: &HelperInvocation) -> &'static str {
         HelperInvocation::UninstallPortRedirect => ops::UNINSTALL_PORT_REDIRECT,
         HelperInvocation::InstallLanPortRedirect { .. } => ops::INSTALL_LAN_PORT_REDIRECT,
         HelperInvocation::UninstallLanPortRedirect => ops::UNINSTALL_LAN_PORT_REDIRECT,
+        HelperInvocation::InstallDaemonJob { .. } => ops::INSTALL_DAEMON_JOB,
+        HelperInvocation::UninstallDaemonJob => ops::UNINSTALL_DAEMON_JOB,
         _ => "unknown",
     }
 }
@@ -345,6 +365,53 @@ mod tests {
     fn install_resolver_bad_addr_rejected_as_usage() {
         let err = parse_err(&["install-resolver", "--tld", "test", "--addr", "not-an-addr"]);
         assert!(matches!(err, HelperError::ArgvUsage(_)));
+    }
+
+    #[test]
+    fn port_redirect_uid_zero_rejected_as_usage() {
+        for op in ["install-port-redirect", "install-lan-port-redirect"] {
+            let err = parse_err(&[
+                op,
+                "--http-from",
+                "80",
+                "--http-to",
+                "8080",
+                "--https-from",
+                "443",
+                "--https-to",
+                "8443",
+                "--uid",
+                "0",
+            ]);
+            assert!(matches!(err, HelperError::ArgvUsage(_)), "{op}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn daemon_job_ops_parse() {
+        let p = parse_ok(&["install-daemon-job", "--uid", "501"]);
+        assert!(matches!(
+            p.invocation,
+            HelperInvocation::InstallDaemonJob { uid: 501 }
+        ));
+        let p = parse_ok(&["uninstall-daemon-job"]);
+        assert!(matches!(p.invocation, HelperInvocation::UninstallDaemonJob));
+    }
+
+    #[test]
+    fn daemon_job_bad_argv_rejected_as_usage() {
+        for args in [
+            &["install-daemon-job"][..],
+            &["install-daemon-job", "--uid", "0"],
+            &["install-daemon-job", "--uid", "abc"],
+            &["uninstall-daemon-job", "--uid", "501"],
+        ] {
+            let err = parse_err(args);
+            assert!(
+                matches!(err, HelperError::ArgvUsage(_)),
+                "{args:?}: {err:?}"
+            );
+        }
     }
 
     #[test]

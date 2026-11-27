@@ -20,11 +20,14 @@
 //! protocol against an older daemon surfaces as [`IpcError::Decode`]
 //! when an unknown `type` tag arrives.
 
+mod about;
 mod create;
 mod dump;
 mod error;
 mod frame;
 mod message;
+mod network;
+mod node;
 mod request;
 mod response;
 mod status;
@@ -37,6 +40,7 @@ mod transport;
 /// add a handshake before doing so.
 pub const PROTOCOL_VERSION: u32 = 1;
 
+pub use about::{Contributor, ReleaseNoteItem, ReleaseNotesEntry};
 pub use create::{
     AuthProvider, CreateSiteSpec, Database, Framework, JobId, JobState, JsRuntime, LaravelOptions,
     StarterKit, Testing, WordPressDatabase, WordPressDbEngine, WordPressOptions,
@@ -45,18 +49,20 @@ pub use dump::{DumpCategory, DumpCounts, DumpEvent, DumpExtStatus};
 pub use error::{FrameError, IpcError, IpcErrorKind};
 pub use frame::{encode_frame, FrameDecoder, DEFAULT_MAX_FRAME};
 pub use message::{decode_message, encode_message};
+pub use network::{EffectiveProxy, NetworkSettings, NetworkTestResult};
+pub use node::{NodePreferenceRef, NodeProjectFile, NodeRelease, NodeSiteEntry};
 pub use request::Request;
 pub use response::{
-    ErrorCode, PhpExtInfo, PhpUpdate, ProxyEntry, ProxyRuleEntry, Response, RouteRuleEntry,
-    SiteEntry, WordPressAdminUser,
+    ErrorCode, PhpExtInfo, PhpUpdate, ProxyEntry, ProxyRuleEntry, Response, ResponseHeaderEntry,
+    RouteRuleEntry, SiteEntry, WordPressAdminUser,
 };
 pub use status::{
     AddableServiceType, BrowserTrust, CaStatus, CloudflaredSource, CloudflaredStatus,
     DatabaseSummary, Diagnosis, DiagnosisCode, DomainShadow, FixReport, FixResult, MailAttachment,
     MailDetail, MailHeader, MailStatus, MailSummary, NamedTunnelMeta, PhpPoolStatus, PoolRunState,
     PortRedirectTargets, PortStatus, ServiceAvailability, ServiceRunState, ServiceStatus, Severity,
-    SiteCounts, SiteHostname, StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState,
-    UnboundWeb, WordPressVersionInfo,
+    SiteCounts, SiteHostname, StatusReport, ToolStatus, TunnelInfo, TunnelKind,
+    TunnelProviderStatus, TunnelRunState, UnboundWeb, WordPressVersionInfo,
 };
 pub use update::{Channel, StagedArtifact, UpdateSource};
 
@@ -64,7 +70,8 @@ pub use update::{Channel, StagedArtifact, UpdateSource};
 /// that need only the IPC surface should `use yerd_ipc::types::*;`
 /// instead of depending on `yerd-core` directly.
 pub mod types {
-    pub use yerd_core::{PhpVersion, Site, SiteKind};
+    pub use yerd_core::node::{MajorLine, NodeSource};
+    pub use yerd_core::{PhpVersion, Site, SiteFramework, SiteKind};
 }
 
 #[cfg(feature = "transport")]

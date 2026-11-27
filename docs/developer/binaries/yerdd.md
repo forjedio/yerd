@@ -108,11 +108,12 @@ The daemon's modules (`src/lib.rs` re-exports each as `pub mod`):
 | `site_domains` | Infallible, collision-resolving router builder (`build`) plus `collisions`, which reports the losing side of each domain clash (surfaced as `StatusReport.shadows`). Resolves domains for whole-host proxies as well as sites - every site is considered before any proxy. |
 | `php_install` | Download + unpack prebuilt PHP builds; `reqwest` downloader. |
 | `php_updates` | PHP update poller + cache (notify-only). |
+| `node_updates` | Node update poller + cache (notify-only): newest patch per major, per-release updates for `ListNode`, and the `Status` count. |
 | `public_url` | Site URLs mirroring the GUI's `siteUrl` (scheme, host, and the bound port on an unredirected rootless fallback): `site_url` for values written into projects, and `browser_url` for job-log links, which switches to the `http://localhost/~{host}` fallback when `.test` names don't resolve. |
 | `self_update` | Yerd self-update poller: fetches the GitHub Releases API, decides via the pure `yerd-update` crate, and persists a snapshot (`checked_at` + decision) both to disk and in `DaemonState` (notify-only). |
 | `dump_server` | Loopback TCP server reading newline-delimited JSON dump frames from the native `yerd-dump` extension into a bounded ring buffer; serves the ring to the GUI over IPC (`ListDumps`/`DumpsStatus`/…). |
 | `ext_install` | Downloads + SHA-256-verifies native PHP extension `.so`s per installed PHP version (from the `forjedio/yerd-php-ext` releases) into `{data}/php-ext/php-<ver>/`. An `ExtSpec` abstraction drives one fetch loop for **both** `yerd-dump` (`DUMP_SPEC`, gated on dumps) and `pcov` (`PCOV_SPEC`, ungated) - two manifests, one release. |
-| `tools` | Dev-tool installers (Composer, Node, Bun, the Laravel installer, WP-CLI): download/build + verify into `{data}/tools/<id>/` and reconcile their `{data}/bin` shims. See [Dev-tool installers](../dev-tools). |
+| `tools` | Dev-tool installers (Composer, Node, Bun, pnpm, the Laravel installer, WP-CLI, cloudflared, ngrok, zrok): download/build + verify into `{data}/tools/<id>/` and reconcile their `{data}/bin` shims. See [Dev-tool installers](../dev-tools). |
 | `create_site` | Site-scaffolding job bodies for the GUI wizards (`laravel.rs`, `wordpress.rs`, and `composer_project.rs` for the CodeIgniter/CakePHP/Slim `composer create-project` templates) - see [WordPress support](#wordpress-support) below. |
 | `wordpress_detect` | Narrow marker-file check for whether a site is a `WordPress` install (`wp-config.php`/`wp-load.php`). |
 | `wordpress_login` | One-click `WordPress` admin login: token registry + the `auto_prepend_file` bootstrap script. |
@@ -122,6 +123,7 @@ The daemon's modules (`src/lib.rs` re-exports each as `pub mod`):
 | `services` | Service-instance lifecycle over IPC: add/remove/start/stop/restart, port and autostart changes, and the free-form [configuration overrides](../crates/yerd-services#configuration-overrides) (`SetServiceOverrides` / `ServiceOverrides`). |
 | `service_install` | Download + unpack prebuilt service builds per engine and version. |
 | `db_admin` | SQL database administration (`ListDatabases`, `CreateDatabase`, `DropDatabase`, backup/restore). |
+| `project_file` | `.yerd.toml` project files: the `ProjectConfigDraft` / `ExportProjectConfig` replies, the `ApplyProjectConfig` job, and the write-back `sync` hook. See [Project files](#project-files-yerd-toml). |
 | `jobs` | The background-job registry behind `JobStarted` / `JobStatus` (site creation, streamed installs). |
 | `lan_setup` | The one-time LAN remote-device bootstrap endpoint (serves the public CA + installer script). |
 | `laravel_detect` | Narrow marker-file check for whether a site is a Laravel app (`artisan`), gating per-site Reverb instances. |
@@ -150,7 +152,13 @@ The daemon's modules (`src/lib.rs` re-exports each as `pub mod`):
 
 ### Site discovery: `scan_sites` / `build_routing`
 
-`scan_sites` reads each `cfg.parked.paths` root and turns each non-hidden child **directory** into a parked `Site` keyed by its lowercased name. Linked sites win on a name collision (the parked child is skipped). Persisted per-site overrides (`cfg.overrides`, keyed by the site's `document_root` stringified with `to_string_lossy`) are re-applied here - PHP version, `secure` flag, and `web_root` - **without promoting the site to linked**. A missing parked root is a warning, not an error.
+`scan_sites` reads each `cfg.parked.paths` root and turns each non-hidden child **directory** into a parked `Site`. Candidates are gathered root-major (roots in their stored, lexicographic order, folders sorted within each root) and named by `assign_parked_names`: a folder's legacy name is `yerd_core::normalize_site_name` and its preferred name `yerd_core::parked_folder_site_name`, which first strips a Public Suffix List suffix (`laravel.com` becomes `laravel`). A folder holding a claim (`[parked.claims]`, below) for its current preferred name keeps it first, unless a linked site, proxy or another claimant's explicitly added domain holds it. Then folders sharing a legacy name keep only the first (claimants first); the survivors' legacy names are reserved; unchanged folders keep their names unless another folder claims that name (the newcomer is hidden with a warning naming both paths); a preferred name wanted by two or more unclaimed changed folders is contested and goes to none of them; otherwise a changed folder takes its preferred name if no linked site, proxy, explicitly added exact domain (from another claimant's `[domains]` delta), reserved legacy name, claim or earlier pick holds it, else its legacy slug. The outcome depends only on the folder set and config, so it is stable across rescans and restarts. Linked sites always keep their names; a parked folder is skipped only when neither its preferred nor its legacy name is usable, or its legacy name is claimed by another folder. Persisted per-site overrides (`cfg.overrides`, keyed by the site's `document_root` stringified with `to_string_lossy`) are re-applied here - PHP version, `secure` flag, and `web_root` - **without promoting the site to linked**. A missing parked root is a warning, not an error.
+
+**Name claims.** `[parked.claims]` records, by byte-exact document root, the suffix-stripped name each parked folder is served under. After every router build (startup, the filesystem watcher's recompute, and the IPC mutation path, where it is folded into the same atomic save) `reconcile_parked_claims` adds a claim for each parked site served under a name other than its legacy one and prunes claims whose folder is gone or whose site no longer has that name. Claims keep an existing site's short name when a new folder later wants it, so settings never move to a different project.
+
+**Rename migration.** Right after the first `build_router`, `parked_renames` finds parked sites served under a new, unclaimed name whose legacy name is not a live site (the sites renamed by upgrading), and `rekey_parked_names` moves their name-keyed settings (`[favourites]`, `[groups]` membership, `[tunnel]` hostnames and passwords, per-site `[services]` instances, and the apex in the site's parked `[domains]` delta) to the new name without overwriting an existing entry (a skipped move is logged as a warning). When anything moved the router is rebuilt from the migrated config, so the first session already serves the migrated domains. The renamed sites' claims are created with `url_synced = false`; once the autostarted services are up (and unless shutdown was requested), each pending site still served from the same parked folder has its app-side URL (`WordPress` `siteurl`/`home` via WP-CLI, `CodeIgniter` `app.baseURL`, both through `public_url::site_url` so a rootless fallback port is kept) synced, and its claim is marked `url_synced = true` only when no hook failed. A failed sync is retried on the next start, as is one skipped because the web ports are unbound (its URL would lack the listener's port). A pending claim is kept while its folder is missing, so an unmounted drive does not drop the sync.
+
+**Renames while running.** A parked site can also change name while the daemon runs: a contested name is freed when the other folder goes, or a linked site or proxy holding the name is removed. The watcher's recompute and the IPC mutation path both compare the previous router with the new one (`live_parked_renames`); a folder served under its legacy name before and its stripped name now gets the same settings move, claim and URL sync as an upgrade. A folder that is new to the router inherits nothing. Every URL sync, including the post-mutation one, runs under `DaemonState::url_sync` and reads the scheme and host from the live router, so concurrent syncs cannot leave a stale value.
 
 **Web-root detection.** For each parked site, if the override pins a `web_root` it is used; otherwise the daemon detects one via the shared `DetectCache` - `yerd_platform::gather_project_signals` (I/O) feeds `yerd_core::detect` (pure). A site whose detection is **unresolved** (an empty folder with no framework evidence yet) serves the project root provisionally and its path is collected as a *watch target*. So `scan_sites` returns `(Vec<Site>, Vec<PathBuf>)`, and `build_routing(cfg, dirs, cache) -> (SiteRouter, Vec<PathBuf>)` exposes both; `build_router` is the thin wrapper that keeps only the router. Linked sites carry their `web_subpath` in the persisted `Site`, so they aren't re-detected on a scan (re-detection is on demand via `SetWebRoot { path: None }`).
 
@@ -171,7 +179,7 @@ Detection at scan time only fires at startup and on mutations, so a project clon
 - **every parked root** - always, to notice child sites appearing/disappearing; plus
 - **only the project roots of *unresolved* parked sites** (no framework detected yet, no manual override) - to catch a project being cloned in.
 
-A site is dropped from the watch set once it resolves or is manually overridden - "don't watch what we already know" (the documented trade-off: deleting a resolved site's web root *in place* isn't noticed until the next scan from another trigger). On a debounced batch of events - or a ping on `state.watch_dirty` (sent after every mutation commits, so a freshly parked root is watched without waiting for an fs event) - the task rebuilds the router from the *current* config under the config lock (same `config → router-write` order as the mutation path, so it never races a mutation) and **never writes config**, so it cannot feed back into its own fs events. It is the fifth subsystem task (see [the run loop](#the-run-loop-lib-rs)).
+A site is dropped from the watch set once it resolves or is manually overridden - "don't watch what we already know" (the documented trade-off: deleting a resolved site's web root *in place* isn't noticed until the next scan from another trigger). On a debounced batch of events - or a ping on `state.watch_dirty` (sent after every mutation commits, so a freshly parked root is watched without waiting for an fs event) - the task rebuilds the router from the *current* config under the config lock (same `config → router-write` order as the mutation path, so it never races a mutation). It saves config only when the rebuild changes the parked name claims or moves a renamed site's settings (below), and retries a failed save on the next wake; an unchanged rebuild writes nothing, and the config file lives outside the watched directories, so a save cannot feed back into its own fs events. It is the fifth subsystem task (see [the run loop](#the-run-loop-lib-rs)).
 
 ## Shared state (`state.rs`)
 
@@ -184,15 +192,16 @@ A site is dropped from the watch set once it resolves or is manually overridden 
 | `dirs`, `config_path` | For re-scanning parked roots and persisting on mutation. |
 | `dns_addr`, `ca_path`, `ca_fingerprint` | Reported by `DaemonInfo` / `Status` (the resolver and trust installers consume them). |
 | `php_updates: RwLock<HashMap<PhpVersion, String>>` | Update cache: installed minor → newest known patch. Served (no network) on `ListPhp`. |
+| `node_updates: RwLock<BTreeMap<u32, String>>`, `node_update_count: AtomicU32` | Node update cache: major → newest installable patch, plus the pending-update count served on `Status`. Served (no network) on `ListNode`. |
 | `php_manager: Arc<Mutex<DaemonPhpManager>>` | The FPM supervisor, shared with the proxy backend resolver and update task. |
 | `http`, `https: PortStatus` | Requested-vs-bound ports (drives the rootless-fallback diagnostics). |
-| `redirect_https_port: Arc<AtomicU16>` | Port the HTTP→HTTPS redirect currently advertises. Seeded from `https.bound`; when `https.fell_back`, the redirect-probe task (see [the run loop](#the-run-loop-lib-rs)) flips it to `https.requested` once a privileged-port redirect (macOS `pf`, `yerd elevate ports`) is live, and back when it isn't - so `yerd-proxy`'s `HttpsBinding::public_port` can change without restarting the proxy. |
+| `redirect_https_port: Arc<AtomicU16>` | Port the HTTP→HTTPS redirect currently advertises. Seeded from `https.bound`; when `https.fell_back`, the redirect-probe task (see [the run loop](#the-run-loop-lib-rs)) flips it to `https.requested` once a privileged-port redirect (macOS port forwarder, `yerd elevate ports`) is live, and back when it isn't - so `yerd-proxy`'s `HttpsBinding::public_port` can change without restarting the proxy. |
 | `started_at: Instant` | `Status` uptime. |
 | `shutdown_tx: watch::Sender<bool>` | The one broadcast channel every task watches; `RestartDaemon` trips it directly. |
 | `restart_requested: AtomicBool` | Set before tripping shutdown so `main` re-execs instead of exiting. |
 | `detect_cache: Arc<DetectCache>` | Shared web-root detection cache (mutation path + watcher). |
 | `watch_dirty: Notify` | Pinged after a mutation commits so the watcher reconciles its watch set without waiting for an fs event. |
-| `shim_reconcile: Mutex<()>` | Serializes `php_install::reconcile_shims` runs. IPC dispatch is `tokio::spawn`-per-connection, so two clients could rebuild the `{data}/bin` cover/clean shims at once; this guard keeps the (sync) scan→prune from interleaving. |
+| `shim_reconcile: Mutex<()>` | Serializes every `{data}/bin` reconcile: the PHP cover/clean shims (`php_install::reconcile_shims`), the dev-tool shims plus the `cloudflared` link (`tools::reconcile_tool_shims`), and the service client shims (`reconcile_client_shims_now`). IPC dispatch is `tokio::spawn`-per-connection, so two clients could rebuild the shims at once; this guard keeps the (sync) scan→prune from interleaving. |
 | `wordpress_sites: Arc<RwLock<HashMap<String, bool>>>` | Cache of which sites are `WordPress` (site name → bool), refreshed on every router rebuild. Read by `ListSites` (badge), the login/user-listing handlers, `wordpress_url_sync`, and the proxy's `DaemonBackendResolver::allows_direct_script_execution` (see [Backend resolver](#backend-resolver-backend-resolver-rs)). |
 | `wordpress_login_tokens: Arc<wordpress_login::LoginTokenRegistry>` | One-click admin-login token store, shared with `yerd-proxy` via `LoginTokenConsumer`. See [WordPress support](#wordpress-support). |
 | `wordpress_login_prepend_script: Option<PathBuf>` | Path the auto-login bootstrap script was written to at startup, or `None` if that write failed - one-click login is then unavailable this boot (the ordinary `/wp-admin/` link still works). |
@@ -214,16 +223,18 @@ The mutation path is the only place that holds two locks, and always in the orde
    - **IPC** (`ipc_server::run`),
    - the **dump-telemetry server** (`dump_server::run`) - a loopback TCP listener receiving newline-delimited JSON frames from the native PHP `yerd-dump` extension into a ring buffer; it rebinds on a port change and a bind failure is non-fatal (logged, retried on the next rebind),
    - an **update checker** covering two independent cadences in one task: a
-     **PHP checker** (poll once, then every 12h) and a **Yerd self-update
+     **PHP and Node checker** (poll once, then every 12h; the two polls run
+     concurrently and a shutdown interrupts them; Node only while a release is
+     installed) and a **Yerd self-update
      checker** (`self_update::poll_if_due`, woken every 15 minutes but only
      fetching when `yerd_update::is_check_due` says its own 4h wall-clock
      interval has elapsed - robust to the process being suspended, unlike a
      plain `tokio::time::interval`). Both are notify-only,
    - the **filesystem watcher** (`fs_watch::run`, see above),
    - conditionally, the **mail-capture SMTP task** (`yerd_mail::serve`) - spawned only when `daemon.mail_listener` is `Some` (mail capture enabled *and* the SMTP port bound at startup; a disabled or failed bind is non-fatal and already logged in `bring_up`), and
-   - conditionally, the **redirect-port prober** (`spawn_redirect_probe`) - spawned only when the proxy is up *and* `state.https.fell_back` (the HTTPS listener bound the rootless fallback, e.g. `8443`). Every 5s it calls `yerd_platform::PortRedirector::is_active` (via `spawn_blocking`, since the probe does real loopback I/O) and stores `effective_redirect_port(state.https, active)` into `DaemonState::redirect_https_port` - flipping the HTTP→HTTPS redirect target to the well-known port once a macOS `pf` redirect (`yerd elevate ports`) is confirmed live, and back if it later disappears. On platforms/configs where `is_active` is always `None` (Linux, or a well-known-port bind that never fell back) this task is either unnecessary (not spawned) or a cheap no-op poll.
+   - conditionally, the **redirect-port prober** (`spawn_redirect_probe`) - spawned only when the proxy is up *and* `state.https.fell_back` (the HTTPS listener bound the rootless fallback, e.g. `8443`). Every 5s it calls `yerd_platform::PortRedirector::is_active` (via `spawn_blocking`, since the probe does real loopback I/O) and stores `effective_redirect_port(state.https, active)` into `DaemonState::redirect_https_port` - flipping the HTTP→HTTPS redirect target to the well-known port once a macOS port forwarder (`yerd elevate ports`) is confirmed live, and back if it later disappears. On platforms/configs where `is_active` is always `None` (Linux, or a well-known-port bind that never fell back) this task is either unnecessary (not spawned) or a cheap no-op poll.
 
-   That is **six always-on tasks plus two conditional ones** (mail, redirect-probe). Four further spawns are fire-and-forget background work, deliberately *not* awaited so a slow boot can't delay the listeners: an **installed-services auto-start** (`services::auto_start_installed`) that brings up every engine with an installed version, regardless of the persisted `enabled` flag (a `Stop` lasts only the session). It watches the shutdown channel and bails the moment shutdown is requested, so an instance torn down shortly after booting (an upgrade-restart bounce) never spawns DB engines it would only have to stop again - that 10s `stop_grace` would otherwise hold the instance lock and stall the next launch. When dumps are enabled in config, an **extension-install** pass (`ext_install::ensure_for_installed`) that fetches the dump `.so` for installed PHP versions so on-demand pools pick it up; an **always-on pcov + cover-shim** pass (`ipc_server::refresh_pcov_and_shims`) that bundles `pcov.so` for installed versions and (re)builds the `{data}/bin` cover/clean shims. This pass is where the **cover symlinks self-heal**: it re-points them at the current `yerd` binary, so a moved-binary install still resolves, and warm/offline starts skip the network (a local-presence check on the `.so`s) - see [cover-shim reconciliation](#cover-shim-reconciliation-and-pcov). The fourth spawn is a **dev-tool shim reconcile** (`reconcile_tool_shims_now`) that self-heals the `composer`/`node`/`bun` shims (re-pointing the `composer` multi-call link if the `yerd` binary moved) and prunes shims for tools removed between runs.
+   That is **six always-on tasks plus two conditional ones** (mail, redirect-probe). Four further spawns are fire-and-forget background work, deliberately *not* awaited so a slow boot can't delay the listeners: an **installed-services auto-start** (`services::auto_start_installed`) that brings up every engine with an installed version, regardless of the persisted `enabled` flag (a `Stop` lasts only the session). It watches the shutdown channel and bails the moment shutdown is requested, so an instance torn down shortly after booting (an upgrade-restart bounce) never spawns DB engines it would only have to stop again - that 10s `stop_grace` would otherwise hold the instance lock and stall the next launch. When dumps are enabled in config, an **extension-install** pass (`ext_install::ensure_for_installed`) that fetches the dump `.so` for installed PHP versions so on-demand pools pick it up; an **always-on pcov + cover-shim** pass (`ipc_server::refresh_pcov_and_shims`) that bundles `pcov.so` for installed versions and (re)builds the `{data}/bin` cover/clean shims. This pass is where the **cover symlinks self-heal**: it re-points them at the current `yerd` binary, so a moved-binary install still resolves, and warm/offline starts skip the network (a local-presence check on the `.so`s) - see [cover-shim reconciliation](#cover-shim-reconciliation-and-pcov). The fourth spawn is a **dev-tool shim reconcile** (`reconcile_tool_shims_now`) that self-heals the `composer`/`node`/`bun` shims (re-pointing the `composer` multi-call link if the `yerd` binary moved) and the `cloudflared` link, and prunes shims for tools removed between runs; the same task then runs the **service client shim reconcile** (`reconcile_client_shims_now`), which links the client commands of installed engines (`mysql`, `psql`, `valkey-cli`, ...) into `{data}/bin` and prunes those of engines removed between runs.
 4. Awaits the shutdown channel, then caps each task's join with a `timeout` (10s DNS/proxy, 5s IPC/dump/update/watch, and 5s for the mail and redirect-probe tasks when present) so a stuck task can't hang the exit.
 5. Shuts down the PhpManager and the service manager, reads `restart_requested`, drops the instance lock, and returns `Outcome`.
 
@@ -267,6 +278,42 @@ The pure delta lives in `mutate::apply` (`mutate.rs`), which is deliberately I/O
 
 `SetWebRoot` is handled outside the pure `apply` because it does I/O - it needs the target site's `document_root` (read from the router/`cfg.linked`) to validate the requested path or to re-detect. `resolve_web_root_mutation` resolves the path against the document root, **canonicalises both sides** (so a Windows `\\?\` verbatim prefix doesn't spuriously fail the containment check), requires the result be a directory *inside* the project, and stores the relative remainder: on the linked `Site`'s `web_subpath`, or in `cfg.overrides[..].web_root` for a parked site. `path: None` resets to auto-detect (re-detect now for a linked site; drop the override for a parked one). After commit, step 7 pings `watch_dirty` so the watcher reconciles.
 
+### Project files (`.yerd.toml`)
+
+`project_file.rs` is the daemon side of [`yerd init`](../../reference/cli/init);
+the schema, plan and delta logic is pure and lives in
+[`yerd_config::ProjectFile`](../crates/yerd-config#the-project-file-project-rs).
+
+- **Draft and export.** `draft` reads the folder's `.yerd.toml`, or renders one
+  from the site serving the folder (`find_site_for_dir`, which prefers a linked
+  site over a parked twin) or from defaults. `export` writes the site's current
+  state under the `project_file_mutate` lock, keeping the file's `name`,
+  services, extensions and a still-matching `node` selector.
+- **Apply job.** `start_apply` validates synchronously (writing wizard
+  `contents` first, refused with `AlreadyExists` if a file is there), then
+  spawns a `jobs` job that reserves the site name in `reserved_names` and walks
+  `yerd_config::plan`: link (or link a parked folder under the declared name),
+  PHP (installing a missing non-legacy version), HTTPS, domains, headers, path
+  rules (via `proxy_mutation`, which keeps the loop check), Node (installing a
+  matching release, then `set_node_version`), then services
+  (`services::add_service` / `start_service`, decided by
+  `yerd_config::service_action`) and extensions (`yerd_php::probe_modules`
+  through the `ffi_cache` runner). Each item logs one `applied:` /
+  `installed:` / `started:` / `unchanged:` / `warning:` / `failed:` line; any
+  `failed:` ends the job `Failed`. Auto-installing PHP and Node here is a
+  deliberate exception to the notify-only install rule: it only happens on an
+  explicit apply and never for legacy minors.
+- **Write-back sync.** `handle_client` sends every request through
+  `ipc_server::respond`, which computes `project_file::sync_target(&req)` before
+  `dispatch` and, on `Response::Ok`, calls `project_file::sync`. `sync` resolves
+  the site through the router and applies that one request's `SyncDelta` to
+  `<document_root>/.yerd.toml` under `project_file_mutate`, only when the file
+  already exists and its parsed content changes. `SetPrimaryDomain` syncs as an
+  added domain, since it can add one; the apex is never written. Failures are
+  logged and never change the reply. The apply job, create-site registration and export call
+  `handle_mutation` and friends directly, never `respond`, so applying a file
+  cannot write it back (no loop, no churn).
+
 ### PHP install / update flows
 
 PHP version operations are I/O at the daemon edge:
@@ -274,6 +321,7 @@ PHP version operations are I/O at the daemon edge:
 - **`install_php`** → `php_install::install`: resolve the latest patch from the distribution's live listing, download the CLI + FPM tarballs, safe-extract the single binary from each (tar-member safety via `yerd_php::is_safe_member`), and atomically swap a staging dir into `data/php/php-<minor>/`. A `.yerd-version` marker records the exact patch so it lands atomically with the binaries. **Integrity is TLS-only** - no checksum sidecars, no hash pinning (a deliberate decision). After install, `refresh_php_binaries` re-discovers and hands the updated map to the live `PhpManager` so the proxy can spawn the new pool **without a daemon restart**.
 - **`update_php`** upgrades a given minor (or all installed) to the latest patch when `yerd_php::is_newer` says so, then refreshes the cache.
 - **`php_updates::poll_and_refresh`** (the periodic task and `CheckPhpUpdates`) repopulates `state.php_updates` and logs notices; it is **failure-tolerant** (network errors log at `debug` and leave the cache untouched). `cached_updates` serves the annotations on `ListPhp` with no network access.
+- **`node_updates::poll_and_refresh`** (the periodic task, alongside the PHP poll) fetches the Node release index and refreshes `state.node_updates`; `AvailableNode` and every Node install refresh it too. Failure-tolerant like the PHP poll. `recount` keeps `node_update_count` (the `Status` field `node_updates`) current without touching the network.
 - **`uninstall_php`** is guarded: blocked if the version is assigned to any site, if it is the last installed version while sites remain, or if it is the current default while others are installed. It stops the pool, removes the version dir, and refreshes the binary map.
 - **`set_php_settings`** validates each ini key/value (`yerd_core::php_settings::validate_value` + `canonical_value`), persists, then under a single `php_manager` lock updates the settings and restarts every started pool so the new directives take effect. An empty-string value removes a key.
 
@@ -291,6 +339,7 @@ The pcov code-coverage launcher (the [`yerd` multi-call binary](./yerd#cover-shi
 - `phpcover` - points at `yerd_bin`; resolves the default version at run time.
 - per installed version `v`: `php<v>` → that version's clean CLI binary, and `php<v>cover` → `yerd_bin`.
 - it then **prunes** managed `php<X.Y>` / `php<X.Y>cover` symlinks whose version is no longer installed. `managed_shim_version` matches *only* canonical names (rejecting `php`, `phpcover`, leading-zero spellings, and foreign files like `phpunit`), so the pruner only ever removes links yerd created.
+- **ownership** (`is_yerd_link`) - a link is Yerd's to replace or prune when it points at `yerd_bin`, at any file named like it (a moved app, macOS App Translocation, a dev build), or at an absolute path inside `{data}/php/` (older builds linked `php` and `php<v>` straight at a bundled binary, so those links migrate to the wrapper). Any other link or regular file is left alone with a warning.
 
 `versioned_shim_name` emits the canonical dotted form; `set_default_shim` (used by `set_default_php`) atomically repoints just `php`. All link writes go through an atomic temp-then-rename `place_symlink`.
 
@@ -302,10 +351,64 @@ The pcov code-coverage launcher (the [`yerd` multi-call binary](./yerd#cover-shi
 - **PHP install** (`InstallPhp`) - `refresh_pcov_and_shims` after `refresh_php_binaries`.
 - **PHP uninstall** (`UninstallPhp`) - removes the orphaned `pcov.so` (file only; the dir is shared with `yerd-dump.so`), then `reconcile_shims_now` to prune the now-dangling shims.
 - **set-default** (`SetDefaultPhp`) - `reconcile_shims_for(new_default)` so `phpcover` and the versioned set track the new default.
+- **service clients** - `reconcile_client_shims_now` runs after every `InstallService`, `UninstallService`, `AddService` and `ChangeServiceVersion` (whether the handler succeeded or not; the reconcile is idempotent), after the WordPress wizard installs a database engine inline, and at startup. It links each installed engine's allowlisted clients (`ServiceDefinition::client_tools`) to the `yerd` multi-call binary via `service_install::reconcile_client_shims` and prunes the names of engines with nothing installed (symlinks only). `{data}/bin/cloudflared` is a tool shim, kept by `reconcile_tool_shims_now`.
 
 ::: info No new wire types
 This is all daemon-internal: **no new IPC `Request`/`Response` variants were added** and `crates/yerd-ipc` was untouched. The shim reconciliation rides on the existing install / uninstall / set-default requests.
 :::
+
+## Outbound HTTP (`network.rs`)
+
+Every external HTTP request the daemon makes goes through one factory in
+`network.rs`: `network::downloader(&state)` (a `yerd_php::Downloader`) or
+`network::client(&state)` (a raw `reqwest::Client`, used for the Cloudflare
+API). `build_client` is the only `reqwest::Client::builder()` call in the crate.
+It calls `.no_proxy()` first, so reqwest's implicit environment proxy never
+applies, then adds the resolved proxy explicitly per scheme with the bypass
+list. A builder failure does not panic or fall back: the downloader holds the
+`Err`, and every download returns `DownloadError::Transport` with an
+"outbound proxy configuration is invalid" message scrubbed of passwords.
+
+`NetworkRuntime` (in `DaemonState::network`) caches the `ResolvedProxy` from
+`yerd_core::network::resolve` for 60 s:
+
+- **Sources.** The daemon env (`std::env`), the OS settings through
+  `yerd_platform::SystemProxySource` (`scutil --proxy` on macOS, `gsettings` on
+  Linux, both with a 3 s timeout), and the login shell's `*_proxy` exports
+  (`tools::external::capture_user_proxy_env`).
+- **Probe policy.** The login shell is only run by `refresh(LoginShell::Probe)`:
+  once at startup (awaited before the update poller and extension install
+  spawn), on `SetNetworkSettings`, and on `TestNetwork`. Every other refresh,
+  including the 60 s refresher task, Diagnose, DoctorFix, site creation and
+  tool installs, reuses the stored result. `invalidate()` drops only the
+  snapshot.
+- **`network.env`.** `refresh` is the only writer of `{data}/network.env`: it
+  renders `child_env_plan` as `KEY=VALUE` lines, writes it 0600 when it changed,
+  and removes it when there is nothing to export (Off, or no proxy).
+- **Subprocesses.** `run_streamed` (site creation) calls
+  `network::apply_child_env`; the Laravel installer and WP-CLI builds get a plan
+  from `network::child_env_plan` and apply it with `network::apply_plan`. Off
+  mode removes every inherited proxy variable; otherwise a scheme with no
+  resolved proxy has both cases of its variable removed, so an inherited value
+  can't route it elsewhere.
+- **Long-lived work.** The update poller builds a fresh downloader on each tick,
+  so a settings change applies without a restart.
+- **Doctor.** Diagnose and DoctorFix run a 3 s TCP connect to the proxy
+  (`probe_reachable`) and pass `outbound_proxy_probe(..)` to
+  `yerd_doctor::diagnose` as a side channel.
+
+Do not call the factory functions while holding `state.config`; a refresh takes
+that lock. cloudflared is the documented exception: its tunnel edge traffic
+can't use an HTTP proxy, and its management commands don't get the proxy
+environment yet.
+
+The `{data}/bin` links for `node`, `npm`, `npx`, `pnpm`, `pnpx`, `bun`,
+`bunx`, `ngrok` and `zrok2` point at the `yerd` multi-call binary (like `composer`, `laravel` and
+`wp`), so the CLI can add the proxy environment before it execs the real tool.
+One edge: a user symlink such as `~/.local/bin/pnpm → {data}/bin/pnpm` now
+canonicalises to the `yerd` binary outside `{data}`, so external-tool detection
+can tag it External. The effect is cosmetic (it still runs Yerd's managed
+tool), and the same edge already exists for `composer`, `laravel` and `wp`.
 
 ## Cert store (`cert_store.rs`)
 

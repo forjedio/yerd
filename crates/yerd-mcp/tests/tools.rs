@@ -84,6 +84,7 @@ fn catalog_names_are_pinned() {
         "install_php",
         "set_default_php",
         "set_php_setting",
+        "set_xdebug",
         "list_services",
         "list_databases",
         "create_database",
@@ -233,6 +234,7 @@ fn schema_property_names_match_the_builder() {
         ("install_php", vec!["version"]),
         ("set_default_php", vec!["version"]),
         ("set_php_setting", vec!["name", "value"]),
+        ("set_xdebug", vec!["enabled", "modes", "start", "version"]),
         ("list_databases", vec!["service"]),
         ("create_database", vec!["name", "service"]),
         ("set_mail_enabled", vec!["enabled"]),
@@ -309,6 +311,26 @@ fn optional_arguments_reach_the_request() {
         built("job_status", json!({ "job_id": "j" })),
         "job_status ignored `cursor`"
     );
+
+    let xdebug_default = built("set_xdebug", json!({ "enabled": true }));
+    assert_ne!(
+        built("set_xdebug", json!({ "enabled": false })),
+        xdebug_default,
+        "set_xdebug ignored `enabled`"
+    );
+    for (key, value) in [
+        ("version", json!("8.4")),
+        ("modes", json!(["profile"])),
+        ("start", json!("trigger")),
+    ] {
+        let mut args = json!({ "enabled": true });
+        args[key] = value.clone();
+        assert_ne!(
+            built("set_xdebug", args),
+            xdebug_default,
+            "set_xdebug ignored `{key}` = {value}"
+        );
+    }
 }
 
 /// Guards the catalog against an entry with no builder arm. `build` resolves the
@@ -358,6 +380,7 @@ fn every_tool_builds_a_request() {
         ("set_mail_enabled", json!({ "enabled": true })),
         ("get_mail", json!({ "id": "000001" })),
         ("set_dumps_enabled", json!({ "enabled": true })),
+        ("set_xdebug", json!({ "enabled": true })),
         ("job_status", json!({ "job_id": "j1" })),
     ]
     .into_iter()
@@ -622,6 +645,80 @@ fn php_tools_map_to_their_requests() {
 }
 
 #[test]
+fn set_xdebug_maps_to_its_request() {
+    use yerd_core::{XdebugMode, XdebugStart};
+    assert_eq!(
+        built("set_xdebug", json!({ "enabled": false })),
+        Request::SetXdebug {
+            version: None,
+            enabled: Some(false),
+            modes: None,
+            start: None,
+        }
+    );
+    assert_eq!(
+        built(
+            "set_xdebug",
+            json!({
+                "version": "8.4",
+                "enabled": true,
+                "modes": ["debug", "profile"],
+                "start": "trigger",
+            })
+        ),
+        Request::SetXdebug {
+            version: Some(PhpVersion::new(8, 4)),
+            enabled: Some(true),
+            modes: Some(vec![XdebugMode::Debug, XdebugMode::Profile]),
+            start: Some(XdebugStart::Trigger),
+        }
+    );
+    for args in [
+        json!({ "modes": ["trace"] }),
+        json!({ "enabled": null, "modes": ["trace"] }),
+    ] {
+        assert_eq!(
+            built("set_xdebug", args.clone()),
+            Request::SetXdebug {
+                version: None,
+                enabled: None,
+                modes: Some(vec![XdebugMode::Trace]),
+                start: None,
+            },
+            "{args}"
+        );
+    }
+}
+
+#[test]
+fn set_xdebug_rejects_bad_arguments() {
+    for args in [
+        json!({ "enabled": "yes" }),
+        json!({ "enabled": true, "modes": ["bogus"] }),
+        json!({ "enabled": true, "modes": ["off"] }),
+        json!({ "enabled": true, "modes": [] }),
+        json!({ "enabled": true, "modes": "debug" }),
+        json!({ "enabled": true, "modes": [1] }),
+        json!({ "enabled": true, "start": "sometimes" }),
+        json!({ "enabled": true, "version": "eight" }),
+        json!({}),
+        json!({ "version": "8.4" }),
+        json!({ "enabled": null, "modes": null, "start": null }),
+    ] {
+        let line = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "set_xdebug", "arguments": args },
+        })
+        .to_string();
+        let Outgoing::Reply(reply) = ready().handle_line(&line) else {
+            panic!("set_xdebug accepted {args}");
+        };
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v.pointer("/error/code"), Some(&json!(-32602)), "{args}");
+    }
+}
+
+#[test]
 fn paging_tools_default_their_cursors_to_zero() {
     assert_eq!(
         built("list_dumps", json!({})),
@@ -706,4 +803,95 @@ fn create_site_options_are_mapped() {
         "skip lets an agent create a site on a machine with no Node"
     );
     assert!(options.git);
+}
+
+#[test]
+fn create_site_accepts_pnpm_runtime() {
+    let request = built(
+        "create_site",
+        json!({
+            "name": "app",
+            "parent_dir": "/srv",
+            "php": "8.4",
+            "starter_kit": "vue",
+            "js": "pnpm",
+        }),
+    );
+    let Request::CreateSite { spec } = request else {
+        panic!("expected CreateSite");
+    };
+    let yerd_ipc::Framework::Laravel { options } = spec.framework else {
+        panic!("expected Laravel");
+    };
+    assert_eq!(options.js, yerd_ipc::JsRuntime::Pnpm);
+}
+
+fn invalid_params_message(tool: &str, args: Value) -> String {
+    let line = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": tool, "arguments": args },
+    })
+    .to_string();
+    let Outgoing::Reply(reply) = ready().handle_line(&line) else {
+        panic!("{tool} accepted {args}");
+    };
+    let v: Value = serde_json::from_str(&reply).unwrap();
+    assert_eq!(
+        v.pointer("/error/code"),
+        Some(&json!(-32602)),
+        "{tool} {args}"
+    );
+    v.pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_owned()
+}
+
+/// The schemas advertise `additionalProperties: false`, so the builder must
+/// honour it: a misspelt optional argument would otherwise silently fall back
+/// to its default.
+#[test]
+fn undeclared_arguments_are_rejected_by_name() {
+    for (tool, args, key) in [
+        (
+            "set_xdebug",
+            json!({ "enabled": true, "mode": ["debug"] }),
+            "mode",
+        ),
+        ("list_sites", json!({ "verbose": true }), "verbose"),
+        (
+            "job_status",
+            json!({ "job_id": "j", "next_cursor": 5 }),
+            "next_cursor",
+        ),
+        (
+            "create_site",
+            json!({ "name": "app", "parent_dir": "/srv", "php": "8.4", "starterKit": "vue" }),
+            "starterKit",
+        ),
+    ] {
+        let message = invalid_params_message(tool, args);
+        assert!(
+            message.contains(&format!("`{key}`")),
+            "{tool}: {message} should name `{key}`"
+        );
+    }
+}
+
+#[test]
+fn set_xdebug_needs_something_to_change() {
+    let message = invalid_params_message("set_xdebug", json!({ "version": "8.4" }));
+    for key in ["enabled", "modes", "start"] {
+        assert!(message.contains(key), "{message} should name `{key}`");
+    }
+    for args in [
+        json!({ "start": "trigger" }),
+        json!({ "modes": ["debug"] }),
+        json!({ "enabled": false }),
+    ] {
+        assert!(
+            matches!(built("set_xdebug", args), Request::SetXdebug { .. }),
+            "one changing argument is enough"
+        );
+    }
 }

@@ -1,6 +1,6 @@
 # yerd-helper (privileged)
 
-`yerd-helper` is the **only** privileged component in Yerd and therefore the project's single security boundary. The daemon ([`yerdd`](./yerdd)) and the CLI ([`yerd`](./yerd)) run entirely as your user; the small set of operations that genuinely require root - trusting the local CA, redirecting `.test` DNS, granting the daemon permission to bind low ports - are handed to this binary, which validates everything, performs exactly one operation, and exits.
+`yerd-helper` is the **only** privileged component in Yerd and therefore the project's single security boundary. The daemon ([`yerdd`](./yerdd)) and the CLI ([`yerd`](./yerd)) run entirely as your user; the small set of operations that genuinely require root - trusting the local CA, redirecting `.test` DNS, granting the daemon permission to bind low ports (Linux) or installing the launchd port forwarder (macOS) - are handed to this binary, which validates everything, performs exactly one operation, and exits.
 
 For the user-facing model of when and how elevation happens, see [Elevation & Privileges](../../guide/elevation). This page is the contributor-level reference: the module map, the hard rules, the argv wire contract, the per-operation implementations, and the invariants enforced by tests.
 
@@ -16,7 +16,7 @@ flowchart LR
     cli -->|"sudo yerd elevate (elevation only)"| helper["yerd-helper<br/>privileged, one-shot"]
 ```
 
-The daemon never spawns `yerd-helper` for itself under ambient privilege. Elevation is driven by `yerd elevate` (`yerd elevate [trust|resolver|ports]`), which is the moment a user supplies `sudo` / an admin prompt. The helper inherits that elevated context, does one job, and exits. There is no resident privileged process.
+The daemon never spawns `yerd-helper` for itself under ambient privilege. Elevation is driven by `yerd elevate` (`yerd elevate [trust|resolver|ports|lan]`), which is the moment a user supplies `sudo` / an admin prompt. The helper inherits that elevated context, does one job, and exits. There is no resident privileged process.
 
 Source: [`bin/yerd-helper`](https://github.com/forjedio/yerd/tree/main/bin/yerd-helper).
 
@@ -27,7 +27,7 @@ These are not aspirational - they are enforced by code structure, lints, and tes
 1. **Strict typed args; never shell out.** Every external command goes through `ops::run_command`, which builds a `std::process::Command` with arguments pushed one at a time. There is no `sh -c`, no string interpolation, no glob expansion. The child's environment is wiped with `env_clear()` and given a single pinned `PATH`.
 2. **Never take remote network input.** The helper reads only its argv and known local files. The resolver installer performs one bounded loopback DNS probe against `127.0.0.1:53`; it opens no remote connection.
 3. **One operation, then exit.** No event loop, no daemonization, no persisted state. `main` parses one invocation, dispatches it once, and returns an `ExitCode`.
-4. **Minimal, auditable dependencies.** The runtime crate graph is tiny: `clap`, `thiserror`, `hex`, `pem`, plus the workspace's own `yerd-core` and `yerd-platform`. A test (`tests/no_runtime_deps.rs`) walks `cargo metadata` and **fails the build** if `tokio`, `reqwest`, `openssl`, `openssl-sys`, or `native-tls` ever appear in the normal-dependency graph.
+4. **Minimal, auditable dependencies.** The runtime crate graph is tiny: `clap`, `thiserror`, `hex`, `pem`, plus the workspace's own `yerd-core` and `yerd-platform` (and, on macOS only, `nix` with the `user` feature, to resolve the forwarder's account name from a uid). A test (`tests/no_runtime_deps.rs`) walks `cargo metadata` and **fails the build** if `tokio`, `reqwest`, `openssl`, `openssl-sys`, or `native-tls` ever appear in the normal-dependency graph.
 5. **Effective-UID check, debug-only bypass.** Before any side effect the helper confirms its effective UID is 0. The only way to skip the check is a hidden `--skip-priv-check` flag that **does not exist in release builds** (it is compiled out by `cfg(debug_assertions)`).
 6. **Defence in depth.** The helper does not trust the daemon. Every typed value is re-parsed and re-validated here, even though the daemon already validated it.
 
@@ -42,11 +42,15 @@ These are not aspirational - they are enforced by code structure, lints, and tes
 | `src/privilege.rs` | `is_privileged()` - effective-UID == 0 check, per-OS |
 | `src/validate.rs` | Defence-in-depth validators (absolute path, file exists, basename, TLD, PEM↔fingerprint) |
 | `src/exec.rs` | `dispatch(HelperInvocation)` → the right `ops::*` function |
-| `src/ops/mod.rs` | `run_command` (pinned-`PATH` subprocess) and `atomic_write` |
+| `src/ops/mod.rs` | `run_command` (pinned-`PATH` subprocess) and `atomic_write`, plus the macOS launchd helpers shared by the job ops (`resolve_user`, `bootstrap_system`, `bootout_system`) |
 | `src/ops/ca.rs` | `install-ca` / `uninstall-ca` (Linux trust anchors, macOS System keychain) |
 | `src/ops/resolver.rs` | `install-resolver` / `uninstall-resolver` (systemd-resolved, NetworkManager dnsmasq, `/etc/resolver/<tld>`) |
 | `src/ops/setcap.rs` | `setcap` (Linux only) |
-| `src/ops/port_redirect.rs` | `install-port-redirect` / `uninstall-port-redirect` (macOS pf, only) |
+| `src/ops/port_redirect.rs` | `install-port-redirect` / `uninstall-port-redirect` (macOS only, loopback forwarder) |
+| `src/ops/lan_port_redirect.rs` | `install-lan-port-redirect` / `uninstall-lan-port-redirect` (macOS only, LAN forwarder) |
+| `src/ops/daemon_job.rs` | `install-daemon-job` / `uninstall-daemon-job` (macOS only, the headless install's boot-time daemon job) |
+| `src/ops/forwarder_job.rs` | Shared install/uninstall of the launchd port-forwarder jobs for a scope |
+| `src/ops/legacy_pf.rs` | One-shot removal of the pf redirects older Yerd installed, plus the gated release of pf enable references |
 | `src/error.rs` | `HelperError`, `ValidationReason`, `CommandReason`, and the exhaustive `exit_code` mapping |
 
 ## main: the control flow
@@ -152,6 +156,8 @@ The clap layer mirrors the enum one-for-one:
 | `setcap` | `--binary <PATH>` | Linux only (macOS → `Unsupported`) |
 | `install-port-redirect` | `--http-from` `--http-to` `--https-from` `--https-to` (all `<PORT>`) | macOS only |
 | `uninstall-port-redirect` | (none) | macOS only |
+| `install-daemon-job` | `--uid <n>` (non-zero) | macOS only |
+| `uninstall-daemon-job` | (none) | macOS only |
 
 The parser is configured `arg_required_else_help = true` and `disable_help_subcommand = true`. Unknown subcommands and unknown flags are rejected by clap and surface as `HelperError::ArgvUsage` (exit `64`).
 
@@ -247,19 +253,44 @@ validate::require_basename_yerdd(binary)?;
 run_command("setcap", "setcap", ["cap_net_bind_service=+ep", binary_str.as_ref()])
 ```
 
-Grants `yerdd` the ability to bind ports 80/443 without being root. On macOS this op returns `HelperError::Unsupported { operation: SETCAP }` (macOS uses the pf port redirect instead).
+Grants `yerdd` the ability to bind ports 80/443 without being root. On macOS this op returns `HelperError::Unsupported { operation: SETCAP }` (macOS uses the launchd port forwarder instead).
 
-### install-port-redirect / uninstall-port-redirect (macOS only)
+### install-port-redirect / install-lan-port-redirect and their uninstalls (macOS only)
 
-macOS has no `setcap`, so the rootless daemon cannot bind 80/443 directly. Instead the helper installs a pf `rdr` redirect (rule text composed by `yerd_platform::pure::pf_anchor`) plus a `LaunchDaemon` to re-apply it at boot. The flow is carefully ordered for safety:
+macOS has no `setcap`, so the rootless daemon cannot bind 80/443 directly. Instead the helper installs two root-owned LaunchDaemons per scope whose `Sockets` make **launchd** bind the privileged ports and hand the listening socket to [`yerd-forward`](./yerd-forward), which relays to the daemon's rootless ports. Plist text is composed by `yerd_platform::pure::launchd_ports`; the shared flow lives in `ops/forwarder_job.rs`.
 
-1. Reject any zero port (`ValidationReason::PortInvalid`).
-2. Write the inert anchor-rules file.
-3. Edit the canonical `/etc/pf.conf` to reference the anchor (preserving its contents and Apple's default anchors), keeping the original for rollback.
-4. `pfctl -f /etc/pf.conf` both validates and loads; if it rejects the edited config the helper **rolls the pf.conf edit back** before returning the error, so a broken config is never persisted. `pfctl -e` ("already enabled" is success) is best-effort.
-5. Only after a clean load does it install the boot-persistence `LaunchDaemon` (`chown root:wheel`, then `launchctl bootout` for idempotency, then `bootstrap`).
+| Op | Jobs | Bind |
+|---|---|---|
+| `install-port-redirect` | `dev.yerd.ports.http`, `dev.yerd.ports.https` | `127.0.0.1:80` / `:443` |
+| `install-lan-port-redirect` | `dev.yerd.lan.ports.http`, `dev.yerd.lan.ports.https` | `0.0.0.0:80` / `:443` |
 
-Uninstall reverses this in the safe order: tear down the `LaunchDaemon`, remove the hook lines from `/etc/pf.conf` and reload (leaving pf's enabled state as-is), then delete the anchor and plist files - so pf.conf never references a missing anchor.
+Both take `--http-from`, `--http-to`, `--https-from`, `--https-to`, and `--uid <n>` (the user who invoked `sudo`). The LAN op takes no LAN IP: the wildcard bind loads at boot before DHCP and survives IP changes, and the forwarder filters LAN traffic itself. Install is ordered so nothing half-done survives and a failed first install never costs the user a working legacy pf redirect:
+
+1. Validate before any I/O: no zero port (`ValidationReason::PortInvalid`); both privileged ports `< 1024` and distinct (`ForwardSourceInvalid`); each rootless target `>= 1024`, distinct from both privileged ports and from the other target (`ForwardTargetInvalid`).
+2. Resolve the account name **from the uid**, never from a string: uid `0`, an unknown uid, or a name that resolves to root is `ValidationReason::UidInvalid`.
+3. Locate `yerd-forward` next to the helper's own canonicalised `current_exe`. It must be a regular file with no group/world write bit, and not under `AppTranslocation` or `/Volumes` (an app run from its disk image) (`ValidationReason::ForwarderInvalid`).
+4. For each job: atomically write the plist (XML-escaped values), `chown root:wheel` (mode `0644`), `launchctl bootout` for idempotency, then `launchctl bootstrap system` (retried briefly while launchd finishes the bootout). If either job fails, both of the scope's jobs are booted out and deleted again, and any legacy pf redirect is left working. On a reinstall this also removes the scope's previously working jobs, so the scope has no forwarder until `elevate` succeeds. Jobs are unloaded by service target (`system/<label>`) rather than plist path, so a job whose plist is already gone can still be unloaded.
+5. Only once both jobs have loaded, remove all legacy pf state (below).
+
+Uninstall boots out and deletes the scope's two plists (absent is fine), then runs the same legacy pf removal.
+
+#### Legacy pf removal (`ops/legacy_pf.rs`)
+
+Older Yerd used pf `rdr` anchors (`dev.yerd`, `dev.yerd.lan`). Every forwarder install and uninstall, for either scope, removes **all** of that state for both anchors. When there is no legacy state (no plist, anchor file, `pf.conf` hook or loaded anchor rules) it does nothing else. Otherwise it boots out `dev.yerd.pf.plist` / `dev.yerd.lan.pf.plist`, strips the `# yerd-managed` / `# yerd-lan-managed` lines from `/etc/pf.conf` and reloads it, flushes both anchors (`pfctl -a <anchor> -F all`, the step that restores iCloud Private Relay without a reboot), and deletes the anchor files and plists. Only a failure to read or rewrite `/etc/pf.conf` or delete a file is an error; the `pfctl` and `launchctl` steps are best effort.
+
+It then releases the pf enable references taken through `pfctl` (`pfctl -X <token>` for every token owned by a process named `pfctl`) **only** when `pf_anchor::only_apple_and_yerd_pf_state` proves the remaining state is just Apple's defaults. Otherwise it leaves them and prints `yerd-helper: note: pf may stay enabled until the next reboot (pf state Yerd doesn't recognise is present)`. References don't record which tool took them, so another tool's `pfctl -E` reference is released too when the gate passes; the gate is what makes that safe, since it only passes when no other pf rules or anchors are loaded. The helper never runs `pfctl -d`.
+
+### install-daemon-job / uninstall-daemon-job (macOS only)
+
+A [headless install](../../guide/headless) has no app to register the daemon, and a per-user LaunchAgent doesn't run until someone logs in. So `sudo yerd daemon install` asks the helper for a root-owned system LaunchDaemon, `/Library/LaunchDaemons/dev.yerd.daemon.plist`, that launchd starts at boot and runs **as the user**. Plist text is composed by `yerd_platform::pure::launchd_daemon` (`ProgramArguments` = `[<yerdd>, serve]`, `UserName`, `EnvironmentVariables.HOME`, `RunAtLoad`, `KeepAlive{SuccessfulExit: false}`, `ThrottleInterval 5`, every value XML-escaped).
+
+`install-daemon-job --uid <n>` validates before any I/O:
+
+1. Resolve the account from the uid, as the forwarder ops do: uid `0`, an unknown uid, or a name that resolves to root is `ValidationReason::UidInvalid`.
+2. The helper's own canonical directory must hold a `yerd-install-receipt` that parses as `headless` (`ValidationReason::NotHeadlessInstall`), so an app-bundle install never gets a system job competing with its LaunchAgent.
+3. `yerdd` next to the helper must be a regular file with no group/world write bit, on a persistent path (`ValidationReason::DaemonBinaryInvalid`).
+
+It then atomically writes the plist, `chown root:wheel` (mode `0644`), boots out any existing `system/dev.yerd.daemon`, and `launchctl bootstrap system` (retried briefly). If loading fails, the job is booted out and the plist deleted again, so service control never targets a job that isn't there. Re-running it is how `sudo yerd daemon start` restarts a stopped job. `uninstall-daemon-job` (run by `sudo yerd uninstall`) boots the job out and deletes the plist; absent is fine. On Linux both return `Unsupported` (the Linux registration is a systemd user unit, written without root).
 
 ## Errors and exit codes
 
@@ -296,6 +327,7 @@ Windows is not supported in Phase 1: the `main` stub exits `78`. Real Windows be
 - [Elevation & Privileges](../../guide/elevation) - the user-facing model
 - [yerdd (daemon)](./yerdd) - the unprivileged process that issues invocations
 - [yerd (CLI)](./yerd) - drives `yerd elevate` / `yerd unelevate`
+- [yerd-forward (macOS ports)](./yerd-forward) - the unprivileged relay the port-forwarder jobs launch
 - [yerd-platform](../crates/yerd-platform) - owns `HelperInvocation`, the argv contract, and the pure composers
 - [Cross-Platform Model](../cross-platform) - how per-OS branches are organised
 - [HTTPS & Certificates](../../guide/https) and [DNS & .test Domains](../../guide/dns) - what the privileged ops ultimately enable

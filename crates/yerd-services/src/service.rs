@@ -20,6 +20,7 @@ use std::sync::Arc;
 use yerd_core::service_directives::{self, OverrideDialect};
 use yerd_supervise::supervisor::{StopProtocol, SupervisorPolicy};
 
+use crate::client::{ClientDefaults, ClientTools};
 use crate::config_render;
 use crate::error::ServiceError;
 
@@ -324,6 +325,13 @@ pub trait ServiceDefinition: Send + Sync + 'static {
         false
     }
 
+    /// The client binaries this type exposes on the user's `PATH` and how they
+    /// default their connection, or `None` when it exposes none. Only client
+    /// tools are listed, never server or init binaries.
+    fn client_tools(&self) -> Option<ClientTools> {
+        None
+    }
+
     /// Build the server command for this type from the resolved context. Pure:
     /// no stdio or process group is applied here (the manager does that).
     fn plan_launch(&self, ctx: &LaunchContext<'_>) -> Result<LaunchPlan, ServiceError>;
@@ -447,6 +455,12 @@ impl ServiceDefinition for Redis {
     ) -> Option<String> {
         Some(config_render::render_redis_conf(port, datadir, log_path))
     }
+    fn client_tools(&self) -> Option<ClientTools> {
+        Some(ClientTools {
+            binaries: &["valkey-cli"],
+            defaults: ClientDefaults::Valkey,
+        })
+    }
     /// Valkey takes its config file as a bare argument, and reports a config
     /// error (an unbalanced quote aborts the whole load) on stderr before it
     /// opens the `logfile` the rendered config names - so the plan captures
@@ -531,6 +545,12 @@ impl ServiceDefinition for MySql {
             port, datadir, socket, log_path, init_file,
         ))
     }
+    fn client_tools(&self) -> Option<ClientTools> {
+        Some(ClientTools {
+            binaries: &["mysql", "mysqldump"],
+            defaults: ClientDefaults::MySqlSocket,
+        })
+    }
     fn plan_launch(&self, ctx: &LaunchContext<'_>) -> Result<LaunchPlan, ServiceError> {
         Ok(my_family_plan(ctx))
     }
@@ -605,6 +625,12 @@ impl ServiceDefinition for MariaDb {
         Some(config_render::render_my_cnf(
             port, datadir, socket, log_path, init_file,
         ))
+    }
+    fn client_tools(&self) -> Option<ClientTools> {
+        Some(ClientTools {
+            binaries: &["mariadb", "mariadb-dump"],
+            defaults: ClientDefaults::MySqlSocket,
+        })
     }
     fn plan_launch(&self, ctx: &LaunchContext<'_>) -> Result<LaunchPlan, ServiceError> {
         Ok(my_family_plan(ctx))
@@ -688,6 +714,12 @@ impl ServiceDefinition for Postgres {
             datadir,
             preload_libraries,
         ))
+    }
+    fn client_tools(&self) -> Option<ClientTools> {
+        Some(ClientTools {
+            binaries: &["psql", "pg_dump", "pg_dumpall", "pg_restore", "createdb"],
+            defaults: ClientDefaults::Postgres,
+        })
     }
     fn plan_launch(&self, ctx: &LaunchContext<'_>) -> Result<LaunchPlan, ServiceError> {
         let mut command = base_command(ctx);
@@ -959,6 +991,53 @@ mod tests {
                 r.get(id).unwrap().multiplicity(),
                 Multiplicity::Single
             ));
+        }
+    }
+
+    #[test]
+    fn client_tools_never_list_server_or_init_binaries() {
+        let r = reg();
+        let servers: Vec<&str> = r
+            .iter()
+            .flat_map(|d| [d.server_binary(), d.init_binary()])
+            .flatten()
+            .collect();
+        for d in r.iter() {
+            for name in d.client_tools().map_or(&[][..], |t| t.binaries) {
+                assert!(!servers.contains(name), "{} lists {name}", d.id());
+            }
+        }
+    }
+
+    #[test]
+    fn client_names_are_unique_across_the_registry() {
+        let mut names: Vec<&str> = reg()
+            .iter()
+            .filter_map(|d| d.client_tools())
+            .flat_map(|t| t.binaries.iter().copied())
+            .collect();
+        let total = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), total);
+    }
+
+    #[test]
+    fn sql_engines_expose_their_client_and_dump_binaries() {
+        for d in reg().iter() {
+            let Some(sql) = d.as_database() else {
+                continue;
+            };
+            let tools = d.client_tools().unwrap();
+            assert!(tools.binaries.contains(&sql.client_binary()), "{}", d.id());
+            assert!(tools.binaries.contains(&sql.dump_binary()), "{}", d.id());
+        }
+    }
+
+    #[test]
+    fn meilisearch_and_reverb_expose_no_clients() {
+        for id in ["meilisearch", "reverb"] {
+            assert!(reg().get(id).unwrap().client_tools().is_none(), "{id}");
         }
     }
 

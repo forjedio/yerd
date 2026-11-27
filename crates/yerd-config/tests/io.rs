@@ -26,6 +26,7 @@ fn save_then_load_round_trip() {
         version_settings: std::collections::BTreeMap::new(),
         directives: std::collections::BTreeMap::new(),
         pool: std::collections::BTreeMap::new(),
+        xdebug: std::collections::BTreeMap::new(),
     };
     original.parked.paths.insert("/srv/sites".to_string());
     original
@@ -158,4 +159,15 @@ fn save_into_readonly_parent_returns_io_error() {
         }
         other => panic!("expected Io error from temp-file creation, got {other:?}"),
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn save_writes_owner_only_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    Config::default().save(&path).unwrap();
+    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
 }

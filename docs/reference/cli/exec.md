@@ -1,8 +1,10 @@
 # Exec and Which
 
-`yerd exec` runs a CLI tool under the PHP version a **site** uses, rather than
-the [global default](../../guide/php-versions#the-global-default). `yerd which`
-reports which binary that would be, without running anything.
+`yerd exec` runs PHP tools under the PHP version a **site** uses, rather than
+the [global default](../../guide/php-versions#the-global-default), and Node tools
+(`node`, `npm`, `npx`) under the project's selected Node release (see
+[Node resolution](#node-resolution)). `yerd which` reports which binary that
+would be, without running anything.
 
 A site's version governs how it is **served**, but the bare `php` and `composer`
 shims always resolve to the global default. Inside a site on 8.3 while your
@@ -17,8 +19,8 @@ either over IPC is an explicit usage error.) The one daemon round-trip is the
 site lookup behind the scenes.
 
 ```sh
-yerd exec [--site <NAME>] <php|composer> [ARGS...]
-yerd which [--json] [--site <NAME>] php
+yerd exec [--site <NAME>] <php|composer|node|npm|npx> [ARGS...]
+yerd which [--json] [--site <NAME>] <php|node|npm|npx>
 ```
 
 | Command | Description |
@@ -72,6 +74,49 @@ for why, and how to move a site's version deliberately.
 In `--json` mode, `source` is `site` when the version came from a site and
 `default` otherwise, with `site` then `null`.
 
+## Node resolution
+
+For `node`, `npm`, and `npx`, both commands share this priority:
+
+1. The nearest `.nvmrc` or `.node-version` in the current directory or its
+   parents, stopping at the registered project's root. Within one directory
+   `.nvmrc` wins; otherwise the nearest directory wins.
+2. The saved preference from `yerd node use <version> --site <name>`.
+3. The global default from `yerd node use <version>`.
+
+Outside registered sites, the nearest project file in any parent applies. With
+`--site`, the search starts at that named site's project root, so its root
+project file applies from any caller directory. Nested registered sites use the
+most specific root. A subdirectory project file overrides a root file within its
+project, so a nearer `.node-version` beats a farther `.nvmrc`.
+
+`.nvmrc` and `.node-version` accept a single numeric major, minor, or exact release with an optional
+`v` prefix, plus `node` (newest installed release), `lts/*` (newest installed
+release recorded as LTS), and `lts/<codename>` such as `lts/iron` (newest installed
+release of that LTS line, codename case-insensitive). Leading and trailing whitespace
+is ignored. `default`, comments, and other nvm syntax are unsupported and fail
+clearly. A legacy single-version installation (`{data}/tools/node`) counts as LTS, since
+that installer only ever fetched the latest LTS, so `lts/*` can select it too; it has
+no recorded codename, so `lts/<codename>` cannot. The aliases also work with
+`yerd install tool node <alias>` and `yerd node use <alias>`.
+
+An empty, unreadable, unsupported, or unmatched project file is an error (exit `2`);
+it never falls through to a site preference or default. Missing installed
+versions also fail with an installation hint. A missing `yerd.toml` counts as an
+empty config; other config I/O failures exit `74`.
+Node project resolution requires the daemon's live site list: an unreachable
+daemon exits `69`, including outside sites. PHP's existing warning and default
+fallback behavior remains unchanged.
+
+npm and npx run their bundled entry point through the selected Node interpreter.
+The selected release's bin directory is prepended to `PATH`, so spawned `node`,
+`npm`, and `npx` processes use the same release. `which` reports the node binary
+or npm/npx entry point and, with `--json`, an exact version and `source` of
+`nvmrc`, `node-version`, `site`, or `default`.
+
+The desktop app's site inspector sets the same saved preference and warns
+when a project file overrides it.
+
 ## Passthrough behaviour
 
 Everything after the tool is handed straight to that tool, so no `--` separator
@@ -108,9 +153,11 @@ Both commands fail rather than quietly running the wrong PHP:
 - **`--site` never falls back.** An unknown name is a usage error (exit `2`);
   a daemon that isn't running to resolve it exits `69`. Naming a site is an
   instruction, not a hint.
-- **Without `--site`, an unreachable daemon just means "not inside a site"** and
-  the global default is used - but with a warning on stderr, since inside a site
-  that would otherwise silently resolve to the wrong version.
+- **Without `--site`, an unreachable daemon just means "not inside a site"** for
+  PHP (`php`, `composer`): the global default is used, with a warning on stderr,
+  since inside a site that would otherwise silently resolve to the wrong version.
+  Node commands (`yerd exec node|npm|npx`, `yerd which node|npm|npx`) need the
+  daemon's site list and exit `69` instead, even outside a site.
 - **Unix only.** Both commands are available on macOS and Linux.
 
 See [Exit codes](./#exit-codes) for the full table.

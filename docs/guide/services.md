@@ -50,28 +50,68 @@ Service support follows the same model as [PHP versions](./php-versions):
 ## In the desktop app
 
 The [desktop app](./desktop-app) surfaces every engine on its **Services** page,
-under the **Developer** group in the sidebar. Install a version, then Start /
-Stop / Restart it inline - no terminal needed. The daemon auto-starts every
-installed engine on boot, so what you install stays running across reboots.
+under the **Developer** group in the sidebar.
 
 <ThemedImage light="/images/services-light.png" dark="/images/services-dark.png" alt="The Services page in the Yerd desktop app" />
 
-Each installed engine's `⋯` menu offers:
+**Add service** opens a one-step
+dialog: pick a tile (installed engines read *Added*), then the version (or, for
+Reverb, the Laravel site), the port (the next free one is filled in) and whether
+it starts with Yerd. The daemon auto-starts every engine set to start with Yerd,
+so what you install stays running across reboots.
 
-- **Configuration** - copies a ready-made Laravel `.env` for that engine, with a
-  database picker that pre-fills `DB_DATABASE` for the SQL engines.
-- **Edit port** - change the loopback port (applies on next start).
-- **View logs** - tail the service log.
-- **Override settings** - add your own engine config directives (config-backed
-  engines only; see [below](#service-configuration-overrides)).
-- **Manage databases** - create, drop, back up, and restore databases (SQL
-  engines only).
-- **Change version** - upgrade in place, keeping your data.
-- **Uninstall** - remove the engine.
+<ThemedImage light="/images/services-add-light.png" dark="/images/services-add-dark.png" alt="The Add a service dialog with MariaDB picked, its version, the next free port and Start with Yerd" />
 
-<ThemedImage light="/images/database-configuration-light.png" dark="/images/database-configuration-dark.png" alt="The Configuration dialog for a MySQL database, with copyable .env values" />
+The list groups services under **Databases**, **Cache & search** and
+**Per-site**, each row showing its version, state, port and (for a running SQL
+engine) how many databases it holds. Selecting one opens its inspector:
 
-<ThemedImage light="/images/manage-databases-light.png" dark="/images/manage-databases-dark.png" alt="The Manage databases dialog, creating and listing MySQL databases" />
+- **Logs** opens a live tail of the service log (the last 500 lines, refreshed
+  every two seconds, with Copy). **Start**, **Restart** and **Stop** appear when
+  they apply.
+
+  <ThemedImage light="/images/services-logs-light.png" dark="/images/services-logs-dark.png" alt="The MySQL logs dialog, a live tail of the service log with an error line in red" />
+
+- The `···` menu holds **Uninstall** for an engine, with an *Also delete the
+  stored data* option (without it your data stays on disk for a reinstall), or
+  **Remove this instance** for a per-site Reverb.
+- The facts strip shows the **Address** with **Edit port** (applies on next
+  start), the **Version** with **Change** or, for Reverb, the **Site** with
+  **Open**, and the **Start with Yerd** switch. **Change** installs the chosen
+  version, restarts the engine onto it and removes the old binaries. It
+  preselects the newest version newer than the one you run, and won't move
+  MySQL, MariaDB or PostgreSQL to an older version, since an older engine can't
+  read data a newer one wrote. MySQL, MariaDB and Redis keep their data across
+  the change, as does PostgreSQL within one major. A new PostgreSQL major starts
+  with an empty cluster: the old major's databases stay on disk (each major has
+  its own data directory) and come back if you switch back to that major.
+  Meilisearch indexes don't carry over; rebuild them with Laravel Scout.
+
+  <ThemedImage light="/images/services-change-version-light.png" dark="/images/services-change-version-dark.png" alt="The Change MySQL version dialog, preselecting a newer version" />
+
+- **Databases** (SQL engines): **New database**, a filter, and **Hide test
+  copies**, which folds Laravel's parallel-testing copies (`app_test_1`, …)
+  under the database they came from. Each row's `···` menu offers **Back up to
+  file…**, **Restore from file…**, **Use in Connect** and **Delete database**;
+  delete and restore confirm in the row itself.
+
+  <ThemedImage light="/images/manage-databases-light.png" dark="/images/manage-databases-dark.png" alt="The MySQL Databases card with a database's menu open: Back up to file, Restore from file, Use in Connect and Delete database" />
+
+- **Connect a Laravel app**: the ready-made `.env` block for the engine, with a
+  database picker that fills in `DB_DATABASE` for SQL engines, and **Copy for
+  .env**. A Reverb instance shows its server and browser (Echo) halves side by
+  side.
+
+  <ThemedImage light="/images/services-reverb-light.png" dark="/images/services-reverb-dark.png" alt="A per-site Reverb instance in the Services inspector, with its server and browser .env blocks side by side" />
+
+- **Config overrides**: your own engine config directives (config-backed engines
+  only; see [below](#service-configuration-overrides)). They apply on the next
+  restart.
+
+In a narrow window the list becomes a table (version, port, status, details)
+and the inspector slides in as a drawer when you click a row.
+
+<ThemedImage light="/images/services-compact-light.png" dark="/images/services-compact-dark.png" alt="The Services page in a narrow window, listing services as a table with version, port, status and details" />
 
 ## From the command line
 
@@ -121,6 +161,62 @@ generated SQL is injection-proof. Engine-internal databases are protected and
 can't be dropped. `backup` writes to a temp file and atomically renames it, so a
 failed dump never clobbers an existing one. See the [Databases CLI
 reference](../reference/cli/db) for details.
+
+## Client commands on your PATH
+
+When an engine is installed, Yerd puts the command-line clients its build ships
+in `{data}/bin`, the same directory as the managed `php` and `composer` commands:
+
+| Service | Commands |
+|---|---|
+| MySQL | `mysql`, `mysqldump` |
+| MariaDB | `mariadb`, `mariadb-dump` |
+| PostgreSQL | `psql`, `pg_dump`, `pg_dumpall`, `pg_restore`, `createdb` |
+| Redis (Valkey) | `valkey-cli` |
+
+Each command runs the client from the version Yerd runs: the configured version
+if it is installed, otherwise the newest installed version. Changing or
+upgrading a service's version needs no relinking, and uninstalling an engine's
+last version removes its commands. Run `yerd path install` once to add
+`{data}/bin` to your `PATH`.
+
+The clients connect to Yerd's instance by default:
+
+- **MySQL / MariaDB** connect over Yerd's Unix socket (the shim sets
+  `MYSQL_UNIX_PORT`), so they work on any port.
+- **PostgreSQL** gets `PGHOST=127.0.0.1`, `PGPORT` set to the service's port,
+  and `PGUSER=postgres` (the superuser Yerd creates), unless you name a host
+  yourself (`-h`, a `host=` or `service=` connection string, a URI with a
+  host, or `PGHOST`/`PGHOSTADDR`/`PGSERVICE` in your environment), in which
+  case none of them is added.
+- **Valkey** gets `-p <port>` when the service is not on the default 6379.
+
+Your own settings always win: an explicit `-h`, `-S`, or `--protocol` flag, a
+`[client]` `host` or `socket` in `~/.my.cnf`, a Postgres `-U`/`--username` or
+a user in a connection string or URI, or your own `MYSQL_UNIX_PORT`, `PGHOST`,
+`PGPORT`, or `PGUSER`. Note that pointing a MySQL/MariaDB client at TCP (with
+`-h` or `MYSQL_HOST`) disables the socket default, so a non-default port then
+also needs `-P` or `MYSQL_TCP_PORT`.
+
+Passwords are never injected. MySQL and MariaDB take the user as usual, while
+Postgres connects to Yerd's instance as the `postgres` superuser unless you pass
+`-U` or set `PGUSER`:
+
+```sh
+mysql -u root my_app
+mysqldump -u root my_app > my_app.sql
+psql my_app
+valkey-cli ping
+```
+
+If you created a Postgres role matching your OS username and relied on
+connecting as it by default, export `PGUSER` with that name to keep doing so.
+
+::: warning Shadowing other clients
+Once `{data}/bin` is on your `PATH`, Yerd's `mysql`, `psql`, and friends take
+precedence over clients installed another way (for example with Homebrew)
+wherever `{data}/bin` comes first.
+:::
 
 ## Configuration
 
@@ -191,8 +287,8 @@ precedence comes from.
 `mysql`, `mariadb`, `postgres`, and `redis`. Meilisearch and RustFS take their
 settings from command-line flags and environment variables rather than a config
 file, so they refuse with `does not support configuration overrides` (the same goes for
-per-site app servers such as Reverb). In the desktop app the **Override
-settings** item simply doesn't appear for them.
+per-site app servers such as Reverb). In the desktop app the **Config
+overrides** card simply doesn't appear for them.
 :::
 
 ### Setting an override
@@ -216,7 +312,7 @@ yerd service restart mysql
 `yerd service unset mysql sql_mode` drops one again. Each override is stored in
 `yerd.toml` (so it survives a restart, an upgrade, and a `change-version`) and
 rendered into `10-yerd.cnf` on every start. The desktop app has the same thing
-under **Override settings** in a service's `⋯` menu.
+in the **Config overrides** card of a service's inspector.
 
 ::: warning Restart to apply
 Setting an override never restarts anything, exactly like
@@ -317,7 +413,7 @@ yerd service install rustfs 1.0.3
 yerd service start rustfs
 ```
 
-Point Laravel's `s3` disk at it (the **Configuration** action in the desktop app
+Point Laravel's `s3` disk at it (the **Connect** card in the desktop app
 prints this block with the right port):
 
 ```ini

@@ -4,6 +4,8 @@ import { CheckCircle2, Info, X, XCircle } from "lucide-vue-next";
 import { useToast } from "@/composables/useToast";
 import { cn } from "@/lib/utils";
 
+import { TOASTER_ATTR } from "./toaster";
+
 const { toasts, dismiss } = useToast();
 
 const icon = { success: CheckCircle2, error: XCircle, info: Info } as const;
@@ -16,7 +18,10 @@ const accent = {
 
 <template>
   <Teleport to="body">
-    <div class="fixed bottom-4 right-4 z-[60] flex w-80 flex-col gap-2">
+    <div
+      v-bind="{ [TOASTER_ATTR]: '' }"
+      class="pointer-events-auto fixed bottom-4 right-4 z-[60] flex w-80 flex-col gap-2"
+    >
       <div
         v-for="t in toasts"
         :key="t.id"
@@ -40,7 +45,7 @@ const accent = {
           <p class="text-sm font-medium">{{ t.title }}</p>
           <p
             v-if="t.detail"
-            class="mt-0.5 break-words text-xs text-muted-foreground"
+            class="mt-0.5 whitespace-pre-line break-words text-xs text-muted-foreground"
           >
             {{ t.detail }}
           </p>

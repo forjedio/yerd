@@ -32,8 +32,10 @@ pub struct PoolConfig {
     /// FPM `pm.max_children`.
     pub max_children: u32,
     /// Global PHP ini directives to apply, as `(name, value)` pairs sorted by
-    /// name. Rendered as `php_value[name] = value` / `php_flag[name] = value`
-    /// (per [`yerd_core::php_settings::directive`]). Empty by default.
+    /// name. Rendered as `php_value[name] = value` / `php_flag[name] = value` /
+    /// `php_admin_value[name] = true` (per [`yerd_core::php_settings::directive`]
+    /// and [`yerd_core::php_settings::fpm_value`]); an admin switch that is off,
+    /// or that does not apply to this version, emits no line. Empty by default.
     pub ini: Vec<(String, String)>,
     /// Free-form per-version ini directives (e.g. `xdebug.mode`), as
     /// `(name, value)` pairs sorted by name. Rendered uniformly as
@@ -59,6 +61,21 @@ pub struct PoolConfig {
     /// PHP trusts the Yerd CA on `.test` HTTPS. Daemon-controlled (not a user
     /// setting); `None` leaves PHP's compiled-in default untouched.
     pub ca_bundle: Option<PathBuf>,
+    /// Daemon-managed Xdebug, loaded via `-d zend_extension=<path>` plus its
+    /// managed `-d` directives on the FPM command line. While `Some`, the
+    /// managed keys ([`yerd_core::php_xdebug::MANAGED_KEYS`]) are dropped from
+    /// [`Self::directives`]. `None` leaves the command line and rendered file
+    /// exactly as they would be without Xdebug support.
+    pub xdebug: Option<XdebugLoad>,
+}
+
+/// The daemon-managed Xdebug for one pool (see [`PoolConfig::xdebug`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct XdebugLoad {
+    /// Absolute path to the bundled `xdebug.so`.
+    pub path: PathBuf,
+    /// Managed directives passed as `-d key=value`, in order.
+    pub defines: Vec<(String, String)>,
 }
 
 /// One user-registered extension to load into a pool (see
@@ -117,6 +134,7 @@ impl PoolConfig {
             ini_defines: Vec::new(),
             user_extensions: Vec::new(),
             ca_bundle: None,
+            xdebug: None,
         }
     }
 }

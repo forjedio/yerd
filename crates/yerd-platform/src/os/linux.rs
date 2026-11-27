@@ -11,32 +11,43 @@ use std::fs;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use directories::ProjectDirs;
 
 use crate::error::ops;
 use crate::ide::{DetectedIde, IdeLauncher, LaunchTarget};
+use crate::libvips::LibvipsProbe;
 use crate::metrics::SystemMetrics;
 use crate::opener::SystemOpener;
-use crate::os::unix::{executable_in_directories, spawn_and_check, DEFAULT_STARTUP_WINDOW};
+use crate::os::unix::{
+    capture_stdout_with_timeout, executable_in_directories, process_exists, signal_process_group,
+    spawn_and_check, DEFAULT_STARTUP_WINDOW,
+};
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::PortRedirector;
+use crate::process_table::ProcessTable;
 use crate::pure::ide_spec::{
     desktop_entry_matches, ide_cli_candidates_linux, spec_for, IdeSpec, IDE_SPECS,
 };
+use crate::pure::libvips;
 use crate::pure::opener_spec::linux_default_openers;
+use crate::pure::system_proxy::parse_gsettings;
 use crate::pure::terminal_spec::{working_dir_flags, TERMINAL_SPECS};
 use crate::pure::{
-    networkmanager_dnsmasq, pem_match, port_plan, proc_metrics, resolved_drop_in, system_roots,
+    networkmanager_dnsmasq, pem_match, port_plan, proc_metrics, process_signal, resolved_drop_in,
+    system_roots,
 };
 use crate::resolver::ResolverInstaller;
+use crate::system_proxy::SystemProxySource;
 use crate::terminal::TerminalLauncher;
 use crate::trust_store::{BrowserCaTrust, CaFingerprint, NssOutcome, TrustStore};
 use crate::{
     BindPairErrorReason, IdeErrorReason, PlatformError, ResolverErrorReason, TerminalErrorReason,
     TrustStoreErrorReason,
 };
+use yerd_core::network::{ProxySource, SystemProxy};
 
 /// Linux terminal launcher.
 #[derive(Debug, Default, Clone, Copy)]
@@ -805,6 +816,37 @@ pub(crate) fn bind_pair_impl(
     }
 }
 
+/// Linux `ProcessTable` implementation.
+///
+/// Reads `/proc/<pid>/cmdline`, decoded by
+/// [`crate::pure::process_signal::decode_proc_cmdline`], and signals through
+/// `killpg`. Best-effort: every failure reads as an absent process.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LinuxProcessTable;
+
+impl LinuxProcessTable {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl ProcessTable for LinuxProcessTable {
+    fn command_line(&self, pid: u32) -> Option<String> {
+        let raw = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+        process_signal::decode_proc_cmdline(&raw)
+    }
+
+    fn signal_group(&self, pid: u32, force: bool) {
+        signal_process_group(pid, force);
+    }
+
+    fn is_alive(&self, pid: u32) -> bool {
+        process_exists(pid)
+    }
+}
+
 /// Linux `SystemMetrics` implementation.
 ///
 /// Reads `/proc/<pid>/status` (`VmRSS`) and `/proc/loadavg`, delegating the
@@ -852,6 +894,57 @@ impl LinuxPortRedirector {
 impl PortRedirector for LinuxPortRedirector {
     fn is_active(&self) -> Option<bool> {
         None
+    }
+}
+
+/// Linux libvips probe: stats the Linux candidate paths.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LinuxLibvipsProbe;
+
+impl LinuxLibvipsProbe {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl LibvipsProbe for LinuxLibvipsProbe {
+    fn libvips_found(&self) -> Option<bool> {
+        Some(libvips::any_present(
+            &libvips::candidates_linux(),
+            Path::is_file,
+        ))
+    }
+}
+
+/// How long the `gsettings` read may take before it is abandoned, so the
+/// daemon's awaited startup probe can never hang on a wedged D-Bus session.
+const GSETTINGS_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Linux proxy source: GNOME `org.gnome.system.proxy` via `gsettings`. A
+/// missing binary, a non-GNOME desktop, a failure, or a timeout reads as `None`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LinuxSystemProxySource;
+
+impl LinuxSystemProxySource {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl SystemProxySource for LinuxSystemProxySource {
+    fn kind(&self) -> ProxySource {
+        ProxySource::GnomeSettings
+    }
+
+    fn read(&self) -> Option<SystemProxy> {
+        let mut cmd = Command::new("gsettings");
+        cmd.args(["list-recursively", "org.gnome.system.proxy"]);
+        let output = capture_stdout_with_timeout(&mut cmd, GSETTINGS_TIMEOUT)?;
+        parse_gsettings(&output)
     }
 }
 

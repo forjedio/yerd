@@ -1,8 +1,9 @@
 //! Artifact selection + verification for self-update.
 //!
 //! Given a resolved [`crate::ReleaseMeta`] and the running [`Platform`], pick the
-//! right downloadable artifact (the macOS `.app.tar.gz` or the Linux `.deb`),
-//! its detached minisign signature (`<artifact>.minisig`, with a legacy
+//! right downloadable artifact (the macOS `.app.tar.gz`, the Linux `.deb`,
+//! `.pkg.tar.zst` or `.rpm`, or the per-OS/arch `.headless.tar.gz` for a headless
+//! install), its detached minisign signature (`<artifact>.minisig`, with a legacy
 //! `<artifact>.sig` fallback), and the `SHA256SUMS` manifest. Verification is
 //! pure: it operates on already-downloaded bytes.
 //!
@@ -32,8 +33,6 @@ pub const PHP_LISTING_PUBLIC_KEY: &str = "RWRtVdsOqEEQ4/LBPGjnS97agmhMj0k/X18GXF
 pub enum Platform {
     /// Apple Silicon macOS - the `.app.tar.gz` bundle.
     MacOsAarch64,
-    /// Intel macOS - no artifact is published (Apple-Silicon-only for MVP).
-    MacOsX86_64,
     /// `x86_64` Linux - the `.deb` package.
     LinuxX86_64,
     /// `aarch64` Linux - the arm64 `.deb` package.
@@ -51,10 +50,6 @@ impl Platform {
         {
             Self::MacOsAarch64
         }
-        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-        {
-            Self::MacOsX86_64
-        }
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
             Self::LinuxX86_64
@@ -65,7 +60,6 @@ impl Platform {
         }
         #[cfg(not(any(
             all(target_os = "macos", target_arch = "aarch64"),
-            all(target_os = "macos", target_arch = "x86_64"),
             all(target_os = "linux", target_arch = "x86_64"),
             all(target_os = "linux", target_arch = "aarch64"),
         )))]
@@ -86,6 +80,9 @@ pub enum ArtifactKind {
     Pacman,
     /// A Red Hat package (reinstalled via `rpm -U`).
     Rpm,
+    /// A gzip'd tar of the headless CLI binaries plus the install receipt
+    /// (swapped in place in the install dir).
+    HeadlessTarGz,
 }
 
 /// The Linux package format a build self-updates with.
@@ -99,6 +96,10 @@ pub enum ArtifactKind {
 /// two distro features are mutually exclusive. macOS selection ignores it. This is
 /// decoupled from `cfg!` in the type so selection stays testable for any format
 /// from any build.
+///
+/// [`PkgFormat::Tarball`] is the exception: it is never compiled in, but chosen at
+/// runtime by [`PkgFormat::resolve`] when the install receipt marks a headless
+/// install. It applies on macOS too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PkgFormat {
     /// Debian `.deb` (installed via `dpkg -i`). The default build.
@@ -107,6 +108,9 @@ pub enum PkgFormat {
     Pacman,
     /// Red Hat `.rpm` (installed via `rpm -U`).
     Rpm,
+    /// The headless `.headless.tar.gz` (binaries swapped in place). Never returned
+    /// by [`PkgFormat::current`]; chosen at runtime from the install receipt.
+    Tarball,
 }
 
 // The `pacman` and `rpm` features both fix the self-update format at build time;
@@ -132,6 +136,17 @@ impl PkgFormat {
         #[cfg(not(any(feature = "pacman", feature = "rpm")))]
         {
             Self::Deb
+        }
+    }
+
+    /// The format to self-update with: [`PkgFormat::Tarball`] for a headless
+    /// install, else the `compiled` format (normally [`PkgFormat::current`]).
+    #[must_use]
+    pub fn resolve(headless: bool, compiled: PkgFormat) -> Self {
+        if headless {
+            Self::Tarball
+        } else {
+            compiled
         }
     }
 }
@@ -183,10 +198,11 @@ impl std::error::Error for AssetError {}
 /// Selection is by filename convention (the names the release workflow emits):
 /// the macOS artifact ends `.app.tar.gz` and is arch-tagged; the Linux artifact
 /// ends `.deb` (Debian), `.pkg.tar.zst` (Arch), or `.rpm` (Fedora) per `format`
-/// and is arch-tagged (`x86_64` or `arm64`); the signature is `<artifact>.minisig`
+/// and is arch-tagged (`x86_64` or `arm64`); with [`PkgFormat::Tarball`] (any OS)
+/// the artifact ends `.headless.tar.gz` and is arch-tagged; the signature is `<artifact>.minisig`
 /// (with a legacy `<artifact>.sig` fallback); the manifest is named `SHA256SUMS`.
 /// `format` resolves the deb-vs-pacman-vs-rpm ambiguity on Linux (a release
-/// carries all three) and is ignored on macOS. Intel macOS / unsupported platforms
+/// carries all three); on macOS it only matters as `Tarball` vs anything else. Intel macOS / unsupported platforms
 /// return [`AssetError::NoArtifactForPlatform`] rather than mis-selecting.
 ///
 /// The signature is `.minisig` (not `.sig`) because pacman reserves `<pkg>.sig` for
@@ -199,6 +215,15 @@ pub fn select_asset(
     format: PkgFormat,
 ) -> Result<ArtifactSelection<'_>, AssetError> {
     let (kind, matches): (ArtifactKind, fn(&str) -> bool) = match (platform, format) {
+        (Platform::MacOsAarch64, PkgFormat::Tarball) => {
+            (ArtifactKind::HeadlessTarGz, is_macos_aarch64_headless)
+        }
+        (Platform::LinuxX86_64, PkgFormat::Tarball) => {
+            (ArtifactKind::HeadlessTarGz, is_linux_x86_64_headless)
+        }
+        (Platform::LinuxAarch64, PkgFormat::Tarball) => {
+            (ArtifactKind::HeadlessTarGz, is_linux_aarch64_headless)
+        }
         (Platform::MacOsAarch64, _) => (ArtifactKind::AppTarGz, is_macos_aarch64_artifact),
         (Platform::LinuxX86_64, PkgFormat::Deb) => (ArtifactKind::Deb, is_linux_x86_64_artifact),
         (Platform::LinuxX86_64, PkgFormat::Pacman) => {
@@ -210,7 +235,7 @@ pub fn select_asset(
         }
         (Platform::LinuxX86_64, PkgFormat::Rpm) => (ArtifactKind::Rpm, is_linux_x86_64_rpm),
         (Platform::LinuxAarch64, PkgFormat::Rpm) => (ArtifactKind::Rpm, is_linux_aarch64_rpm),
-        (p @ (Platform::MacOsX86_64 | Platform::Unsupported), _) => {
+        (p @ Platform::Unsupported, _) => {
             return Err(AssetError::NoArtifactForPlatform(p));
         }
     };
@@ -294,6 +319,30 @@ fn is_linux_x86_64_rpm(name: &str) -> bool {
 fn is_linux_aarch64_rpm(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower.ends_with(".rpm") && (lower.contains("aarch64") || lower.contains("arm64"))
+}
+
+// The headless tarballs are `Yerd_<OS>_<Arch>_v<ver>.headless.tar.gz`. The suffix is
+// disjoint from `.app.tar.gz`, so the headless and app-bundle matchers never collide.
+// Arch tokens are matched case-insensitively like the arm64 package matchers.
+fn is_macos_aarch64_headless(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".headless.tar.gz")
+        && lower.contains("macos")
+        && (lower.contains("applesilicon") || lower.contains("aarch64") || lower.contains("arm64"))
+}
+
+fn is_linux_x86_64_headless(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".headless.tar.gz")
+        && lower.contains("linux")
+        && (lower.contains("x86_64") || lower.contains("amd64"))
+}
+
+fn is_linux_aarch64_headless(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".headless.tar.gz")
+        && lower.contains("linux")
+        && (lower.contains("aarch64") || lower.contains("arm64"))
 }
 
 /// Why verification failed.
@@ -604,12 +653,171 @@ mod tests {
         );
     }
 
+    fn full_release() -> ReleaseMeta {
+        let mut names = Vec::new();
+        for base in [
+            "Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz",
+            "Yerd_MacOS_AppleSilicon_v2-0-2.headless.tar.gz",
+            "Yerd_Linux_x86_64_v2-0-2.deb",
+            "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst",
+            "Yerd_Linux_x86_64_v2-0-2.rpm",
+            "Yerd_Linux_x86_64_v2-0-2.headless.tar.gz",
+            "Yerd_Linux_Arm64_v2-0-2.deb",
+            "Yerd_Linux_Arm64_v2-0-2.rpm",
+            "Yerd_Linux_Arm64_v2-0-2.headless.tar.gz",
+        ] {
+            names.push(base.to_string());
+            names.push(format!("{base}.minisig"));
+        }
+        names.push("Yerd_MacOS_AppleSilicon_v2-0-2.dmg".to_string());
+        names.push("SHA256SUMS".to_string());
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        release_with(&refs)
+    }
+
     #[test]
-    fn intel_macos_has_no_artifact() {
+    fn selection_per_platform_and_format_in_a_full_release() {
+        let r = full_release();
+        let cases = [
+            (
+                Platform::MacOsAarch64,
+                PkgFormat::Tarball,
+                ArtifactKind::HeadlessTarGz,
+                "Yerd_MacOS_AppleSilicon_v2-0-2.headless.tar.gz",
+            ),
+            (
+                Platform::LinuxX86_64,
+                PkgFormat::Tarball,
+                ArtifactKind::HeadlessTarGz,
+                "Yerd_Linux_x86_64_v2-0-2.headless.tar.gz",
+            ),
+            (
+                Platform::LinuxAarch64,
+                PkgFormat::Tarball,
+                ArtifactKind::HeadlessTarGz,
+                "Yerd_Linux_Arm64_v2-0-2.headless.tar.gz",
+            ),
+            (
+                Platform::MacOsAarch64,
+                PkgFormat::Deb,
+                ArtifactKind::AppTarGz,
+                "Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz",
+            ),
+            (
+                Platform::LinuxX86_64,
+                PkgFormat::Deb,
+                ArtifactKind::Deb,
+                "Yerd_Linux_x86_64_v2-0-2.deb",
+            ),
+            (
+                Platform::LinuxX86_64,
+                PkgFormat::Pacman,
+                ArtifactKind::Pacman,
+                "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst",
+            ),
+            (
+                Platform::LinuxX86_64,
+                PkgFormat::Rpm,
+                ArtifactKind::Rpm,
+                "Yerd_Linux_x86_64_v2-0-2.rpm",
+            ),
+            (
+                Platform::LinuxAarch64,
+                PkgFormat::Deb,
+                ArtifactKind::Deb,
+                "Yerd_Linux_Arm64_v2-0-2.deb",
+            ),
+            (
+                Platform::LinuxAarch64,
+                PkgFormat::Rpm,
+                ArtifactKind::Rpm,
+                "Yerd_Linux_Arm64_v2-0-2.rpm",
+            ),
+        ];
+        for (platform, format, kind, name) in cases {
+            let sel = select_asset(&r, platform, format).unwrap();
+            assert_eq!(sel.kind, kind, "{platform:?}/{format:?}");
+            assert_eq!(sel.artifact.name, name, "{platform:?}/{format:?}");
+            assert_eq!(
+                sel.signature.name,
+                format!("{name}.minisig"),
+                "{platform:?}/{format:?}"
+            );
+            assert_eq!(sel.checksums.name, "SHA256SUMS");
+        }
+    }
+
+    #[test]
+    fn headless_matchers_are_disjoint_from_app_bundle_and_across_arch() {
+        let only_app = release_with(&[
+            "Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz",
+            "Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz.minisig",
+            "SHA256SUMS",
+        ]);
+        assert_eq!(
+            select_asset(&only_app, Platform::MacOsAarch64, PkgFormat::Tarball),
+            Err(AssetError::NoArtifactForPlatform(Platform::MacOsAarch64))
+        );
+        let only_headless = release_with(&[
+            "Yerd_MacOS_AppleSilicon_v2-0-2.headless.tar.gz",
+            "Yerd_MacOS_AppleSilicon_v2-0-2.headless.tar.gz.minisig",
+            "SHA256SUMS",
+        ]);
+        assert_eq!(
+            select_asset(&only_headless, Platform::MacOsAarch64, PkgFormat::Deb),
+            Err(AssetError::NoArtifactForPlatform(Platform::MacOsAarch64))
+        );
+        assert_eq!(
+            select_asset(&only_headless, Platform::LinuxAarch64, PkgFormat::Tarball),
+            Err(AssetError::NoArtifactForPlatform(Platform::LinuxAarch64))
+        );
+        let only_x86 = release_with(&[
+            "Yerd_Linux_x86_64_v2-0-2.headless.tar.gz",
+            "Yerd_Linux_x86_64_v2-0-2.headless.tar.gz.minisig",
+            "SHA256SUMS",
+        ]);
+        assert_eq!(
+            select_asset(&only_x86, Platform::LinuxAarch64, PkgFormat::Tarball),
+            Err(AssetError::NoArtifactForPlatform(Platform::LinuxAarch64))
+        );
+        assert_eq!(
+            select_asset(&only_x86, Platform::LinuxX86_64, PkgFormat::Deb),
+            Err(AssetError::NoArtifactForPlatform(Platform::LinuxX86_64))
+        );
+    }
+
+    #[test]
+    fn headless_missing_signature_is_an_error() {
+        let r = release_with(&["Yerd_Linux_x86_64_v2-0-2.headless.tar.gz", "SHA256SUMS"]);
+        assert_eq!(
+            select_asset(&r, Platform::LinuxX86_64, PkgFormat::Tarball),
+            Err(AssetError::MissingSignature(
+                "Yerd_Linux_x86_64_v2-0-2.headless.tar.gz".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn resolve_picks_tarball_only_when_headless() {
+        let cases = [
+            (true, PkgFormat::Deb, PkgFormat::Tarball),
+            (true, PkgFormat::Pacman, PkgFormat::Tarball),
+            (true, PkgFormat::Rpm, PkgFormat::Tarball),
+            (false, PkgFormat::Deb, PkgFormat::Deb),
+            (false, PkgFormat::Pacman, PkgFormat::Pacman),
+            (false, PkgFormat::Rpm, PkgFormat::Rpm),
+        ];
+        for (headless, compiled, expected) in cases {
+            assert_eq!(PkgFormat::resolve(headless, compiled), expected);
+        }
+    }
+
+    #[test]
+    fn unsupported_platform_has_no_artifact() {
         let r = release_with(&["Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz", "SHA256SUMS"]);
         assert_eq!(
-            select_asset(&r, Platform::MacOsX86_64, PkgFormat::Deb),
-            Err(AssetError::NoArtifactForPlatform(Platform::MacOsX86_64))
+            select_asset(&r, Platform::Unsupported, PkgFormat::Deb),
+            Err(AssetError::NoArtifactForPlatform(Platform::Unsupported))
         );
     }
 

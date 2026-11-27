@@ -3,7 +3,12 @@
 //! in a single file.
 
 pub mod ca;
+pub mod daemon_job;
+#[cfg(target_os = "macos")]
+pub mod forwarder_job;
 pub mod lan_port_redirect;
+#[cfg(target_os = "macos")]
+pub mod legacy_pf;
 pub mod port_redirect;
 pub mod resolver;
 pub mod setcap;
@@ -11,6 +16,8 @@ pub mod setcap;
 use std::ffi::OsStr;
 use std::process::Command;
 
+#[cfg(target_os = "macos")]
+use crate::error::ValidationReason;
 use crate::error::{CommandReason, HelperError};
 
 /// Pinned `PATH` for every subprocess invocation. Matches
@@ -50,6 +57,114 @@ where
         .code()
         .map_or(CommandReason::Signal, CommandReason::NonZero);
     Err(HelperError::Command { tool, reason })
+}
+
+/// Absolute `launchctl`, so the pinned `PATH` is never consulted.
+#[cfg(target_os = "macos")]
+const LAUNCHCTL: &str = "/bin/launchctl";
+#[cfg(target_os = "macos")]
+const BOOTSTRAP_ATTEMPTS: u32 = 5;
+#[cfg(target_os = "macos")]
+const BOOTSTRAP_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Shorthand for a [`HelperError::Validation`].
+#[cfg(target_os = "macos")]
+pub const fn invalid(reason: ValidationReason) -> HelperError {
+    HelperError::Validation { reason }
+}
+
+/// The passwd entry for `uid`, which must exist and not be root.
+#[cfg(target_os = "macos")]
+pub fn resolve_user(uid: u32) -> Result<nix::unistd::User, HelperError> {
+    use nix::unistd::{Uid, User};
+    if uid == 0 {
+        return Err(invalid(ValidationReason::UidInvalid));
+    }
+    match User::from_uid(Uid::from_raw(uid)) {
+        Ok(Some(user)) if user.uid.as_raw() == uid && !user.uid.is_root() => Ok(user),
+        _ => Err(invalid(ValidationReason::UidInvalid)),
+    }
+}
+
+/// Load a system-domain launchd job from `plist`.
+///
+/// `launchctl bootstrap` can briefly fail right after a `bootout` of the same
+/// label while launchd finishes tearing the old job down, so retry a few
+/// times before giving up.
+#[cfg(target_os = "macos")]
+pub fn bootstrap_system(plist: &str) -> Result<(), HelperError> {
+    let mut attempt = 1;
+    loop {
+        match run_command("launchctl", LAUNCHCTL, ["bootstrap", "system", plist]) {
+            Ok(_) => return Ok(()),
+            Err(e) if attempt >= BOOTSTRAP_ATTEMPTS => return Err(e),
+            Err(_) => {
+                attempt += 1;
+                std::thread::sleep(BOOTSTRAP_RETRY_DELAY);
+            }
+        }
+    }
+}
+
+/// Unload the system-domain job `label`, ignoring failure. Unloads by service
+/// target rather than plist path, so a job whose plist is already gone can
+/// still be unloaded.
+#[cfg(target_os = "macos")]
+pub fn bootout_system(label: &str) {
+    ignore_command_failure(run_command(
+        "launchctl",
+        LAUNCHCTL,
+        ["bootout", &format!("system/{label}")],
+    ));
+}
+
+/// Unload the system-domain job `label`. A job that isn't loaded is success;
+/// any other failure (launchctl missing or killed, or the job still loaded
+/// after a failed `bootout`) is returned. Absence is only concluded from
+/// `launchctl print` exiting non-zero, never from it failing to run.
+#[cfg(target_os = "macos")]
+pub fn bootout_system_checked(label: &str) -> Result<(), HelperError> {
+    let target = format!("system/{label}");
+    let Err(bootout) = run_command("launchctl", LAUNCHCTL, ["bootout", &target]) else {
+        return Ok(());
+    };
+    if !matches!(
+        bootout,
+        HelperError::Command {
+            reason: CommandReason::NonZero(_),
+            ..
+        }
+    ) {
+        return Err(bootout);
+    }
+    match run_command("launchctl", LAUNCHCTL, ["print", &target]) {
+        Err(HelperError::Command {
+            reason: CommandReason::NonZero(_),
+            ..
+        }) => Ok(()),
+        Err(e) => Err(e),
+        Ok(_) => Err(bootout),
+    }
+}
+
+/// Discard the result of a best-effort step, such as a `launchctl bootout` of
+/// a job that isn't loaded.
+#[cfg(target_os = "macos")]
+pub fn ignore_command_failure(result: Result<std::process::Output, HelperError>) {
+    let _ = result;
+}
+
+/// Delete `path`; already absent is success.
+#[cfg(target_os = "macos")]
+pub fn remove_if_present(path: &str) -> Result<(), HelperError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(HelperError::Io {
+            path: path.into(),
+            source,
+        }),
+    }
 }
 
 /// Write `data` to `path` atomically with the given mode.
@@ -150,6 +265,19 @@ mod tests {
     fn run_command_succeeds_for_true() {
         let out = run_command("true", "/usr/bin/true", Vec::<&str>::new()).unwrap();
         assert!(out.status.success());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn resolve_user_rejects_root_and_unknown_uids() {
+        for uid in [0, u32::MAX - 7] {
+            assert!(matches!(
+                resolve_user(uid),
+                Err(HelperError::Validation {
+                    reason: ValidationReason::UidInvalid
+                })
+            ));
+        }
     }
 
     #[test]

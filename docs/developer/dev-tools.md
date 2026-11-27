@@ -1,8 +1,8 @@
 # Dev-tool installer subsystem
 
 The **Tooling** feature lets a user install Composer, Node (`node`/`npm`/`npx`),
-Bun (`bun`/`bunx`), the Laravel installer, and WP-CLI as self-contained
-binaries on their `PATH`, from the [desktop app](./gui) or the
+Bun (`bun`/`bunx`), pnpm (`pnpm`/`pnpx`), the Laravel installer, WP-CLI, cloudflared
+(the Cloudflare Tunnel connector used by sharing), ngrok (`ngrok`), and zrok (`zrok2`) as self-contained binaries on their `PATH`, from the [desktop app](./gui) or the
 [`yerd` CLI](./binaries/yerd). This page documents its implementation
 end-to-end: the daemon subsystem that downloads/verifies/lays down the
 binaries (or, for the Laravel installer and WP-CLI, builds them via Composer),
@@ -32,7 +32,7 @@ flowchart TD
     INST --> DL["download + sha256 verify"]
     DL --> SWAP["stage_and_swap → {data}/tools/<id>/"]
     SWAP --> REC["reconcile_tool_shims_now\n(under shim_reconcile mutex)"]
-    REC --> BIN["{data}/bin symlinks\ncomposer/node/npm/npx/bun/bunx"]
+    REC --> BIN["{data}/bin symlinks\ncomposer/node/npm/npx/bun/bunx/pnpm/pnpx/ngrok/zrok2"]
     BIN -.->|on PATH via `yerd path`| SHELL["user's shell"]
 ```
 
@@ -43,11 +43,11 @@ differ enough (phar vs multi-file tarball vs single-binary zip) that a `match`
 into per-tool modules is clearer than an abstraction.
 
 ```rust
-pub enum Tool { Composer, Node, Bun, Laravel, WpCli }
+pub enum Tool { Composer, Node, Bun, Pnpm, Laravel, WpCli, Cloudflared, Ngrok, Zrok }
 
 impl Tool {
-    pub const ALL: [Tool; 5];
-    pub const fn id(self) -> &'static str;            // "composer" | "node" | "bun" | "laravel" | "wp-cli"
+    pub const ALL: [Tool; 9];
+    pub const fn id(self) -> &'static str;            // "composer" | "node" | "bun" | "pnpm" | "laravel" | "wp-cli" | "cloudflared" | "ngrok" | "zrok"
     pub const fn display_name(self) -> &'static str;  // for the UI
     pub const fn primary_bin(self) -> &'static str;   // the command external detection looks for
     pub const fn exposed_bins(self) -> &'static [&'static str]; // commands on PATH
@@ -57,7 +57,7 @@ impl Tool {
 ```
 
 `exposed_bins` is the single source of truth for which `{data}/bin` names a tool
-owns: `composer`; `node`/`npm`/`npx`; `bun`/`bunx`; `laravel`; `wp`. It drives
+owns: `composer`; `node`/`npm`/`npx`; `bun`/`bunx`; `pnpm`/`pnpx`; `laravel`; `wp`; `cloudflared`; `ngrok`; `zrok2`. It drives
 both shim creation and pruning.
 
 `accepts_external` is the source of truth for whether a copy already on the
@@ -133,6 +133,10 @@ a `User-Agent` (the GitHub API used for Bun rejects requests without one).
 | `composer.rs` | `getcomposer.org/versions` → newest stable the installed PHP can run (honours each entry's `min-php` `PHP_VERSION_ID`) | `…/download/<ver>/composer.phar` | `composer.phar.sha256sum` (single line) | `{data}/tools/composer/composer.phar` |
 | `node.rs` | `nodejs.org/dist/index.json` → first entry with a string `lts` (newest LTS) | `node-<ver>-<os>-<arch>.tar.gz` | per-release `SHASUMS256.txt` | unpacked tree under a versioned dir |
 | `bun.rs` | GitHub `releases/latest` → `tag_name` (`bun-v…`) | `bun-<os>-<arch>.zip` (plain, non-baseline) | per-release `SHASUMS256.txt` | `bun-<os>-<arch>/bun` |
+| `pnpm.rs` | GitHub `releases/latest` → `tag_name` (`v…`) | `pnpm-<os>-<arch>.tar.gz` (glibc, non-musl; unpacked with `unpack_in` for its hard-link members) | the release API's per-asset `digest` | `pnpm-<os>-<arch>/{pnpm,pnpx,dist}` |
+| `cloudflared.rs` | GitHub `releases/latest` JSON → `tag_name` (`YYYY.M.N`) | `cloudflared-linux-<amd64\|arm64>` (bare binary) or `cloudflared-darwin-<amd64\|arm64>.tgz` | a compiled-in pinned hash when present, else the release API's per-asset `digest`; fail-closed, and the asset URL must be on a trusted GitHub host | `{data}/tools/cloudflared/cloudflared` |
+| `ngrok.rs` | ngrok's official download archive page (`ngrok_archive`, HTML) → first `<h2>Version X.Y.Z` | `ngrok-v3-<ver>-<darwin\|linux>-<amd64\|arm64>.tar.gz` from `bin.ngrok.com`, single `ngrok` member | the SHA256 listed beside that link in the newest release block; fail-closed, and the link must be `https` on exactly `bin.ngrok.com` | `{data}/tools/ngrok/ngrok` |
+| `zrok.rs` | GitHub `/releases?per_page=30` → highest stable `v2.x.y` tag (not `releases/latest`: v1 maintenance releases interleave) | `zrok_<ver>_<darwin\|linux>_<amd64\|arm64>.tar.gz`, single `zrok2` member | the release API's per-asset `digest`; fail-closed | `{data}/tools/zrok/zrok2` |
 
 Each module has a pure host→asset mapper (`current_os_arch()` → `darwin-arm64` /
 `linux-x64` / `bun-darwin-aarch64` / …) that returns a typed
@@ -141,6 +145,69 @@ than building a URL that 404s. Bun's zip is unpacked with the `zip` crate
 (`default-features = false, features = ["deflate"]`, pulling only the pure-Rust
 flate2 backend - pinned to 2.x to stay within the workspace's MSRV-1.77
 discipline; see the `Cargo.toml` MSRV-pin block).
+
+### Node releases
+
+Node is the one tool installed side by side: `install_version(dirs, dl, selector, progress)`
+resolves a selector against `index.json` and unpacks into
+`{data}/tools/node-versions/<exact>/` (a pre-existing single-version install in
+`{data}/tools/node` stays discoverable). Beyond the table above:
+
+- **Progress.** With a progress sink (the streamed `InstallNodeStreamed` job) it
+  emits Resolving, Downloading (byte progress via `download_with_progress` and
+  `php_install::emit_byte_progress`), Verifying SHA-256, Unpacking, and Installed
+  lines. The blocking `InstallTool` / `InstallNode` paths pass `None`; the CLI
+  uses the streamed requests (`map::streamed_install`) unless `--json` is set.
+- **Selectors.** `yerd_core::node::validate_selector` accepts numeric selectors,
+  `node`, `lts/*` and `lts/<codename>`; `select_release` takes any
+  `Into<Candidate>` (version, LTS flag, codename). The installer matches
+  `lts/<codename>` against each index entry's `lts` string and the installed
+  resolver (`InstalledNode::candidate`) against the `.lts` marker, both ignoring
+  case. A not-installed error carries `install_hint`, which single-quotes `lts/*`.
+- **Codename.** The release's LTS codename is written into the `.lts` marker; an
+  empty marker (older installs) still reads as LTS with no codename.
+- **Installability filter.** `yerd_core::node::installable` keeps only releases
+  whose `files` list the host build (`osx-arm64-tar`, `osx-x64-tar`, `linux-x64`,
+  `linux-arm64`) and whose major is at least `MIN_LISTED_MAJOR` (9, because part
+  of the 8.x line ships without `npx`). The same filter backs the install and the
+  `AvailableNode` listing.
+- **Listing.** `available(dl, installed, today)` fetches `index.json` (a failure is
+  an error) and nodejs/Release `schedule.json` (a failure leaves every `eol` unset)
+  and groups them with the pure `major_lines`.
+- **Per-release uninstall.** `uninstall_version(dirs, installed, last)` removes one
+  release dir, the legacy `tools/node` root when its `.version` names the same
+  release, and `tools/node/.default` when it names the target or no release
+  remains. The default/preference decisions are the pure `plan_uninstall`, run by
+  the `UninstallNode` handler before any files are touched.
+- **Update cache.** `latest_patches(dl)` fetches only the index and returns the
+  newest installable patch per major; `install_release` returns the same map
+  from the index the installer already fetched. `node_updates.rs` stores it in
+  `DaemonState::node_updates` (refreshed by the 12h PHP update tick while a
+  release is installed, by every `AvailableNode`, and by every Node install),
+  derives per-release `update` for `ListNode` with the pure `release_updates`,
+  and keeps `DaemonState::node_update_count` (served on `Status` as
+  `node_updates`) in step via `recount`, which `reconcile_tool_shims_now` also
+  calls after any install or uninstall.
+- **Create-site Node.** A Laravel create with `LaravelOptions.node` set (and
+  frontend dependencies not skipped) resolves that installed release in
+  preflight, puts its `bin` right after the per-job bin in the job `PATH`
+  (`create_site::composed_path`), and saves it as the new site's Node preference
+  after registration.
+- **Legacy root.** The pre-side-by-side `{data}/tools/node` install is discovered
+  as a normal release; it is always LTS (that installer only fetched the latest
+  LTS) and, with no `[node] default`, is the effective default via
+  `legacy_default`.
+- **Tool-level install and uninstall.** A no-version `install tool node` keeps a
+  configured `[node] default`; without one it persists the previous effective
+  default (a legacy pointer), or the new release when there was none
+  (`finish_tool_install`, shared by `InstallTool` and `InstallToolStreamed`).
+  `uninstall tool node` removes every release and clears `[node] default` and
+  `[node.sites]`.
+
+Project-file discovery (`.nvmrc`, then `.node-version` per directory, nearest
+directory wins) and selection live in `yerd_platform::node::{project_file, select}`,
+shared by `yerd exec` / `yerd which` and the daemon's `NodeSite` handler; the
+precedence rule itself (`SEARCH_ORDER`, `choose`) is pure in `yerd-core`.
 
 ### Composer-built tools: the Laravel installer and WP-CLI
 
@@ -167,7 +234,7 @@ WP-CLI's bundled dependencies emit PHP deprecation notices on newer PHP that wou
 The commands a tool provides are symlinks in `{data}/bin` - the same directory as
 the PHP `php`/`php<ver>`/`phpcover` shims. The two reconcilers partition the
 namespace cleanly: the PHP reconcile only prunes `php<X.Y>*` names, and
-`reconcile_tool_shims` owns `composer`/`node`/`npm`/`npx`/`bun`/`bunx`.
+`reconcile_tool_shims` owns `composer`/`node`/`npm`/`npx`/`bun`/`bunx`/`pnpm`/`pnpx`/`laravel`/`wp`/`cloudflared`/`ngrok`/`zrok2`.
 
 For each installed tool it creates `(name → target)` links via the shared
 `php_install::place_symlink` (atomic temp+rename); for each **uninstalled** tool
@@ -180,6 +247,10 @@ dangling by an uninstall is still removed. Per-tool targets:
 | Composer | `composer` → the `yerd` binary (a multi-call shim, like `phpcover`) |
 | Node | `node`/`npm`/`npx` → **absolute** `node_root/bin/{…}` |
 | Bun | `bun` → `bun_root/bun`; `bunx` → `{data}/bin/bun` (sibling; Bun dispatches on argv0) |
+| pnpm | `pnpm` → `pnpm_root/pnpm`; `pnpx` → `pnpm_root/pnpx`, a hard link of `pnpm` (pnpm dispatches on `current_exe`, which resolves symlinks on Linux) |
+| cloudflared | `cloudflared` → `{data}/tools/cloudflared/cloudflared` directly (unversioned path, and the documented outbound-proxy exception, so no multi-call shim) |
+| ngrok | `ngrok` → the `yerd` binary (multi-call shim resolving `{data}/tools/ngrok/ngrok`, with the outbound proxy env) |
+| zrok | `zrok2` → the `yerd` binary (multi-call shim resolving `{data}/tools/zrok/zrok2`, with the outbound proxy env) |
 
 ::: tip Why npm points at an absolute path
 Node's `bin/npm` and `bin/npx` are themselves *relative* symlinks into
@@ -205,8 +276,11 @@ Composer is a phar, so its `composer` command can't be a direct symlink - it
 needs a PHP interpreter. Like the [cover shims](./binaries/yerd#cover-shims-yerd-as-a-multi-call-binary-cover_shim-rs),
 `{data}/bin/composer` symlinks to the `yerd` binary, which detects `argv[0] ==
 "composer"` *before clap* (in `main.rs`, ahead of `cover_shim::dispatch`) and
-`exec`s the default managed PHP against `{data}/tools/composer/composer.phar`. If
-no PHP is installed it prints a clear "install a PHP version" message; if the
+`exec`s the default managed PHP against `{data}/tools/composer/composer.phar`,
+pointing `PHPRC` at that version's CLI ini (`php-cli-<minor>.ini`, else the base
+`php-cli.ini`) so per-version extensions and settings apply. Without it Composer
+would inherit the base `php-cli.ini` exported by the shell profile, which has no
+extension lines. If no PHP is installed it prints a clear "install a PHP version" message; if the
 phar is absent it points the user at the Tooling page.
 
 ## IPC contract
@@ -237,9 +311,12 @@ moved between runs).
   (`listTools`/`installTool`/`uninstallTool`), `views/ToolingView.vue` (a table
   copied from the PHP view's pattern - install/update/uninstall with a busy
   spinner and toasts), plus the `SideNav.vue` + `router.ts` entries that place
-  **Tooling** between Sites and Services.
+  **Tooling** between Sites and Services. The view filters Node out of the
+  `ListTools` reply: Node has its own page, `/node` (`NodeView.vue`), which drives
+  the [Node requests](./ipc-protocol) instead of `InstallTool` / `UninstallTool`.
 - **CLI**: `yerd tools`, `yerd install tool <id>`, `yerd uninstall tool <id>` -
-  a `Tool` variant on the `InstallTarget`/`UninstallTarget` enums and a `Tools`
+  install streams as a job (`InstallToolStreamed`, or `InstallNodeStreamed` for a
+  Node selector) unless `--json` is set; a `Tool` variant on the `InstallTarget`/`UninstallTarget` enums and a `Tools`
   command, mapped in `map::to_request` (exhaustive, compile-checked) with an
   explicit `Response::Tools` arm in `map::render` (which has a wildcard, so a
   missing arm would silently misrender).

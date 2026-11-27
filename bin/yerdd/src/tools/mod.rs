@@ -1,8 +1,10 @@
 //! Dev-tool installer subsystem - Composer, Node (node/npm/npx), Bun (bun/bunx),
-//! the Laravel installer, and WP-CLI.
+//! pnpm (pnpm/pnpx), the Laravel installer, WP-CLI, cloudflared (the
+//! Cloudflare Tunnel connector Share uses), and the ngrok and zrok (`zrok2`)
+//! tunnel agents.
 //!
 //! Most tools ship as a self-contained, relocatable binary (no global install):
-//! Node's tarball, Bun's zip, Composer's phar. yerd downloads + sha256-verifies
+//! Node's tarball, Bun's zip, pnpm's tarball, Composer's phar. yerd downloads + sha256-verifies
 //! the latest release into `{data}/tools/<id>/` and symlinks the commands it
 //! provides into `{data}/bin` (on `PATH` via `yerd path`). Same I/O-edge pattern
 //! as `php_install`/`ext_install`: a `Downloader` trait is injected; the pure
@@ -11,11 +13,15 @@
 //! `laravel`/`wp_cli`).
 
 pub mod bun;
+pub mod cloudflared;
 pub mod composer;
 pub mod external;
 pub mod laravel;
+pub mod ngrok;
 pub mod node;
+pub mod pnpm;
 pub mod wp_cli;
+pub mod zrok;
 
 use std::path::{Path, PathBuf};
 
@@ -34,6 +40,8 @@ pub enum Tool {
     Node,
     /// Bun - `bun`, `bunx`.
     Bun,
+    /// pnpm - `pnpm`, `pnpx`.
+    Pnpm,
     /// The Laravel installer (`laravel new`) - a Composer package run via the
     /// managed PHP, exposed as the `laravel` multi-call shim.
     Laravel,
@@ -41,6 +49,15 @@ pub enum Tool {
     /// (`wp-cli/wp-cli-bundle`) run via the managed PHP, exposed as the `wp`
     /// multi-call shim.
     WpCli,
+    /// cloudflared - the Cloudflare Tunnel connector used by Share, a single
+    /// static binary from Cloudflare's GitHub releases.
+    Cloudflared,
+    /// ngrok - the ngrok v3 agent, a single binary from ngrok's official
+    /// download archive.
+    Ngrok,
+    /// zrok - the open-source zrok v2 agent, whose binary is `zrok2`, from the
+    /// openziti/zrok GitHub releases.
+    Zrok,
 }
 
 /// Filename of the installed-version marker inside a tool's dir.
@@ -48,12 +65,16 @@ const VERSION_MARKER: &str = ".version";
 
 impl Tool {
     /// Every tool, for `list_status` / reconcile.
-    pub const ALL: [Tool; 5] = [
+    pub const ALL: [Tool; 9] = [
         Tool::Composer,
         Tool::Node,
         Tool::Bun,
+        Tool::Pnpm,
         Tool::Laravel,
         Tool::WpCli,
+        Tool::Cloudflared,
+        Tool::Ngrok,
+        Tool::Zrok,
     ];
 
     /// Stable id used on the wire and as the on-disk dir name.
@@ -63,8 +84,12 @@ impl Tool {
             Tool::Composer => "composer",
             Tool::Node => "node",
             Tool::Bun => "bun",
+            Tool::Pnpm => "pnpm",
             Tool::Laravel => "laravel",
             Tool::WpCli => "wp-cli",
+            Tool::Cloudflared => "cloudflared",
+            Tool::Ngrok => "ngrok",
+            Tool::Zrok => "zrok",
         }
     }
 
@@ -75,8 +100,12 @@ impl Tool {
             Tool::Composer => "Composer",
             Tool::Node => "Node.js",
             Tool::Bun => "Bun",
+            Tool::Pnpm => "pnpm",
             Tool::Laravel => "Laravel Installer",
             Tool::WpCli => "WP-CLI",
+            Tool::Cloudflared => "cloudflared",
+            Tool::Ngrok => "ngrok",
+            Tool::Zrok => "zrok",
         }
     }
 
@@ -88,8 +117,12 @@ impl Tool {
             Tool::Composer => "composer",
             Tool::Node => "node",
             Tool::Bun => "bun",
+            Tool::Pnpm => "pnpm",
             Tool::Laravel => "laravel",
             Tool::WpCli => "wp",
+            Tool::Cloudflared => "cloudflared",
+            Tool::Ngrok => "ngrok",
+            Tool::Zrok => "zrok2",
         }
     }
 
@@ -100,8 +133,12 @@ impl Tool {
             Tool::Composer => &["composer"],
             Tool::Node => &["node", "npm", "npx"],
             Tool::Bun => &["bun", "bunx"],
+            Tool::Pnpm => &["pnpm", "pnpx"],
             Tool::Laravel => &["laravel"],
             Tool::WpCli => &["wp"],
+            Tool::Cloudflared => &["cloudflared"],
+            Tool::Ngrok => &["ngrok"],
+            Tool::Zrok => &["zrok2"],
         }
     }
 
@@ -121,7 +158,14 @@ impl Tool {
     #[must_use]
     pub const fn accepts_external(self) -> bool {
         match self {
-            Tool::Composer | Tool::Node | Tool::Bun | Tool::Laravel => true,
+            Tool::Composer
+            | Tool::Node
+            | Tool::Bun
+            | Tool::Pnpm
+            | Tool::Laravel
+            | Tool::Cloudflared
+            | Tool::Ngrok
+            | Tool::Zrok => true,
             Tool::WpCli => false,
         }
     }
@@ -168,7 +212,21 @@ pub(crate) fn bin_dir(dirs: &PlatformDirs) -> PathBuf {
 }
 
 /// Read a tool's installed version from its `.version` marker, or `None`.
-pub(crate) fn installed_version(dirs: &PlatformDirs, tool: Tool) -> Option<String> {
+///
+/// Node has no single marker: `node_default` is the daemon's configured
+/// `[node] default`, falling back to a legacy single-version install.
+pub(crate) fn installed_version(
+    dirs: &PlatformDirs,
+    tool: Tool,
+    node_default: Option<&str>,
+) -> Option<String> {
+    if tool == Tool::Node {
+        return yerd_platform::node::default_selector(dirs, node_default).and_then(|v| {
+            yerd_platform::node::resolve(dirs, &v)
+                .ok()
+                .map(|v| format!("v{}", v.version))
+        });
+    }
     let v = std::fs::read_to_string(tool_dir(dirs, tool).join(VERSION_MARKER)).ok()?;
     let v = v.trim().to_owned();
     if v.is_empty() {
@@ -179,9 +237,10 @@ pub(crate) fn installed_version(dirs: &PlatformDirs, tool: Tool) -> Option<Strin
 }
 
 /// Status of one tool (installed + version + the commands it provides).
+/// `node_default` is the daemon's configured `[node] default`.
 #[must_use]
-pub fn status(dirs: &PlatformDirs, tool: Tool) -> ToolStatus {
-    let version = installed_version(dirs, tool);
+pub fn status(dirs: &PlatformDirs, tool: Tool, node_default: Option<&str>) -> ToolStatus {
+    let version = installed_version(dirs, tool, node_default);
     ToolStatus {
         id: tool.id().to_owned(),
         display_name: tool.display_name().to_owned(),
@@ -194,13 +253,95 @@ pub fn status(dirs: &PlatformDirs, tool: Tool) -> ToolStatus {
             .collect(),
         external: false,
         external_path: None,
+        update_available: None,
     }
 }
 
 /// Status of every tool, for `Response::Tools`. Pure fs reads (no network/lock).
 #[must_use]
-pub fn list_status(dirs: &PlatformDirs) -> Vec<ToolStatus> {
-    Tool::ALL.iter().map(|&t| status(dirs, t)).collect()
+pub fn list_status(dirs: &PlatformDirs, node_default: Option<&str>) -> Vec<ToolStatus> {
+    Tool::ALL
+        .iter()
+        .map(|&t| status(dirs, t, node_default))
+        .collect()
+}
+
+/// `latest` when it is a stable release strictly newer than `installed`, for
+/// `ToolStatus::update_available`. Both sides may carry a `v` or `bun-v`
+/// prefix; anything that is not semver yields `None`.
+pub(crate) fn newer_version(installed: &str, latest: &str) -> Option<String> {
+    let parse = |v: &str| yerd_update::parse_tag(v.strip_prefix("bun-").unwrap_or(v));
+    let current = parse(installed)?;
+    let candidate = parse(latest)?;
+    (candidate.pre.is_empty() && candidate > current).then(|| latest.to_owned())
+}
+
+/// The highest stable `version` of `package` in a Packagist `p2/<package>.json`
+/// document. Order is not assumed; pre-releases and non-semver entries such as
+/// `dev-main` are skipped.
+pub(crate) fn packagist_latest(bytes: &[u8], package: &str) -> Option<String> {
+    let doc: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    doc.get("packages")?
+        .get(package)?
+        .as_array()?
+        .iter()
+        .filter_map(|entry| entry.get("version")?.as_str())
+        .filter_map(|raw| {
+            let parsed = yerd_update::parse_tag(raw)?;
+            parsed.pre.is_empty().then_some((parsed, raw))
+        })
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, raw)| raw.to_owned())
+}
+
+/// Fetch a Packagist `p2` document and pick its latest stable version.
+pub(crate) async fn fetch_packagist_latest(
+    dl: &dyn Downloader,
+    package: &str,
+) -> Result<String, ToolError> {
+    let url = format!("https://repo.packagist.org/p2/{package}.json");
+    let bytes = dl
+        .download(&url)
+        .await
+        .map_err(|e| ToolError::Download(format!("packagist {package}: {e}")))?;
+    packagist_latest(&bytes, package)
+        .ok_or_else(|| ToolError::Download(format!("packagist {package}: no stable version")))
+}
+
+/// The latest published version of `tool`, for the notify-only update poll.
+/// `Ok(None)` for Node, whose updates `node_updates` already tracks. Installs
+/// nothing.
+pub(crate) async fn latest(
+    tool: Tool,
+    dirs: &PlatformDirs,
+    dl: &dyn Downloader,
+) -> Result<Option<String>, ToolError> {
+    let version = match tool {
+        Tool::Node => return Ok(None),
+        Tool::Composer => composer::latest(dirs, dl).await?,
+        Tool::Bun => bun::latest(dl).await?,
+        Tool::Pnpm => pnpm::latest(dl).await?,
+        Tool::Laravel => laravel::latest(dl).await?,
+        Tool::WpCli => wp_cli::latest(dl).await?,
+        Tool::Cloudflared => cloudflared::latest(dl).await?,
+        Tool::Ngrok => ngrok::latest(dl).await?,
+        Tool::Zrok => zrok::latest(dl).await?,
+    };
+    Ok(Some(version))
+}
+
+/// The installed version to compare against the latest one. The Laravel
+/// installer's marker is always `installed`, so its real version comes from
+/// Composer's `installed.php`; every other tool uses its marker.
+pub(crate) fn comparable_version(
+    dirs: &PlatformDirs,
+    tool: Tool,
+    marker: Option<&str>,
+) -> Option<String> {
+    match tool {
+        Tool::Laravel => laravel::installed_installer_version(dirs),
+        _ => marker.map(str::to_owned),
+    }
 }
 
 /// A sink for streamed install output (one line per send). The streamed-install
@@ -217,11 +358,13 @@ fn note(progress: Option<&ProgressTx>, msg: impl Into<String>) {
 /// Download + install `tool`'s latest release. Idempotent (replaces in place via
 /// staging + atomic swap). Best-effort integrity is sha256-verified per asset.
 /// When `progress` is set, coarse status (and, for the Laravel installer, the
-/// live Composer output) is streamed to it.
+/// live Composer output) is streamed to it. `proxy_env` is applied to the
+/// Composer subprocess that builds the Laravel installer and WP-CLI.
 pub async fn install(
     tool: Tool,
     dirs: &PlatformDirs,
     dl: &dyn Downloader,
+    proxy_env: &yerd_core::network::ChildEnvPlan,
     progress: Option<&ProgressTx>,
 ) -> Result<(), ToolError> {
     note(progress, format!("Installing {}…", tool.display_name()));
@@ -229,8 +372,12 @@ pub async fn install(
         Tool::Composer => composer::install(dirs, dl).await,
         Tool::Node => node::install(dirs, dl).await,
         Tool::Bun => bun::install(dirs, dl).await,
-        Tool::Laravel => laravel::install(dirs, progress).await,
-        Tool::WpCli => wp_cli::install(dirs, progress).await,
+        Tool::Pnpm => pnpm::install(dirs, dl).await,
+        Tool::Laravel => laravel::install(dirs, proxy_env, progress).await,
+        Tool::WpCli => wp_cli::install(dirs, proxy_env, progress).await,
+        Tool::Cloudflared => cloudflared::install(dirs, dl, progress).await,
+        Tool::Ngrok => ngrok::install(dirs, dl, progress).await,
+        Tool::Zrok => zrok::install(dirs, dl, progress).await,
     };
     match &result {
         Ok(()) => note(progress, format!("Installed {}", tool.display_name())),
@@ -242,6 +389,12 @@ pub async fn install(
 /// Remove `tool`'s files. The `{data}/bin` shims are pruned by a subsequent
 /// `reconcile_tool_shims` (the caller runs it under the shim mutex).
 pub fn uninstall(dirs: &PlatformDirs, tool: Tool) -> Result<(), ToolError> {
+    if tool == Tool::Node {
+        let versions = yerd_platform::node::versions_dir(dirs);
+        if versions.exists() {
+            std::fs::remove_dir_all(&versions).map_err(|e| ToolError::Io(e.to_string()))?;
+        }
+    }
     let d = tool_dir(dirs, tool);
     if d.exists() {
         std::fs::remove_dir_all(&d).map_err(|e| ToolError::Io(format!("{}: {e}", d.display())))?;
@@ -249,52 +402,130 @@ pub fn uninstall(dirs: &PlatformDirs, tool: Tool) -> Result<(), ToolError> {
     Ok(())
 }
 
-/// The `(name_in_bin, symlink_target)` pairs for an installed `tool`. Empty if
-/// the tool isn't installed or its root can't be resolved.
+/// Point every resolvable command of a Node, pnpm, or Bun install at the yerd
+/// multi-call binary. The module-level `shim_links` still decides *which*
+/// names get a link (none when the root or the Node default can't be
+/// resolved); the CLI's `tool_shim` then resolves the same target at run time
+/// and adds the outbound proxy environment before `exec`.
 #[cfg(unix)]
-fn shim_links(dirs: &PlatformDirs, tool: Tool, yerd_bin: &Path) -> Vec<(String, PathBuf)> {
+fn via_yerd(links: Vec<(String, PathBuf)>, yerd_bin: &Path) -> Vec<(String, PathBuf)> {
+    links
+        .into_iter()
+        .map(|(name, _)| (name, yerd_bin.to_path_buf()))
+        .collect()
+}
+
+/// The `(name_in_bin, symlink_target)` pairs for an installed `tool`. Empty if
+/// the tool isn't installed or its root can't be resolved. Every command
+/// (including `ngrok` and `zrok2`, so they get the outbound proxy environment)
+/// is a link to the yerd multi-call binary except `cloudflared`, which links
+/// straight to the managed binary: its path carries no version to resolve, and
+/// it is the documented outbound-proxy exception, so there is no environment to
+/// inject.
+#[cfg(unix)]
+fn shim_links(
+    dirs: &PlatformDirs,
+    tool: Tool,
+    yerd_bin: &Path,
+    node_default: Option<&str>,
+) -> Vec<(String, PathBuf)> {
     match tool {
         Tool::Composer => vec![("composer".to_owned(), yerd_bin.to_path_buf())],
-        Tool::Node => node::shim_links(dirs),
-        Tool::Bun => bun::shim_links(dirs),
+        Tool::Node => via_yerd(node::shim_links(dirs, node_default), yerd_bin),
+        Tool::Bun => via_yerd(bun::shim_links(dirs), yerd_bin),
+        Tool::Pnpm => via_yerd(pnpm::shim_links(dirs), yerd_bin),
         Tool::Laravel => vec![("laravel".to_owned(), yerd_bin.to_path_buf())],
         Tool::WpCli => vec![("wp".to_owned(), yerd_bin.to_path_buf())],
+        Tool::Cloudflared => cloudflared_links(dirs),
+        Tool::Ngrok => vec![("ngrok".to_owned(), yerd_bin.to_path_buf())],
+        Tool::Zrok => vec![("zrok2".to_owned(), yerd_bin.to_path_buf())],
     }
 }
 
-/// Reconcile `{data}/bin` tool shims against what's installed: (re)create the
-/// commands of installed tools, prune those of uninstalled tools. **Prunes by
-/// name-ownership** (gated on `is_symlink`, never `target.exists()`), so a
-/// dangling link after uninstall is still removed. Callers must hold the shared
-/// `shim_reconcile` mutex (this writes the same dir as `php_install::reconcile_shims`).
-/// Unix-only; no-op elsewhere.
 #[cfg(unix)]
-pub fn reconcile_tool_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), ToolError> {
-    let bin = bin_dir(dirs);
-    std::fs::create_dir_all(&bin).map_err(|e| ToolError::Io(format!("{}: {e}", bin.display())))?;
+fn cloudflared_links(dirs: &PlatformDirs) -> Vec<(String, PathBuf)> {
+    vec![("cloudflared".to_owned(), cloudflared::binary_path(dirs))]
+}
 
-    for &tool in &Tool::ALL {
-        if installed_version(dirs, tool).is_some() {
-            for (name, target) in shim_links(dirs, tool, yerd_bin) {
-                crate::php_install::place_symlink(&bin.join(&name), &target)
-                    .map_err(|e| ToolError::Io(e.to_string()))?;
-            }
-        } else {
-            for &name in tool.exposed_bins() {
-                let p = bin.join(name);
-                let is_link =
-                    std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink());
-                if is_link {
-                    let _ = std::fs::remove_file(&p);
-                }
+/// Create `tool`'s links in `bin` when it is installed, else prune its names
+/// (symlinks only).
+#[cfg(unix)]
+fn reconcile_tool(
+    dirs: &PlatformDirs,
+    bin: &Path,
+    tool: Tool,
+    node_default: Option<&str>,
+    links: impl FnOnce() -> Vec<(String, PathBuf)>,
+) -> Result<(), ToolError> {
+    if installed_version(dirs, tool, node_default).is_some() {
+        for (name, target) in links() {
+            crate::php_install::place_symlink(&bin.join(&name), &target)
+                .map_err(|e| ToolError::Io(e.to_string()))?;
+        }
+    } else {
+        for &name in tool.exposed_bins() {
+            let p = bin.join(name);
+            let is_link = std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink());
+            if is_link {
+                let _ = std::fs::remove_file(&p);
             }
         }
     }
     Ok(())
 }
 
+/// Reconcile only the `{data}/bin/cloudflared` link, which targets the managed
+/// binary rather than the `yerd` multi-call binary, so it is kept even when the
+/// `yerd` sibling cannot be located. Callers must hold the shared
+/// `shim_reconcile` mutex. Unix-only; no-op elsewhere.
+#[cfg(unix)]
+pub fn reconcile_cloudflared_shim(dirs: &PlatformDirs) -> Result<(), ToolError> {
+    let bin = bin_dir(dirs);
+    std::fs::create_dir_all(&bin).map_err(|e| ToolError::Io(format!("{}: {e}", bin.display())))?;
+    reconcile_tool(dirs, &bin, Tool::Cloudflared, None, || {
+        cloudflared_links(dirs)
+    })
+}
+
 #[cfg(not(unix))]
-pub fn reconcile_tool_shims(_dirs: &PlatformDirs, _yerd_bin: &Path) -> Result<(), ToolError> {
+pub fn reconcile_cloudflared_shim(_dirs: &PlatformDirs) -> Result<(), ToolError> {
+    Ok(())
+}
+
+/// Reconcile `{data}/bin` tool shims against what's installed: (re)create the
+/// commands of installed tools, prune those of uninstalled tools. **Prunes by
+/// name-ownership** (gated on `is_symlink`, never `target.exists()`), so a
+/// dangling link after uninstall is still removed. Every tool is attempted even
+/// when an earlier one fails; the first error is returned. Callers must hold the
+/// shared `shim_reconcile` mutex (this writes the same dir as
+/// `php_install::reconcile_shims`). Unix-only; no-op elsewhere.
+#[cfg(unix)]
+pub fn reconcile_tool_shims(
+    dirs: &PlatformDirs,
+    yerd_bin: &Path,
+    node_default: Option<&str>,
+) -> Result<(), ToolError> {
+    let bin = bin_dir(dirs);
+    std::fs::create_dir_all(&bin).map_err(|e| ToolError::Io(format!("{}: {e}", bin.display())))?;
+
+    let mut first_err = None;
+    for &tool in &Tool::ALL {
+        let result = reconcile_tool(dirs, &bin, tool, node_default, || {
+            shim_links(dirs, tool, yerd_bin, node_default)
+        });
+        if let Err(e) = result {
+            first_err.get_or_insert(e);
+        }
+    }
+    first_err.map_or(Ok(()), Err)
+}
+
+#[cfg(not(unix))]
+pub fn reconcile_tool_shims(
+    _dirs: &PlatformDirs,
+    _yerd_bin: &Path,
+    _node_default: Option<&str>,
+) -> Result<(), ToolError> {
     Ok(())
 }
 
@@ -331,25 +562,78 @@ pub(crate) fn verify_sha256(bytes: &[u8], want_sha: &str, label: &str) -> Result
     }
 }
 
+/// A `v<semver>` tag made of ASCII alphanumerics, `.` and `-` only. The tag is
+/// interpolated into the download URL and stored as the version marker, so a
+/// hostile release payload must not be able to inject `/` or `..`.
+pub(crate) fn valid_tag(tag: &str) -> bool {
+    let Some(rest) = tag.strip_prefix('v') else {
+        return false;
+    };
+    rest.bytes().next().is_some_and(|b| b.is_ascii_digit())
+        && rest
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+        && !rest.contains("..")
+}
+
+/// The bytes of the regular file named exactly `member` at the root of a
+/// `.tar.gz` (no directory component, no `./` prefix). Symlinks, directories,
+/// and same-named files in subdirectories are skipped, so the result is always
+/// the archive's own top-level executable. `label` names the archive for errors.
+pub(crate) fn extract_file_from_tgz(
+    gz: &[u8],
+    member: &str,
+    label: &str,
+) -> Result<Vec<u8>, ToolError> {
+    use std::io::Read as _;
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(gz));
+    let entries = archive
+        .entries()
+        .map_err(|e| ToolError::Unpack(format!("{label}: {e}")))?;
+    for entry in entries {
+        let mut entry = entry.map_err(|e| ToolError::Unpack(format!("{label}: {e}")))?;
+        let is_member = entry
+            .path()
+            .map_err(|e| ToolError::Unpack(format!("{label}: {e}")))?
+            .as_os_str()
+            == member;
+        if is_member && entry.header().entry_type().is_file() {
+            let mut buf = Vec::new();
+            entry
+                .read_to_end(&mut buf)
+                .map_err(|e| ToolError::Unpack(format!("{label}: {e}")))?;
+            return Ok(buf);
+        }
+    }
+    Err(ToolError::Unpack(format!(
+        "no {member} executable in {label}"
+    )))
+}
+
+/// Write `bytes` as the executable `staging/name` (`rwxr-xr-x` on Unix).
+pub(crate) fn write_executable(staging: &Path, name: &str, bytes: &[u8]) -> Result<(), ToolError> {
+    let dest = staging.join(name);
+    std::fs::write(&dest, bytes).map_err(|e| ToolError::Io(format!("{}: {e}", dest.display())))?;
+    set_mode_755(&dest)
+}
+
+#[cfg(unix)]
+fn set_mode_755(path: &Path) -> Result<(), ToolError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| ToolError::Io(format!("chmod {}: {e}", path.display())))
+}
+
+#[cfg(not(unix))]
+fn set_mode_755(_path: &Path) -> Result<(), ToolError> {
+    Ok(())
+}
+
 /// The single child **directory** of `dir` (Node/Bun archives wrap their payload
 /// in one top-level dir whose name encodes the version). Errors unless exactly
 /// one directory entry exists - never reconstructed from a version string.
 pub(crate) fn extract_root_dir(dir: &Path) -> Result<PathBuf, ToolError> {
-    let mut found: Option<PathBuf> = None;
-    let entries =
-        std::fs::read_dir(dir).map_err(|e| ToolError::Unpack(format!("{}: {e}", dir.display())))?;
-    for entry in entries.flatten() {
-        if entry.path().is_dir() {
-            if found.is_some() {
-                return Err(ToolError::Unpack(format!(
-                    "expected one top-level dir in {}, found multiple",
-                    dir.display()
-                )));
-            }
-            found = Some(entry.path());
-        }
-    }
-    found.ok_or_else(|| ToolError::Unpack(format!("no top-level dir in {}", dir.display())))
+    yerd_platform::single_top_level_dir(dir).map_err(|e| ToolError::Unpack(e.to_string()))
 }
 
 /// Stage `tool`'s payload via a fresh staging dir, write the `.version` marker,
@@ -362,16 +646,27 @@ pub(crate) fn stage_and_swap(
     version: &str,
     unpack: impl FnOnce(&Path) -> Result<(), ToolError>,
 ) -> Result<(), ToolError> {
+    stage_at(&tool_dir(dirs, tool), version, unpack)
+}
+
+/// Atomically replace an isolated tool or release directory.
+pub(crate) fn stage_at(
+    final_dir: &Path,
+    version: &str,
+    unpack: impl FnOnce(&Path) -> Result<(), ToolError>,
+) -> Result<(), ToolError> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
 
-    let tools_root = dirs.data.join("tools");
-    std::fs::create_dir_all(&tools_root)
+    let tools_root = final_dir
+        .parent()
+        .ok_or_else(|| ToolError::Io("missing install parent".to_owned()))?;
+    std::fs::create_dir_all(tools_root)
         .map_err(|e| ToolError::Io(format!("{}: {e}", tools_root.display())))?;
     let staging = tools_root.join(format!(
         ".staging-{}-{}-{seq}",
-        tool.id(),
+        final_dir.file_name().unwrap_or_default().to_string_lossy(),
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&staging);
@@ -389,22 +684,21 @@ pub(crate) fn stage_and_swap(
         return Err(e);
     }
 
-    let final_dir = tool_dir(dirs, tool);
     let backup = tools_root.join(format!(
         ".previous-{}-{}-{seq}",
-        tool.id(),
+        final_dir.file_name().unwrap_or_default().to_string_lossy(),
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&backup);
     if final_dir.exists() {
-        if let Err(e) = std::fs::rename(&final_dir, &backup) {
+        if let Err(e) = std::fs::rename(final_dir, &backup) {
             let _ = std::fs::remove_dir_all(&staging);
             return Err(ToolError::Io(format!("{}: {e}", final_dir.display())));
         }
     }
-    if let Err(e) = std::fs::rename(&staging, &final_dir) {
+    if let Err(e) = std::fs::rename(&staging, final_dir) {
         if backup.exists() {
-            let _ = std::fs::rename(&backup, &final_dir);
+            let _ = std::fs::rename(&backup, final_dir);
         }
         let _ = std::fs::remove_dir_all(&staging);
         return Err(ToolError::Io(format!("{}: {e}", final_dir.display())));
@@ -450,6 +744,161 @@ mod tests {
     use super::*;
 
     #[test]
+    fn newer_version_cases() {
+        let cases: &[(&str, &str, Option<&str>)] = &[
+            ("v1.3.14", "bun-v1.3.15", Some("bun-v1.3.15")),
+            ("v1.3.14", "v1.3.15", Some("v1.3.15")),
+            ("2.8.1", "2.8.12", Some("2.8.12")),
+            ("2.8.12", "2.8.12", None),
+            ("2.8.12", "2.8.1", None),
+            ("2.8.1", "2.9.0-RC1", None),
+            ("v10.1.0", "v10.2.0", Some("v10.2.0")),
+            ("garbage", "2.8.12", None),
+            ("2.8.1", "garbage", None),
+            ("installed", "v5.33.0", None),
+            ("v5.32.0", "v5.33.0", Some("v5.33.0")),
+            ("2024.6.1", "2024.12.0", Some("2024.12.0")),
+            ("2024.12.0", "2024.12.0", None),
+            ("2025.1.0", "2024.12.0", None),
+            ("installed", "2025.11.1", None),
+            ("3.39.12", "3.39.13", Some("3.39.13")),
+            ("v2.0.10", "v2.0.11", Some("v2.0.11")),
+        ];
+        for (installed, latest, want) in cases {
+            assert_eq!(
+                newer_version(installed, latest).as_deref(),
+                *want,
+                "{installed} vs {latest}"
+            );
+        }
+    }
+
+    const P2_INSTALLER: &str = r#"{"packages":{"laravel/installer":[
+        {"name":"laravel/installer","version":"v5.33.0-beta.1","version_normalized":"5.33.0.0-beta1"},
+        {"version":"v5.32.0","version_normalized":"5.32.0.0"},
+        {"version":"v5.33.0","version_normalized":"5.33.0.0"},
+        {"version":"dev-main"},
+        {"version":"v4.5.1"}
+    ]},"minified":"composer/2.0"}"#;
+
+    #[test]
+    fn packagist_latest_cases() {
+        let cases: &[(&str, &str, Option<&str>)] = &[
+            (P2_INSTALLER, "laravel/installer", Some("v5.33.0")),
+            (P2_INSTALLER, "wp-cli/wp-cli", None),
+            (
+                r#"{"packages":{"a/b":[{"version":"1.0.0-RC1"}]}}"#,
+                "a/b",
+                None,
+            ),
+            ("not json", "a/b", None),
+            (r#"{"packages":{"a/b":{}}}"#, "a/b", None),
+        ];
+        for (doc, package, want) in cases {
+            assert_eq!(
+                packagist_latest(doc.as_bytes(), package).as_deref(),
+                *want,
+                "{package}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wp_cli_latest_reads_the_core_package_not_the_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = crate::test_support::dirs_in(tmp.path());
+        let core = crate::test_support::UrlDl::default()
+            .with(
+                "https://repo.packagist.org/p2/wp-cli/wp-cli.json",
+                r#"{"packages":{"wp-cli/wp-cli":[{"version":"v2.12.1"},{"version":"v2.12.0"}]}}"#,
+            )
+            .with(
+                "https://repo.packagist.org/p2/wp-cli/wp-cli-bundle.json",
+                r#"{"packages":{"wp-cli/wp-cli-bundle":[{"version":"v2.12.0"}]}}"#,
+            );
+        let got = latest(Tool::WpCli, &dirs, &core).await.unwrap();
+        assert_eq!(got.as_deref(), Some("v2.12.1"));
+        assert_eq!(
+            newer_version("v2.12.0", "v2.12.1").as_deref(),
+            Some("v2.12.1")
+        );
+
+        let bundle_only = crate::test_support::UrlDl::default().with(
+            "https://repo.packagist.org/p2/wp-cli/wp-cli.json",
+            r#"{"packages":{"wp-cli/wp-cli-bundle":[{"version":"v2.12.0"}]}}"#,
+        );
+        assert!(latest(Tool::WpCli, &dirs, &bundle_only).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn latest_per_tool_from_fixtures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = crate::test_support::dirs_in(tmp.path());
+        crate::test_support::fake_php(&dirs, "8.4");
+        let dl = crate::test_support::UrlDl::default()
+            .with(
+                "https://getcomposer.org/versions",
+                r#"{"stable":[{"path":"/download/2.8.12/composer.phar","version":"2.8.12","min-php":70205}]}"#,
+            )
+            .with(
+                "https://api.github.com/repos/oven-sh/bun/releases/latest",
+                r#"{"tag_name":"bun-v1.3.15"}"#,
+            )
+            .with(
+                "https://api.github.com/repos/pnpm/pnpm/releases/latest",
+                r#"{"tag_name":"v10.2.0","assets":[]}"#,
+            )
+            .with(
+                "https://repo.packagist.org/p2/laravel/installer.json",
+                P2_INSTALLER,
+            )
+            .with(
+                "https://api.github.com/repos/cloudflare/cloudflared/releases/latest",
+                r#"{"tag_name":"2025.11.1","assets":[]}"#,
+            )
+            .with(
+                "https://ngrok.com/download/archive/ngrok/ngrok-v3/stable/ngrok_archive",
+                ngrok::ARCHIVE_FIXTURE,
+            )
+            .with(
+                "https://api.github.com/repos/openziti/zrok/releases?per_page=30",
+                zrok::RELEASES_FIXTURE,
+            );
+        let cases: &[(Tool, Option<&str>)] = &[
+            (Tool::Composer, Some("2.8.12")),
+            (Tool::Bun, Some("v1.3.15")),
+            (Tool::Pnpm, Some("v10.2.0")),
+            (Tool::Laravel, Some("v5.33.0")),
+            (Tool::Cloudflared, Some("2025.11.1")),
+            (Tool::Ngrok, Some("3.39.13")),
+            (Tool::Zrok, Some("v2.0.11")),
+            (Tool::Node, None),
+        ];
+        for (tool, want) in cases {
+            assert_eq!(
+                latest(*tool, &dirs, &dl).await.unwrap().as_deref(),
+                *want,
+                "{tool:?}"
+            );
+        }
+        assert!(latest(Tool::WpCli, &dirs, &dl).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn composer_latest_needs_an_installed_php() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = crate::test_support::dirs_in(tmp.path());
+        let dl = crate::test_support::UrlDl::default().with(
+            "https://getcomposer.org/versions",
+            r#"{"stable":[{"path":"/download/2.8.12/composer.phar","version":"2.8.12","min-php":70205}]}"#,
+        );
+        assert!(matches!(
+            latest(Tool::Composer, &dirs, &dl).await,
+            Err(ToolError::UnsupportedHost(_))
+        ));
+    }
+
+    #[test]
     fn parse_and_ids_round_trip() {
         for t in Tool::ALL {
             assert_eq!(Tool::parse(t.id()), Some(t));
@@ -469,8 +918,103 @@ mod tests {
         }
         assert_eq!(Tool::Node.exposed_bins(), &["node", "npm", "npx"]);
         assert_eq!(Tool::Bun.exposed_bins(), &["bun", "bunx"]);
+        assert_eq!(Tool::Pnpm.exposed_bins(), &["pnpm", "pnpx"]);
         assert_eq!(Tool::Composer.primary_bin(), "composer");
         assert_eq!(Tool::Laravel.display_name(), "Laravel Installer");
+        assert_eq!(Tool::Zrok.exposed_bins(), &["zrok2"]);
+        assert_eq!(Tool::Ngrok.primary_bin(), "ngrok");
+    }
+
+    #[test]
+    fn valid_tag_accepts_only_plain_semver_tags() {
+        let cases = [
+            ("v12.21.0", true),
+            ("v11.0.0-rc.3", true),
+            ("12.21.0", false),
+            ("v", false),
+            ("v..1", false),
+            ("v1/../x", false),
+            ("bun-v1.0.0", false),
+            ("", false),
+        ];
+        for (tag, want) in cases {
+            assert_eq!(valid_tag(tag), want, "{tag:?}");
+        }
+    }
+
+    enum Member {
+        File(&'static str, &'static [u8]),
+        Symlink(&'static str),
+        Dir(&'static str),
+    }
+
+    fn tgz(members: &[Member]) -> Vec<u8> {
+        let mut b = tar::Builder::new(Vec::new());
+        for member in members {
+            let mut h = tar::Header::new_gnu();
+            let body: &[u8] = match member {
+                Member::File(name, body) => {
+                    h.set_path(name).unwrap();
+                    h.set_entry_type(tar::EntryType::Regular);
+                    body
+                }
+                Member::Symlink(name) => {
+                    h.set_path(name).unwrap();
+                    h.set_link_name("/bin/sh").unwrap();
+                    h.set_entry_type(tar::EntryType::Symlink);
+                    b""
+                }
+                Member::Dir(name) => {
+                    h.set_path(name).unwrap();
+                    h.set_entry_type(tar::EntryType::Directory);
+                    b""
+                }
+            };
+            h.set_mode(0o755);
+            h.set_size(body.len() as u64);
+            h.set_cksum();
+            b.append(&h, body).unwrap();
+        }
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut enc, &b.into_inner().unwrap()).unwrap();
+        enc.finish().unwrap()
+    }
+
+    type ExtractCase = (&'static str, Vec<u8>, Option<&'static [u8]>);
+
+    #[test]
+    fn extract_file_from_tgz_cases() {
+        let cases: Vec<ExtractCase> = vec![
+            (
+                "root member among decoys",
+                tgz(&[
+                    Member::File("README.md", b"readme"),
+                    Member::File("LICENSE", b"license"),
+                    Member::File("ngrok", b"ngrok-bin"),
+                ]),
+                Some(b"ngrok-bin"),
+            ),
+            (
+                "nested member",
+                tgz(&[Member::Dir("x/"), Member::File("x/ngrok", b"nested")]),
+                None,
+            ),
+            ("symlink member", tgz(&[Member::Symlink("ngrok")]), None),
+            ("directory member", tgz(&[Member::Dir("ngrok")]), None),
+            (
+                "missing member",
+                tgz(&[Member::File("LICENSE", b"license")]),
+                None,
+            ),
+            ("not gzip", b"definitely not gzip".to_vec(), None),
+        ];
+        for (name, gz, want) in cases {
+            let got = extract_file_from_tgz(&gz, "ngrok", "test.tar.gz");
+            match want {
+                Some(bytes) => assert_eq!(got.unwrap(), bytes, "{name}"),
+                None => assert!(matches!(got, Err(ToolError::Unpack(_))), "{name}: {got:?}"),
+            }
+        }
     }
 
     /// Issue #150: an external `wp` can't stand in for the managed build, so
@@ -492,10 +1036,10 @@ mod tests {
         let d = tool_dir(&dirs, Tool::Composer);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join(VERSION_MARKER), "   \n").unwrap();
-        assert_eq!(installed_version(&dirs, Tool::Composer), None);
+        assert_eq!(installed_version(&dirs, Tool::Composer, None), None);
         std::fs::write(d.join(VERSION_MARKER), "  2.10.1\n").unwrap();
         assert_eq!(
-            installed_version(&dirs, Tool::Composer).as_deref(),
+            installed_version(&dirs, Tool::Composer, None).as_deref(),
             Some("2.10.1")
         );
     }
@@ -516,7 +1060,7 @@ mod tests {
     fn list_status_covers_every_tool() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
-        let all = list_status(&dirs);
+        let all = list_status(&dirs, None);
         assert_eq!(all.len(), Tool::ALL.len());
         assert!(all.iter().all(|s| !s.installed && !s.external));
     }
@@ -558,30 +1102,56 @@ mod tests {
     fn status_reflects_marker() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
-        let s = status(&dirs, Tool::Node);
+        let s = status(&dirs, Tool::Node, None);
         assert!(!s.installed);
         assert_eq!(s.binaries, vec!["node", "npm", "npx"]);
         let d = tool_dir(&dirs, Tool::Node);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join(VERSION_MARKER), "v24.17.0").unwrap();
-        let s = status(&dirs, Tool::Node);
+        let bin = d.join("node-v24.17.0-test/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        for name in ["node", "npm", "npx"] {
+            std::fs::write(bin.join(name), "fake").unwrap();
+        }
+        let s = status(&dirs, Tool::Node, None);
         assert!(s.installed);
         assert_eq!(s.version.as_deref(), Some("v24.17.0"));
     }
 
     #[test]
-    fn extract_root_dir_requires_exactly_one() {
+    fn node_status_uses_the_passed_default_not_the_config_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        for v in ["22.9.0", "24.2.0"] {
+            let root = yerd_platform::node::versions_dir(&dirs).join(v);
+            let bin = root.join("node-test/bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            std::fs::write(root.join(VERSION_MARKER), v).unwrap();
+            for name in ["node", "npm", "npx"] {
+                std::fs::write(bin.join(name), "fake").unwrap();
+            }
+        }
+        std::fs::create_dir_all(&dirs.config).unwrap();
+        std::fs::write(
+            dirs.config.join("yerd.toml"),
+            "version = 27\n[node]\ndefault = \"24.2.0\"\n",
+        )
+        .unwrap();
+        let s = status(&dirs, Tool::Node, Some("22.9.0"));
+        assert_eq!(s.version.as_deref(), Some("v22.9.0"));
+        assert!(status(&dirs, Tool::Node, None).version.is_none());
+    }
+
+    #[test]
+    fn extract_root_dir_maps_errors_to_unpack() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        assert!(extract_root_dir(root).is_err());
+        assert!(matches!(extract_root_dir(root), Err(ToolError::Unpack(_))));
         std::fs::create_dir(root.join("node-v24.17.0-darwin-arm64")).unwrap();
-        std::fs::write(root.join(".version"), "x").unwrap();
         assert_eq!(
             extract_root_dir(root).unwrap(),
             root.join("node-v24.17.0-darwin-arm64")
         );
-        std::fs::create_dir(root.join("second")).unwrap();
-        assert!(extract_root_dir(root).is_err());
     }
 
     #[cfg(unix)]
@@ -607,16 +1177,110 @@ mod tests {
         std::fs::create_dir_all(&bin).unwrap();
         std::os::unix::fs::symlink(&yerd_bin, bin.join("bun")).unwrap();
 
-        reconcile_tool_shims(&dirs, &yerd_bin).unwrap();
+        reconcile_tool_shims(&dirs, &yerd_bin, None).unwrap();
 
-        assert_eq!(
-            std::fs::read_link(bin.join("node")).unwrap(),
-            node_root.join("bin").join("node")
-        );
-        assert!(bin.join("npm").exists());
-        assert!(bin.join("npx").exists());
-        assert_eq!(std::fs::read_link(bin.join("composer")).unwrap(), yerd_bin);
+        for name in ["node", "npm", "npx", "composer"] {
+            assert_eq!(
+                std::fs::read_link(bin.join(name)).unwrap(),
+                yerd_bin,
+                "{name}"
+            );
+        }
+        assert!(node_root.join("bin").join("node").is_file());
         assert!(!bin.join("bun").exists());
+
+        let bun_root = tool_dir(&dirs, Tool::Bun).join("bun-darwin-aarch64");
+        std::fs::create_dir_all(&bun_root).unwrap();
+        std::fs::write(bun_root.join("bun"), b"b").unwrap();
+        std::fs::write(
+            tool_dir(&dirs, Tool::Bun).join(VERSION_MARKER),
+            "bun-v1.0.0",
+        )
+        .unwrap();
+        reconcile_tool_shims(&dirs, &yerd_bin, None).unwrap();
+        for name in ["bun", "bunx"] {
+            assert_eq!(
+                std::fs::read_link(bin.join(name)).unwrap(),
+                yerd_bin,
+                "{name}"
+            );
+        }
+
+        cloudflared::install_binary_for_test(&dirs, "2025.11.1", b"#!/bin/sh\n");
+        reconcile_tool_shims(&dirs, &yerd_bin, None).unwrap();
+        assert_eq!(
+            std::fs::read_link(bin.join("cloudflared")).unwrap(),
+            cloudflared::binary_path(&dirs)
+        );
+
+        uninstall(&dirs, Tool::Cloudflared).unwrap();
+        reconcile_tool_shims(&dirs, &yerd_bin, None).unwrap();
+        assert!(std::fs::symlink_metadata(bin.join("cloudflared")).is_err());
+
+        for (tool, name) in [(Tool::Ngrok, "ngrok"), (Tool::Zrok, "zrok2")] {
+            stage_and_swap(&dirs, tool, "1.0.0", |s| {
+                write_executable(s, name, b"#!/bin/sh\n")
+            })
+            .unwrap();
+        }
+        reconcile_tool_shims(&dirs, &yerd_bin, None).unwrap();
+        for name in ["ngrok", "zrok2"] {
+            assert_eq!(
+                std::fs::read_link(bin.join(name)).unwrap(),
+                yerd_bin,
+                "{name}"
+            );
+        }
+
+        uninstall(&dirs, Tool::Ngrok).unwrap();
+        uninstall(&dirs, Tool::Zrok).unwrap();
+        reconcile_tool_shims(&dirs, &yerd_bin, None).unwrap();
+        for name in ["ngrok", "zrok2"] {
+            assert!(std::fs::symlink_metadata(bin.join(name)).is_err(), "{name}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_tries_every_tool_when_one_link_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let yerd_bin = tmp.path().join("yerd");
+        std::fs::write(&yerd_bin, b"#!fake").unwrap();
+        let bin = bin_dir(&dirs);
+        let composer_dir = tool_dir(&dirs, Tool::Composer);
+        std::fs::create_dir_all(&composer_dir).unwrap();
+        std::fs::write(composer_dir.join(VERSION_MARKER), "2.10.1").unwrap();
+        std::fs::create_dir_all(bin.join("composer").join("blocker")).unwrap();
+        cloudflared::install_binary_for_test(&dirs, "2025.11.1", b"#!/bin/sh\n");
+
+        assert!(reconcile_tool_shims(&dirs, &yerd_bin, None).is_err());
+        assert_eq!(
+            std::fs::read_link(bin.join("cloudflared")).unwrap(),
+            cloudflared::binary_path(&dirs)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_cloudflared_shim_links_then_prunes_without_yerd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let link = bin_dir(&dirs).join("cloudflared");
+
+        reconcile_cloudflared_shim(&dirs).unwrap();
+        assert!(std::fs::symlink_metadata(&link).is_err());
+
+        cloudflared::install_binary_for_test(&dirs, "2025.11.1", b"#!/bin/sh\n");
+        reconcile_cloudflared_shim(&dirs).unwrap();
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            cloudflared::binary_path(&dirs)
+        );
+
+        uninstall(&dirs, Tool::Cloudflared).unwrap();
+        reconcile_cloudflared_shim(&dirs).unwrap();
+        assert!(std::fs::symlink_metadata(&link).is_err());
     }
 
     #[test]
@@ -630,7 +1294,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            installed_version(&dirs, Tool::Bun).as_deref(),
+            installed_version(&dirs, Tool::Bun, None).as_deref(),
             Some("bun-v1.0.0")
         );
         stage_and_swap(&dirs, Tool::Bun, "bun-v1.1.0", |s| {
@@ -640,7 +1304,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            installed_version(&dirs, Tool::Bun).as_deref(),
+            installed_version(&dirs, Tool::Bun, None).as_deref(),
             Some("bun-v1.1.0")
         );
         assert!(extract_root_dir(&tool_dir(&dirs, Tool::Bun)).is_ok());

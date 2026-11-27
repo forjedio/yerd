@@ -120,6 +120,8 @@ struct TrayState {
     update_target: Option<String>,
     /// True when any installed PHP version has a newer patch available.
     php_update: bool,
+    /// True when any installed Node release has a newer patch available.
+    node_update: bool,
     /// Captured emails not yet marked read.
     unread: u32,
 }
@@ -258,12 +260,13 @@ async fn fetch_state() -> TrayState {
         https: Some(report.https.bound),
         update_target,
         php_update: report.php.iter().any(|p| p.update_available.is_some()),
+        node_update: report.node_updates > 0,
         unread: report.mail.as_ref().map_or(0, |m| m.unread),
     }
 }
 
 /// Which badges the icon needs: a red dot bottom-right for a waiting update (app
-/// or PHP), an orange dot bottom-left for unread mail. They can coexist.
+/// PHP or Node), an orange dot bottom-left for unread mail. They can coexist.
 #[derive(Clone, Copy)]
 struct Badges {
     update: bool,
@@ -290,7 +293,7 @@ fn apply(app: &AppHandle, state: &TrayState, dark: bool, variant: TrayIconVarian
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_menu(Some(menu));
         let badges = Badges {
-            update: state.update_target.is_some() || state.php_update,
+            update: state.update_target.is_some() || state.php_update || state.node_update,
             unread: state.unread > 0,
         };
         if let Some(icon) = tray_icon(app, badges, variant, dark) {
@@ -552,7 +555,7 @@ fn mail_label(unread: u32) -> String {
 /// `dark_menu_bar()` reading the caller took before taking `MENU_LOCK` (see the
 /// module concurrency note), threaded through every icon in this build.
 ///
-/// Layout: a top zone (Open Yerd, plus Update Yerd / Update PHP while an update
+/// Layout: a top zone (Open Yerd, plus Update Yerd / PHP / Node while an update
 /// waits) before the status header, then the running- or stopped-daemon block,
 /// then Quit. In the running block the installed PHP versions sit under a
 /// "Default PHP:" label, each indented with a tick drawn into the label text
@@ -575,6 +578,12 @@ fn build_menu(app: &AppHandle, state: &TrayState, dark: bool) -> tauri::Result<M
         push(
             &mut items,
             action(app, "update:php", "Update PHP", icons::UPDATE_PHP, dark)?,
+        );
+    }
+    if state.node_update {
+        push(
+            &mut items,
+            action(app, "update:node", "Update Node", icons::UPDATE_PHP, dark)?,
         );
     }
     push(&mut items, PredefinedMenuItem::separator(app)?);
@@ -783,6 +792,10 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
         "update:php" => {
             crate::show_main(app);
             let _ = app.emit("navigate", "/php");
+        }
+        "update:node" => {
+            crate::show_main(app);
+            let _ = app.emit("navigate", "/node");
         }
         "update:check" => spawn_update_check(app.clone()),
         "daemon:start" => spawn_lifecycle(app.clone(), Lifecycle::Start),

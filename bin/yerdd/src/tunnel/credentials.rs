@@ -9,8 +9,8 @@
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
+use crate::state::DaemonState;
 use serde::Deserialize;
-use yerd_platform::PlatformDirs;
 
 /// Bound on the zone-resolution API call so a `list` never stalls.
 const ZONE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -38,15 +38,17 @@ pub struct OriginToken {
 #[must_use]
 pub fn parse_origin_token(pem: &str) -> Option<OriginToken> {
     let body = extract_pem_block(pem, "ARGO TUNNEL TOKEN")?;
-    let bytes = base64_decode(&body)?;
+    let bytes = yerd_proxy::pure::base64::decode(&body)?;
     serde_json::from_slice(&bytes).ok()
 }
 
 /// Resolve the authorized zone's domain name via `GET /zones/{id}`, memoized by
 /// the cert's mtime so repeated `list()` calls don't re-hit the API. Returns
 /// `None` if the cert is absent/unparseable or the API doesn't answer in time.
-pub async fn resolve_zone(dirs: &PlatformDirs) -> Option<String> {
-    let cert_path = super::named::origincert(dirs);
+/// The client comes from the outbound-proxy factory, built only after a cache
+/// miss.
+pub async fn resolve_zone(state: &DaemonState) -> Option<String> {
+    let cert_path = super::named::origincert(&state.dirs);
     let mtime = std::fs::metadata(&cert_path)
         .and_then(|m| m.modified())
         .ok()?;
@@ -63,7 +65,7 @@ pub async fn resolve_zone(dirs: &PlatformDirs) -> Option<String> {
         "https://api.cloudflare.com/client/v4/zones/{}",
         token.zone_id
     );
-    let client = reqwest::Client::builder().build().ok()?;
+    let client = crate::network::client(state).await.ok()?;
     let resp = client
         .get(&url)
         .bearer_auth(&token.api_token)
@@ -120,39 +122,6 @@ fn extract_pem_block(pem: &str, name: &str) -> Option<String> {
     None
 }
 
-/// Lenient RFC 4648 base64 decode (standard alphabet; padding and whitespace are
-/// skipped). Returns `None` on an invalid character; a non-multiple-of-4 length
-/// drops the trailing partial group rather than erroring (fine for the trusted
-/// cloudflared cert). Hand-rolled (~25 lines) so this one small need doesn't add
-/// a direct `base64` dependency.
-fn base64_decode(s: &str) -> Option<Vec<u8>> {
-    let sextet = |c: u8| -> Option<u32> {
-        match c {
-            b'A'..=b'Z' => Some(u32::from(c - b'A')),
-            b'a'..=b'z' => Some(u32::from(c - b'a') + 26),
-            b'0'..=b'9' => Some(u32::from(c - b'0') + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        }
-    };
-    let mut out = Vec::new();
-    let mut acc = 0u32;
-    let mut bits = 0u32;
-    for &c in s.as_bytes() {
-        if c == b'=' || c.is_ascii_whitespace() {
-            continue;
-        }
-        acc = (acc << 6) | sextet(c)?;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push(u8::try_from((acc >> bits) & 0xFF).ok()?);
-        }
-    }
-    Some(out)
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
@@ -183,28 +152,6 @@ mod tests {
     }
 
     #[test]
-    fn base64_round_trips() {
-        for s in [
-            "",
-            "f",
-            "fo",
-            "foo",
-            "foob",
-            "fooba",
-            "foobar",
-            "hello cloudflared",
-        ] {
-            assert_eq!(base64_decode(&b64(s.as_bytes())).unwrap(), s.as_bytes());
-        }
-    }
-
-    #[test]
-    fn base64_tolerates_whitespace_and_rejects_junk() {
-        assert_eq!(base64_decode("aGVs\nbG8=").unwrap(), b"hello");
-        assert!(base64_decode("not*valid").is_none());
-    }
-
-    #[test]
     fn parses_token_from_a_cert() {
         let json = r#"{"zoneID":"abc123","accountID":"acc","apiToken":"tok"}"#;
         let pem = format!(
@@ -223,5 +170,18 @@ mod tests {
                 .is_none()
         );
         assert!(parse_origin_token("not a pem").is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_zone_cache_hit_never_builds_a_client() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state_in(tmp.path());
+        let cert = super::super::named::origincert(&state.dirs);
+        std::fs::create_dir_all(cert.parent().unwrap()).unwrap();
+        std::fs::write(&cert, "not a cert").unwrap();
+        let mtime = std::fs::metadata(&cert).unwrap().modified().unwrap();
+        *ZONE_CACHE.lock().unwrap() = Some((mtime, "example.com".to_owned()));
+        assert_eq!(resolve_zone(&state).await.as_deref(), Some("example.com"));
+        assert!(!state.network.has_snapshot());
     }
 }

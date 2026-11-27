@@ -5,19 +5,15 @@ import Spinner from "@/components/ui/Spinner.vue";
 import { useOperations } from "@/composables/useOperations";
 
 // Global "something is running" line for the SideNav footer. Long operations
-// (daemon start, service install, …) register in the singleton `useOperations`,
-// so they stay visible here even after the user navigates away from the screen
-// that started them. Shows the first active op's label + detail, with a "+N"
-// when several run at once. Renders nothing when idle.
-//
-// PHP installs are deliberately excluded: they run behind a dedicated blocking
-// progress dialog (PhpView) that owns their status, so surfacing them here too
-// would duplicate the same "Installing PHP …" line beside it.
+// (daemon start, service install, PHP install, …) register in the singleton
+// `useOperations`, so they stay visible here even after the user navigates away
+// from the screen that started them, or closes its progress dialog. Shows the
+// first active op's label + detail, with a "+N" when several run at once.
+// Renders nothing when idle.
 const { active } = useOperations();
 
-const visible = computed(() => active.value.filter((o) => o.kind !== "php-install"));
-const primary = computed(() => visible.value[0] ?? null);
-const extra = computed(() => Math.max(0, visible.value.length - 1));
+const primary = computed(() => active.value[0] ?? null);
+const extra = computed(() => Math.max(0, active.value.length - 1));
 </script>
 
 <template>

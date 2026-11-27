@@ -47,6 +47,10 @@ pub enum FixAction {
 /// hand-edited `50-local.<ext>` exists. The daemon reads them because this crate
 /// does no I/O; see [`service_override_findings`].
 ///
+/// `outbound_proxy` is a third daemon-supplied side channel: the outbound
+/// proxy's reachability and PAC state, which are not on the IPC wire. `None`
+/// skips the outbound-proxy checks; see [`outbound_proxy_findings`].
+///
 /// Findings are emitted in a stable order. When no `Warn`/`Fail` finding is
 /// produced, a single [`DiagnosisCode::AllGood`] `Ok` finding is appended so the
 /// caller always has something to show. `Option<bool>` probes that are `None`
@@ -56,10 +60,12 @@ pub fn diagnose(
     report: &StatusReport,
     path_needs_setup: Option<bool>,
     local_override_files: &[(String, String, String)],
+    outbound_proxy: Option<&OutboundProxyProbe>,
 ) -> Vec<Diagnosis> {
     let mut out = Vec::new();
 
     out.extend(port_findings(report));
+    out.extend(legacy_redirect_finding(report));
     out.extend(trust_findings(report));
     out.extend(php_state_findings(report));
     out.extend(service_findings(report));
@@ -69,6 +75,11 @@ pub fn diagnose(
     out.extend(symlink_protection_finding(report));
     out.extend(no_sites_finding(report));
     out.extend(shadow_findings(report));
+    out.extend(
+        outbound_proxy
+            .map(outbound_proxy_findings)
+            .unwrap_or_default(),
+    );
 
     if path_needs_setup == Some(true) {
         out.push(warn(
@@ -94,6 +105,50 @@ pub fn diagnose(
         });
     }
 
+    out
+}
+
+/// The daemon's outbound-proxy probe results for [`diagnose`]. Doctor-local:
+/// it is never sent over IPC.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OutboundProxyProbe {
+    /// Pre-redacted label naming the proxy and its source, such as
+    /// `http://u:***@proxy:8080 (macOS System Settings)`.
+    pub proxy: Option<String>,
+    /// Whether a TCP connection to the proxy succeeded; `None` when no proxy
+    /// resolved or the probe did not run.
+    pub reachable: Option<bool>,
+    /// System mode found a PAC script or WPAD and no static proxy.
+    pub pac_unsupported: bool,
+}
+
+/// Outbound-proxy findings: an unreachable proxy, and a PAC/WPAD setup Yerd
+/// cannot evaluate.
+fn outbound_proxy_findings(probe: &OutboundProxyProbe) -> Vec<Diagnosis> {
+    let mut out = Vec::new();
+    if probe.reachable == Some(false) {
+        let proxy = probe.proxy.as_deref().unwrap_or("the configured proxy");
+        out.push(warn(
+            DiagnosisCode::OutboundProxyUnreachable,
+            "Outbound proxy unreachable",
+            format!(
+                "Yerd's downloads and update checks go through {proxy}, which did not \
+                 accept a connection."
+            ),
+            "yerd network proxy test",
+        ));
+    }
+    if probe.pac_unsupported {
+        out.push(warn(
+            DiagnosisCode::OutboundProxyPacUnsupported,
+            "Proxy auto-config can't be used",
+            "Your system uses a PAC script or WPAD to choose a proxy, which Yerd can't \
+             evaluate, so it connects directly. Set the proxy manually, or run a local \
+             PAC-aware proxy such as px and point Yerd at it."
+                .to_owned(),
+            "yerd network proxy set http://127.0.0.1:3128",
+        ));
+    }
     out
 }
 
@@ -369,8 +424,17 @@ pub fn is_auto_fixable(code: DiagnosisCode) -> bool {
 /// misattribute to "needs elevation", so when it's detected we surface that
 /// instead and suppress the fallback advice (elevation can't bind a port
 /// another process owns). On macOS the daemon still binds the rootless ports
-/// even once elevated, so an active pf redirect (`port_redirect == Some(true)`)
-/// means 80/443 are in fact reachable - also suppressing the fallback warning.
+/// even once elevated, so an active port forwarder (`port_redirect ==
+/// Some(true)`) means 80/443 are in fact reachable - also suppressing the
+/// fallback warning.
+///
+/// A launchd socket keeps accepting even when Yerd's forwarder can't deliver
+/// (stale targets, the app moved, or only the LAN job installed, whose
+/// forwarder drops loopback connections). The bare-connect foreign-listener
+/// probe would then blame "another program", so while a Yerd redirect is
+/// installed and not delivering, the stale or fallback finding is reported
+/// instead. With only the LAN forwarder installed the probe can't tell it from
+/// another web server, so the fallback finding names both possibilities.
 fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
     let mut out = Vec::new();
     if let Some(dns_port) = report.dns_unbound {
@@ -385,7 +449,14 @@ fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
              If you changed the port, re-run Trust so the OS resolver points at the new one.",
         ));
     }
-    let foreign_listener = report.foreign_web_listener == Some(true);
+    let host_stale = redirect_stale_finding(report);
+    let redirect_installed =
+        report.port_redirect_targets.is_some() || report.lan_redirect_targets.is_some();
+    let installed_not_delivering =
+        redirect_installed && report.port_redirect != Some(true) && privileged_fallback(report);
+    let foreign_listener = report.foreign_web_listener == Some(true)
+        && host_stale.is_none()
+        && !installed_not_delivering;
     if foreign_listener {
         out.push(warn(
             DiagnosisCode::ForeignWebListener,
@@ -413,7 +484,6 @@ fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
         ));
         return out;
     }
-    let host_stale = redirect_stale_finding(report);
     let host_stale_present = host_stale.is_some();
     if let Some(finding) = host_stale {
         out.push(finding);
@@ -426,27 +496,44 @@ fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
         && !foreign_listener
         && !host_stale_present
     {
+        let mut detail = format!(
+            "HTTP {}→{}, HTTPS {}→{}: 80/443 need elevation, serving on the rootless ports.",
+            report.http.requested, report.http.bound, report.https.requested, report.https.bound
+        );
+        let remedy = if report.port_redirect_targets.is_some() {
+            detail.push_str(
+                " A Yerd port redirect is installed (the launchd port forwarder, or a legacy pf \
+                 redirect from an older Yerd) but port 80 isn't reaching Yerd.",
+            );
+            OTHER_SERVER_REMEDY
+        } else if report.foreign_web_listener == Some(true) {
+            detail.push_str(
+                " Something on this Mac answers on port 80/443 but isn't Yerd: either Yerd's LAN \
+                 forwarder (which refuses on-Mac connections) or another web server.",
+            );
+            OTHER_SERVER_REMEDY
+        } else {
+            port_fallback_remedy(report.lan_enabled)
+        };
         out.push(warn(
             DiagnosisCode::PortFallback,
             "Privileged ports not bound",
-            format!(
-                "HTTP {}→{}, HTTPS {}→{}: 80/443 need elevation, serving on the rootless ports.",
-                report.http.requested,
-                report.http.bound,
-                report.https.requested,
-                report.https.bound
-            ),
-            port_fallback_remedy(report.lan_enabled),
+            detail,
+            remedy,
         ));
     }
     out
 }
 
-/// Warn when the installed macOS loopback (`dev.yerd`) pf redirect targets a
+/// Remedy when 80 isn't reaching Yerd and another web server may hold it.
+const OTHER_SERVER_REMEDY: &str = "sudo yerd elevate ports; if another web server (Apache, nginx, \
+     Valet) holds 80/443, stop it, then re-run sudo yerd elevate ports";
+
+/// Warn when the installed macOS loopback port forwarder targets a
 /// port the daemon is no longer serving, so on-host 80/443 are black-holed even
-/// though the daemon is up. Not gated on `lan_enabled`: the loopback anchor
-/// governs host access regardless of LAN mode. `None` targets emit nothing (the
-/// anchor is not installed, unreadable, or this is not macOS).
+/// though the daemon is up. Not gated on `lan_enabled`: the loopback forwarder
+/// governs host access regardless of LAN mode. `None` targets emit nothing (no
+/// forwarder installed, unreadable, or this is not macOS).
 fn redirect_stale_finding(report: &StatusReport) -> Option<Diagnosis> {
     let t = report.port_redirect_targets?;
     if t.http == report.http.bound && t.https == report.https.bound {
@@ -456,7 +543,7 @@ fn redirect_stale_finding(report: &StatusReport) -> Option<Diagnosis> {
         DiagnosisCode::PortRedirectStale,
         "Port redirect is stale",
         format!(
-            "The pf redirect sends 80→{} and 443→{}, but Yerd is listening on {} and {}, so \
+            "The port forwarder sends 80→{} and 443→{}, but Yerd is listening on {} and {}, so \
              http/https on this Mac fail even though the daemon is running.",
             t.http, t.https, report.http.bound, report.https.bound
         ),
@@ -465,10 +552,9 @@ fn redirect_stale_finding(report: &StatusReport) -> Option<Diagnosis> {
     ))
 }
 
-/// Warn when LAN mode is on and the installed macOS LAN (`dev.yerd.lan`) pf
-/// redirect targets a port the daemon is no longer serving, so other devices
-/// reach a dead port. Gated on `lan_enabled`: `yerd lan disable` leaves the
-/// anchor in place (only `yerd unelevate lan` removes it), and a deliberately
+/// Warn when LAN mode is on and the installed macOS LAN port forwarder targets
+/// a port the daemon is no longer serving, so other devices reach a dead port.
+/// Gated on `lan_enabled`: `yerd lan disable` leaves the forwarder in place (only `yerd unelevate lan` removes it), and a deliberately
 /// disabled machine has no remote path left to break.
 fn lan_redirect_stale_finding(report: &StatusReport) -> Option<Diagnosis> {
     if !report.lan_enabled {
@@ -482,7 +568,7 @@ fn lan_redirect_stale_finding(report: &StatusReport) -> Option<Diagnosis> {
         DiagnosisCode::LanRedirectStale,
         "LAN redirect is stale",
         format!(
-            "The LAN pf redirect sends 80→{} and 443→{}, but Yerd is listening on {} and {}, so \
+            "The LAN port forwarder sends 80→{} and 443→{}, but Yerd is listening on {} and {}, so \
              other devices on your network reach a dead port.",
             t.http, t.https, report.http.bound, report.https.bound
         ),
@@ -491,10 +577,36 @@ fn lan_redirect_stale_finding(report: &StatusReport) -> Option<Diagnosis> {
     ))
 }
 
+/// Warn when a pf redirect from an older Yerd is still installed on macOS. It
+/// may still work, so nothing else flags it, but other pf users (container
+/// tools, Internet Sharing) can break it and it keeps iCloud Private Relay from
+/// working. Re-running `elevate ports` removes it and installs the launchd
+/// forwarder; that also removes a legacy LAN redirect, so LAN users need
+/// `elevate lan` afterwards.
+fn legacy_redirect_finding(report: &StatusReport) -> Option<Diagnosis> {
+    if report.legacy_pf_redirect != Some(true) {
+        return None;
+    }
+    let remedy = if report.lan_enabled {
+        "sudo yerd elevate ports, then sudo yerd elevate lan"
+    } else {
+        "sudo yerd elevate ports"
+    };
+    Some(warn(
+        DiagnosisCode::LegacyPortRedirect,
+        "Old pf port redirect still installed",
+        "Ports 80/443 still go through the pf redirect an older Yerd installed. OrbStack, \
+         Docker or Internet Sharing can break it, and it stops iCloud Private Relay from \
+         working. Re-run elevate to switch to the launchd port forwarder."
+            .to_owned(),
+        remedy,
+    ))
+}
+
 /// Remediation for the privileged-ports-not-bound warning. The loopback probe
 /// this warning is gated on measures `elevate ports`, so that is always the fix.
 /// On macOS with LAN mode on, other devices additionally need the separate
-/// `elevate lan` pf rule; on Linux `elevate lan` reuses the same `setcap` grant,
+/// `elevate lan` forwarder; on Linux `elevate lan` reuses the same `setcap` grant,
 /// so `elevate ports` alone already covers LAN and mentioning both would be
 /// redundant.
 fn port_fallback_remedy(lan_enabled: bool) -> &'static str {
@@ -627,6 +739,8 @@ mod tests {
             lan_setup_bound: None,
             port_redirect_targets: None,
             lan_redirect_targets: None,
+            legacy_pf_redirect: None,
+            node_updates: 0,
         }
     }
 
@@ -636,7 +750,7 @@ mod tests {
 
     #[test]
     fn healthy_report_is_all_good_only() {
-        let ds = diagnose(&healthy(), None, &[]);
+        let ds = diagnose(&healthy(), None, &[], None);
         assert_eq!(codes(&ds), vec![DiagnosisCode::AllGood]);
         assert!(plan_auto_fixes(&healthy()).is_empty());
     }
@@ -651,7 +765,7 @@ mod tests {
     }
 
     fn override_findings(files: &[(String, String, String)]) -> Vec<Diagnosis> {
-        diagnose(&healthy(), None, files)
+        diagnose(&healthy(), None, files, None)
             .into_iter()
             .filter(|d| d.code == DiagnosisCode::ServiceOverrideInvalid)
             .collect()
@@ -712,6 +826,7 @@ mod tests {
             &healthy(),
             None,
             &[local_file("mysql", "[mysqld]\nport = 3307\n")],
+            None,
         );
         assert!(codes(&ds).contains(&DiagnosisCode::ServiceOverrideInvalid));
         assert!(!codes(&ds).contains(&DiagnosisCode::AllGood));
@@ -720,11 +835,13 @@ mod tests {
     #[test]
     fn resolver_backup_surfaces_as_ok_finding_with_no_remedy() {
         let mut r = healthy();
-        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::ResolverBackupSaved));
+        assert!(
+            !codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::ResolverBackupSaved)
+        );
 
         r.resolver_backup =
             Some("/Library/Application Support/io.yerd.Yerd/resolver-backups/test-1.conf".into());
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         let finding = ds
             .iter()
             .find(|d| d.code == DiagnosisCode::ResolverBackupSaved)
@@ -743,12 +860,13 @@ mod tests {
     fn symlink_protection_off_surfaces_as_ok_finding_with_no_remedy() {
         let mut r = healthy();
         assert!(
-            !codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::SymlinkProtectionDisabled),
+            !codes(&diagnose(&r, None, &[], None))
+                .contains(&DiagnosisCode::SymlinkProtectionDisabled),
             "on by default surfaces nothing"
         );
 
         r.symlink_protection = false;
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         let finding = ds
             .iter()
             .find(|d| d.code == DiagnosisCode::SymlinkProtectionDisabled)
@@ -765,13 +883,13 @@ mod tests {
     #[test]
     fn shadowed_domain_warns_once_per_losing_site() {
         let mut r = healthy();
-        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::DomainShadowed));
+        assert!(!codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::DomainShadowed));
 
         r.shadows = vec![yerd_ipc::DomainShadow {
             site: "blog".into(),
             shadowed_by: "shop".into(),
         }];
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         let finding = ds
             .iter()
             .find(|d| d.code == DiagnosisCode::DomainShadowed)
@@ -798,7 +916,7 @@ mod tests {
                 shadowed_by: "proxy:reverb".into(),
             },
         ];
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         let details: Vec<&str> = ds
             .iter()
             .filter(|d| d.code == DiagnosisCode::DomainShadowed)
@@ -815,13 +933,13 @@ mod tests {
         r.http.requested = 80;
         r.http.bound = 8080;
         r.http.fell_back = true;
-        assert!(codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PortFallback));
+        assert!(codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::PortFallback));
 
         let mut r2 = healthy();
         r2.http.requested = 8080;
         r2.http.bound = 8081;
         r2.http.fell_back = true;
-        assert!(!codes(&diagnose(&r2, None, &[])).contains(&DiagnosisCode::PortFallback));
+        assert!(!codes(&diagnose(&r2, None, &[], None)).contains(&DiagnosisCode::PortFallback));
     }
 
     #[test]
@@ -830,7 +948,7 @@ mod tests {
         r.http.requested = 80;
         r.http.bound = 8080;
         r.http.fell_back = true;
-        let remedy = diagnose(&r, None, &[])
+        let remedy = diagnose(&r, None, &[], None)
             .into_iter()
             .find(|d| d.code == DiagnosisCode::PortFallback)
             .and_then(|d| d.remedy)
@@ -846,7 +964,7 @@ mod tests {
         #[cfg(target_os = "macos")]
         assert!(
             lan.contains("elevate lan"),
-            "macOS LAN needs the separate pf rule"
+            "macOS LAN needs the separate LAN forwarder"
         );
         #[cfg(not(target_os = "macos"))]
         assert!(
@@ -868,14 +986,14 @@ mod tests {
             http: 8080,
             https: 8443,
         });
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(cs.contains(&DiagnosisCode::WebPortsUnbound));
         assert!(!cs.contains(&DiagnosisCode::PortFallback));
         assert!(!cs.contains(&DiagnosisCode::AllGood));
     }
 
     /// Build the rootless-serving fallback state: the daemon requested 80/443 but
-    /// bound the rootless pair, with the pf redirect live.
+    /// bound the rootless pair, with the port forwarder live.
     fn rootless_fallback() -> StatusReport {
         let mut r = healthy();
         r.http = PortStatus {
@@ -899,7 +1017,7 @@ mod tests {
             http: 8080,
             https: 8443,
         });
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(!cs.contains(&DiagnosisCode::PortRedirectStale));
         assert!(!cs.contains(&DiagnosisCode::LanRedirectStale));
     }
@@ -912,7 +1030,7 @@ mod tests {
             http: 9090,
             https: 9443,
         });
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         let cs = codes(&ds);
         assert!(cs.contains(&DiagnosisCode::PortRedirectStale));
         assert!(!cs.contains(&DiagnosisCode::PortFallback));
@@ -930,6 +1048,40 @@ mod tests {
     /// bound rootless ports (so PortRedirectStale/PortFallback stay silent), but
     /// the LAN identity anchor still points 80/443 at themselves.
     #[test]
+    fn legacy_pf_redirect_warns_with_scope_aware_remedy() {
+        let cases = [
+            (None, false, None),
+            (Some(false), true, None),
+            (Some(true), false, Some("sudo yerd elevate ports")),
+            (
+                Some(true),
+                true,
+                Some("sudo yerd elevate ports, then sudo yerd elevate lan"),
+            ),
+        ];
+        for (legacy, lan_enabled, want) in cases {
+            let mut r = healthy();
+            r.legacy_pf_redirect = legacy;
+            r.lan_enabled = lan_enabled;
+            let ds = diagnose(&r, None, &[], None);
+            let got = ds
+                .iter()
+                .find(|d| d.code == DiagnosisCode::LegacyPortRedirect)
+                .map(|d| (d.severity, d.remedy.as_deref()));
+            assert_eq!(
+                got,
+                want.map(|remedy| (Severity::Warn, Some(remedy))),
+                "legacy={legacy:?} lan={lan_enabled}"
+            );
+            assert_eq!(
+                codes(&ds).contains(&DiagnosisCode::AllGood),
+                want.is_none(),
+                "legacy={legacy:?} lan={lan_enabled}"
+            );
+        }
+    }
+
+    #[test]
     fn lan_identity_anchor_warns_only_lan_stale() {
         let mut r = rootless_fallback();
         r.lan_enabled = true;
@@ -941,7 +1093,7 @@ mod tests {
             http: 80,
             https: 443,
         });
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         let cs = codes(&ds);
         assert!(cs.contains(&DiagnosisCode::LanRedirectStale));
         assert!(!cs.contains(&DiagnosisCode::PortRedirectStale));
@@ -966,7 +1118,7 @@ mod tests {
             http: 80,
             https: 443,
         });
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(!cs.contains(&DiagnosisCode::LanRedirectStale));
     }
 
@@ -974,7 +1126,7 @@ mod tests {
     fn dns_unbound_warns_independently_of_web() {
         let mut r = healthy();
         r.dns_unbound = Some(1053);
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         let cs = codes(&ds);
         assert!(cs.contains(&DiagnosisCode::DnsPortUnbound));
         assert!(!cs.contains(&DiagnosisCode::AllGood));
@@ -993,7 +1145,7 @@ mod tests {
             http: 8080,
             https: 8443,
         });
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(cs.contains(&DiagnosisCode::DnsPortUnbound));
         assert!(cs.contains(&DiagnosisCode::WebPortsUnbound));
     }
@@ -1005,13 +1157,13 @@ mod tests {
         r.http.bound = 8080;
         r.http.fell_back = true;
         r.port_redirect = Some(true);
-        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PortFallback));
+        assert!(!codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::PortFallback));
 
         r.port_redirect = Some(false);
-        assert!(codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PortFallback));
+        assert!(codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::PortFallback));
 
         r.port_redirect = None;
-        assert!(codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PortFallback));
+        assert!(codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::PortFallback));
     }
 
     #[test]
@@ -1021,7 +1173,7 @@ mod tests {
         r.http.bound = 8080;
         r.http.fell_back = true;
         r.foreign_web_listener = Some(true);
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(cs.contains(&DiagnosisCode::ForeignWebListener));
         assert!(
             !cs.contains(&DiagnosisCode::PortFallback),
@@ -1030,19 +1182,102 @@ mod tests {
         assert!(!cs.contains(&DiagnosisCode::AllGood));
 
         r.foreign_web_listener = Some(false);
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(!cs.contains(&DiagnosisCode::ForeignWebListener));
         assert!(cs.contains(&DiagnosisCode::PortFallback));
 
         r.foreign_web_listener = None;
-        assert!(codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PortFallback));
+        assert!(codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::PortFallback));
+    }
+
+    #[test]
+    fn installed_redirect_suppresses_foreign_listener() {
+        let bound = PortRedirectTargets {
+            http: 8080,
+            https: 8443,
+        };
+        let stale = PortRedirectTargets {
+            http: 9080,
+            https: 9443,
+        };
+
+        let mut r = rootless_fallback();
+        r.port_redirect = Some(false);
+        r.foreign_web_listener = Some(true);
+        r.port_redirect_targets = Some(stale);
+        let cs = codes(&diagnose(&r, None, &[], None));
+        assert!(cs.contains(&DiagnosisCode::PortRedirectStale));
+        assert!(!cs.contains(&DiagnosisCode::ForeignWebListener));
+        assert!(!cs.contains(&DiagnosisCode::PortFallback));
+
+        r.port_redirect_targets = Some(bound);
+        let ds = diagnose(&r, None, &[], None);
+        let fallback = ds
+            .iter()
+            .find(|d| d.code == DiagnosisCode::PortFallback)
+            .expect("installed but not delivering -> fallback");
+        assert!(fallback
+            .detail
+            .contains("A Yerd port redirect is installed"));
+        assert!(fallback
+            .remedy
+            .as_deref()
+            .is_some_and(|m| m.contains("Apache")));
+        assert!(!codes(&ds).contains(&DiagnosisCode::ForeignWebListener));
+
+        r.port_redirect_targets = None;
+        r.lan_redirect_targets = Some(bound);
+        r.lan_enabled = true;
+        let ds = diagnose(&r, None, &[], None);
+        let fallback = ds
+            .iter()
+            .find(|d| d.code == DiagnosisCode::PortFallback)
+            .expect("only LAN installed -> fallback naming both possibilities");
+        assert!(!fallback
+            .detail
+            .contains("A Yerd port redirect is installed"));
+        assert!(fallback.detail.contains("LAN forwarder"));
+        assert!(fallback.detail.contains("another web server"));
+        assert_eq!(fallback.remedy.as_deref(), Some(OTHER_SERVER_REMEDY));
+        assert!(!codes(&ds).contains(&DiagnosisCode::ForeignWebListener));
+
+        r.foreign_web_listener = Some(false);
+        let ds = diagnose(&r, None, &[], None);
+        let fallback = ds
+            .iter()
+            .find(|d| d.code == DiagnosisCode::PortFallback)
+            .expect("only LAN installed, nothing on 80 -> plain fallback");
+        assert!(!fallback.detail.contains("isn't Yerd"));
+        assert_eq!(fallback.remedy.as_deref(), Some(port_fallback_remedy(true)));
+        r.foreign_web_listener = Some(true);
+
+        r.lan_redirect_targets = None;
+        r.lan_enabled = false;
+        let cs = codes(&diagnose(&r, None, &[], None));
+        assert!(cs.contains(&DiagnosisCode::ForeignWebListener));
+        assert!(!cs.contains(&DiagnosisCode::PortFallback));
+    }
+
+    #[test]
+    fn installed_redirect_without_fallback_keeps_foreign_listener() {
+        let mut r = healthy();
+        r.lan_enabled = true;
+        r.port_redirect = Some(false);
+        r.foreign_web_listener = Some(true);
+        r.lan_redirect_targets = Some(PortRedirectTargets {
+            http: r.http.bound,
+            https: r.https.bound,
+        });
+        let cs = codes(&diagnose(&r, None, &[], None));
+        assert!(cs.contains(&DiagnosisCode::ForeignWebListener));
+        assert!(!cs.contains(&DiagnosisCode::AllGood));
     }
 
     #[test]
     fn foreign_web_listener_warns_even_without_fallback() {
         let mut r = healthy();
         r.foreign_web_listener = Some(true);
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(cs.contains(&DiagnosisCode::ForeignWebListener));
         assert!(!cs.contains(&DiagnosisCode::AllGood));
     }
@@ -1052,7 +1287,7 @@ mod tests {
         let mut r = healthy();
         r.ca.trusted_system = None;
         r.resolver_installed = None;
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(!cs.contains(&DiagnosisCode::CaNotTrusted));
         assert!(!cs.contains(&DiagnosisCode::ResolverNotInstalled));
     }
@@ -1062,7 +1297,7 @@ mod tests {
         let mut r = healthy();
         r.ca.trusted_system = Some(false);
         r.resolver_installed = Some(false);
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(cs.contains(&DiagnosisCode::CaNotTrusted));
         assert!(cs.contains(&DiagnosisCode::ResolverNotInstalled));
     }
@@ -1071,7 +1306,7 @@ mod tests {
     fn browser_untrusted_warns() {
         let mut r = healthy();
         r.ca.browser_trust = Some(BrowserTrust::Untrusted);
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         assert!(ds.iter().any(
             |d| d.code == DiagnosisCode::CaNotTrustedByBrowsers && d.severity == Severity::Warn
         ));
@@ -1082,7 +1317,7 @@ mod tests {
     fn browser_tool_missing_warns_with_install_hint() {
         let mut r = healthy();
         r.ca.browser_trust = Some(BrowserTrust::ToolMissing);
-        let d = diagnose(&r, None, &[])
+        let d = diagnose(&r, None, &[], None)
             .into_iter()
             .find(|d| d.code == DiagnosisCode::CaNotTrustedByBrowsers)
             .expect("tool-missing warns");
@@ -1124,16 +1359,20 @@ mod tests {
     fn browser_trusted_or_unknown_is_silent() {
         let mut r = healthy();
         r.ca.browser_trust = Some(BrowserTrust::Trusted);
-        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::CaNotTrustedByBrowsers));
+        assert!(
+            !codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::CaNotTrustedByBrowsers)
+        );
         r.ca.browser_trust = None;
-        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::CaNotTrustedByBrowsers));
+        assert!(
+            !codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::CaNotTrustedByBrowsers)
+        );
     }
 
     #[test]
     fn no_php_suppresses_default_not_installed() {
         let mut r = healthy();
         r.php.clear();
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(cs.contains(&DiagnosisCode::NoPhpInstalled));
         assert!(!cs.contains(&DiagnosisCode::DefaultPhpNotInstalled));
     }
@@ -1142,7 +1381,7 @@ mod tests {
     fn default_not_installed_when_other_versions_present() {
         let mut r = healthy();
         r.php[0].version = PhpVersion::new(8, 4);
-        let cs = codes(&diagnose(&r, None, &[]));
+        let cs = codes(&diagnose(&r, None, &[], None));
         assert!(cs.contains(&DiagnosisCode::DefaultPhpNotInstalled));
         assert!(!cs.contains(&DiagnosisCode::NoPhpInstalled));
     }
@@ -1151,7 +1390,7 @@ mod tests {
     fn failed_pool_is_fail_and_auto_fixable() {
         let mut r = healthy();
         r.php[0].state = PoolRunState::Failed;
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         assert!(codes(&ds).contains(&DiagnosisCode::FpmPoolFailed));
         assert!(ds
             .iter()
@@ -1168,7 +1407,7 @@ mod tests {
     fn php_ca_untrusted_warns_and_plans_rebuild() {
         let mut r = healthy();
         r.ca.php_trusts_ca = Some(false);
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         assert!(ds
             .iter()
             .any(|d| d.code == DiagnosisCode::PhpCaNotTrusted && d.severity == Severity::Warn));
@@ -1180,9 +1419,9 @@ mod tests {
     fn php_ca_none_or_true_emits_no_finding() {
         let mut r = healthy();
         r.ca.php_trusts_ca = None;
-        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PhpCaNotTrusted));
+        assert!(!codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::PhpCaNotTrusted));
         r.ca.php_trusts_ca = Some(true);
-        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PhpCaNotTrusted));
+        assert!(!codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::PhpCaNotTrusted));
         assert!(!plan_auto_fixes(&r).contains(&FixAction::RebuildPhpCaBundle));
     }
 
@@ -1190,7 +1429,7 @@ mod tests {
     fn update_available_is_informational_and_still_all_good() {
         let mut r = healthy();
         r.php[0].update_available = Some("8.5.7".into());
-        let ds = diagnose(&r, None, &[]);
+        let ds = diagnose(&r, None, &[], None);
         let cs = codes(&ds);
         assert!(cs.contains(&DiagnosisCode::PhpUpdateAvailable));
         assert!(cs.contains(&DiagnosisCode::AllGood));
@@ -1200,23 +1439,86 @@ mod tests {
     fn no_sites_is_informational() {
         let mut r = healthy();
         r.sites = SiteCounts::default();
-        assert!(codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::NoSites));
+        assert!(codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::NoSites));
     }
 
     #[test]
     fn problems_suppress_all_good() {
         let mut r = healthy();
         r.ca.trusted_system = Some(false);
-        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::AllGood));
+        assert!(!codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::AllGood));
     }
 
     #[test]
     fn bin_dir_not_on_path_warns_only_on_some_true() {
         let r = healthy();
-        let on = codes(&diagnose(&r, Some(true), &[]));
+        let on = codes(&diagnose(&r, Some(true), &[], None));
         assert!(on.contains(&DiagnosisCode::BinDirNotOnPath));
         assert!(!on.contains(&DiagnosisCode::AllGood));
-        assert!(!codes(&diagnose(&r, Some(false), &[])).contains(&DiagnosisCode::BinDirNotOnPath));
-        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::BinDirNotOnPath));
+        assert!(
+            !codes(&diagnose(&r, Some(false), &[], None)).contains(&DiagnosisCode::BinDirNotOnPath)
+        );
+        assert!(!codes(&diagnose(&r, None, &[], None)).contains(&DiagnosisCode::BinDirNotOnPath));
+    }
+
+    #[test]
+    fn outbound_proxy_findings_table() {
+        let label = Some("http://u:***@proxy:8080 (manual setting)".to_owned());
+        let cases: [(Option<OutboundProxyProbe>, &[DiagnosisCode]); 6] = [
+            (None, &[DiagnosisCode::AllGood]),
+            (
+                Some(OutboundProxyProbe {
+                    proxy: label.clone(),
+                    reachable: Some(true),
+                    pac_unsupported: false,
+                }),
+                &[DiagnosisCode::AllGood],
+            ),
+            (
+                Some(OutboundProxyProbe {
+                    proxy: label.clone(),
+                    reachable: Some(false),
+                    pac_unsupported: false,
+                }),
+                &[DiagnosisCode::OutboundProxyUnreachable],
+            ),
+            (
+                Some(OutboundProxyProbe {
+                    proxy: label.clone(),
+                    reachable: None,
+                    pac_unsupported: false,
+                }),
+                &[DiagnosisCode::AllGood],
+            ),
+            (
+                Some(OutboundProxyProbe {
+                    proxy: None,
+                    reachable: None,
+                    pac_unsupported: true,
+                }),
+                &[DiagnosisCode::OutboundProxyPacUnsupported],
+            ),
+            (
+                Some(OutboundProxyProbe {
+                    proxy: None,
+                    reachable: None,
+                    pac_unsupported: false,
+                }),
+                &[DiagnosisCode::AllGood],
+            ),
+        ];
+        for (probe, expected) in cases {
+            let ds = diagnose(&healthy(), None, &[], probe.as_ref());
+            assert_eq!(codes(&ds), expected, "{probe:?}");
+        }
+        let probe = OutboundProxyProbe {
+            proxy: label,
+            reachable: Some(false),
+            pac_unsupported: false,
+        };
+        let ds = diagnose(&healthy(), None, &[], Some(&probe));
+        let finding = ds.first().unwrap();
+        assert!(finding.detail.contains("http://u:***@proxy:8080"));
+        assert_eq!(finding.remedy.as_deref(), Some("yerd network proxy test"));
     }
 }

@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU16};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -24,6 +24,7 @@ use yerd_proxy::SharedRouter;
 
 use crate::backend_resolver::DaemonPhpManager;
 use crate::detect_cache::DetectCache;
+use crate::ffi_cache::FfiCache;
 
 /// Mail-capture runtime fact captured at startup: whether the SMTP listener
 /// actually bound. `Status` sources `enabled`/`port` from the live config (so a
@@ -77,6 +78,23 @@ pub struct DaemonState {
     /// from the last manifest poll. Populated by the periodic checker /
     /// `CheckPhpUpdates` and served (no network) on `ListPhp`.
     pub php_updates: RwLock<HashMap<PhpVersion, (String, u32)>>,
+    /// Node update cache: major → newest installable patch from the last
+    /// release-index fetch. Populated by the periodic checker / `AvailableNode`
+    /// and served (no network) on `ListNode`.
+    pub node_updates: RwLock<std::collections::BTreeMap<u32, String>>,
+    /// Installed Node releases with a newer patch in `node_updates`, kept by
+    /// `node_updates::recount` so `Status` never touches the disk for it.
+    pub node_update_count: std::sync::atomic::AtomicU32,
+    /// Tool update cache: tool id (or `cloudflared`) to the newest published
+    /// version at the last `tool_updates` poll. Served (no network) on
+    /// `ListTools` and `TunnelStatus`.
+    pub tool_updates: RwLock<std::collections::BTreeMap<String, String>>,
+    /// Release-notes cache: when it was filled and the reply payload. Served
+    /// while fresh, and as a stale fallback when a refresh fails.
+    pub release_notes_cache: RwLock<Option<(Instant, crate::about::ReleaseNotesPayload)>>,
+    /// Contributors cache: when it was filled and the human contributors.
+    /// Served while fresh, and as a stale fallback when a refresh fails.
+    pub contributors_cache: RwLock<Option<(Instant, Vec<yerd_ipc::Contributor>)>>,
     /// Yerd self-update cache: the releases seen at the last GitHub poll. Empty
     /// until the first successful fetch. Populated by the periodic checker /
     /// `CheckUpdate` and served (no network) when a live fetch fails.
@@ -101,6 +119,28 @@ pub struct DaemonState {
     /// of a system binary runs once rather than on every tunnel action or
     /// status poll. See `tunnel::resolved_cloudflared`.
     pub cloudflared_resolution: RwLock<Option<crate::tunnel::install::Resolved>>,
+    /// The loopback port of the tunnel origin listener `cloudflared` dials, or
+    /// `None` when binding it failed at startup (sharing is then unavailable).
+    pub tunnel_origin_port: Option<u16>,
+    /// The tunnel listener's `public host -> site` route map, rebuilt by
+    /// `tunnel::rebuild_routes` and read per request by the listener. Its lock
+    /// is a leaf: never held across another lock.
+    pub tunnel_routes: yerd_proxy::SharedTunnelRoutes,
+    /// Serializes `tunnel::rebuild_routes`, so two concurrent rebuilds can't
+    /// swap the route map in an order that loses the newer one.
+    pub tunnel_routes_rebuild: Mutex<()>,
+    /// Source of a fresh loopback address for a `cloudflared` metrics server,
+    /// called on every tunnel spawn (passed as `TUNNEL_METRICS` and probed for
+    /// `/ready`). Production uses `tunnel::pick_metrics_addr`; tests replace it
+    /// with a listener that answers the probe.
+    pub tunnel_metrics_addr: yerd_tunnel::MetricsAddrSource,
+    /// Share preflight warnings by site name, computed when a share starts and
+    /// read (never recomputed) when tunnel state is reported.
+    pub share_warnings: Mutex<HashMap<String, Vec<String>>>,
+    /// Bumped under `tunnel_mutate` whenever the named tunnel is stopped, so a
+    /// background start queued before the stop sees it is stale and does not
+    /// relaunch the connector.
+    pub named_stop_epoch: AtomicU64,
     /// Captured-mail store (the built-in SMTP sink writes here; IPC reads/clears
     /// it). Always present even when capture is disabled, so stored mail remains
     /// listable/clearable after the server is turned off.
@@ -116,7 +156,7 @@ pub struct DaemonState {
     /// Port the HTTP→HTTPS redirect `Location` header currently advertises.
     /// Starts at `https.bound`; when `https.fell_back`, a background prober
     /// (`redirect_probe_handle` in `lib.rs`) flips it to `https.requested`
-    /// once it observes a live privileged-port redirect (macOS `pf`, via
+    /// once it observes a live privileged-port redirect (the macOS port forwarder, via
     /// `yerd elevate ports`) via `yerd_platform::PortRedirector::is_active`,
     /// and back when that redirect goes away - so the proxy can advertise a
     /// portless `https://site.test` without restarting. Shared with
@@ -151,24 +191,42 @@ pub struct DaemonState {
     /// Web-root detection cache, shared between the mutation path and the
     /// filesystem watcher so repeated parked-root rescans stay cheap.
     pub detect_cache: Arc<DetectCache>,
+    /// Which installed PHP versions include the FFI extension, cached per
+    /// version on the CLI binary's freshness stamp.
+    pub ffi_cache: Arc<FfiCache>,
+    /// Host probe for libvips, reported next to the GUI's FFI toggle.
+    pub libvips_probe: Arc<dyn yerd_platform::LibvipsProbe + Send + Sync>,
+    /// Outbound proxy state behind the client factory (`crate::network`).
+    pub network: crate::network::NetworkRuntime,
     /// Pinged after a config mutation commits so the filesystem watcher
     /// reconciles its watch set (e.g. a newly-parked root) without waiting for
     /// an unrelated filesystem event.
     pub watch_dirty: Notify,
+    /// Set when startup reconciled the config but could not save it. The
+    /// filesystem watcher starts dirty from this, so it keeps retrying the save
+    /// on each wake until one succeeds.
+    pub config_unsaved: std::sync::atomic::AtomicBool,
     /// Dump-telemetry ring buffer + server control, shared with the dump-server
     /// task and the IPC dump handlers.
     pub dumps: Arc<crate::dump_server::DumpStore>,
-    /// Serializes `php_install::reconcile_shims` runs. IPC dispatch is
-    /// `tokio::spawn`-per-connection, so two clients can reconcile the `{data}/bin`
-    /// shims concurrently; this guard keeps the (sync) scan→prune from interleaving.
+    /// Serializes every `{data}/bin` reconcile: the PHP shims, the dev-tool
+    /// shims, and the service client shims (plus the `cloudflared` link). IPC
+    /// dispatch is `tokio::spawn`-per-connection, so two clients can reconcile
+    /// concurrently; this guard keeps the (sync) scan→prune from interleaving.
     pub shim_reconcile: Mutex<()>,
     /// Serializes dev-tool (`composer`/`node`/`bun`) install/uninstall mutations.
     /// IPC dispatch is `tokio::spawn`-per-connection, so two clients could swap
     /// `{data}/tools/<id>` concurrently; this guard makes commit+reconcile atomic.
     pub tool_mutate: Mutex<()>,
-    /// Serializes `cloudflared` install (and Phase-2 login) mutations of
-    /// `{data}/tunnel`, so two clients can't clobber the staging binary.
+    /// Serializes Cloudflare account and named-tunnel mutations of
+    /// `{data}/tunnel` (login, logout, named setup), and gates the `cloudflared`
+    /// uninstall so it never runs mid-mutation. The `cloudflared` install itself
+    /// runs under `tool_mutate` like every tool.
     pub tunnel_mutate: Mutex<()>,
+    /// Serialises zrok environment mutations (`zrok2 enable`/`disable` in
+    /// `{data}/tunnel/zrok`). Separate from `tunnel_mutate` so a minute-long
+    /// enable never blocks Cloudflare actions.
+    pub zrok_mutate: Mutex<()>,
     /// Serializes PHP-version install/update mutations. IPC dispatch is
     /// `tokio::spawn`-per-connection (and the streamed install is its own task),
     /// so two clients could install concurrently; the staging dir is keyed by
@@ -187,6 +245,13 @@ pub struct DaemonState {
     /// Site names held by an in-flight `CreateSite` job, so two concurrent
     /// creates can't both scaffold (then fight over registering) the same name.
     pub reserved_names: Mutex<HashSet<String>>,
+    /// Serializes every read-modify-write of a project's `.yerd.toml` (the
+    /// write-back sync, export, and the `yerd init` wizard's first write).
+    pub project_file_mutate: Mutex<()>,
+    /// Serializes the app-side URL syncs (`WordPress` `siteurl`/`home`,
+    /// `CodeIgniter` `app.baseURL`), so a startup rename sync and a
+    /// post-mutation sync can't interleave their reads and writes.
+    pub url_sync: Mutex<()>,
     /// WordPress core-version availability cache (the WordPress wizard's
     /// version dropdown): the last successful `meta/wordpress-versions.json`
     /// fetch, plus when it happened so a request can decide whether to
@@ -213,6 +278,18 @@ pub struct DaemonState {
     /// on the same router-rebuild hook as `wordpress_sites` rather than detected
     /// on every `ListSites` poll - see [`crate::laravel_detect`].
     pub laravel_sites: Arc<RwLock<HashMap<String, bool>>>,
+    /// In-memory cache of each site's detected framework (site name →
+    /// framework, recognised sites only), refreshed on the same router-rebuild
+    /// hook as `wordpress_sites`.
+    pub framework_sites: Arc<RwLock<HashMap<String, yerd_core::SiteFramework>>>,
+    /// Favourite (starred) site names, lowercased: a copy of the config's
+    /// `[favourites]` refreshed after each `SetSiteFavourite` save, so
+    /// `ListSites` never takes the config mutex.
+    pub favourite_sites: RwLock<std::collections::BTreeSet<String>>,
+    /// When each site was added: a copy of the config's `[added]` refreshed
+    /// after every config commit that can change it (a mutation or a
+    /// filesystem-watcher rescan), so `ListSites` never takes the config mutex.
+    pub site_added: RwLock<yerd_config::AddedSection>,
     /// The host's LAN IPv4 discovered **once at startup** when LAN mode is on
     /// (the same value baked into the bootstrap TLS cert's iPAddress SAN). All
     /// runtime consumers (`DaemonInfo`, status, `remote-setup` URL) read this

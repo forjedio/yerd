@@ -21,15 +21,18 @@ crates/yerd-proxy/src/
 ├── error.rs         # ProxyError
 ├── traits.rs        # CertStore + BackendResolver (daemon-injected seams)
 ├── tls.rs           # rustls ServerConfig build + SNI cert resolution
-├── server.rs        # ProxyServer::serve - accept loops, dispatch
+├── server.rs        # ProxyServer::serve / serve_tunnel - accept loops, dispatch
 ├── pure/            # synchronous, runtime-free, I/O-free helpers
 │   ├── mod.rs
-│   ├── cgi_params.rs   # build the CGI/1.1 param list for FastCGI
+│   ├── base64.rs       # standard base64 decoder (basic auth, cloudflared credentials)
+│   ├── cgi_params.rs   # build the CGI/1.1 param list for FastCGI (+ PrependParams)
 │   ├── cgi_head.rs     # incremental CGI response-head parsing (streaming)
 │   ├── fcgi_codec.rs   # FastCGI record framing (encode/decode)
 │   ├── query.rs        # login-token query-string helpers (one-click WP admin)
+│   ├── response_headers.rs # apply a site's custom response headers (replace semantics)
 │   ├── route_rules.rs  # longest-prefix match of a site's routing rules
 │   ├── try_files.rs    # static-file/directory-index candidate resolution + MIME map
+│   ├── tunnel.rs       # tunnel listener helpers: host normalization, basic-auth parse/compare
 │   ├── unbound.rs      # resolver-off localhost access (header / switch URL / cookie / picker)
 │   └── redirect.rs     # HTTP → HTTPS upgrade + trailing-slash directory Location
 └── forward/         # async per-backend forwarding I/O
@@ -107,6 +110,26 @@ The `document_root` parameter is the directory actually served, which is the sit
 
 Beyond the script vars, `build_params` emits the standard CGI/1.1 set (`GATEWAY_INTERFACE`, `SERVER_PROTOCOL`, `REQUEST_METHOD`, `QUERY_STRING`, `DOCUMENT_ROOT`, `REMOTE_ADDR`/`REMOTE_PORT`, `SERVER_ADDR`/`SERVER_PORT`, `SERVER_SOFTWARE = yerd`). `HTTPS=on` is added only when the request arrived on the TLS listener. `Host` is surfaced as both `SERVER_NAME` and `HTTP_HOST`; `Content-Type` and `Content-Length` are emitted un-prefixed (FPM expects them that way). Every other header is translated to the generic `HTTP_*` form (uppercased, `-` → `_`), with `Host`/`Content-Type`/`Content-Length` explicitly skipped so they are not double-emitted.
 
+A per-request `auto_prepend_file` override travels as `prepend: Option<PrependParams>`:
+
+```rust
+pub enum PrependParams<'a> {
+    AutoLogin { prepend_script: &'a Path, target_user: &'a str },
+    PublicUrl { prepend_script: &'a Path, url: &'a str },
+}
+```
+
+Both emit `PHP_VALUE auto_prepend_file=<script>` plus the param their script gates on: `YERD_LOGIN_USER` for the [one-click WordPress login](#one-click-wordpress-admin-login), `YERD_PUBLIC_URL` for the [tunnel's WordPress public-URL override](#the-tunnel-listener-proxyserver-serve-tunnel). One enum means a request can never carry two prepends. FPM keeps a `PHP_VALUE` on the worker that served it, so each script returns immediately unless its own gate param is present.
+
+### `tunnel` - tunnel listener helpers
+
+Pure helpers for [`serve_tunnel`](#the-tunnel-listener-proxyserver-serve-tunnel):
+
+- `normalize_host(raw)` - strip a port and a trailing dot and lowercase; `None` for empty input or whitespace. Route-map keys and incoming `Host` headers both go through it.
+- `basic_auth_password(header)` - case-insensitive `Basic` scheme, base64 decode (`pure::base64::decode`), split at the first `:`. **The username is ignored.**
+- `password_matches(given, expected)` - constant-time comparison through `subtle::ConstantTimeEq`.
+- `keep_out_of_shared_caches(headers)` - applied to every response behind a share password: drops `public`, `s-maxage` and a field-scoped `private="..."` from `Cache-Control`, adds a bare `private` unless `no-store` or a bare `private` is there (an unparseable value becomes `private, no-store`), and removes `CDN-Cache-Control`, `Cloudflare-CDN-Cache-Control` and `Surrogate-Control`. The edge's cache key ignores `Authorization`, so a shared-cacheable authenticated response would otherwise bypass the gate.
+
 ### `redirect` - HTTP → HTTPS upgrade URI {#redirect}
 
 `build_redirect_uri(host, path_and_query, https_port)` constructs the `Location` for the permanent redirect used when a secure site is hit on the plain-HTTP listener:
@@ -145,6 +168,16 @@ pub fn match_route<'a>(rules: &'a [RouteRule], path: &str) -> Option<&'a RouteRu
 Longest-prefix wins, and ties cannot occur because duplicate prefixes per site are rejected when the rule is added. Callers pass the raw, case-sensitive, percent-encoded `uri.path()` with **no** normalization, exactly as `match_rule` does: an under-match (an encoded path failing to match) is acceptable for a dev tool, and the matcher never over-matches.
 
 Matching is the whole of the pure half. Whether the matched target is a PHP script or a static document is derived at the dispatch site from `try_files::is_php_source`, so this module needs to know neither.
+
+### `response_headers` - applying a site's custom headers
+
+```rust
+pub fn apply<B>(resp: &mut http::Response<B>, configured: &[ResponseHeader])
+```
+
+Each configured [`ResponseHeader`](./yerd-core#response-header) is set with `HeaderMap::insert`, which drops every existing value of that name (case-insensitively, since `HeaderName` is lowercase-normalised) and inserts the configured one: **replace** semantics, so the header appears exactly once. Only the header map is touched, so bodies keep streaming.
+
+It is called through `finish_site_response`, which `serve_routed` (shared by the main listeners' `dispatch` and the tunnel's `dispatch_tunnel`) and `dispatch`'s HTTP→HTTPS redirect both use. `resolve_request` and `dispatch_tunnel` take a shared (`Arc`) handle to the site's list while they hold the router read guard, and every response a site produces passes through `apply`: PHP (FastCGI and FrankenPHP), static files, directory redirects, `403`/`405`/`501`, the HTTP→HTTPS `301`, WebSocket `101`s, and the `500` built from a failed backend (the error is turned into that `500` before the headers are applied). The tunnel's share-password `401` gets only the CORS (`Access-Control-*`) ones, via `apply_cors`: they are meant to be public, cannot touch the challenge or its caching, and let a cross-origin caller read the `401`, while every other configured header stays behind the password. The one exemption is a path-prefix proxy rule, whose upstream response gets no site headers (though on a password-protected share `dispatch_tunnel` still runs it through `keep_out_of_shared_caches`). A whole-host proxy's responses (forwarded responses including `101`s, the `502` for a dead upstream, and the HTTP→HTTPS `301`) also pass through `finish_site_response`, with the proxy's own headers, which `resolve_request` carries on `Routed::Proxy`.
 
 ### `cgi_head` - incremental response-head parsing {#cgi_head-incremental-response-head-parsing}
 
@@ -202,6 +235,11 @@ pub trait BackendResolver: Send + Sync + 'static {
     async fn allows_direct_script_execution(&self, site: &yerd_core::Site) -> bool {
         false
     }
+
+    /// Whether `site` is a WordPress site - defaults to `false`.
+    async fn is_wordpress(&self, site: &yerd_core::Site) -> bool {
+        false
+    }
 }
 
 pub trait LoginTokenConsumer: Send + Sync + 'static {
@@ -212,6 +250,7 @@ pub trait LoginTokenConsumer: Send + Sync + 'static {
 - **`CertStore` is synchronous** because rustls's `ResolvesServerCert::resolve` is synchronous - it is called inside the TLS handshake. The daemon's impl is expected to hold the active cert material in an in-memory map and refresh it out-of-band. See [HTTPS & Certificates](../../guide/https).
 - **`BackendResolver` is async** and consulted once per request, mapping the routed `&Site` to a concrete `Backend`. The daemon's impl typically calls `yerd_php::PhpManager::ensure(site.php())` and translates the returned `Listen` into a `Backend`. The implementer note in the source is load-bearing: copy out the `Site` fields you need before any `.await`, so the per-request closure doesn't hold a router guard across an await point.
 - **`allows_direct_script_execution` is a default method** (defaulting to `false`) gating [`script_file::resolve_script`](#script_file-direct-script-execution) - a real, on-disk `.php` script under the served root is only directly URL-executable for sites the resolver opts in. WordPress needs this for its multiple front controllers (`wp-login.php`, `wp-admin/index.php`, ...); a framework with a single front controller (Laravel, plain PHP) does not, and leaving it on for those would make any stray script under the document root (a debug `phpinfo.php`, an old admin tool) directly URL-executable where it previously wasn't. The daemon's impl (`DaemonBackendResolver`, see [`yerdd`](../binaries/yerdd#backend-resolver-backend-resolver-rs)) checks its `wordpress_sites` cache.
+- **`is_wordpress` is a default method** (defaulting to `false`) used only by the tunnel listener to decide whether to add the `PublicUrl` prepend. The daemon's impl reads the same `wordpress_sites` cache.
 - **`LoginTokenConsumer` is synchronous** and backs the one-click WordPress admin login flow - see [One-click WordPress admin login](#one-click-wordpress-admin-login) below. `consume` must check and invalidate atomically, so a token can never be consumed twice even under concurrent requests for the same token.
 
 Foreign errors (e.g. `PhpError`) are boxed into `ProxyError::BackendResolver { host, source }`, so the proxy never names `yerd-php` in its type signatures.
@@ -257,7 +296,7 @@ pub struct HttpsBinding<C: CertStore> {
 
 `public_port` is separate from the listener's local port on purpose: in rootless mode the daemon may `bind_pair((80, 443), (8080, 8443))` and end up listening on 8443, but the redirect target must reflect the port clients actually use. The daemon's `bind_pair` atomically binds the desired HTTP/HTTPS pair, falling back to `(8080, 8443)` when `80`/`443` require elevation, then converts each `std` listener with `TcpListener::from_std` before passing it in.
 
-It's an `Arc<AtomicU16>` rather than a plain `u16` because the fallback story doesn't end at startup: on macOS, `yerd elevate ports` installs a `pf` redirect (`80`/`443` → the bound rootless pair) that goes live immediately, with no daemon restart - see [Elevation & Privileges](../../guide/elevation). If the redirect target stayed a fixed `u16` captured once in `ProxyServer::serve`, a browser would keep getting bounced to `https://site.test:8443` even after elevation made the plain `https://site.test` reachable. Instead, the daemon owns a shared cell (`DaemonState::redirect_https_port`, see [`yerdd`](../binaries/yerdd)) that a background prober flips between the rootless and well-known port as `yerd_platform::PortRedirector::is_active` changes, and `dispatch` loads the current value on every redirect it builds. `yerd-proxy` itself has no opinion on *why* the port changes - it just reads whatever the cell holds at request time.
+It's an `Arc<AtomicU16>` rather than a plain `u16` because the fallback story doesn't end at startup: on macOS, `yerd elevate ports` installs a launchd port forwarder (`80`/`443` → the bound rootless pair) that goes live immediately, with no daemon restart - see [Elevation & Privileges](../../guide/elevation). If the redirect target stayed a fixed `u16` captured once in `ProxyServer::serve`, a browser would keep getting bounced to `https://site.test:8443` even after elevation made the plain `https://site.test` reachable. Instead, the daemon owns a shared cell (`DaemonState::redirect_https_port`, see [`yerdd`](../binaries/yerdd)) that a background prober flips between the rootless and well-known port as `yerd_platform::PortRedirector::is_active` changes, and `dispatch` loads the current value on every redirect it builds. `yerd-proxy` itself has no opinion on *why* the port changes - it just reads whatever the cell holds at request time.
 
 ## The server: `ProxyServer::serve`
 
@@ -311,6 +350,41 @@ The hyper service is **infallible** - internal errors are logged and turned into
 
 `FrankenPhp` serves its own static files and has no equivalent script-resolution step, so steps 6.2-6.4 only apply to the FastCGI backends. The `Listener::{Http, Https}` discriminator is threaded through so the redirect rule and the `HTTPS=on` CGI var both know which listener the connection arrived on.
 
+The post-routing tail (path-prefix proxy rule, backend resolution, upgrade, `FrankenPhp`, and `serve_php_fpm`) lives in `serve_routed`, which [`serve_tunnel`](#the-tunnel-listener-proxyserver-serve-tunnel) shares, so both listeners serve a routed site identically.
+
+## The tunnel listener: `ProxyServer::serve_tunnel` {#the-tunnel-listener-proxyserver-serve-tunnel}
+
+Public sharing (see [`yerd-tunnel`](./yerd-tunnel)) points every `cloudflared` at a separate, loopback-only, plain-HTTP listener instead of the main 80/443 listeners. It is a separate entry point so none of `serve`'s call sites or main-listener behaviour change:
+
+```rust
+pub struct TunnelRoute { pub site: String, pub password: Option<String> }
+pub type SharedTunnelRoutes = Arc<tokio::sync::RwLock<HashMap<String, TunnelRoute>>>;
+
+pub struct TunnelBinding {
+    pub listener: TcpListener,
+    pub routes: SharedTunnelRoutes,
+    pub public_url_prepend: Option<PathBuf>,
+}
+
+pub async fn serve_tunnel<R, S>(
+    binding: TunnelBinding,
+    router: SharedRouter,
+    backend_resolver: Arc<R>,
+    symlink_protection: Arc<AtomicBool>,
+    client_tls: Arc<ProxyClientTls>,
+    shutdown: S,
+) -> Result<(), ProxyError>
+```
+
+The daemon binds `127.0.0.1:0` at startup, owns `routes` (a `normalized public host -> TunnelRoute` map rebuilt from `[tunnel.sites]`, `[tunnel.passwords]`, and live quick-tunnel URLs, swapped whole under a write guard like `SharedRouter`), and passes the path of its WordPress public-URL script. The accept loop mirrors the HTTP one (no peer filter, since the socket is loopback-only) and serves http1 with upgrades. `dispatch_tunnel` handles each request:
+
+1. **Public host.** `normalize_host` the `Host` header and look it up in `routes` (clone the route, drop the guard). A miss is `404` with `Server: yerd`.
+2. **Share password.** When the route has a password, a missing or wrong `Authorization` gets `401` with `WWW-Authenticate: Basic realm="Yerd share", charset="UTF-8"`, `Cache-Control: no-store`, and the site's `Access-Control-*` response headers (no others). A valid one has the `Authorization` header **removed** before forwarding, so the password never reaches PHP or an upstream, and the final response goes through `keep_out_of_shared_caches`.
+3. **Site by name.** Take the router read guard, look the site up by name (a miss, such as an unlinked site, is `404`), compute its proxy-rule and route-rule matches, and drop the guard.
+4. **`serve_routed` as HTTPS.** `https = true` and `server_addr` reports port `443`, so PHP sees `HTTPS=on`, `SERVER_PORT=443`, and `HTTP_HOST`/`SERVER_NAME` = the public host. There is no HTTP-to-HTTPS redirect and no login-token consumption on this path (a one-click admin token never works from the public internet). A path proxy rule forwards with `X-Forwarded-Host` set to the public host. When `is_wordpress(&site)` and a script path exists, the request carries `PrependParams::PublicUrl { url: "https://<public host>" }`; the script overrides WordPress's `home`/`siteurl` for that request and blocks writes of those options.
+
+`REMOTE_ADDR` is the loopback peer (`cloudflared`), so every visitor appears as `127.0.0.1`. `tests/integration_tunnel.rs` covers the listener end to end against a fake FastCGI backend.
+
 ## One-click WordPress admin login {#one-click-wordpress-admin-login}
 
 `consume_login_token_if_present` (`server.rs`) checks a request for the one-click WordPress admin login token the daemon minted via `Request::MintWordpressLoginToken` (see [`yerdd`](../binaries/yerdd)'s `wordpress_login` module):
@@ -330,7 +404,7 @@ fn consume_login_token_if_present<B, L: LoginTokenConsumer>(
 - On success, strips `yerd_login_token` from the forwarded URI (via `pure::query::strip_param`) so it never reaches PHP or request logging, and returns `Some(target_user)` (`""` meaning no preference - the caller falls back to the earliest-created administrator).
 - **Ordering is load-bearing**: `serve_php_fpm` calls this *after* `dispatch`'s HTTP→HTTPS redirect check has already run (step 3 above), so a secure site's token is never burned by the 301 itself - a browser presenting the token over plain HTTP gets redirected first, with the token intact in the `Location`, and only consumes it on the follow-up HTTPS request.
 
-On success, `serve_php_fpm` builds a `cgi_params::AutoLoginParams { prepend_script, target_user }` and passes it through to `fcgi::forward`, which adds it as a per-request `auto_prepend_file` FastCGI param (plus a `YERD_LOGIN_USER` param) - so the injected bootstrap script only ever loads for this one already-token-validated request, never for an ordinary one. `auto_login` is only built when `login_prepend_script` is `Some` *and* a token was just consumed - the daemon's own `mint_wordpress_login_token` handler already refuses to mint a token at all when the prepend script is unavailable (see [`yerdd`](../binaries/yerdd)), so in practice the proxy never sees a valid token to consume while `login_prepend_script` is `None`.
+On success, `serve_php_fpm` builds a `cgi_params::PrependParams::AutoLogin { prepend_script, target_user }` and passes it through to `fcgi::forward`, which adds it as a per-request `auto_prepend_file` FastCGI param (plus a `YERD_LOGIN_USER` param) - so the injected bootstrap script only ever loads for this one already-token-validated request, never for an ordinary one. The prepend is only built when `login_prepend_script` is `Some` *and* a token was just consumed - the daemon's own `mint_wordpress_login_token` handler already refuses to mint a token at all when the prepend script is unavailable (see [`yerdd`](../binaries/yerdd)), so in practice the proxy never sees a valid token to consume while `login_prepend_script` is `None`.
 
 ## The `forward/` layer
 

@@ -28,7 +28,181 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v23 (current)
+### v34 (current)
+
+**Added:** the optional `[added]` table - when each site was added to Yerd, as Unix seconds, for the desktop app's **Recently added** list. `[added.linked]` is keyed by site name and `[added.parked]` by byte-exact document root (like `[domains.parked]`), so renaming a parked folder never carries a time across to a different site. A value of `0` means the site was already there before Yerd recorded added times: it is kept so the site is never stamped later, but reported as undated. `baseline_pending` lists the parked roots whose existing sites the migration asked to record as undated. The table is omitted when empty, so a fresh config never writes it.
+
+```toml
+[added]
+baseline_pending = ["/Users/you/Sites"]
+
+[added.linked]
+blog = 1764100000
+
+[added.parked]
+"/Users/you/Sites/api" = 0
+```
+
+**Migration from v33:** structural but small, like v15 - the migration copies `[parked] paths` into `[added] baseline_pending` and leaves any other keys alone (a config with no parked roots gains nothing). The daemon records every parked site it finds under a listed root as `0` (undated) rather than "now", and drops a root from the list once a scan finds at least one site under it, so upgrading doesn't make every existing project look recently added, even if a drive is unmounted at the time. Existing linked sites simply have no entry. No times are invented.
+
+**To downgrade to v33:** change `version = 34` to `version = 33` and delete the `[added]` table and its `[added.linked]` / `[added.parked]` sub-tables (a v33 daemon rejects the unknown table under `deny_unknown_fields`). The recorded added times are lost, and upgrading again starts a fresh baseline.
+
+### v33
+
+**Added:** the optional `[response_headers.proxy]` table - custom response headers for whole-host proxies, keyed by proxy name, in the same `name`/`value` array-of-tables shape as `[response_headers.linked]`. It defaults to empty when absent, so a file with no proxy headers omits it entirely. A key naming no configured proxy is tolerated (as in `[domains.proxy]`): it is neither routed nor listed, and the daemon prunes a proxy's entry when the proxy is removed.
+
+```toml
+[[response_headers.proxy.reverb]]
+name = "Access-Control-Allow-Origin"
+value = "*"
+```
+
+**Migration from v32:** bare version bump - the table defaults to empty when absent, so a v32 file needs no other change.
+
+**To downgrade to v32:** change `version = 33` to `version = 32` and delete every `[[response_headers.proxy.*]]` table (a v32 daemon rejects the unknown key under `deny_unknown_fields`).
+
+### v32
+
+**Added:** `default_provider` under `[tunnel]` (`cloudflare`, `ngrok` or `zrok`; the provider new shares use, default `cloudflare` and omitted while it is) and the optional `[tunnel.ngrok]` table (`authtoken`, the ngrok agent authtoken, and `domain`, an optional static domain as a bare hostname). Both default when absent, so a file that never configured a provider omits them entirely.
+
+```toml
+[tunnel]
+default_provider = "ngrok"
+
+[tunnel.ngrok]
+authtoken = "2fXk..."
+domain = "demo.ngrok-free.app"
+```
+
+**Migration from v31:** bare version bump - both default when absent, so a v31 file needs no other change.
+
+**To downgrade to v31:** change `version = 32` to `version = 31`, delete the `default_provider` line from `[tunnel]`, and delete the `[tunnel.ngrok]` table (a v31 daemon rejects both under `deny_unknown_fields`).
+
+### v31
+
+**Added:** the optional `[parked.claims]` map - the suffix-stripped site names held by parked folders, keyed by byte-exact document root, each with the `name` held and a `url_synced` flag. The daemon maintains it after every scan. It defaults to empty when absent, so a file with no domain-named parked folders omits it entirely.
+
+```toml
+[parked.claims."/Users/you/Sites/laravel.com"]
+name = "laravel"
+url_synced = true
+```
+
+**Migration from v30:** bare version bump - the map defaults to empty when absent, so a v30 file needs no other change.
+
+**To downgrade to v30:** change `version = 31` to `version = 30` and delete every `[parked.claims."..."]` table (a v30 daemon rejects the unknown key under `deny_unknown_fields`).
+
+A v30 daemon names domain-named folders by their full slug again (`laravel-com.test` rather than `laravel.test`), so anything that followed a site to its shorter name stays behind:
+
+- **Settings keyed by the short name** do not apply under v30: `[favourites]` entries, `[groups.members]` keys, `[tunnel.sites]` and `[tunnel.passwords]` keys, and per-site `[services."<type>:<site>"]` instances. To keep them, rename each key from the short name to the full slug (`laravel` to `laravel-com`; a per-site service id becomes `"reverb:laravel-com"`, and its `site` field too).
+- **App-side URLs** keep the short host. Point WordPress at the full slug (`wp option update siteurl https://laravel-com.test` and the same for `home`) and set `app.baseURL` in a CodeIgniter site's `.env` to the full-slug URL.
+
+The `[domains.parked]` deltas are keyed by document root, so they carry over; only an apex entry naming the short host needs changing back.
+
+### v30
+
+**Added:** the optional `[favourites]` table - the sites starred in the desktop app, as a list of lowercased site names. Entries are not validated against live sites, like `[groups]` membership. It defaults to empty when absent, so a file with no favourites omits it entirely.
+
+```toml
+[favourites]
+sites = ["blog"]
+```
+
+**Migration from v29:** bare version bump - the table defaults to empty when absent, so a v29 file needs no other change.
+
+**To downgrade to v29:** change `version = 30` to `version = 29` and delete the `[favourites]` table (a v29 daemon rejects the unknown table under `deny_unknown_fields`). The starred sites are lost.
+
+### v29
+
+**Added:** the optional `[php.xdebug]` table - per-version settings for the [bundled Xdebug](../guide/xdebug) toggle. `[php.xdebug."<version>"]` holds `enabled` (bool), `modes` (a non-empty list of `debug`, `develop`, `coverage`, `profile`, `trace`, `gcstats`) and `start` (`"always"` or `"trigger"`). An entry is written only while it differs from the default (off, `["debug"]`, `"always"`), so an untouched file omits the table entirely.
+
+```toml
+[php.xdebug."8.4"]
+enabled = true
+modes = ["debug"]
+start = "always"
+```
+
+The table loads **leniently**: an entry with an unparseable or empty mode list, a bad or missing `start`, or a legacy (< 8.2) version key is dropped during parsing rather than failing the load. A malformed version key or an unknown key inside an entry is still a hard error.
+
+**Migration from v28:** bare version bump - the table defaults to empty when absent, so a v28 file needs no other change.
+
+**To downgrade to v28:** change `version = 29` to `version = 28` and delete the `[php.xdebug]` table itself along with any `[php.xdebug.*]` tables (a v28 daemon rejects the unknown table under `deny_unknown_fields`, even an empty one). Every pool then starts without Xdebug. The downloaded `{data}/php-ext/php-<version>/xdebug.so` and `debug.ini` files are inert leftovers you can delete.
+
+### v28
+
+**Added:** the optional `[network]` table - the outbound HTTP proxy for Yerd's own downloads and the tools it runs: `mode` (`"system"`, `"manual"` or `"off"`), `http_proxy`, `https_proxy` and `no_proxy`. It is omitted while it holds the defaults (system detection, nothing manual).
+
+```toml
+[network]
+mode = "manual"
+http_proxy = "http://proxy.corp:3128"
+no_proxy = [".corp.com"]
+```
+
+**Migration from v27:** bare version bump - the table defaults to system detection when absent, so a v27 file needs no other change.
+
+**To downgrade to v27:** change `version = 28` to `version = 27` and delete the `[network]` table if present (a v27 daemon rejects the unknown table under `deny_unknown_fields`). An older Yerd ignores proxies set only in Yerd; it still picks up nothing from the system on its own, so downloads go direct.
+
+### v27
+
+**Added:** the optional `[node]` table (`default`, the global Node selector) and `[node.sites]` (per-project Node preferences keyed by canonical absolute project root). Both default to empty when absent; a legacy single-version Node install stays discoverable and acts as the default until one is saved.
+
+```toml
+[node]
+default = "24.2.0"
+
+[node.sites]
+"/srv/example" = "22.9.0"
+```
+
+**Migration from v26:** bare version bump - the table defaults to empty when absent, so a v26 file needs no other change.
+
+**To downgrade to v26:** change `version = 27` to `version = 26` and delete the `[node]` table if present (a v26 daemon rejects the unknown table under `deny_unknown_fields`). Saved Node defaults and per-project preferences are lost.
+
+### v26
+
+**Added:** the optional `ffi.enable` key in `[php.settings]` and `[php.version_settings."<version>"]` - the "Allow FFI in web requests" switch. It accepts an on/off value (stored as `On`/`Off`) and is never seeded, so a file that has not turned it on omits it. When on, PHP 8.2+ pools get `php_admin_value[ffi.enable] = true`; when absent or `Off`, PHP's own `preload` default applies. It is refused for legacy (7.4 to 8.1) per-version overrides.
+
+```toml
+[php.settings]
+"ffi.enable" = "On"
+```
+
+**Migration from v25:** bare version bump - the key is absent unless set, so a v25 file needs no other change.
+
+**To downgrade to v25:** change `version = 26` to `version = 25` and delete any `"ffi.enable"` keys (a v25 daemon rejects the unknown name in `[php.settings]`). Web requests fall back to `ffi.enable=preload`.
+
+### v25
+
+**Added:** the optional `[response_headers]` table - per-site **custom response headers**, keyed by site class exactly like `[route_rules]`: `[response_headers.linked.<name>]` by site name, `[response_headers.parked."<docroot>"]` by document-root string. Each entry pairs a header `name` with a `value`. It defaults to empty when absent, so an uncustomised file omits it entirely.
+
+```toml
+[[response_headers.linked.api]]
+name = "Access-Control-Allow-Origin"
+value = "https://app.test"
+```
+
+The proxy sets every listed header on every response it produces for the site, replacing any same-named header the app or Yerd already set (issue #234). Each entry is validated at load: the name must be a valid HTTP header name and not one Yerd manages (`Connection`, `Keep-Alive`, `Transfer-Encoding`, `Upgrade`, `TE`, `Trailer`, `Content-Length`, `Host`, `Set-Cookie`, `Content-Encoding`, `Content-Range`, `Location`, or any `Proxy-*`), and the value must be non-empty with no control characters. A hand-edited entry that fails these checks is a hard parse error, exactly like a bad `[route_rules]` target. Two entries for one site with the same name (ignoring case) fail validation.
+
+**Migration from v24:** bare version bump - the table defaults to empty when absent, so a v24 file needs no other change.
+
+**To downgrade to v24:** change `version = 25` to `version = 24` and delete any `[response_headers.*]` tables (a v24 daemon rejects the unknown table under `deny_unknown_fields`). Sites stop sending the custom headers.
+
+### v24
+
+**Added:** the optional `[tunnel.passwords]` table - per-site share passwords, keyed by site name. When a site has a password, every tunnelled request to it (quick or named tunnel) must carry HTTP basic auth with that password; the username is ignored. One password protects every tunnel kind for that site. Each value is 1 to 128 bytes with no control characters, and keys follow the same safe-key rule as `[tunnel.sites]`. It defaults to empty when absent, so a file with no passwords omits it entirely. The file is saved `0600`, and passwords are never returned over IPC.
+
+```toml
+[tunnel.passwords]
+blog = "let-me-in"
+```
+
+**Migration from v23:** bare version bump - the table defaults to empty when absent, so a v23 file (including existing `[tunnel.named]` and `[tunnel.sites]` tables) needs no other change.
+
+**To downgrade to v23:** change `version = 24` to `version = 23` and delete the `[tunnel.passwords]` table if present (a v23 daemon rejects the unknown key under `deny_unknown_fields`). Shared sites are then served without a password.
+
+### v23
 
 **Added:** the optional `[domains.proxy]` table - routable-domain deltas for **whole-host proxies**, keyed by proxy name. It sits alongside the existing `[domains.linked]` (by site name) and `[domains.parked]` (by document-root string) maps and carries the same three keys: `added`, `suppressed`, and `primary`. It defaults to empty when absent, so an uncustomised file omits it entirely.
 

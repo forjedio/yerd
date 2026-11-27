@@ -9,36 +9,78 @@
 //! setting is the user's choice and left alone. Best-effort: a failed write only
 //! logs a warning and never fails the mutation it's attached to.
 
+use std::path::Path;
+
 use yerd_core::{Site, SiteRouter};
 
+use crate::public_url::UrlSyncOutcome;
 use crate::state::DaemonState;
 
-/// Post-mutation hook: if `site` is a `CodeIgniter` 4 project with an active
-/// `app.baseURL` in its `.env`, point it at the site's current URL.
-pub async fn sync_base_url(site: &Site, state: &DaemonState) {
+/// Post-mutation hook (also run once for a site renamed on upgrade): if `site`
+/// is a `CodeIgniter` 4 project with an active `app.baseURL` in its `.env`,
+/// point it at the site's current URL. `Failed` when the site has no concrete
+/// host right now or the write failed; `NotApplicable` when it is not such a
+/// project or the line already matches.
+pub async fn sync_base_url(site: &Site, state: &DaemonState) -> UrlSyncOutcome {
     let root = site.document_root();
     if !root.join("spark").is_file() {
-        return;
+        return UrlSyncOutcome::NotApplicable;
     }
     let dotenv = root.join(".env");
-    let Ok(current) = tokio::fs::read_to_string(&dotenv).await else {
-        return;
+    let _serial = state.url_sync.lock().await;
+    let current = match tokio::fs::read_to_string(&dotenv).await {
+        Ok(current) => current,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return UrlSyncOutcome::NotApplicable;
+        }
+        Err(e) => {
+            tracing::warn!(
+                site = %site.name(),
+                error = %e,
+                "couldn't read CodeIgniter .env to sync app.baseURL"
+            );
+            return UrlSyncOutcome::Failed;
+        }
     };
 
     let Some((host, secure)) = advertised_host(&*state.router.read().await, site.name()) else {
-        return;
+        return UrlSyncOutcome::Failed;
     };
     let url = crate::public_url::site_url(state, &host, secure).await;
     let Some(updated) = rewrite_base_url(&current, &format!("{url}/")) else {
-        return;
+        return UrlSyncOutcome::NotApplicable;
     };
-    if let Err(e) = tokio::fs::write(&dotenv, updated).await {
+    if let Err(e) = replace_file(&dotenv, &updated).await {
         tracing::warn!(
             site = %site.name(),
             error = %e,
             "couldn't sync CodeIgniter app.baseURL after a site change"
         );
+        return UrlSyncOutcome::Failed;
     }
+    UrlSyncOutcome::Done
+}
+
+/// Replace `path`'s contents atomically: write a sibling temporary file with
+/// the original's permissions, then rename it over the target (resolving a
+/// symlinked `.env` first so the link survives). On failure the original is
+/// untouched and the temporary file is removed.
+async fn replace_file(path: &Path, contents: &str) -> std::io::Result<()> {
+    let target = tokio::fs::canonicalize(path).await?;
+    let permissions = tokio::fs::metadata(&target).await?.permissions();
+    let mut tmp_name = target.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(".yerd-tmp");
+    let tmp = target.with_file_name(tmp_name);
+    let written = async {
+        tokio::fs::write(&tmp, contents).await?;
+        tokio::fs::set_permissions(&tmp, permissions).await?;
+        tokio::fs::rename(&tmp, &target).await
+    }
+    .await;
+    if written.is_err() {
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
+    written
 }
 
 /// The host and secure flag to advertise for `name`, read from the live router
@@ -143,6 +185,24 @@ mod tests {
     fn advertised_host_is_none_for_an_unknown_site() {
         let r = router(&[("blog", false)], &[]);
         assert_eq!(advertised_host(&r, "gone"), None);
+    }
+
+    #[tokio::test]
+    async fn replace_file_swaps_contents_and_leaves_no_temporary_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dotenv = tmp.path().join(".env");
+        std::fs::write(&dotenv, "old\n").unwrap();
+        replace_file(&dotenv, "new\n").await.unwrap();
+        assert_eq!(std::fs::read_to_string(&dotenv).unwrap(), "new\n");
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn replace_file_fails_without_creating_a_missing_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dotenv = tmp.path().join(".env");
+        assert!(replace_file(&dotenv, "new\n").await.is_err());
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
     }
 
     #[test]

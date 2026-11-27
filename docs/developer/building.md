@@ -114,7 +114,8 @@ binaries. This is the from-source path from the [README](https://github.com/forj
 
 ```sh
 cargo build --release -p yerd -p yerdd -p yerd-helper
-install -Dm755 target/release/{yerd,yerdd,yerd-helper} -t ~/.local/bin
+mkdir -p ~/.local/bin
+install -m 755 target/release/yerd target/release/yerdd target/release/yerd-helper ~/.local/bin/
 yerdd serve &                # rootless; runs on 8080/8443 out of the box
 ```
 
@@ -122,6 +123,18 @@ The three binaries map to the three-process privilege model: the
 [`yerdd`](./binaries/yerdd) daemon, the [`yerd`](./binaries/yerd) CLI, and the
 privileged one-shot [`yerd-helper`](./binaries/yerd-helper). See
 [Elevation & Privileges](../guide/elevation) for why they are separate.
+
+On macOS, `sudo yerd elevate ports` also needs the
+[`yerd-forward`](./binaries/yerd-forward) port forwarder installed **next to
+`yerd-helper`** (the helper looks for it as a sibling of its own executable):
+
+```sh
+cargo build --release -p yerd-forward
+install -m755 target/release/yerd-forward ~/.local/bin/   # same dir as yerd-helper
+```
+
+It must not be group- or world-writable, or the helper refuses it. `yerd
+uninstall` removes it along with the other binaries.
 
 ## Running a from-source build with a production Yerd installed
 
@@ -277,7 +290,7 @@ The trait-fake design means most tests pass on either OS regardless of which
 host you're on - which can *hide* a bug that only the real per-OS implementation
 would surface. When you change OS-specific code under `yerd-platform`, run the
 suite on the affected platform, not just your own. CI runs the full gate on both
-`ubuntu-22.04` and `macos-14` (Apple Silicon) for exactly this reason.
+`ubuntu-22.04` and `macos-latest` (Apple Silicon) for exactly this reason.
 :::
 
 ## The CI gate (run this before pushing)
@@ -433,14 +446,22 @@ The shipped artifacts are the **GUI bundle** (`.dmg` on macOS, `.deb` on Linux),
 **plus a native Arch package** (`.pkg.tar.zst`, x86-64) **and a Fedora package**
 (`.rpm`, x86-64 and arm64). The three binaries
 (`yerd`/`yerdd`/`yerd-helper`) are embedded via Tauri `externalBin`
-(per-platform overlays in `apps/yerd-gui/src-tauri/`). Tauri builds the `.app`
+(per-platform overlays in `apps/yerd-gui/src-tauri/`), and the macOS overlay
+adds a fourth, the [`yerd-forward`](./binaries/yerd-forward) port forwarder,
+which lands in `Yerd.app/Contents/MacOS/` next to `yerd-helper`. Tauri builds the `.app`
 (macOS) and `.deb` (Linux) directly; the macOS `.dmg` is built as a separate
 headless step (`apps/yerd-gui/scripts/build-macos-dmg.sh`, via `appdmg`) after
 the `.app`, not by Tauri's own dmg bundler - see
 [macOS code signing & notarisation](#macos-code-signing-notarisation) below
-for why. The CLI and daemon are never shipped on their own - there is no
-CLI-only artifact (tarball or `.deb`) separate from the GUI bundle and the
-Arch package.
+for why. The same binaries also ship on their own as the **headless tarball**
+(`Yerd_<OS>_<Arch>_v<ver>.headless.tar.gz`, Linux x86-64/arm64 and macOS Apple
+Silicon): each GUI leg of `build.yml` packages its just-built
+`yerd`/`yerdd`/`yerd-helper` (plus `yerd-forward` on macOS) and a
+`yerd-install-receipt` saying `headless` under a top-level `yerd/` directory,
+then checks the file set, that no GTK/WebKit library is linked, and that
+`yerd --version` runs. It's installed by `docs/public/install.sh` (served at
+`https://yerd.app/install.sh`); see the [headless install guide](../guide/headless).
+There is no CLI-only `.deb`.
 
 `bump` keeps three files in sync - `Cargo.toml`,
 `apps/yerd-gui/src-tauri/tauri.conf.json`, and `apps/yerd-gui/package.json` - so
@@ -533,7 +554,7 @@ the GUI `.app` (signed, notarised and stapled by Tauri) and its `.dmg`
 builds the `.app` - not notarised or stapled, and deliberately so: only the
 `.app` staple is enforced in CI, the `.dmg`'s own notarisation/staple is
 advisory and non-fatal, since the stapled `.app` inside is the gate). The
-three embedded binaries (`yerd`/`yerdd`/`yerd-helper`) are signed by Tauri **as
+four embedded binaries (`yerd`/`yerdd`/`yerd-helper`/`yerd-forward`) are signed by Tauri **as
 part of the bundle** (Hardened Runtime + secure timestamp + the app's Developer ID
 team) and covered by the single `.app` notarisation - so there are no loose,
 separately-notarised CLI binaries. Notarisation uses an **App Store Connect API

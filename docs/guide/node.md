@@ -1,0 +1,121 @@
+# Node.js
+
+Yerd installs [Node.js](https://nodejs.org) (with `npm` and `npx`) as
+self-contained releases in its own data directory, side by side, so different
+projects can use different versions without `nvm`, Homebrew or a system install.
+One release is the **global default**; a project can ask for another with an
+`.nvmrc` or `.node-version` file, or a saved per-site preference.
+
+## In the desktop app
+
+Open the **Node** page from the sidebar (under **Environment**):
+
+<ThemedImage light="/images/node-versions-light.png" dark="/images/node-versions-dark.png" alt="The Node page: Node 24.11.1 (the default, LTS Krypton, used by 7 sites) and Node 22.21.0 (LTS Jod, 2 sites), the How a site picks its Node card, and Sites not on the default listing api.test and crm.test on Node 22 and legacy-app.test with Node 18 missing" />
+
+- **Refresh** and **Install** sit in the page toolbar. A banner notes that bare
+  `node`, `npm` and `npx` always use the global default.
+- **Installed versions** lists each release with chips: a star on the global
+  default, its LTS codename, and **Current** or **EOL** once the release index
+  has been loaded this session (by **Install** or **Refresh**). **Used by**
+  counts the sites that resolve to that release, and **Update** shows a pending
+  newer patch of that major. Each row's `⋯` menu offers **Update to …**,
+  **Make default** and **Uninstall…**. The daemon checks for
+  newer patches every 12 hours alongside the PHP update check (only while a
+  Node release is installed; notify-only, nothing is downloaded but the
+  release index). Pending updates show as a count on the sidebar's **Node**
+  item, a red dot on the tray icon, and an **Update Node** tray item that
+  opens this page. **Refresh** checks immediately.
+- **How a site picks its Node** shows the resolution order (`.nvmrc`,
+  `.node-version`, the saved preference, then the global default), and **Sites
+  not on the default** lists every site whose Node differs from the default,
+  with where it came from. Sites whose file or preference names a release that
+  isn't installed are listed with a red chip.
+- **Install** opens a dialog with a dropdown of the release lines you don't
+  have yet, newest first, each showing its newest patch, LTS codename, and an
+  **EOL** badge for end-of-life majors; the newest supported LTS is preselected.
+  End-of-life majors are hidden unless you turn on **Show end-of-life
+  versions**. A switch in the dialog lets you type an exact version instead. Majors below 9
+  aren't offered. If the release schedule can't be fetched the list still
+  loads, without EOL badges.
+
+<ThemedImage light="/images/node-install-light.png" dark="/images/node-install-dark.png" alt="The Install a Node version dialog, with the exact-version and end-of-life switches and Node 26 (LTS Lithium) preselected" />
+
+- Installs run in the background with a live log; **Hide** closes it while the
+  install keeps going, and the operations indicator keeps tracking it. Other version actions are disabled until the
+  install finishes. The first install becomes the global default.
+- **Update** installs the newest patch of that major alongside the old one. The
+  global default moves to it only when the default currently resolves to an
+  older patch of that major. Saved site preferences are never changed, and the
+  old patch stays installed.
+- **Uninstall** removes a single release. While other releases are installed, a
+  release can't be removed if the global default would then resolve to nothing
+  (for example an exact default naming it) - set another default first. Removing the last release is allowed and clears the default. Saved site
+  preferences that resolve only to the removed release are cleared; the
+  confirmation lists them first, and those sites fall back to their project file
+  or the global default.
+
+## Per-site versions
+
+Each site's inspector on the Sites page has a **Node version** row in its
+Environment card: pick a saved preference, or **Default** to clear it (the
+project file, then the global default, decide). The line under it says which
+release builds use and why, and a warning shows when a project file takes
+precedence over the saved preference.
+A committed [`.yerd.toml`](./project-file#node-precedence) can set this
+preference too, through its `node` key.
+`node` and `npm` on your PATH still use the global default; run `yerd exec node …`
+or `yerd exec npm …` in the project folder to use the site's version. Nothing installs
+automatically: when the project file or saved preference names a version that
+isn't installed, the row shows the error with an **Install Node X** button that
+installs it right there (with live progress), and a link to the Node page.
+
+<ThemedImage light="/images/node-site-selectversion-light.png" dark="/images/node-site-selectversion-dark.png" alt="The inspector for api.test: Node version 24 saved as a preference, with a warning that the project's .nvmrc (22) takes precedence" />
+
+When you create a Laravel site from **New site**, its Options step has a **Node
+version** picker once two or more releases are installed: the build uses that
+release and it's saved as the new site's preference.
+
+<ThemedImage light="/images/node-newsite-version-light.png" dark="/images/node-newsite-version-dark.png" alt="The New Laravel site Options step with Node 22.21.0 picked as the Node version" />
+
+## From the command line
+
+Node releases can be installed side by side and selected from the CLI:
+
+```sh
+yerd install tool node 24
+yerd install tool node lts/iron
+yerd node use 24
+yerd node use 22 --site blog
+yerd node unset --site blog
+yerd node uninstall 22.9.0
+yerd exec npm install
+```
+
+`yerd exec node`, `npm`, and `npx` honor a project's `.nvmrc` or `.node-version`
+(including `lts/*` and `lts/<codename>` such as `lts/iron`), then its saved
+preference, then the global default. Bare `node`, `npm`, and `npx` on your `PATH`
+always use the global default; run `yerd exec npm …` inside a project to use its
+version. CLI installs stream their progress and keep an existing default.
+`yerd uninstall tool node` removes every release and clears the default and all
+site preferences. See [Node version commands](../reference/cli/tooling#node-versions)
+and [resolution rules](../reference/cli/exec#node-resolution).
+
+## Where things live
+
+| Path | Contents |
+|---|---|
+| `{data}/tools/node-versions/<version>/` | One unpacked Node release (side by side). |
+| `{data}/tools/node/node-<ver>-<os>-<arch>/` | A legacy single-version Node install, still usable. |
+| `{data}/bin/{node,npm,npx}` | The `PATH` shims, pointing at the global default. |
+
+Downloads are verified against the release's `SHASUMS256.txt` before they are
+unpacked. `{data}` is Yerd's per-user data directory (`yerd status` shows it);
+put `{data}/bin` on your `PATH` as described in
+[Tooling](./tooling#put-yerd-s-bin-directory-on-your-path).
+
+## See also
+
+- [Node version commands](../reference/cli/tooling#node-versions) - the CLI surface.
+- [Node resolution](../reference/cli/exec#node-resolution) - how `yerd exec` picks a version.
+- [Configuration: Node preferences](../reference/configuration#node-preferences).
+- [Tooling](./tooling) - Composer, Bun, pnpm, the Laravel installer and WP-CLI.

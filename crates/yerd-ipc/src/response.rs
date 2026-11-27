@@ -8,13 +8,14 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use yerd_core::{PhpVersion, Site};
+use yerd_core::tunnel_provider::TunnelProvider;
+use yerd_core::{PhpVersion, Site, SiteFramework, XdebugSettings};
 
 use crate::dump::{DumpCounts, DumpEvent, DumpExtStatus};
 use crate::status::{
     AddableServiceType, CloudflaredStatus, DatabaseSummary, Diagnosis, FixReport, MailDetail,
     MailSummary, NamedTunnelMeta, ServiceAvailability, ServiceStatus, SiteHostname, StatusReport,
-    ToolStatus, TunnelInfo, WordPressVersionInfo,
+    ToolStatus, TunnelInfo, TunnelProviderStatus, WordPressVersionInfo,
 };
 
 // Same rule: no per-field serde renames.
@@ -128,9 +129,10 @@ pub enum Response {
         /// The current global default.
         default: PhpVersion,
         /// Installed minors with a newer patch available (from the daemon's
-        /// update cache). Empty when none / cache cold.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        updates: Vec<PhpUpdate>,
+        /// update cache). Empty when none / cache cold. Boxed (transparent on
+        /// the wire) to keep `Response` small.
+        #[serde(default, skip_serializing_if = "boxed_updates_is_empty")]
+        updates: Box<Vec<PhpUpdate>>,
         /// Global PHP ini settings applied to every version's FPM pool
         /// (`"memory_limit" -> "512M"`). Empty when none are set.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -157,6 +159,28 @@ pub enum Response {
         /// decodable. Boxed like `version_settings`.
         #[serde(default, skip_serializing_if = "boxed_version_map_is_empty")]
         pool: Box<BTreeMap<PhpVersion, BTreeMap<String, String>>>,
+        /// Installed versions whose PHP build includes the FFI extension, so
+        /// clients only offer the FFI toggle where it can work. Empty when none
+        /// do; `#[serde(default)]` keeps older daemons (which omit it) decodable.
+        /// Boxed like `version_settings` to keep `Response` small.
+        #[serde(default, skip_serializing_if = "boxed_versions_is_empty")]
+        ffi_versions: Box<Vec<PhpVersion>>,
+        /// Whether the libvips shared library (needed by php-vips) was found on
+        /// the host. `None` when the daemon does not check on this OS, or is
+        /// older and omits it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        libvips_found: Option<bool>,
+        /// Configured per-version Xdebug settings. Only versions whose
+        /// settings differ from the default appear; an absent version has
+        /// Xdebug off. `#[serde(default)]` keeps older daemons (which omit it)
+        /// decodable. Boxed like `version_settings`.
+        #[serde(default, skip_serializing_if = "boxed_xdebug_map_is_empty")]
+        xdebug: Box<BTreeMap<PhpVersion, XdebugSettings>>,
+        /// Installed versions a bundled Xdebug is published for on this host,
+        /// so clients only offer the toggle where it can work. Boxed like
+        /// `ffi_versions`.
+        #[serde(default, skip_serializing_if = "boxed_versions_is_empty")]
+        xdebug_versions: Box<Vec<PhpVersion>>,
     },
     /// Reply to [`crate::Request::AvailablePhp`].
     AvailablePhp {
@@ -309,6 +333,74 @@ pub enum Response {
         /// One entry per tool, with install status.
         tools: Vec<ToolStatus>,
     },
+    /// Reply to [`crate::Request::ListNode`] and [`crate::Request::UninstallNode`].
+    NodeVersions {
+        /// Installed releases, newest first.
+        installed: Vec<crate::NodeRelease>,
+    },
+    /// Reply to [`crate::Request::AvailableNode`].
+    AvailableNode {
+        /// Published majors, newest first.
+        majors: Vec<yerd_core::node::MajorLine>,
+    },
+    /// Reply to [`crate::Request::NodeSite`]. A lookup failure is carried in
+    /// `error` rather than as [`Self::Error`], so clients can render it inline.
+    NodeSite {
+        /// The site's saved preference.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preference: Option<String>,
+        /// The project file at or above the site root, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_file: Option<Box<crate::NodeProjectFile>>,
+        /// The exact release that would run.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effective: Option<String>,
+        /// Which source chose `effective`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<yerd_core::node::NodeSource>,
+        /// Why the lookup or resolution failed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        /// The selector that was chosen (project file, preference, or default)
+        /// but matches no installed release, so a client can offer to install
+        /// it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        missing: Option<String>,
+    },
+    /// Reply to [`crate::Request::NodeSites`]: one entry per routed site, in
+    /// router order. Per-site failures are carried in each entry's `error`.
+    NodeSites {
+        /// Every site's Node resolution.
+        sites: Vec<crate::NodeSiteEntry>,
+    },
+    /// Reply to [`crate::Request::ReleaseNotes`]. `current` is absent when the
+    /// running release has no published notes file.
+    ReleaseNotes {
+        /// The running release's notes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        current: Option<Box<crate::ReleaseNotesEntry>>,
+        /// Earlier stable releases, newest first.
+        earlier: Vec<crate::ReleaseNotesEntry>,
+    },
+    /// Reply to [`crate::Request::Contributors`], in GitHub's order (most
+    /// contributions first), bots excluded.
+    Contributors {
+        /// The human contributors.
+        contributors: Vec<crate::Contributor>,
+        /// How many contributors are listed.
+        total: u32,
+    },
+    /// Reply to [`crate::Request::GetNetworkSettings`] and
+    /// [`crate::Request::SetNetworkSettings`].
+    NetworkSettings {
+        /// The saved settings (redacted) and the resolved proxy.
+        settings: Box<crate::NetworkSettings>,
+    },
+    /// Reply to [`crate::Request::TestNetwork`].
+    NetworkTest {
+        /// The test outcome (redacted, scrubbed).
+        result: Box<crate::NetworkTestResult>,
+    },
     /// Reply to [`crate::Request::CreateSite`] - the background job was started.
     JobStarted {
         /// The job id to poll with [`crate::Request::JobStatus`].
@@ -367,6 +459,12 @@ pub enum Response {
         version: String,
         /// What kind of artifact it is (drives the applier's install method).
         kind: crate::StagedArtifact,
+        /// The directory the daemon's own binaries run from, so a headless
+        /// applier can refuse to swap a different install's files. Absent
+        /// from older daemons; `skip_serializing_if` keeps their bytes
+        /// unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        install_dir: Option<String>,
     },
     /// Reply to [`crate::Request::StartQuickTunnel`] / [`crate::Request::StopTunnel`]
     /// / [`crate::Request::TunnelStatus`] - the live tunnels plus `cloudflared`
@@ -376,6 +474,14 @@ pub enum Response {
         tunnels: Vec<TunnelInfo>,
         /// `cloudflared` install / account status.
         cloudflared: CloudflaredStatus,
+    },
+    /// Reply to [`crate::Request::ListTunnelProviders`] - every tunnel
+    /// provider's readiness and settings, plus the default for new shares.
+    TunnelProviders {
+        /// One entry per provider, in display order.
+        providers: Vec<TunnelProviderStatus>,
+        /// The provider new shares use by default.
+        default_provider: TunnelProvider,
     },
     /// Reply to [`crate::Request::ListNamedTunnels`] - the account's named
     /// tunnels recorded locally, plus the per-site hostname mappings that are
@@ -418,6 +524,26 @@ pub enum Response {
         /// Per-site routing rules.
         rules: Vec<RouteRuleEntry>,
     },
+    /// Reply to [`crate::Request::ListResponseHeaders`] - every site's and
+    /// whole-host proxy's custom response headers.
+    ResponseHeaders {
+        /// Custom response headers, in each site's or proxy's configured order.
+        headers: Vec<ResponseHeaderEntry>,
+    },
+    /// Reply to [`crate::Request::ProjectConfigDraft`] and
+    /// [`crate::Request::ExportProjectConfig`]: a project file's text.
+    ProjectConfig {
+        /// The `.yerd.toml` path.
+        file: PathBuf,
+        /// Whether the file exists on disk (always true after an export).
+        exists: bool,
+        /// The site at the project directory, if it is one.
+        site: Option<String>,
+        /// The file's declared `name`, if any.
+        name: Option<String>,
+        /// The file's TOML text: the existing file, or a rendered draft.
+        contents: String,
+    },
 }
 
 /// One registered custom PHP extension (see [`Response::PhpExtensions`]).
@@ -451,6 +577,7 @@ pub struct PhpExtInfo {
 /// and re-statting every site's marker files on each poll doesn't scale with
 /// site count.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct SiteEntry {
     /// The site itself - unchanged shape, still exactly what `Site`'s own
     /// serde impl produces.
@@ -490,6 +617,19 @@ pub struct SiteEntry {
     /// daemons and when the site is not Laravel.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_laravel: bool,
+    /// Whether the user starred this site in the GUI. Omitted when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub favourite: bool,
+    /// The framework detected at the site's project root, served from the same
+    /// rebuild-refreshed daemon cache as `is_wordpress`. Omitted when none was
+    /// recognised.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub framework: Option<SiteFramework>,
+    /// When the site was added to Yerd, as Unix seconds: when it was linked or
+    /// created, or when the daemon first discovered it in a parked folder.
+    /// Omitted when unknown, including sites that predate the record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_at: Option<u64>,
 }
 
 /// One whole-host reverse proxy (reply element of [`Response::Proxies`]).
@@ -528,6 +668,12 @@ pub struct ProxyRuleEntry {
     pub prefix: String,
     /// The upstream URL (`http[s]://host:port`).
     pub target: String,
+    /// The display name of the per-site service that owns this rule (e.g.
+    /// `Reverb` for its `/app` rule). The service re-points the rule at its own
+    /// port, so the daemon refuses a direct edit. Omitted for an ordinary
+    /// rule so its wire shape stays byte-identical to older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_by: Option<String>,
 }
 
 /// One per-site path-prefix routing rule (reply element of
@@ -548,6 +694,19 @@ pub struct RouteRuleEntry {
     pub target: String,
 }
 
+/// One site's or whole-host proxy's custom response header (reply element of
+/// [`Response::ResponseHeaders`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResponseHeaderEntry {
+    /// The site or proxy the header attaches to (a linked site name, a parked
+    /// document-root display label, or a whole-host proxy name).
+    pub site: String,
+    /// The header name, in the casing it was set with.
+    pub name: String,
+    /// The header value.
+    pub value: String,
+}
+
 /// One `WordPress` administrator account, for the auto-login user picker -
 /// see [`Response::WordpressAdminUsers`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -562,6 +721,24 @@ pub struct WordPressAdminUser {
 /// `skip_serializing_if` predicate for [`Response::PhpVersions`]'s boxed
 /// per-version maps (the `&Box<_>` field reference deref-coerces here).
 fn boxed_version_map_is_empty(m: &BTreeMap<PhpVersion, BTreeMap<String, String>>) -> bool {
+    m.is_empty()
+}
+
+/// `skip_serializing_if` predicate for [`Response::PhpVersions`]'s boxed
+/// `ffi_versions` list.
+fn boxed_versions_is_empty(v: &[PhpVersion]) -> bool {
+    v.is_empty()
+}
+
+/// `skip_serializing_if` predicate for [`Response::PhpVersions`]'s boxed
+/// `updates` list.
+fn boxed_updates_is_empty(v: &[PhpUpdate]) -> bool {
+    v.is_empty()
+}
+
+/// `skip_serializing_if` predicate for [`Response::PhpVersions`]'s boxed
+/// `xdebug` map.
+fn boxed_xdebug_map_is_empty(m: &BTreeMap<PhpVersion, XdebugSettings>) -> bool {
     m.is_empty()
 }
 
@@ -627,6 +804,20 @@ pub enum ErrorCode {
     /// provoke it and, lacking the variant, will surface it as an
     /// `IpcError::Decode` rather than a typed error.
     LegacyRestricted,
+    /// The bundled Xdebug can't be used for the requested version: none is
+    /// published for that PHP version and host platform, or it could not be
+    /// downloaded. Returned only for `SetXdebug`, so older clients never
+    /// receive it.
+    XdebugUnavailable,
+    /// A setting value was rejected by validation (for example an empty
+    /// Xdebug mode list). Distinct from [`Self::InvalidPath`], which is about
+    /// filesystem paths. Returned only for `SetXdebug`, so older clients
+    /// never receive it.
+    InvalidSetting,
+    /// A `.yerd.toml` (or wizard contents) failed to parse or validate; the
+    /// message carries the parser's explanation. Returned only for the
+    /// project-file requests, so older clients never receive it.
+    ProjectFileInvalid,
     /// Catch-all for daemon-side failures that don't fit a typed code.
     /// Expand this enum rather than overloading `Internal`.
     Internal,
@@ -677,16 +868,27 @@ mod variant_name_pinning {
             Response::Mails { .. } => {}
             Response::Mail { .. } => {}
             Response::Tools { .. } => {}
+            Response::NodeVersions { .. } => {}
+            Response::AvailableNode { .. } => {}
+            Response::NodeSite { .. } => {}
+            Response::NodeSites { .. } => {}
+            Response::ReleaseNotes { .. } => {}
+            Response::Contributors { .. } => {}
+            Response::NetworkSettings { .. } => {}
+            Response::NetworkTest { .. } => {}
             Response::JobStarted { .. } => {}
             Response::JobProgress { .. } => {}
             Response::UpdateStatus { .. } => {}
             Response::Staged { .. } => {}
             Response::Tunnels { .. } => {}
             Response::NamedTunnels { .. } => {}
+            Response::TunnelProviders { .. } => {}
             Response::Groups { .. } => {}
             Response::BrowserTrust { .. } => {}
             Response::Proxies { .. } => {}
             Response::Routes { .. } => {}
+            Response::ResponseHeaders { .. } => {}
+            Response::ProjectConfig { .. } => {}
         }
     }
 
@@ -705,6 +907,9 @@ mod variant_name_pinning {
             ErrorCode::InstanceAlreadyExists => {}
             ErrorCode::LanNotReady => {}
             ErrorCode::LegacyRestricted => {}
+            ErrorCode::XdebugUnavailable => {}
+            ErrorCode::InvalidSetting => {}
+            ErrorCode::ProjectFileInvalid => {}
             ErrorCode::Internal => {}
         }
     }
@@ -743,10 +948,14 @@ mod variant_name_pinning {
         pin_response(Response::PhpVersions {
             installed: vec![PhpVersion::new(8, 5)],
             default: PhpVersion::new(8, 5),
-            updates: vec![],
+            updates: Box::default(),
             settings: BTreeMap::new(),
             version_settings: Box::new(BTreeMap::new()),
             directives: Box::new(BTreeMap::new()),
+            ffi_versions: Box::new(vec![]),
+            libvips_found: None,
+            xdebug: Box::default(),
+            xdebug_versions: Box::default(),
             pool: Box::new(BTreeMap::new()),
         });
         pin_response(Response::AvailablePhp {
@@ -812,6 +1021,8 @@ mod variant_name_pinning {
                 lan_setup_bound: None,
                 port_redirect_targets: None,
                 lan_redirect_targets: None,
+                legacy_pf_redirect: None,
+                node_updates: 0,
             }),
         });
         pin_response(Response::Diagnoses {
@@ -883,6 +1094,7 @@ mod variant_name_pinning {
                 subject: "Hi".into(),
                 date_epoch: 1_700_000_000,
                 read: false,
+                site: None,
             }],
         });
         pin_response(Response::Mail {
@@ -910,7 +1122,71 @@ mod variant_name_pinning {
                 binaries: vec!["node".into(), "npm".into(), "npx".into()],
                 external: false,
                 external_path: None,
+                update_available: None,
             }],
+        });
+        pin_response(Response::NodeVersions {
+            installed: vec![crate::NodeRelease {
+                version: "22.9.0".into(),
+                lts: true,
+                codename: Some("Jod".into()),
+                default: true,
+                uninstall_blocked: false,
+                clears_preferences: vec![crate::NodePreferenceRef {
+                    root: "/srv/blog".into(),
+                    site: Some("blog".into()),
+                }],
+                update: None,
+            }],
+        });
+        pin_response(Response::AvailableNode {
+            majors: vec![yerd_core::node::MajorLine {
+                major: 22,
+                latest: "22.12.0".into(),
+                codename: Some("Jod".into()),
+                eol: Some(false),
+                installed_latest: Some("22.9.0".into()),
+                update_available: true,
+            }],
+        });
+        pin_response(Response::NodeSite {
+            preference: None,
+            project_file: Some(Box::new(crate::NodeProjectFile {
+                kind: yerd_core::node::NodeSource::Nvmrc,
+                selector: "22".into(),
+            })),
+            effective: Some("22.9.0".into()),
+            source: Some(yerd_core::node::NodeSource::Nvmrc),
+            error: None,
+            missing: None,
+        });
+        pin_response(Response::NodeSites { sites: vec![] });
+        pin_response(Response::ReleaseNotes {
+            current: None,
+            earlier: vec![],
+        });
+        pin_response(Response::Contributors {
+            contributors: vec![],
+            total: 0,
+        });
+        pin_response(Response::NetworkSettings {
+            settings: Box::new(crate::NetworkSettings {
+                mode: yerd_core::network::OutboundProxyMode::System,
+                http_proxy: None,
+                https_proxy: None,
+                no_proxy: vec![],
+                effective: None,
+            }),
+        });
+        pin_response(Response::NetworkTest {
+            result: Box::new(crate::NetworkTestResult {
+                ok: true,
+                url: "https://files.yerd.app/latest.json".into(),
+                status: Some(200),
+                error: None,
+                via: None,
+                source: yerd_core::network::ProxySource::None,
+            }),
         });
         pin_response(Response::JobStarted {
             job_id: "j1".into(),
@@ -937,6 +1213,7 @@ mod variant_name_pinning {
             path: "/x/Yerd.app.tar.gz".into(),
             version: "2.0.5".into(),
             kind: crate::StagedArtifact::AppTarGz,
+            install_dir: None,
         });
         pin_response(Response::Tunnels {
             tunnels: vec![crate::status::TunnelInfo {
@@ -945,13 +1222,33 @@ mod variant_name_pinning {
                 state: crate::status::TunnelRunState::Running,
                 url: Some("https://calm-river-1234.trycloudflare.com".into()),
                 hostname: None,
+                last_error: None,
+                protected: false,
+                warnings: Vec::new(),
+                provider: yerd_core::tunnel_provider::TunnelProvider::Cloudflare,
+                static_domain: false,
             }],
             cloudflared: crate::status::CloudflaredStatus {
                 installed: true,
                 version: Some("2026.6.1".into()),
                 source: Some(crate::status::CloudflaredSource::Managed),
                 logged_in: false,
+                update_available: None,
             },
+        });
+        pin_response(Response::TunnelProviders {
+            providers: vec![crate::status::TunnelProviderStatus {
+                provider: TunnelProvider::Ngrok,
+                readiness: yerd_core::tunnel_provider::ProviderReadiness::Ready,
+                version: Some("3.18.4".into()),
+                source: Some(crate::status::CloudflaredSource::Managed),
+                path: None,
+                update_available: None,
+                configured: true,
+                authtoken_hint: Some("2fXk••••••••Qa".into()),
+                domain: None,
+            }],
+            default_provider: TunnelProvider::Cloudflare,
         });
         pin_response(Response::NamedTunnels {
             tunnels: vec![crate::status::NamedTunnelMeta {
@@ -961,6 +1258,7 @@ mod variant_name_pinning {
             sites: vec![crate::status::SiteHostname {
                 site: "app".into(),
                 hostname: "app.example.com".into(),
+                protected: false,
             }],
             zone: None,
         });
@@ -980,6 +1278,7 @@ mod variant_name_pinning {
                 site: "app".into(),
                 prefix: "/app".into(),
                 target: "http://127.0.0.1:8080".into(),
+                managed_by: None,
             }],
         });
         pin_response(Response::Routes {
@@ -988,6 +1287,20 @@ mod variant_name_pinning {
                 prefix: "/api".into(),
                 target: "api/index.php".into(),
             }],
+        });
+        pin_response(Response::ResponseHeaders {
+            headers: vec![ResponseHeaderEntry {
+                site: "api".into(),
+                name: "Access-Control-Allow-Origin".into(),
+                value: "https://app.test".into(),
+            }],
+        });
+        pin_response(Response::ProjectConfig {
+            file: PathBuf::from("/p/acme/.yerd.toml"),
+            exists: true,
+            site: Some("acme".into()),
+            name: Some("acme".into()),
+            contents: "name = \"acme\"\n".into(),
         });
         for c in [
             ErrorCode::NotFound,
@@ -1002,6 +1315,9 @@ mod variant_name_pinning {
             ErrorCode::InstanceAlreadyExists,
             ErrorCode::LanNotReady,
             ErrorCode::LegacyRestricted,
+            ErrorCode::XdebugUnavailable,
+            ErrorCode::InvalidSetting,
+            ErrorCode::ProjectFileInvalid,
             ErrorCode::Internal,
         ] {
             pin_code(c);

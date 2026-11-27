@@ -1,34 +1,23 @@
-//! Pure `cloudflared` `config.yml` rendering for the consolidated named tunnel.
+//! Pure `cloudflared` config rendering.
 //!
-//! Hand-rendered as a string (rather than via a YAML serializer) so it stays a
-//! trivially-testable pure function with no extra dependency. The ingress list
-//! maps each enabled site's public hostname to its local origin via the same
-//! Host-header rewrite used by Quick Tunnels. A single tunnel serves every
-//! enabled site (one process, one config) and the list must end in the mandatory
-//! catch-all `service: http_status:404` or `cloudflared` refuses to start.
+//! Hand-rendered as strings (rather than via a YAML serializer) so they stay
+//! trivially-testable pure functions with no extra dependency.
+//!
+//! The named tunnel's ingress is a single catch-all rule pointing at Yerd's
+//! tunnel listener, which routes by the public `Host` itself. Exposing or
+//! unexposing a site therefore only changes DNS and the daemon's route map,
+//! never this file, so the running `cloudflared` never needs a restart. A
+//! catch-all rule with no `hostname` is itself the mandatory last rule, so no
+//! `http_status:404` entry is needed.
 
 use std::fmt::Write as _;
 use std::path::Path;
 
-use crate::origin::OriginTarget;
-
-/// One ingress mapping: a public hostname to a local site origin.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IngressRule {
-    /// The public hostname (on the user's Cloudflare domain).
-    pub hostname: String,
-    /// Where and how `cloudflared` reaches the site locally.
-    pub origin: OriginTarget,
-}
-
-/// Render the ingress config for a named tunnel that serves every rule in
-/// `rules` (one rule per enabled site), ending in the mandatory catch-all.
+/// Render the config for the named tunnel `tunnel_uuid`, authenticating with
+/// `credentials_file`, whose only ingress rule sends everything to `origin`
+/// (the tunnel listener URL, see [`crate::origin::origin_url`]).
 #[must_use]
-pub fn render_ingress_config(
-    tunnel_uuid: &str,
-    credentials_file: &Path,
-    rules: &[IngressRule],
-) -> String {
+pub fn render_ingress_config(tunnel_uuid: &str, credentials_file: &Path, origin: &str) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "tunnel: {}", yaml_squote(tunnel_uuid));
     let _ = writeln!(
@@ -37,30 +26,22 @@ pub fn render_ingress_config(
         yaml_squote(&credentials_file.display().to_string())
     );
     out.push_str("ingress:\n");
-    for rule in rules {
-        let _ = writeln!(out, "  - hostname: {}", yaml_squote(&rule.hostname));
-        let _ = writeln!(out, "    service: {}", yaml_squote(&rule.origin.url()));
-        out.push_str("    originRequest:\n");
-        let _ = writeln!(
-            out,
-            "      httpHostHeader: {}",
-            yaml_squote(&rule.origin.host_header)
-        );
-        if let Some(sni) = rule.origin.origin_server_name.as_ref() {
-            let _ = writeln!(out, "      originServerName: {}", yaml_squote(sni));
-        }
-        if rule.origin.no_tls_verify {
-            out.push_str("      noTLSVerify: true\n");
-        }
-    }
-    out.push_str("  - service: http_status:404\n");
+    let _ = writeln!(out, "  - service: {}", yaml_squote(origin));
     out
 }
 
+/// The Quick Tunnel config passed with `--config`: valid and ingress-free, so
+/// `--url` applies and `cloudflared` never falls back to a default search path
+/// such as `~/.cloudflared` or `/etc/cloudflared`.
+#[must_use]
+pub fn render_quick_config() -> &'static str {
+    "no-autoupdate: true\n"
+}
+
 /// Render a string as a YAML single-quoted scalar, doubling any embedded single
-/// quote per the YAML spec. The values here are upstream-validated hostnames and
-/// loopback URLs, but quoting keeps a stray character from ever breaking out of
-/// its line into a forged ingress key.
+/// quote per the YAML spec. The values here are a UUID, a daemon-owned path, and
+/// a loopback URL, but quoting keeps a stray character from ever breaking out of
+/// its line into a forged key.
 fn yaml_squote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
@@ -69,62 +50,47 @@ fn yaml_squote(s: &str) -> String {
 mod tests {
     use super::*;
 
-    fn rule(name: &str, tld: &str, secure: bool, hostname: &str) -> IngressRule {
-        IngressRule {
-            hostname: hostname.to_owned(),
-            origin: OriginTarget::for_site(&format!("{name}.{tld}"), secure, 8080, 8443),
+    #[test]
+    fn named_config_is_a_single_catch_all_to_the_listener() {
+        let yaml = render_ingress_config(
+            "uuid-123",
+            Path::new("/t/creds/uuid-123.json"),
+            "http://127.0.0.1:49152",
+        );
+        assert_eq!(
+            yaml,
+            "tunnel: 'uuid-123'\n\
+             credentials-file: '/t/creds/uuid-123.json'\n\
+             ingress:\n  - service: 'http://127.0.0.1:49152'\n"
+        );
+    }
+
+    #[test]
+    fn named_config_has_no_per_host_or_tls_options() {
+        let yaml = render_ingress_config("u", Path::new("/c.json"), "http://127.0.0.1:1");
+        assert_eq!(yaml.matches("service:").count(), 1);
+        for absent in [
+            "hostname:",
+            "httpHostHeader",
+            "noTLSVerify",
+            "originServerName",
+            "originRequest",
+            "http_status:404",
+        ] {
+            assert!(!yaml.contains(absent), "{absent}");
         }
     }
 
     #[test]
-    fn secure_rule_has_host_rewrite_sni_and_catch_all() {
-        let yaml = render_ingress_config(
-            "uuid-123",
-            Path::new("/t/creds/uuid-123.json"),
-            &[rule("app", "test", true, "app.example.com")],
-        );
-        assert!(yaml.contains("tunnel: 'uuid-123'"));
-        assert!(yaml.contains("credentials-file: '/t/creds/uuid-123.json'"));
-        assert!(yaml.contains("- hostname: 'app.example.com'"));
-        assert!(yaml.contains("service: 'https://127.0.0.1:8443'"));
-        assert!(yaml.contains("httpHostHeader: 'app.test'"));
-        assert!(yaml.contains("originServerName: 'app.test'"));
-        assert!(yaml.contains("noTLSVerify: true"));
-        assert!(yaml.trim_end().ends_with("- service: http_status:404"));
+    fn values_are_single_quoted_with_quotes_doubled() {
+        let yaml = render_ingress_config("a'b", Path::new("/it's/c.json"), "http://127.0.0.1:2");
+        assert!(yaml.contains("tunnel: 'a''b'"));
+        assert!(yaml.contains("credentials-file: '/it''s/c.json'"));
     }
 
     #[test]
-    fn non_secure_rule_omits_tls_knobs() {
-        let yaml = render_ingress_config(
-            "uuid-9",
-            Path::new("/t/creds/uuid-9.json"),
-            &[rule("blog", "test", false, "blog.example.com")],
-        );
-        assert!(yaml.contains("service: 'http://127.0.0.1:8080'"));
-        assert!(yaml.contains("httpHostHeader: 'blog.test'"));
-        assert!(!yaml.contains("originServerName"));
-        assert!(!yaml.contains("noTLSVerify"));
-    }
-
-    #[test]
-    fn multiple_rules_each_get_an_ingress_block() {
-        let yaml = render_ingress_config(
-            "uuid-1",
-            Path::new("/t/creds/uuid-1.json"),
-            &[
-                rule("app", "test", true, "app.example.com"),
-                rule("blog", "test", false, "blog.example.com"),
-            ],
-        );
-        assert!(yaml.contains("- hostname: 'app.example.com'"));
-        assert!(yaml.contains("- hostname: 'blog.example.com'"));
-        assert_eq!(yaml.matches("http_status:404").count(), 1);
-        assert!(yaml.trim_end().ends_with("- service: http_status:404"));
-    }
-
-    #[test]
-    fn empty_rules_render_only_the_catch_all() {
-        let yaml = render_ingress_config("u", Path::new("/c.json"), &[]);
-        assert!(yaml.contains("ingress:\n  - service: http_status:404"));
+    fn quick_config_is_ingress_free() {
+        assert_eq!(render_quick_config(), "no-autoupdate: true\n");
+        assert!(!render_quick_config().contains("ingress"));
     }
 }

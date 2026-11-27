@@ -1,139 +1,82 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import {
-  CheckCircle2,
-  Cloud,
-  Copy,
-  Download,
-  Globe,
-  Lock,
-  Share2,
-  Square,
-  Trash2,
-} from "lucide-vue-next";
+import { computed, nextTick, onUnmounted, ref, watch } from "vue";
+import { useRouter } from "vue-router";
+import { CloudDownload, Plus, Share2, SlidersHorizontal, Trash2, Wrench } from "lucide-vue-next";
 
 import PageHeader from "@/components/PageHeader.vue";
-import Badge from "@/components/ui/Badge.vue";
+import CloudflareLoginDialog from "@/components/share/CloudflareLoginDialog.vue";
+import ShareInspector from "@/components/share/ShareInspector.vue";
+import ShareList from "@/components/share/ShareList.vue";
+import ShareProviderCards from "@/components/share/ShareProviderCards.vue";
+import ShareSiteDialog, { type ShareRequest } from "@/components/share/ShareSiteDialog.vue";
+import TunnelProvidersDialog from "@/components/share/providers/TunnelProvidersDialog.vue";
+import AsyncState from "@/components/ui/AsyncState.vue";
 import Button from "@/components/ui/Button.vue";
-import Card from "@/components/ui/Card.vue";
-import CardContent from "@/components/ui/CardContent.vue";
-import CardDescription from "@/components/ui/CardDescription.vue";
-import CardHeader from "@/components/ui/CardHeader.vue";
-import CardTitle from "@/components/ui/CardTitle.vue";
-import Combobox from "@/components/ui/Combobox.vue";
-import EmptyState from "@/components/ui/EmptyState.vue";
+import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import Input from "@/components/ui/Input.vue";
 import Modal from "@/components/ui/Modal.vue";
-import Spinner from "@/components/ui/Spinner.vue";
-import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
+import { usePoll } from "@/composables/usePoll";
 import { useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
+import { useWideLayout } from "@/composables/useWideLayout";
 import {
   cloudflaredLogin,
   createNamedTunnel,
   deleteNamedTunnel,
-  installCloudflaredStreamed,
   IpcError,
+  jobCancel,
   listNamedTunnels,
   listSites,
+  listTunnelProviders,
   openInBrowser,
   pollJobToEnd,
   routeTunnelDns,
   setSiteTunnel,
+  setTunnelPassword,
   startNamedTunnel,
   startQuickTunnel,
-  stopNamedTunnel,
   stopTunnel,
   tunnelStatus,
 } from "@/ipc/client";
-import type { CloudflaredStatus, NamedTunnelMeta, Site, TunnelInfo } from "@/ipc/types";
+import type {
+  CloudflaredStatus,
+  NamedTunnelMeta,
+  Site,
+  TunnelInfo,
+  TunnelProvider,
+  TunnelProviderStatus,
+} from "@/ipc/types";
+import {
+  canStartNamed,
+  checkProviderStart,
+  CLEANUP_UNKNOWN_MESSAGE,
+  cleanupFailedMessage,
+  filterShares,
+  loginUrlFrom,
+  namedEntry,
+  removeTunnelCopy,
+  type ShareFilter,
+  type ShareItem,
+  shareItems,
+  shareKey,
+  siblingShares,
+  unsharedProviders,
+  unsupportedProviderMessage,
+} from "@/lib/share";
+import { copyUrlWithToast } from "@/lib/toastActions";
+import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 
 const toast = useToast();
-const { connected } = useDaemon();
+const { connected, report, refresh: refreshDaemon } = useDaemon();
+const router = useRouter();
+const wide = useWideLayout();
 
-const cloudflared = ref<CloudflaredStatus | null>(null);
-const tunnels = ref<TunnelInfo[]>([]);
-const sites = ref<Site[]>([]);
-const shareSite = ref("");
-// A long-running op in flight, e.g. "share:app" / "stop:app" / "install".
+/** A long-running action in flight, e.g. `share:ngrok:app`, `stop:ngrok:app`,
+ *  `enable:app` or `create`. */
 const busy = ref<string | null>(null);
 
-const installed = computed(() => cloudflared.value?.installed ?? false);
-const loggedIn = computed(() => cloudflared.value?.logged_in ?? false);
-// Whether the active cloudflared came from the user's PATH rather than
-// Yerd's own managed download - offers a way to switch to the bundled copy.
-const isSystemCloudflared = computed(() => cloudflared.value?.source === "system");
-
-// Named tunnels (Phase 2). One consolidated tunnel exposes every enabled site.
-const namedTunnels = ref<NamedTunnelMeta[]>([]);
-const newTunnelName = ref("");
-// site -> hostname currently enabled on the server.
-const enabledHosts = ref<Record<string, string>>({});
-// site -> hostname being typed in the per-site input.
-const hostInputs = ref<Record<string, string>>({});
-
-const namedRunning = computed(() =>
-  tunnels.value.some((t) => t.kind === "named" && t.state === "running"),
-);
-// Whether any site is currently exposed (drives auto start/stop of the tunnel).
-const anyExposed = computed(() => Object.keys(enabledHosts.value).length > 0);
-// v1 allows exactly one named tunnel.
-const hasNamedTunnel = computed(() => namedTunnels.value.length > 0);
-// The authorized Cloudflare zone (domain), once resolved from the account cert.
-const authorizedDomain = ref<string | null>(null);
-
-// Site search for the expose table.
-const siteFilter = ref("");
-// Sites for the expose table: matching the filter, exposed ones first.
-const visibleSites = computed(() => {
-  const q = siteFilter.value.trim().toLowerCase();
-  const matched = q ? sites.value.filter((s) => s.name.toLowerCase().includes(q)) : sites.value;
-  return [...matched].sort((a, b) => {
-    const ax = enabledHosts.value[a.name] ? 0 : 1;
-    const bx = enabledHosts.value[b.name] ? 0 : 1;
-    return ax - bx || a.name.localeCompare(b.name);
-  });
-});
-
-/** Suggested public hostname for a site: `{site}.{domain}` once the domain is
- *  known, otherwise a generic placeholder. */
-function suggestedHost(site: string): string {
-  return authorizedDomain.value ? `${site}.${authorizedDomain.value}` : `${site}.example.com`;
-}
-// The per-site "Shared sites" table is Quick-only; the named tunnel is managed
-// in its own card.
-const quickTunnels = computed(() => tunnels.value.filter((t) => t.kind === "quick"));
-
-// Sites not already tunnelled, for the share picker.
-const shareableSites = computed(() => {
-  const live = new Set(tunnels.value.map((t) => t.site));
-  return sites.value.filter((s) => !live.has(s.name));
-});
-
-const shareOptions = computed(() =>
-  shareableSites.value.map((s) => ({
-    value: s.name,
-    label: s.name,
-    sublabel: `PHP ${s.php}${s.secure ? " · https" : ""}`,
-  })),
-);
-
-const selectedShareSite = computed(() =>
-  sites.value.find((s) => s.name === shareSite.value),
-);
-
-// Streamed install log.
-const logOpen = ref(false);
-const installLog = ref<string[]>([]);
-const logBox = ref<HTMLElement | null>(null);
-
-async function appendLog(lines: string[]): Promise<void> {
-  installLog.value.push(...lines);
-  await nextTick();
-  const el = logBox.value;
-  if (el) el.scrollTop = el.scrollHeight;
-}
+const tld = computed(() => report.value?.tld ?? "test");
 
 type SharePageData = {
   cloudflared: CloudflaredStatus;
@@ -142,103 +85,160 @@ type SharePageData = {
   named: Awaited<ReturnType<typeof listNamedTunnels>>;
 };
 
-// The named-tunnel list is fetched unconditionally: the daemon returns the saved
-// tunnels and site mappings even when logged out (only the live zone needs an
-// account), so a logged-out user keeps visibility and control of an existing
-// tunnel instead of having it vanish from the UI.
+/** The named-tunnel list is fetched even when logged out: the daemon returns the
+ *  saved tunnel and site mappings without an account (only the zone needs one),
+ *  so a logged-out user keeps control of an existing tunnel. */
 async function fetchSharePage(): Promise<SharePageData> {
-  const [status, siteList, named] = await Promise.all([
-    tunnelStatus(),
-    listSites(),
-    listNamedTunnels(),
-  ]);
+  const [status, siteList, named] = await Promise.all([tunnelStatus(), listSites(), listNamedTunnels()]);
   return { cloudflared: status.cloudflared, tunnels: status.tunnels, sites: siteList, named };
 }
 
-// Module-cached (stale-while-revalidate): revisiting the page renders the last
-// value instantly and revalidates in the background, instead of re-fetching and
-// flashing a spinner on every pageload.
-const { data, loading, refresh, mutate, error } = useResource("share-page", fetchSharePage);
+const { data, loading, refresh, mutate, error: resourceError } = useResource("share-page", fetchSharePage);
 
-// Fold an authoritative tunnel-status response into the cache. Writing through
-// `mutate` (not the local refs directly) bumps useResource's epoch, so a
-// background poll fetch that started before this action can't revert it.
+const cloudflared = computed<CloudflaredStatus | null>(() => data.value?.cloudflared ?? null);
+const tunnels = computed<TunnelInfo[]>(() => data.value?.tunnels ?? []);
+const sites = computed<Site[]>(() => data.value?.sites ?? []);
+const namedTunnels = computed<NamedTunnelMeta[]>(() => data.value?.named.tunnels ?? []);
+/** The sites mapped onto the named tunnel, with their hostnames. */
+const namedSites = computed(() => data.value?.named.sites ?? []);
+/** The authorized Cloudflare zone, once resolved from the account cert. */
+const authorizedDomain = computed(() => data.value?.named.zone ?? null);
+
+/** Provider readiness for the cards, the dialog and the inspector. Not part of
+ *  the 5 s poll, since a PATH copy's version probe runs on every fetch; it is
+ *  refreshed after the providers sheet closes and after each share or stop. */
+const {
+  data: providerData,
+  refresh: refreshProviderData,
+  error: providerFetchError,
+} = useResource("tunnel-providers", listTunnelProviders);
+const providers = computed<TunnelProviderStatus[]>(() => providerData.value?.providers ?? []);
+const defaultProvider = computed<TunnelProvider>(() => providerData.value?.default_provider ?? "cloudflare");
+
+function refreshProviders(): void {
+  void refreshProviderData({ force: true });
+}
+
+/** Why the provider list couldn't load, while there is no list to show. A
+ *  failed revalidation over a loaded list keeps the list. */
+const providersError = computed(() =>
+  providerData.value ? null : (providerFetchError.value?.message ?? null),
+);
+
+const installed = computed(() => cloudflared.value?.installed ?? false);
+/** Whether any provider's binary is available; cloudflared alone until the
+ *  provider list has loaded. */
+const anyInstalled = computed(() =>
+  providers.value.length ? providers.value.some((p) => p.readiness !== "not_installed") : installed.value,
+);
+const loggedIn = computed(() => cloudflared.value?.logged_in ?? false);
+const entry = computed(() => namedEntry(tunnels.value));
+const exposedSites = computed(() => namedSites.value.map((s) => s.site));
+const canStart = computed(() => canStartNamed(entry.value, exposedSites.value.length));
+const tunnel = computed(() => namedTunnels.value[0] ?? null);
+const domainReady = computed(() => loggedIn.value && tunnel.value !== null);
+
+/** Only a cold-load failure replaces the screen; a failed revalidation over
+ *  cached data keeps it. */
+const error = computed(() => (data.value ? null : (resourceError.value?.message ?? null)));
+
+/** Fold an authoritative tunnel-status response into the cache. Writing through
+ *  `mutate` bumps useResource's epoch, so an older poll can't revert it. */
 function applyTunnelStatus(r: { tunnels: TunnelInfo[]; cloudflared: CloudflaredStatus }): void {
   mutate((cur) => (cur ? { ...cur, tunnels: r.tunnels, cloudflared: r.cloudflared } : cur));
 }
 
-// Optimistically add/clear a site's hostname mapping in the cache.
+/** Optimistically add or clear a site's hostname mapping in the cache. */
 function setNamedSite(site: string, hostname: string | null): void {
   mutate((cur) => {
     if (!cur?.named) return cur;
-    const sites = cur.named.sites.filter((s) => s.site !== site);
-    if (hostname) sites.push({ site, hostname });
-    return { ...cur, named: { ...cur.named, sites } };
+    const prev = cur.named.sites.find((s) => s.site === site);
+    const rest = cur.named.sites.filter((s) => s.site !== site);
+    if (hostname) rest.push({ site, hostname, protected: prev?.protected });
+    return { ...cur, named: { ...cur.named, sites: rest } };
   });
 }
 
-/** Mirror fetched page data into the local refs the handlers mutate optimistically. */
-function applyData(d: SharePageData): void {
-  cloudflared.value = d.cloudflared;
-  tunnels.value = d.tunnels;
-  sites.value = d.sites;
-  const staleSelection =
-    shareSite.value && !shareableSites.value.some((s) => s.name === shareSite.value);
-  if (staleSelection) {
-    shareSite.value = "";
-  }
-  namedTunnels.value = d.named.tunnels;
-  authorizedDomain.value = d.named.zone ?? null;
-  enabledHosts.value = Object.fromEntries(d.named.sites.map((s) => [s.site, s.hostname]));
-  for (const s of d.sites) {
-    if (hostInputs.value[s.name] === undefined || hostInputs.value[s.name] === "") {
-      hostInputs.value[s.name] = enabledHosts.value[s.name] ?? suggestedHost(s.name);
-    }
-  }
-}
-
-watch(data, (d) => { if (d) applyData(d); }, { immediate: true });
-// Surface a load failure only on a cold load (no cached data), so a transient
-// background revalidation stays silent.
-watch(error, (e) => {
-  if (e && !data.value) toast.error("Couldn't load tunnels", e.message);
-});
-
-/** Force a revalidation and apply it synchronously (for post-write refreshes). */
+/** Force a revalidation, for post-write refreshes. */
 async function reload(): Promise<void> {
   await refresh({ force: true });
-  if (data.value) applyData(data.value);
 }
 
-// ── named tunnels (Phase 2) ───────────────────────────────────────────────
+const items = computed(() => shareItems(tunnels.value, namedSites.value));
+const filter = ref<ShareFilter>("all");
 
+// ── selection ──
+const selectedKey = ref<string | null>(null);
+const drawerOpen = ref(false);
+/** The shares the list shows; only these can be selected. */
+const visible = computed(() => filterShares(items.value, filter.value));
+const selected = computed(() => visible.value.find((i) => i.key === selectedKey.value) ?? null);
+const selectedSite = computed(() => sites.value.find((s) => s.name === selected.value?.site));
+const selectedProvider = computed(
+  () => providers.value.find((p) => p.provider === selected.value?.provider) ?? null,
+);
+const siblings = computed(() => (selected.value ? siblingShares(items.value, selected.value) : []));
+const unshared = computed(() =>
+  selected.value ? unsharedProviders(items.value, selected.value.site, providers.value) : [],
+);
+
+/** Keep the selection on a share the list shows: the wide layout falls back
+ *  to the first visible share, the compact one clears it. */
+watch(
+  [visible, wide],
+  ([list, isWide]) => {
+    if (selectedKey.value && list.some((i) => i.key === selectedKey.value)) return;
+    selectedKey.value = isWide ? (list[0]?.key ?? null) : null;
+  },
+  { immediate: true },
+);
+
+watch(selected, (s) => {
+  if (!s) drawerOpen.value = false;
+});
+
+watch(wide, (isWide) => {
+  if (isWide) drawerOpen.value = false;
+});
+
+/** A row click: selects it, and in the compact table opens the drawer. */
+function select(key: string): void {
+  selectedKey.value = key;
+  if (!wide.value) drawerOpen.value = true;
+}
+
+// ── cloudflared ──
+/** cloudflared is installed, updated and removed in Tooling; Share only links there. */
+function goToTooling(): void {
+  void router.push("/tooling");
+}
+
+// ── Cloudflare login ──
 const loginOpen = ref(false);
-const loginLog = ref<string[]>([]);
-const loginBox = ref<HTMLElement | null>(null);
-// The auth URL, captured once so we can offer a manual "Open" button. cloudflared
-// opens the browser itself, so we deliberately do NOT auto-open it here (doing so
-// produced duplicate browser windows).
-const loginUrl = ref<string | null>(null);
+const loginLines = ref<string[]>([]);
+const loginUrl = computed(() => loginUrlFrom(loginLines.value));
 
-async function appendLogin(lines: string[]): Promise<void> {
-  for (const line of lines) {
-    const m = line.match(/https:\/\/dash\.cloudflare\.com\/argotunnel\S*/);
-    if (m && !loginUrl.value) loginUrl.value = m[0];
-  }
-  loginLog.value.push(...lines);
-  await nextTick();
-  const el = loginBox.value;
-  if (el) el.scrollTop = el.scrollHeight;
-}
-
+/** Closing the dialog (or leaving the page) while the login still runs cancels
+ *  the daemon job: it holds the tunnel lock until cloudflared exits, which
+ *  would otherwise stall every other tunnel action for up to five minutes. */
 async function doLogin(): Promise<void> {
   busy.value = "login";
-  loginLog.value = [];
-  loginUrl.value = null;
+  loginLines.value = [];
   loginOpen.value = true;
   try {
     const jobId = await cloudflaredLogin();
-    const final = await pollJobToEnd(jobId, (lines) => void appendLogin(lines), () => loginOpen.value);
+    const final = await pollJobToEnd(
+      jobId,
+      (lines) => {
+        loginLines.value = [...loginLines.value, ...lines];
+      },
+      () => loginOpen.value,
+    );
+    if (final.state === "running") {
+      await jobCancel(jobId).catch((e: unknown) =>
+        toast.error("Couldn't cancel the Cloudflare login", (e as IpcError).message),
+      );
+    }
     await reload();
     if (final.state === "succeeded") {
       toast.success("Connected to Cloudflare");
@@ -252,13 +252,11 @@ async function doLogin(): Promise<void> {
   }
 }
 
-async function doCreateTunnel(): Promise<void> {
-  const name = newTunnelName.value.trim();
-  if (!name) return;
+// ── named tunnel ──
+async function doCreateTunnel(name: string): Promise<void> {
   busy.value = "create";
   try {
     await createNamedTunnel(name);
-    newTunnelName.value = "";
     await reload();
     toast.success(`Created tunnel ${name}`);
   } catch (e) {
@@ -268,43 +266,58 @@ async function doCreateTunnel(): Promise<void> {
   }
 }
 
-// ── delete-tunnel confirm ──
-const deleteTunnelOpen = ref(false);
-const deleteTunnelTarget = ref<string | null>(null);
+const deleteOpen = ref(false);
 
-function askDeleteTunnel(name: string): void {
-  deleteTunnelTarget.value = name;
-  deleteTunnelOpen.value = true;
-}
-
-/** Delete the named tunnel from the account and reset local state. */
-async function confirmDeleteTunnel(close: () => void): Promise<void> {
-  const name = deleteTunnelTarget.value;
+/** Delete the named tunnel from the account. */
+async function confirmDeleteTunnel(): Promise<void> {
+  const name = tunnel.value?.name;
   if (!name) return;
-  close();
   busy.value = "delete-tunnel";
   try {
     await deleteNamedTunnel(name);
     await reload();
+    void refreshDaemon();
     toast.success(`Deleted tunnel ${name}`);
   } catch (e) {
     toast.error(`Couldn't delete ${name}`, (e as IpcError).message);
   } finally {
     busy.value = null;
-    deleteTunnelTarget.value = null;
   }
 }
 
-/** Enable a site: save its hostname and route DNS to the named tunnel. */
-async function doEnableSite(site: string): Promise<void> {
-  const hostname = (hostInputs.value[site] ?? "").trim();
-  const tunnel = namedTunnels.value[0];
-  if (!hostname || !tunnel) return;
+/** Start the named tunnel when sites are exposed but nothing is running (for
+ *  example after `yerd tunnel unpublish`), or retry a failed one. Idempotent on
+ *  the daemon side. */
+async function doStartNamed(): Promise<void> {
+  busy.value = "named";
+  try {
+    const r = await startNamedTunnel();
+    applyTunnelStatus(r);
+    const next = namedEntry(r.tunnels);
+    if (next?.state === "running") {
+      toast.success("Tunnel online");
+    } else if (next?.state === "failed") {
+      toast.info("Tunnel retrying", next.last_error ?? "It keeps retrying in the background");
+    } else {
+      toast.info("Tunnel connecting", "It shows as online once Cloudflare's edge is reached");
+    }
+  } catch (e) {
+    toast.error("Couldn't start the tunnel", (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+}
+
+/** Expose a site: save its hostname, then route DNS to the named tunnel, rolling
+ *  the mapping back if DNS fails. The daemon starts the tunnel once a hostname is set. */
+async function doEnableSite(site: string, hostname: string): Promise<boolean> {
+  const named = tunnel.value;
+  if (!hostname || !named) return false;
   busy.value = `enable:${site}`;
   try {
     await setSiteTunnel(site, hostname);
     try {
-      await routeTunnelDns(tunnel.name, hostname);
+      await routeTunnelDns(named.name, hostname);
     } catch (routeErr) {
       const rolledBack = await setSiteTunnel(site, null)
         .then(() => true)
@@ -313,23 +326,27 @@ async function doEnableSite(site: string): Promise<void> {
       throw routeErr;
     }
     setNamedSite(site, hostname);
-    await reconcileNamedTunnel(true);
+    await reload();
+    void refreshDaemon();
     toast.success(`Exposed ${site}`, `https://${hostname}`);
+    return true;
   } catch (e) {
     toast.error(`Couldn't expose ${site}`, (e as IpcError).message);
+    return false;
   } finally {
     busy.value = null;
   }
 }
 
-/** Disable a site: clear its hostname mapping. */
+/** Remove a site from the domain: clear its hostname mapping. The daemon stops
+ *  the named tunnel once the last hostname is cleared. */
 async function doDisableSite(site: string): Promise<void> {
   busy.value = `enable:${site}`;
   try {
     await setSiteTunnel(site, null);
-    const stillExposed = Object.keys(enabledHosts.value).some((s) => s !== site);
     setNamedSite(site, null);
-    await reconcileNamedTunnel(stillExposed);
+    await reload();
+    void refreshDaemon();
     toast.success(`Removed ${site} from the tunnel`);
   } catch (e) {
     toast.error(`Couldn't remove ${site}`, (e as IpcError).message);
@@ -338,71 +355,54 @@ async function doDisableSite(site: string): Promise<void> {
   }
 }
 
-/** Keep the live tunnel in sync with the exposed set: (re)start it while a site
- *  is exposed, stop it once the last one is removed. `hasExposed` is supplied by
- *  the caller (the cache mutation is async via the watcher, so we don't read it
- *  back here). */
-async function reconcileNamedTunnel(hasExposed: boolean): Promise<void> {
-  const r = hasExposed ? await startNamedTunnel() : await stopNamedTunnel();
-  applyTunnelStatus(r);
-}
-
-/** Manual restart, for recovering a tunnel that died (state "failed"). */
-async function doRestartNamed(): Promise<void> {
-  busy.value = "named";
-  const hasExposed = anyExposed.value;
+// ── per-site shares ──
+async function doShare(site: string, provider: TunnelProvider, randomUrl: boolean): Promise<boolean> {
+  busy.value = `share:${provider}:${site}`;
+  const before = tunnels.value;
   try {
-    await reconcileNamedTunnel(hasExposed);
-    toast.success(hasExposed ? "Tunnel restarted" : "Tunnel stopped");
-  } catch (e) {
-    toast.error("Couldn't restart the tunnel", (e as IpcError).message);
-  } finally {
-    busy.value = null;
-  }
-}
-
-async function doInstall(): Promise<void> {
-  busy.value = "install";
-  installLog.value = [];
-  logOpen.value = true;
-  try {
-    const jobId = await installCloudflaredStreamed();
-    const final = await pollJobToEnd(jobId, (lines) => void appendLog(lines), () => logOpen.value);
-    await reload();
-    if (final.state === "succeeded") {
-      toast.success("Installed cloudflared");
-    } else if (final.state !== "running") {
-      toast.error("cloudflared install failed", final.error ?? "install failed");
+    const r = await startQuickTunnel(site, provider, randomUrl);
+    const check = checkProviderStart(provider, before, r.tunnels);
+    const stray = check.stopCloudflare;
+    const stopped = stray ? await stopTunnel(stray, "cloudflare").catch(() => null) : null;
+    applyTunnelStatus(stopped ?? r);
+    void refreshDaemon();
+    refreshProviders();
+    if (check.unsupported) {
+      toast.error(`Couldn't share ${site}`, unsupportedProviderMessage(provider));
+      if (stray && !stopped) toast.error(`Couldn't stop the Cloudflare share of ${stray}`, cleanupFailedMessage(stray));
+      if (check.cleanupUnknown) toast.error("Check your Cloudflare shares", CLEANUP_UNKNOWN_MESSAGE);
+      return false;
     }
-  } catch (e) {
-    toast.error("cloudflared install failed", (e as IpcError).message);
-  } finally {
-    busy.value = null;
-  }
-}
-
-async function doShare(): Promise<void> {
-  const site = shareSite.value;
-  if (!site) return;
-  busy.value = `share:${site}`;
-  try {
-    const r = await startQuickTunnel(site);
-    applyTunnelStatus(r);
-    shareSite.value = "";
-    const url = r.tunnels.find((t) => t.site === site)?.url;
-    toast.success(`Sharing ${site}`, url ?? undefined);
+    const started = r.tunnels.find(
+      (t) => t.kind === "quick" && t.site === site && (t.provider ?? "cloudflare") === provider,
+    );
+    if (started?.url) {
+      toast.success(`Sharing ${site}`, started.url);
+    } else if (started?.state === "failed") {
+      toast.info(`Sharing ${site}`, started.last_error ?? "Retrying");
+    } else {
+      toast.success(`Sharing ${site}`, "Connecting - the URL appears once it's online");
+    }
+    if (started?.warnings?.length) {
+      toast.info(`Check ${site} while it's shared`, started.warnings.join("\n"), 10000);
+    }
+    return true;
   } catch (e) {
     toast.error(`Couldn't share ${site}`, (e as IpcError).message);
+    return false;
   } finally {
     busy.value = null;
   }
 }
 
-async function doStop(site: string): Promise<void> {
-  busy.value = `stop:${site}`;
+async function doStop(item: ShareItem): Promise<void> {
+  const { site, provider } = item;
+  busy.value = `stop:${provider}:${site}`;
   try {
-    const r = await stopTunnel(site);
+    const r = await stopTunnel(site, provider);
     applyTunnelStatus(r);
+    void refreshDaemon();
+    refreshProviders();
     toast.success(`Stopped sharing ${site}`);
   } catch (e) {
     toast.error(`Couldn't stop ${site}`, (e as IpcError).message);
@@ -411,441 +411,360 @@ async function doStop(site: string): Promise<void> {
   }
 }
 
-async function copyUrl(url: string): Promise<void> {
+// ── Share a site ──
+const shareOpen = ref(false);
+const shareInitialSite = ref<string | null>(null);
+const shareInitialProvider = ref<TunnelProvider | null>(null);
+
+/** Open Share a site, preselecting a site and provider when given. */
+function openShare(site: string | null = null, provider: TunnelProvider | null = null): void {
+  shareInitialSite.value = site;
+  shareInitialProvider.value = provider;
+  shareOpen.value = true;
+}
+
+/** "Also share through <provider>" from the inspector: close the drawer, then
+ *  open the dialog on the selected site and that provider. */
+function alsoShare(provider: TunnelProvider): void {
+  const site = selected.value?.site ?? null;
+  drawerOpen.value = false;
+  void nextTick(() => openShare(site, provider));
+}
+const shareInFlight = computed(
+  () => !!busy.value && (busy.value.startsWith("share:") || busy.value.startsWith("enable:")),
+);
+
+/** Run the dialog's share; on success close it and select the new share. */
+async function onShare(request: ShareRequest): Promise<void> {
+  const ok =
+    request.provider === "cloudflare" && request.kind === "domain"
+      ? await doEnableSite(request.site, request.hostname ?? "")
+      : await doShare(request.site, request.provider, request.randomUrl);
+  if (!ok) return;
+  shareOpen.value = false;
+  if (filter.value !== "all" && filter.value !== request.provider) filter.value = "all";
+  await nextTick();
+  select(shareKey(request.provider, request.kind, request.site));
+}
+
+// ── Providers ──
+const providersOpen = ref(false);
+const providersInitial = ref<TunnelProvider | null>(null);
+
+function openProviders(initial: TunnelProvider | null = null): void {
+  providersInitial.value = initial;
+  providersOpen.value = true;
+}
+
+/** Close any open dialog or drawer, then open the Providers sheet on `initial`,
+ *  so two dialogs never stack (the sibling of `fromProviders`). */
+function toProviders(initial: TunnelProvider | null = null): void {
+  shareOpen.value = false;
+  drawerOpen.value = false;
+  void nextTick(() => openProviders(initial));
+}
+
+/** Close the Providers sheet, then open the next dialog, so two dialogs never stack. */
+function fromProviders(next: () => void): void {
+  providersOpen.value = false;
+  void nextTick(next);
+}
+
+function onProvidersTooling(): void {
+  fromProviders(goToTooling);
+}
+
+function onProvidersLogin(): void {
+  fromProviders(() => void doLogin());
+}
+
+function onProvidersRemove(): void {
+  fromProviders(() => {
+    deleteOpen.value = true;
+  });
+}
+
+/** Reload once the sheet closes, so the page reflects provider changes. */
+watch(providersOpen, (open) => {
+  if (open) return;
+  void reload();
+  refreshProviders();
+});
+
+// ── share passwords ──
+const passwordOpen = ref(false);
+const passwordSite = ref<string | null>(null);
+const passwordInput = ref("");
+const passwordProtected = ref(false);
+
+function askPassword(site: string, isProtected: boolean): void {
+  passwordSite.value = site;
+  passwordInput.value = "";
+  passwordProtected.value = isProtected;
+  passwordOpen.value = true;
+}
+
+/** Forget the target site and any typed password whenever the modal closes. */
+function onPasswordOpenChange(open: boolean): void {
+  if (open) return;
+  passwordSite.value = null;
+  passwordInput.value = "";
+}
+
+/** Set (a non-empty value) or remove (`null`) the target site's share password. */
+async function savePassword(password: string | null, close: () => void): Promise<void> {
+  const site = passwordSite.value;
+  if (!site) return;
+  close();
+  busy.value = `password:${site}`;
   try {
-    await navigator.clipboard.writeText(url);
-    toast.success("Copied URL");
-  } catch {
-    toast.error("Couldn't copy URL");
+    await setTunnelPassword(site, password);
+    await reload();
+    toast.success(password === null ? `Removed the password for ${site}` : `Protected ${site}`);
+  } catch (e) {
+    toast.error(`Couldn't update the password for ${site}`, (e as IpcError).message);
+  } finally {
+    busy.value = null;
+    passwordSite.value = null;
+    passwordInput.value = "";
   }
 }
 
-// Open an external URL through the Tauri shell opener, surfacing (not floating)
-// any failure.
+async function copyUrl(url: string): Promise<void> {
+  await copyUrlWithToast(url);
+}
+
+/** Open an external URL through the Tauri opener, surfacing any failure. */
 function openExternal(url: string): void {
   void openInBrowser(url).catch(() => toast.error("Couldn't open link"));
 }
 
-// Silent background revalidation while a tunnel is live, so a cloudflared child
-// that dies (state -> "failed") becomes visible without a manual reload. Skipped
-// while a long-running op is in flight to avoid clobbering optimistic UI; cleared
-// on unmount. useResource fetches on mount and serves the cached value instantly
-// on a revisit, so there's no explicit load() here.
-let poll: ReturnType<typeof setInterval> | null = null;
+/** Silent revalidation while a tunnel exists, so health changes show without a
+ *  manual reload. Skipped while an action is in flight so optimistic state holds.
+ *  Not forced: the first tick lands on mount and joins useResource's own fetch. */
 async function refreshTunnels(): Promise<void> {
   if (busy.value !== null || tunnels.value.length === 0) return;
-  await reload().catch(() => {});
+  await refresh();
 }
 
-onMounted(() => {
-  poll = setInterval(() => void refreshTunnels(), 5000);
-});
+usePoll(refreshTunnels, 5000);
+
 onUnmounted(() => {
-  if (poll !== null) clearInterval(poll);
-  logOpen.value = false;
   loginOpen.value = false;
 });
 onUnmounted(registerViewActions({ refresh: () => void reload() }));
+
+const shareDisabled = computed(() => connected.value !== true || busy.value !== null);
 </script>
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader
-      title="Share"
-      subtitle="Publish a local site to the internet over a secure public URL"
-      docs="/guide/sharing"
-    />
+    <PageHeader title="Share" docs="/guide/sharing">
+      <template #actions>
+        <Button
+          v-if="wide"
+          variant="outline"
+          size="sm"
+          :disabled="!data"
+          data-testid="open-providers"
+          @click="openProviders()"
+        >
+          <SlidersHorizontal /> Providers
+        </Button>
+        <Button
+          v-else
+          variant="outline"
+          size="icon"
+          class="size-8"
+          aria-label="Providers"
+          title="Providers"
+          :disabled="!data"
+          data-testid="open-providers"
+          @click="openProviders()"
+        >
+          <SlidersHorizontal />
+        </Button>
+        <Button size="sm" :disabled="shareDisabled" data-testid="open-share" @click="openShare()">
+          <Plus /> Share a site
+        </Button>
+      </template>
+    </PageHeader>
 
-    <div class="flex-1 space-y-6 overflow-y-auto p-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Cloudflare Tunnel</CardTitle>
-          <CardDescription>
-            Expose a local site over a public HTTPS URL through Cloudflare's
-            edge - outbound-only, no open ports, no account needed. Quick
-            tunnels are for development: the URL is temporary (it changes on
-            restart), capped at 200 concurrent requests, and does not support
-            server-sent events.
-          </CardDescription>
-        </CardHeader>
-
-        <CardContent>
-          <div v-if="loading" class="flex justify-center py-8">
-            <Spinner class="size-6" />
-          </div>
-
-          <div v-else class="flex items-center justify-between gap-4">
-            <div class="flex items-center gap-2 text-sm">
-              <Badge v-if="installed" variant="secondary" class="gap-1">
-                <CheckCircle2 class="size-3 text-emerald-500" />
-                cloudflared {{ cloudflared?.version ?? "ready" }}
-                <span v-if="isSystemCloudflared" class="text-muted-foreground">(system)</span>
-              </Badge>
-              <span v-else class="text-muted-foreground">
-                Sharing needs <span class="font-medium text-foreground">cloudflared</span>,
-                a small one-time download. No account required.
+    <div class="min-h-0 flex-1">
+      <AsyncState
+        :loading="loading && !data"
+        :error="error"
+        :empty="!anyInstalled || !items.length"
+        pad="py-16"
+        @retry="reload"
+      >
+        <template #empty>
+          <div class="flex h-full flex-col items-center justify-center px-6 py-16 text-center" data-testid="share-empty">
+            <template v-if="!anyInstalled">
+              <span class="flex size-11 items-center justify-center rounded-xl border bg-card text-muted-foreground">
+                <CloudDownload class="size-5" aria-hidden="true" />
               </span>
-            </div>
-            <Button
-              v-if="!installed"
-              :disabled="busy !== null || connected !== true"
-              @click="doInstall"
-            >
-              <Download class="mr-1.5 size-3.5" /> Install cloudflared
-            </Button>
-            <Button
-              v-else-if="isSystemCloudflared"
-              variant="outline"
-              size="sm"
-              :disabled="busy !== null || connected !== true"
-              @click="doInstall"
-            >
-              <Download class="mr-1.5 size-3.5" /> Use Yerd's bundled version instead
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card v-if="installed">
-        <CardHeader>
-          <CardTitle>Shared sites</CardTitle>
-          <CardDescription>
-            Pick a site to publish, or stop an active tunnel. Sharing serves
-            your local site as-is - anyone with the URL can reach it.
-          </CardDescription>
-        </CardHeader>
-
-        <CardContent>
-          <div class="mb-4 flex items-end gap-3">
-            <div class="min-w-0 flex-1">
-              <label class="mb-1.5 block text-xs font-medium text-muted-foreground">
-                Site to share
-              </label>
-              <Combobox
-                v-model="shareSite"
-                :options="shareOptions"
-                placeholder="Choose a site…"
-                search-placeholder="Search sites…"
-                empty-text="No matching sites."
-                aria-label="Site to share"
-                :disabled="shareableSites.length === 0"
-              />
-            </div>
-            <Button
-              :disabled="busy !== null || !shareSite || connected !== true"
-              @click="doShare"
-            >
-              <Spinner v-if="busy === `share:${shareSite}`" class="mr-1.5 size-3.5" />
-              <Globe v-else class="mr-1.5 size-3.5" />
-              Share
-            </Button>
-          </div>
-
-          <p
-            v-if="selectedShareSite"
-            class="mb-5 flex items-center gap-1.5 text-xs text-muted-foreground"
-          >
-            <Lock v-if="selectedShareSite.secure" class="size-3 shrink-0" />
-            <span>
-              Publishes
-              <span class="font-mono text-foreground">{{ shareSite }}.test</span>
-              over {{ selectedShareSite.secure ? "HTTPS" : "HTTP" }} - anyone with the
-              link can reach it.
-            </span>
-          </p>
-
-          <EmptyState
-            v-if="quickTunnels.length === 0"
-            :icon="Share2"
-            title="No active shares"
-            description="Pick a site above and hit Share to get a public URL you can send to anyone."
-          />
-
-          <table v-else class="w-full text-sm">
-            <thead>
-              <tr class="border-b text-left text-xs uppercase text-muted-foreground">
-                <th class="py-2 pr-4 font-medium">Site</th>
-                <th class="py-2 pr-4 font-medium">Public URL</th>
-                <th class="py-2 pl-4 text-right font-medium">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="t in quickTunnels" :key="t.site" class="border-b last:border-0">
-                <td class="py-3 pr-4 font-medium text-foreground">
-                  {{ t.site }}
-                  <Badge v-if="t.state === 'failed'" variant="outline" class="ml-1">
-                    failed
-                  </Badge>
-                </td>
-                <td class="py-3 pr-4">
-                  <button
-                    v-if="t.url ?? t.hostname"
-                    type="button"
-                    class="font-mono text-xs text-brand hover:underline"
-                    @click="openExternal(t.url ?? `https://${t.hostname}`)"
-                  >
-                    {{ t.url ?? t.hostname }}
-                  </button>
-                  <span v-else class="text-xs text-muted-foreground">starting…</span>
-                </td>
-                <td class="py-3 pl-4">
-                  <div class="flex items-center justify-end gap-2">
-                    <Button
-                      v-if="t.url"
-                      variant="ghost"
-                      size="sm"
-                      aria-label="Copy URL"
-                      title="Copy URL"
-                      @click="copyUrl(t.url)"
-                    >
-                      <Copy class="size-3.5" />
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      :disabled="busy !== null"
-                      @click="doStop(t.site)"
-                    >
-                      <Spinner v-if="busy === `stop:${t.site}`" class="mr-1.5 size-3.5" />
-                      <Square v-else class="mr-1.5 size-3.5" />
-                      Stop
-                    </Button>
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </CardContent>
-      </Card>
-
-      <Card v-if="installed">
-        <CardHeader>
-          <CardTitle>Named tunnels (stable hostnames)</CardTitle>
-          <CardDescription>
-            Publish a site at a stable hostname on your own Cloudflare domain
-            (requires a Cloudflare account and a managed domain). Yerd uses one
-            tunnel to serve every exposed site.
-          </CardDescription>
-        </CardHeader>
-
-        <CardContent>
-          <div
-            v-if="!loggedIn"
-            class="mb-5 flex items-center justify-between gap-4 rounded-md border bg-muted/40 px-3 py-2.5"
-          >
-            <span class="text-sm text-muted-foreground">
-              {{ hasNamedTunnel
-                ? "Reconnect your Cloudflare account to manage this tunnel."
-                : "Not connected to a Cloudflare account." }}
-            </span>
-            <Button :disabled="busy !== null || connected !== true" @click="doLogin">
-              <Cloud class="mr-1.5 size-3.5" /> Connect Cloudflare account
-            </Button>
-          </div>
-
-          <div v-if="loggedIn || hasNamedTunnel" class="space-y-5">
-            <div class="flex items-center justify-between gap-2">
-              <Badge v-if="loggedIn" variant="secondary">
-                Cloudflare connected<template v-if="authorizedDomain">
-                  · {{ authorizedDomain }}</template>
-              </Badge>
-              <Badge v-else variant="outline" class="text-muted-foreground">
-                Account disconnected
-              </Badge>
-              <div class="flex items-center gap-2">
-                <Badge v-if="namedRunning" variant="secondary" class="gap-1">
-                  <span class="size-1.5 rounded-full bg-emerald-500" /> live
-                </Badge>
-                <Badge
-                  v-else-if="anyExposed"
-                  variant="outline"
-                  class="gap-1 text-amber-600 dark:text-amber-400"
-                >
-                  offline
-                </Badge>
-                <Button
-                  v-if="anyExposed"
-                  variant="outline"
-                  size="sm"
-                  :disabled="busy !== null || connected !== true || !loggedIn"
-                  @click="doRestartNamed"
-                >
-                  <Spinner v-if="busy === 'named'" class="mr-1.5 size-3.5" />
-                  <Globe v-else class="mr-1.5 size-3.5" />
-                  {{ namedRunning ? "Restart" : "Start" }}
-                </Button>
-              </div>
-            </div>
-
-            <div>
-              <div v-if="!hasNamedTunnel">
-                <label class="mb-1 block text-xs text-muted-foreground">Create a tunnel</label>
-                <div class="flex items-end gap-2">
-                  <Input
-                    v-model="newTunnelName"
-                    placeholder="tunnel name"
-                    class="flex-1"
-                  />
-                  <Button
-                    :disabled="busy !== null || !newTunnelName.trim() || connected !== true || !loggedIn"
-                    @click="doCreateTunnel"
-                  >
-                    <Spinner v-if="busy === 'create'" class="mr-1.5 size-3.5" />
-                    Create
-                  </Button>
-                </div>
-              </div>
-              <ul v-if="namedTunnels.length" class="mt-2 space-y-1.5">
-                <li
-                  v-for="t in namedTunnels"
-                  :key="t.uuid"
-                  class="flex items-center justify-between gap-2 rounded-md border bg-muted/40 px-2.5 py-1.5"
-                >
-                  <div class="min-w-0">
-                    <p class="truncate text-sm font-medium">{{ t.name }}</p>
-                    <p class="truncate font-mono text-[11px] text-muted-foreground">{{ t.uuid }}</p>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    class="shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                    :disabled="busy !== null || connected !== true || !loggedIn"
-                    @click="askDeleteTunnel(t.name)"
-                  >
-                    <Spinner v-if="busy === 'delete-tunnel'" class="mr-1.5 size-3.5" />
-                    <Trash2 v-else class="mr-1.5 size-3.5" />
-                    Remove
-                  </Button>
-                </li>
-              </ul>
-            </div>
-
-            <div>
-              <h3 class="mb-2 text-sm font-semibold text-foreground">
-                Choose a site to expose
-              </h3>
-
-              <p v-if="namedTunnels.length === 0" class="text-xs text-muted-foreground">
-                Create a tunnel above first.
+              <p class="mt-4 text-[15px] font-semibold">Sharing needs a tunnel provider</p>
+              <p class="mt-1.5 max-w-sm text-[13px] text-muted-foreground">
+                Install cloudflared, ngrok or zrok from Tooling.
               </p>
-              <p v-else-if="sites.length === 0" class="text-xs text-muted-foreground">
-                No sites yet.
+              <Button
+                size="sm"
+                class="mt-5"
+                :disabled="connected !== true"
+                data-testid="open-tooling"
+                @click="goToTooling"
+              >
+                <Wrench /> Open Tooling
+              </Button>
+            </template>
+            <template v-else>
+              <span class="flex size-11 items-center justify-center rounded-xl border bg-card text-muted-foreground">
+                <Share2 class="size-5" aria-hidden="true" />
+              </span>
+              <p class="mt-4 text-[15px] font-semibold">Nothing shared yet</p>
+              <p class="mt-1.5 max-w-sm text-[13px] text-muted-foreground">
+                Share a site to get a public URL you can send to anyone.
               </p>
-
-              <template v-else>
-                <div class="mb-2">
-                  <Input v-model="siteFilter" placeholder="Search sites…" />
-                </div>
-                <p
-                  v-if="visibleSites.length === 0"
-                  class="py-4 text-center text-xs text-muted-foreground"
-                >
-                  No sites match “{{ siteFilter }}”.
-                </p>
-                <table v-else class="w-full text-sm">
-                  <thead>
-                    <tr class="border-b text-left text-xs uppercase text-muted-foreground">
-                      <th class="py-2 pr-2 font-medium">Site</th>
-                      <th class="py-2 pr-2 font-medium">Public hostname</th>
-                      <th class="py-2 pl-2 text-right font-medium">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="s in visibleSites" :key="s.name" class="border-b last:border-0">
-                      <td class="py-2 pr-2 font-medium text-foreground">
-                        {{ s.name }}
-                        <Badge v-if="enabledHosts[s.name]" variant="secondary" class="ml-1">
-                          exposed
-                        </Badge>
-                      </td>
-                      <td class="py-2 pr-2">
-                        <Input
-                          v-model="hostInputs[s.name]"
-                          :placeholder="suggestedHost(s.name)"
-                          :disabled="!!enabledHosts[s.name]"
-                        />
-                      </td>
-                      <td class="py-2 pl-2 text-right">
-                        <Button
-                          v-if="enabledHosts[s.name]"
-                          variant="ghost"
-                          size="sm"
-                          :disabled="busy !== null || connected !== true"
-                          @click="doDisableSite(s.name)"
-                        >
-                          <Spinner v-if="busy === `enable:${s.name}`" class="mr-1.5 size-3.5" />
-                          Remove
-                        </Button>
-                        <Button
-                          v-else
-                          variant="outline"
-                          size="sm"
-                          :disabled="busy !== null || !(hostInputs[s.name] ?? '').trim() || connected !== true || !loggedIn"
-                          @click="doEnableSite(s.name)"
-                        >
-                          <Spinner v-if="busy === `enable:${s.name}`" class="mr-1.5 size-3.5" />
-                          Expose
-                        </Button>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </template>
-            </div>
+              <Button size="sm" class="mt-5" :disabled="shareDisabled" @click="openShare()">
+                <Plus /> Share a site
+              </Button>
+            </template>
           </div>
-        </CardContent>
-      </Card>
+        </template>
+
+        <div class="flex h-full min-h-0" :data-layout="wide ? 'wide' : 'compact'">
+          <div :class="wide ? 'flex w-[360px] shrink-0 flex-col pl-4 pt-4' : 'flex min-w-0 flex-1 flex-col pl-4 pt-4'">
+            <ShareProviderCards
+              :providers="providers"
+              :error="providersError"
+              @manage="toProviders()"
+              @retry="refreshProviders"
+            />
+            <ShareList
+              v-model:filter="filter"
+              class="min-h-0 flex-1"
+              :layout="wide ? 'list' : 'table'"
+              :items="items"
+              :selected="selectedKey"
+              @select="select"
+            />
+          </div>
+
+          <div :class="wide ? 'min-w-0 flex-1 border-l' : 'hidden'" data-testid="inspector-column">
+            <ShareInspector
+              :mode="wide ? 'panel' : 'drawer'"
+              :shown="wide ? !!selected : drawerOpen && !!selected"
+              :item="selected"
+              :site="selectedSite"
+              :tld="tld"
+              :tunnel-name="tunnel?.name ?? null"
+              :cloudflared="cloudflared"
+              :provider-status="selectedProvider"
+              :siblings="siblings"
+              :unshared="unshared"
+              :can-restart="canStart"
+              :logged-in="loggedIn"
+              :busy="busy"
+              :connected="connected === true"
+              @close="drawerOpen = false"
+              @stop="selected && doStop(selected)"
+              @also-share="alsoShare"
+              @open-sibling="openExternal"
+              @remove-from-domain="selected && doDisableSite(selected.site)"
+              @restart="doStartNamed"
+              @password="selected && askPassword(selected.site, selected.protected)"
+              @copy="copyUrl"
+              @open="openExternal"
+            />
+            <p v-if="wide && !selected" class="flex h-full items-center justify-center text-[13px] text-faint">
+              Select a share to see its details.
+            </p>
+          </div>
+        </div>
+      </AsyncState>
     </div>
 
-    <Modal v-model:open="loginOpen" title="Connect Cloudflare account" size="lg">
-      <p class="mb-3 text-sm text-muted-foreground">
-        A browser window should have opened to authorize Yerd. If it didn't, use
-        the button below.
-      </p>
-      <div
-        v-if="loginUrl"
-        class="mb-3 flex items-center justify-between gap-3 rounded-md border bg-muted/40 px-3 py-2"
-      >
-        <span class="truncate font-mono text-xs text-muted-foreground">{{ loginUrl }}</span>
-        <Button size="sm" variant="outline" class="shrink-0" @click="openExternal(loginUrl)">
-          <Globe class="mr-1.5 size-3.5" /> Open in browser
-        </Button>
-      </div>
-      <pre
-        ref="loginBox"
-        class="h-64 overflow-y-auto whitespace-pre-wrap rounded-lg bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-zinc-200"
-      >{{ loginLog.join("\n") || "Waiting for Cloudflare login…" }}</pre>
-      <template #footer="{ close }">
-        <Spinner v-if="busy === 'login'" class="size-4" />
-        <Button :disabled="busy === 'login'" @click="close">Done</Button>
-      </template>
-    </Modal>
+    <ShareSiteDialog
+      v-model:open="shareOpen"
+      :sites="sites"
+      :items="items"
+      :providers="providers"
+      :providers-error="providersError"
+      :default-provider="defaultProvider"
+      :initial-site="shareInitialSite"
+      :initial-provider="shareInitialProvider"
+      :zone="authorizedDomain"
+      :domain-ready="domainReady"
+      :tld="tld"
+      :busy="shareInFlight"
+      :locked="busy !== null || connected !== true"
+      @share="onShare"
+      @setup="toProviders"
+      @retry-providers="refreshProviders"
+    />
 
-    <Modal v-model:open="logOpen" title="Installing cloudflared" size="lg">
-      <pre
-        ref="logBox"
-        class="h-72 overflow-y-auto whitespace-pre-wrap rounded-lg bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-zinc-200"
-      >{{ installLog.join("\n") || "Starting…" }}</pre>
-      <template #footer="{ close }">
-        <Spinner v-if="busy === 'install'" class="size-4" />
-        <Button :disabled="busy === 'install'" @click="close">Done</Button>
-      </template>
-    </Modal>
+    <TunnelProvidersDialog
+      v-model:open="providersOpen"
+      :cloudflared="cloudflared"
+      :zone="authorizedDomain"
+      :tunnel="tunnel"
+      :entry="entry"
+      :exposed-count="exposedSites.length"
+      :busy="busy"
+      :connected="connected === true"
+      :initial="providersInitial"
+      @tooling="onProvidersTooling"
+      @login="onProvidersLogin"
+      @create="doCreateTunnel"
+      @start="doStartNamed"
+      @remove="onProvidersRemove"
+      @open-url="openExternal"
+    />
 
-    <Modal
-      v-model:open="deleteTunnelOpen"
-      title="Delete named tunnel"
-      @update:open="(v: boolean) => { if (!v) deleteTunnelTarget = null; }"
+    <CloudflareLoginDialog
+      v-model:open="loginOpen"
+      :lines="loginLines"
+      :url="loginUrl"
+      :running="busy === 'login'"
+      @open-url="openExternal"
+    />
+
+    <ConfirmDialog
+      v-model:open="deleteOpen"
+      :title="`Remove tunnel ${tunnel?.name ?? ''}?`"
+      confirm-label="Remove tunnel"
+      tone="danger"
+      :icon="Trash2"
+      @confirm="confirmDeleteTunnel"
     >
-      <p class="text-sm text-muted-foreground">
-        Delete <strong class="font-mono text-foreground">{{ deleteTunnelTarget }}</strong>?
-        This removes it from your Cloudflare account and takes any exposed sites
-        offline. Any DNS records you created for it may need removing in the
-        Cloudflare dashboard.
+      {{ removeTunnelCopy(exposedSites) }}
+    </ConfirmDialog>
+
+    <Modal v-model:open="passwordOpen" title="Share password" @update:open="onPasswordOpenChange">
+      <p class="mb-3 text-sm text-muted-foreground">
+        Visitors to <strong class="font-mono text-foreground">{{ passwordSite }}</strong>
+        over the tunnel must sign in with this password (any username). Local
+        <span class="font-mono">.test</span> access is unaffected.
       </p>
+      <Input
+        id="share-password"
+        v-model="passwordInput"
+        type="password"
+        autocomplete="new-password"
+        placeholder="Share password"
+      />
       <template #footer="{ close }">
+        <Button
+          v-if="passwordProtected"
+          variant="ghost"
+          class="mr-auto text-destructive hover:bg-destructive/10 hover:text-destructive"
+          @click="savePassword(null, close)"
+        >
+          Remove password
+        </Button>
         <Button variant="ghost" @click="close">Cancel</Button>
-        <Button variant="destructive" @click="confirmDeleteTunnel(close)">Delete</Button>
+        <Button :disabled="passwordInput.length === 0" @click="savePassword(passwordInput, close)">Save</Button>
       </template>
     </Modal>
   </div>

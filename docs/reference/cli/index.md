@@ -35,21 +35,25 @@ The exceptions are the two passthrough commands. Anything after [`coverage`](./c
 | Group | Commands |
 | --- | --- |
 | [Sites](./sites) | `sites`, `park`, `unpark`, `link`, `unlink`, `root` |
+| [Init](./init) | `init` (apply or create a project's `.yerd.toml`) |
 | [Domains](./domains) | `domain list`, `domain add`, `domain remove`, `domain primary`, `domain reset` |
-| [Proxies](./proxies) | `proxy add`, `proxy remove`, `proxy list` |
+| [Proxies](./proxies) | `proxy add`, `proxy edit`, `proxy remove`, `proxy list` |
 | [Routing rules](./routes) | `route add`, `route remove`, `route list` |
+| [Response headers](./headers) | `header set`, `header remove`, `header list` |
 | [HTTPS](./https) | `secure`, `unsecure` |
 | [PHP](./php) | `use`, `install php`, `uninstall php`, `update php`, `restart php`, `list php`, `list parked`, `set php`, `unset php`, `php ext add`/`remove`/`list`, `php ini set`/`unset`/`list`, `php pool set`/`unset`/`list`, [`coverage`](./coverage) |
+| [Xdebug](./xdebug) | `xdebug on`, `xdebug off`, `xdebug status`, plus the `phpdebug` / `php<version>debug` shims |
 | [Exec and Which](./exec) | `exec php`, `exec composer`, `which php` |
 | [Tooling](./tooling) | `tools`, `install tool`, `uninstall tool`, `path install`, `path uninstall`, `path print` |
 | [Services](./services) | `services`, `service available`, `service install`, `service change-version`, `service uninstall`, `service start`, `service stop`, `service restart`, `service set-port`, `service set`, `service unset`, `service overrides`, `service logs`, `service add`, `service remove`, `service set-autostart`, `service set-site` |
 | [Databases](./db) | `db list`, `db create`, `db drop`, `db backup`, `db restore` |
 | [Mail](./mail) | `mail list`, `mail show`, `mail clear` |
 | [LAN sharing](./lan) | `lan enable`, `lan disable`, `lan status`, `remote-setup` |
-| [Tunnel](./tunnel) | `tunnel install`, `tunnel share`, `tunnel stop`, `tunnel status`, `tunnel login`, `tunnel create`, `tunnel delete`, `tunnel list`, `tunnel route`, `tunnel set-host`, `tunnel publish`, `tunnel unpublish` |
+| [Network](./network) | `network proxy status`, `network proxy set`, `network proxy system`, `network proxy off`, `network proxy test` |
+| [Tunnel](./tunnel) | `tunnel share`, `tunnel stop`, `tunnel status`, `tunnel login`, `tunnel create`, `tunnel delete`, `tunnel list`, `tunnel route`, `tunnel set-host`, `tunnel password`, `tunnel publish`, `tunnel unpublish` |
 | [Diagnostics](./diagnostics) | `ping`, `status`, `doctor`, `doctor fix` |
 | [Elevation](./elevation) | `elevate`, `unelevate` |
-| [Daemon control](./daemon) | `restart daemon` |
+| [Daemon control](./daemon) | `restart daemon`, `daemon install`, `daemon start`, `daemon stop` |
 | [Self-Update](./update) | `update` (check/apply a Yerd self-update) |
 | [Uninstall](./uninstall) | `uninstall` (full self-uninstall), `uninstall php`, `uninstall tool` |
 

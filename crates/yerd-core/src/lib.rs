@@ -7,27 +7,33 @@
 
 #![forbid(unsafe_code)]
 
+pub mod node;
+
 pub mod detect;
 mod domain;
 mod error;
 mod host;
 mod net;
+pub mod network;
 mod php;
 pub mod php_directives;
 pub mod php_extensions;
 pub mod php_pool;
 pub mod php_settings;
+pub mod php_xdebug;
 mod proxy;
+mod response_header;
 mod route_rule;
 mod router;
 pub mod service_directives;
 mod site;
 mod tld;
+pub mod tunnel_provider;
 
 /// `Server` header value the proxy stamps on its own (synthetic, non-forwarded)
 /// responses. It doubles as the signature the macOS privileged-port redirect
 /// probe looks for: confirming a connection to `127.0.0.1:80` reaches *this*
-/// daemon's proxy - rather than some other process or a stale `pf` rule holding
+/// daemon's proxy - rather than some other process or an undelivering forwarder holding
 /// the port - instead of merely confirming *something* answers.
 ///
 /// It is a cross-crate contract: `yerd-proxy` sets it (`server.rs`) and
@@ -44,12 +50,12 @@ pub const PROXY_SERVER_ID: &str = "yerd";
 /// value means re-generating existing users' CAs, so treat it as frozen.
 pub const CA_COMMON_NAME: &str = "Yerd Local CA";
 
-pub use detect::{detect, Detection, ProjectSignals};
+pub use detect::{detect, detect_framework, Detection, ProjectSignals, SiteFramework};
 pub use domain::{choose_primary, effective_domains, Domain};
 pub use error::{
     CoreError, DomainErrorReason, PhpVersionErrorReason, ProxyNameErrorReason,
-    ProxyRuleErrorReason, RouteRuleErrorReason, SiteNameErrorReason, TldErrorReason,
-    UpstreamTargetErrorReason,
+    ProxyRuleErrorReason, ProxyUrlErrorReason, ResponseHeaderErrorReason, RouteRuleErrorReason,
+    SiteNameErrorReason, TldErrorReason, UpstreamTargetErrorReason,
 };
 pub use net::is_lan_source;
 pub use php::{PhpVersion, FIRST_SUPPORTED_MINOR};
@@ -57,8 +63,13 @@ pub use php_directives::{DirectiveError, DirectiveNameErrorReason};
 pub use php_extensions::{ExtError, NameErrorReason, PathErrorReason};
 pub use php_pool::{PoolNameErrorReason, PoolSettingError, PoolValueErrorReason};
 pub use php_settings::{PhpSettingError, ValueErrorReason};
+pub use php_xdebug::{XdebugError, XdebugMode, XdebugSettings, XdebugStart};
 pub use proxy::{match_rule, validate_proxy_name, ProxyRule, ProxySite, UpstreamTarget};
+pub use response_header::ResponseHeader;
 pub use route_rule::RouteRule;
 pub use router::{Route, RouterConfig, SiteRouter};
-pub use site::{normalize_site_name, slugify_site_name, Site, SiteKind};
+pub use site::{
+    folder_site_name, normalize_site_name, parked_folder_site_name, slugify_site_name, Site,
+    SiteKind,
+};
 pub use tld::Tld;

@@ -17,6 +17,10 @@ fn main() -> ExitCode {
         return code;
     }
     #[cfg(unix)]
+    if let Some(code) = yerd::debug_shim::dispatch() {
+        return code;
+    }
+    #[cfg(unix)]
     if let Some(code) = yerd::laravel_shim::dispatch() {
         return code;
     }
@@ -26,6 +30,14 @@ fn main() -> ExitCode {
     }
     #[cfg(unix)]
     if let Some(code) = yerd::wp_shim::dispatch() {
+        return code;
+    }
+    #[cfg(unix)]
+    if let Some(code) = yerd::tool_shim::dispatch() {
+        return code;
+    }
+    #[cfg(unix)]
+    if let Some(code) = yerd::service_client_shim::dispatch() {
         return code;
     }
     if let Some(code) = yerd::apply::run_from_env() {

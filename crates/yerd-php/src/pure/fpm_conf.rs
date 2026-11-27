@@ -48,10 +48,16 @@ pub fn render_fpm_conf(cfg: &PoolConfig) -> String {
     }
 
     for (key, value) in &cfg.ini {
-        if let Some(directive) = yerd_core::php_settings::directive(key) {
-            if yerd_core::php_settings::validate_value(key, value).is_ok() {
-                let _ = writeln!(out, "{directive}[{key}] = {value}");
-            }
+        let Some(directive) = yerd_core::php_settings::directive(key) else {
+            continue;
+        };
+        if yerd_core::php_settings::validate_value(key, value).is_err()
+            || !yerd_core::php_settings::applies_to_version(key, cfg.version)
+        {
+            continue;
+        }
+        if let Some(rendered) = yerd_core::php_settings::fpm_value(key, value) {
+            let _ = writeln!(out, "{directive}[{key}] = {rendered}");
         }
     }
 
@@ -59,6 +65,7 @@ pub fn render_fpm_conf(cfg: &PoolConfig) -> String {
         if yerd_core::php_directives::validate_name(key).is_ok()
             && yerd_core::php_directives::validate_value(value).is_ok()
             && yerd_core::php_directives::reserved(key).is_none()
+            && !(cfg.xdebug.is_some() && yerd_core::php_xdebug::is_managed_key(key))
         {
             let _ = writeln!(out, "php_value[{key}] = {value}");
         }
@@ -109,6 +116,7 @@ mod tests {
             ini_defines: Vec::new(),
             user_extensions: Vec::new(),
             ca_bundle: None,
+            xdebug: None,
         }
     }
 
@@ -127,6 +135,7 @@ mod tests {
             ini_defines: Vec::new(),
             user_extensions: Vec::new(),
             ca_bundle: None,
+            xdebug: None,
         }
     }
 
@@ -217,6 +226,54 @@ catch_workers_output = yes
             s.find("php_value[memory_limit]").unwrap()
                 < s.find("php_value[opcache.enable]").unwrap(),
             "settings must precede free-form directives: {s}"
+        );
+    }
+
+    fn xdebug_directives() -> Vec<(String, String)> {
+        vec![
+            ("opcache.jit".to_string(), "tracing".to_string()),
+            ("xdebug.idekey".to_string(), "PHPSTORM".to_string()),
+            ("xdebug.mode".to_string(), "coverage".to_string()),
+            ("xdebug.start_with_request".to_string(), "no".to_string()),
+        ]
+    }
+
+    #[test]
+    fn managed_xdebug_keys_render_when_xdebug_is_off() {
+        let mut cfg = cfg_unix(ProcessManagerMode::OnDemand);
+        cfg.directives = xdebug_directives();
+        let s = render_fpm_conf(&cfg);
+        assert!(s.contains("php_value[opcache.jit] = tracing\n"), "got: {s}");
+        assert!(
+            s.contains("php_value[xdebug.idekey] = PHPSTORM\n"),
+            "got: {s}"
+        );
+        assert!(
+            s.contains("php_value[xdebug.mode] = coverage\n"),
+            "got: {s}"
+        );
+        assert!(
+            s.contains("php_value[xdebug.start_with_request] = no\n"),
+            "got: {s}"
+        );
+    }
+
+    #[test]
+    fn managed_xdebug_keys_are_dropped_when_xdebug_is_on() {
+        let mut cfg = cfg_unix(ProcessManagerMode::OnDemand);
+        cfg.directives = xdebug_directives();
+        cfg.xdebug = Some(crate::pool::XdebugLoad {
+            path: PathBuf::from("/d/php-ext/php-8.3/xdebug.so"),
+            defines: vec![("xdebug.mode".to_string(), "debug".to_string())],
+        });
+        let s = render_fpm_conf(&cfg);
+        assert!(!s.contains("xdebug.mode"), "got: {s}");
+        assert!(!s.contains("xdebug.start_with_request"), "got: {s}");
+        assert!(!s.contains("opcache.jit"), "got: {s}");
+        assert!(!s.contains("xdebug.so"), "got: {s}");
+        assert!(
+            s.contains("php_value[xdebug.idekey] = PHPSTORM\n"),
+            "got: {s}"
         );
     }
 

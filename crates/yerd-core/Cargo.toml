@@ -10,6 +10,7 @@ description            = "Pure domain model and host→site routing for Yerd."
 [dependencies]
 serde     = { workspace = true }
 thiserror = { workspace = true }
+psl       = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

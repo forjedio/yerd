@@ -18,7 +18,7 @@ Skip setup and Yerd still works: it falls back to [rootless ports `8080`/`8443`]
 
 ## The one command
 
-Run this once for the full experience. It's the only Yerd command that uses root:
+Run this once for the full experience. It's the only Yerd command you need root for (a macOS [headless install](./headless) also runs `yerd daemon install` with `sudo`, once):
 
 ```sh
 sudo yerd elevate
@@ -34,6 +34,14 @@ sudo yerd elevate resolver    # route *.test to yerd's DNS responder
 sudo yerd elevate ports       # allow the daemon to serve on 80/443
 ```
 
+::: tip Headless installs: use the absolute path
+`sudo` resets `PATH` to a fixed `secure_path`, which doesn't include a [headless install](./headless)'s `~/.yerd/bin`, so `sudo yerd ...` reports `command not found`. Give the full path instead, for every `sudo` command on this page:
+
+```sh
+sudo ~/.yerd/bin/yerd elevate
+```
+:::
+
 Resolver elevation first checks the daemon's DNS health. If Yerd could not bind
 its configured DNS port, the command stops before changing OS resolver files and
 names the port to free (or change); restart Yerd after correcting it, then retry.
@@ -47,11 +55,11 @@ names the port to free (or change); restart Yerd after correcting it, then retry
 ::: tip Or use the GUI
 The desktop app's **Doctor** page mirrors this exactly - a **Fix** button per row
 (CA trust, `.test` resolver, privileged ports) runs the same `yerd elevate`
-helper under an OS prompt, and once a row is configured an **Unelevate** button
+helper under an OS prompt, and once a row is configured a **Revert** button
 reverts it.
 :::
 
-<ThemedImage light="/images/doctor-light.png" dark="/images/doctor-dark.png" alt="The Doctor page in the desktop app, with Fix and Unelevate buttons per row" />
+<ThemedImage light="/images/doctor-permissions-light.png" dark="/images/doctor-permissions-dark.png" alt="The Doctor page's System permissions: the local CA and .test resolver not yet granted, with Fix and Fix all" />
 
 Reverse any of it with `unelevate`, using the same targets:
 
@@ -129,10 +137,37 @@ The platforms diverge most here.
 - **Linux:** grants `cap_net_bind_service=+ep` on the `yerdd` binary (`setcap`). The unprivileged daemon can then bind 80/443 directly. Restart the daemon (as your user) for it to take effect.
 
   ::: warning setcap is reset by upgrades
-  The capability lives on the binary file, so replacing that file (a package upgrade) clears it. The Linux packages re-apply it on every upgrade (the `.deb`'s post-install and the Arch package's `.install` scriptlet); other install methods need `sudo yerd elevate ports` again after upgrading. There's no clean reverse, so `sudo yerd unelevate ports` only prints the manual command (`sudo setcap -r <path-to-yerdd>`).
+  The capability lives on the binary file, so replacing that file (a package upgrade) clears it. The Linux packages re-apply it on every upgrade (the `.deb`'s post-install and the Arch package's `.install` scriptlet); other install methods need `sudo yerd elevate ports` again after upgrading. That includes a [headless install](./headless): `yerd update --yes` swaps in a new `yerdd` without root, so the daemon drops back to `8080`/`8443` until you re-run `sudo ~/.yerd/bin/yerd elevate ports` (the updater prints the command). If `/home` is mounted `nosuid`, the kernel ignores the capability altogether; see the headless page. There's no clean reverse, so `sudo yerd unelevate ports` only prints the manual command (`sudo setcap -r <path-to-yerdd>`).
   :::
 
-- **macOS:** no `setcap`. The helper installs a `pf` redirect (`rdr`) mapping `80 -> http_port` and `443 -> https_port`, the rootless ports the daemon already bound. The daemon keeps its high ports; pf forwards the privileged ones. A `LaunchDaemon` re-applies the redirect at boot. It's live immediately (no restart) and fully reversible via `sudo yerd unelevate ports`. The daemon also polls for the redirect every few seconds, so a secure site's `http://` → `https://` redirect drops the `:8443`-style port from the URL shortly after you elevate (and brings it back if you `unelevate`) - no restart needed for that either.
+- **macOS:** no `setcap`. The helper installs two root-owned LaunchDaemons in `/Library/LaunchDaemons`, `dev.yerd.ports.http` and `dev.yerd.ports.https`, whose sockets make **launchd** listen on `127.0.0.1:80` and `127.0.0.1:443`. On the first connection launchd starts `yerd-forward` (a tiny forwarder shipped in `Yerd.app/Contents/MacOS/` next to `yerd-helper`) **as your user, never root**, and hands it the listening socket. The forwarder relays each connection to the rootless ports the daemon already bound (`8080`/`8443` by default). The daemon keeps its high ports; the forwarder carries the privileged ones. launchd loads the jobs at boot, so the setup survives a reboot. It's live immediately (no restart) and fully reversible via `sudo yerd unelevate ports`. The daemon also polls for the redirect every few seconds, so a secure site's `http://` → `https://` redirect drops the `:8443`-style port from the URL shortly after you elevate (and brings it back if you `unelevate`) - no restart needed for that either.
+
+  After installing, `elevate ports` checks that port 80 actually reaches Yerd. If it doesn't, it prints `installed, but port 80 isn't reaching Yerd yet`: another web server (Apache, nginx, Valet) is probably holding 80/443. Stop it, re-run `sudo yerd elevate ports`, and see `yerd doctor`.
+
+  ::: warning Things that stop the macOS forwarder
+  - Run `sudo yerd elevate ports` with `sudo` from your own account, not a root login: the forwarder runs as the user who invoked `sudo`.
+  - If you turn off "Yerd" in System Settings ▸ General ▸ Login Items ▸ Allow in the Background, the jobs may not load.
+  - If you move or delete `Yerd.app`, the jobs point at a missing forwarder: requests to 80/443 hang instead of failing, and `yerd doctor` reports that the redirect is installed but not reaching Yerd. Re-run `sudo yerd elevate ports` from the app's new location.
+  :::
+
+  ::: info Upgrading from a pf-based Yerd
+  Older Yerd versions used a `pf` redirect (anchors `dev.yerd` and `dev.yerd.lan`, plus `dev.yerd.pf.plist` / `dev.yerd.lan.pf.plist` boot jobs). That could break when OrbStack, Docker, or Internet Sharing reloaded pf, and enabling pf broke iCloud Private Relay. Yerd no longer uses pf. After upgrading, re-run `sudo yerd elevate ports` once (and `sudo yerd elevate lan` if you used [LAN access](../reference/cli/lan)). Until you do, `yerd doctor` (and the app's diagnostics) shows a `LegacyPortRedirect` warning.
+
+  Every macOS `elevate` / `unelevate` (ports or lan) and `sudo yerd uninstall` first removes all the old pf state in one go: the old boot jobs, Yerd's lines in `/etc/pf.conf`, the loaded anchors (this restores Private Relay without a reboot), and the anchor files. Yerd never turns pf off with `pfctl -d`; it only releases the enable references taken through `pfctl`, and only when the remaining pf state is just Apple's defaults (so nothing else, such as a VPN kill switch or Internet Sharing, is relying on pf). Otherwise it prints `pf may stay enabled until the next reboot`. `sudo pfctl -s info` may still show pf as enabled afterwards because macOS enables it for its own use (a reference held by `pfd`); that's normal and doesn't affect Yerd.
+
+  Because that cleanup removes both old redirects, running only one of the two commands prints a reminder to run the other: `elevate ports` reminds you to run `sudo yerd elevate lan`, and `elevate lan` reminds you to run `sudo yerd elevate ports`. The desktop app's **Fix** button shows no such message, so if you used LAN access, run `sudo yerd elevate lan` from a terminal after fixing ports in the app.
+  :::
+
+  To remove the forwarder by hand (for example before downgrading to a pf-based Yerd):
+
+  ```sh
+  sudo launchctl bootout system/dev.yerd.ports.http
+  sudo launchctl bootout system/dev.yerd.ports.https
+  sudo launchctl bootout system/dev.yerd.lan.ports.http
+  sudo launchctl bootout system/dev.yerd.lan.ports.https
+  sudo rm -f /Library/LaunchDaemons/dev.yerd.ports.http.plist /Library/LaunchDaemons/dev.yerd.ports.https.plist \
+    /Library/LaunchDaemons/dev.yerd.lan.ports.http.plist /Library/LaunchDaemons/dev.yerd.lan.ports.https.plist
+  ```
 
 ## The rootless fallback
 
@@ -152,16 +187,16 @@ If you have no admin rights to route `.test`, those names won't resolve anywhere
 Run [`yerd doctor`](./diagnostics) to see which ports are live and what to do.
 
 ::: warning If even the fallback can't bind
-Rare, but possible if something else already holds the rootless ports too: the daemon comes up with no web listener at all. `yerd status` reports "not serving" for both ports, and `yerd doctor` raises a hard `WebPortsUnbound` failure. In this state `sudo yerd elevate ports` **refuses** on macOS - a `pf` redirect needs a live bound port to point at, and there isn't one. Free a port, or change the fallback pair in Settings (Yerd ▸ General), then restart the daemon before elevating. See [Diagnostics](./diagnostics).
+Rare, but possible if something else already holds the rootless ports too: the daemon comes up with no web listener at all. `yerd status` reports "not serving" for both ports, and `yerd doctor` raises a hard `WebPortsUnbound` failure. In this state `sudo yerd elevate ports` **refuses** on macOS - the port forwarder needs a live bound port to point at, and there isn't one. Free a port, or change the fallback pair in Settings (Yerd ▸ General), then restart the daemon before elevating. See [Diagnostics](./diagnostics).
 :::
 
 ::: info macOS port status
-The macOS daemon always binds its high ports (pf does the 80/443 forwarding), so Yerd probes reachability rather than trusting that a config file exists. The probe also **confirms it reaches Yerd's own proxy** - it speaks HTTP to `127.0.0.1:80` and checks for the proxy's `Server: yerd` marker - so a redirect you've torn down (or a foreign web server squatting the port) is correctly reported as *not* redirected. If something that isn't Yerd holds 80/443, `doctor` raises a [`ForeignWebListener`](./diagnostics) warning.
+The macOS daemon always binds its high ports (the launchd port forwarder does the 80/443 forwarding), so Yerd probes reachability rather than trusting that a config file exists. The probe also **confirms it reaches Yerd's own proxy** - it speaks HTTP to `127.0.0.1:80` and checks for the proxy's `Server: yerd` marker - so a redirect you've torn down (or a foreign web server squatting the port) is correctly reported as *not* redirected. If something that isn't Yerd holds 80/443, `doctor` raises a [`ForeignWebListener`](./diagnostics) warning; if a Yerd forwarder is installed but port 80 still isn't reaching Yerd, it reports `PortFallback` instead.
 :::
 
 ## The security model
 
-Elevation is tiny and tightly bounded. Yerd splits into three binaries with different privilege:
+Elevation is tiny and tightly bounded. Yerd splits into three binaries with different privilege (plus, on macOS, a tiny port forwarder):
 
 ```mermaid
 flowchart LR
@@ -172,18 +207,19 @@ flowchart LR
 - **`yerdd`** owns all runtime state, the proxy, DNS, and PHP-FPM pools. Never runs as root.
 - **`yerd`** is a thin client. Under `sudo yerd elevate` it runs as root only to orchestrate; it never does the privileged operation itself.
 - **`yerd-helper`** is a strict one-shot binary. Each invocation does exactly one validated operation and exits with a `sysexits.h`-style code.
+- **`yerd-forward`** (macOS only) is the small TCP relay launchd starts for the [port forwarder](#ports). It runs as your user, refuses to run as root, and only copies bytes between 80/443 and the daemon's rootless ports.
 
-The desktop app is also just a daemon client and never runs as root; its "Fix" actions shell out to `sudo yerd elevate ...` like you would, and the matching **Unelevate** buttons shell out to `sudo yerd unelevate ...` (behind an in-app confirm and the OS prompt). See [Features](./desktop-app).
+The desktop app is also just a daemon client and never runs as root; its "Fix" actions shell out to `sudo yerd elevate ...` like you would, and the matching **Revert** buttons shell out to `sudo yerd unelevate ...` (behind an in-app confirm and the OS prompt). See [Features](./desktop-app).
 
 ### What makes `yerd-helper` safe
 
 The helper trusts no caller, not even the daemon:
 
 - **Effective-UID gate.** Refuses to run unless its effective UID is 0 (Linux reads `/proc/self/status`; macOS shells out to `/usr/bin/id` by absolute path). If `/proc` is missing it reports "not root" rather than assuming privilege.
-- **Frozen, typed argv contract.** The CLI hands it one typed operation (`install-ca`, `uninstall-ca`, `install-resolver`, `uninstall-resolver`, `setcap`, `install-port-redirect`, `uninstall-port-redirect`), nothing else.
-- **Re-validation.** Every argument is re-parsed before any side effect: paths must be absolute and existing, the TLD goes through `yerd-core`'s `Tld` type, and `setcap` is refused on any binary whose basename isn't `yerdd`.
+- **Frozen, typed argv contract.** The CLI hands it one typed operation (`install-ca`, `uninstall-ca`, `install-resolver`, `uninstall-resolver`, `setcap`, `install-port-redirect`, `uninstall-port-redirect`, `install-lan-port-redirect`, `uninstall-lan-port-redirect`, and on a macOS headless install `install-daemon-job`, `uninstall-daemon-job`), nothing else.
+- **Re-validation.** Every argument is re-parsed before any side effect: paths must be absolute and existing, the TLD goes through `yerd-core`'s `Tld` type, `setcap` is refused on any binary whose basename isn't `yerdd`, and the port-forwarder and daemon-job ops take the invoking user's uid (never `0`) so neither `yerd-forward` nor `yerdd` ever runs as root.
 - **Fingerprint-pinned CA install.** The helper reads the PEM, requires exactly one `CERTIFICATE` block, and verifies its SHA-256 matches the fingerprint passed on argv. This blocks swapping in a different PEM.
-- **Hardened subprocesses.** Any tool it runs (`security`, `pfctl`, `update-ca-certificates`, `systemctl`, ...) is spawned with `env_clear()` and a pinned `PATH` (`/usr/sbin:/usr/bin:/sbin:/bin`), with the working directory set to `/`. It never touches the network.
+- **Hardened subprocesses.** Any tool it runs (`security`, `launchctl`, `update-ca-certificates`, `systemctl`, ...) is spawned with `env_clear()` and a pinned `PATH` (`/usr/sbin:/usr/bin:/sbin:/bin`), with the working directory set to `/`. It never touches the network.
 - **Atomic writes.** Files are written to a temp sibling, `fsync`'d, and `rename(2)`'d into place with the mode set at creation, so there's no create-then-chmod race.
 
 On the orchestration side, `sudo yerd elevate` adds two guards:

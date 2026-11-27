@@ -5,18 +5,20 @@ pageClass: home-page
 # A descriptive <title> for the homepage (the default would just be "Yerd").
 title: Yerd - Local PHP development environment for macOS & Linux
 titleTemplate: false
-description: Serve every project in a folder on its own .test domain over HTTPS, run a different PHP version per site, and manage databases, mail and tooling from one ~8 MB Rust daemon. Free, MIT-licensed, rootless, and Docker-free.
+description: Serve every project in a folder on its own .test domain over HTTPS, run a different PHP version per site, and manage databases, mail and tooling from one ~16 MB Rust daemon. Free, MIT-licensed, rootless, and Docker-free.
 
 hero:
   pill: OPEN SOURCE · ROOTLESS · MIT
+  # Shown in place of the pill while set; remove to bring the pill back.
+  announce:
+    badge: NEW
+    text: YERD 2.1 · SEE WHAT'S NEW
+    link: /releases/v2-1-0
   lines:
     - LOCAL PHP,
     - WITHOUT THE
   accent: WEIGHT.
   tagline: Every project in a parked folder is live on its own .test domain - HTTPS, per-site PHP, databases and mail. One tiny Rust daemon, and no Docker anywhere.
-  command:
-    label: YOUR FIRST COMMAND
-    text: yerd park ~/Code
   actions:
     - theme: brand
       text: Get started →
@@ -26,12 +28,12 @@ hero:
       link: https://github.com/forjedio/yerd
   platforms: macOS (Apple Silicon) · Debian · Ubuntu · Arch · Fedora
   shot:
-    light: /images/overview-light.png
-    dark: /images/overview-dark.png
-    alt: The Yerd desktop app Overview dashboard
+    light: /images/sites-light.png
+    dark: /images/sites-dark.png
+    alt: The Sites page in the Yerd desktop app, with a site's details open beside the list
 
 stats:
-  - value: 8 MB
+  - value: 16 MB
     label: ONE RUST DAEMON
   - value: '0'
     label: CONTAINERS OR VMS
@@ -47,8 +49,8 @@ footprint:
   scaleMax: 1600
   ticks: ['0', 400 MB, 800 MB, 1.2 GB, 1.6 GB]
   yerd:
-    label: YERD · ~8 MB
-    mb: 8
+    label: YERD · ~16 MB
+    mb: 16
   middle:
     label: ELECTRON APP · ~180 MB
     mb: 180
@@ -111,15 +113,15 @@ app:
     dark: /images/overview-dark.png
     alt: The Yerd desktop app Overview dashboard
   secondary:
-    - light: /images/sites-light.png
-      dark: /images/sites-dark.png
-      alt: The Sites page in the Yerd desktop app
+    - light: /images/mail-light.png
+      dark: /images/mail-dark.png
+      alt: The Mail page in the Yerd desktop app, with a captured email open
     - light: /images/services-light.png
       dark: /images/services-dark.png
       alt: The Services page in the Yerd desktop app
   captions:
     - OVERVIEW · every project and service at a glance
-    - SITES · SERVICES · managed in place
+    - MAIL · SERVICES · managed in place
   chipsLabel: ALSO INSTALLED ON DEMAND
   chips:
     - MySQL
@@ -132,6 +134,7 @@ app:
     - Composer
     - Node
     - Bun
+    - pnpm
     - Laravel dumps
     - LAN sharing
 

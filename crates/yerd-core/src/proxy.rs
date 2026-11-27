@@ -149,7 +149,7 @@ impl std::fmt::Display for UpstreamTarget {
 /// Splits `host[:port]` (bracketed IPv6 allowed) into an unbracketed host and a
 /// port, defaulting the port. Returns `None` when the port is malformed, or for
 /// an unbracketed multi-colon host (an IPv6 literal that must be bracketed).
-fn split_host_port(rest: &str, default_port: u16) -> Option<(&str, u16)> {
+pub(crate) fn split_host_port(rest: &str, default_port: u16) -> Option<(&str, u16)> {
     if let Some(inner) = rest.strip_prefix('[') {
         let (host, after) = inner.split_once(']')?;
         let port = if after.is_empty() {
@@ -173,7 +173,7 @@ fn split_host_port(rest: &str, default_port: u16) -> Option<(&str, u16)> {
 /// `[a-z0-9._-]`, non-empty, no leading/trailing dot). `_` is allowed for
 /// container/service names (e.g. `my_service` from a docker-compose network),
 /// which aren't strict DNS but resolve fine on a local dev network.
-fn is_valid_host(host: &str) -> bool {
+pub(crate) fn is_valid_host(host: &str) -> bool {
     if host.parse::<IpAddr>().is_ok() {
         return true;
     }
@@ -238,6 +238,11 @@ impl ProxyRule {
     #[must_use]
     pub fn target(&self) -> &UpstreamTarget {
         &self.target
+    }
+
+    /// Replaces the upstream, keeping every other field.
+    pub fn set_target(&mut self, target: UpstreamTarget) {
+        self.target = target;
     }
 
     /// Whether this rule matches `path`. Boundary-correct: `/app` matches `/app`
@@ -332,6 +337,11 @@ impl ProxySite {
     /// Toggles the HTTPS flag.
     pub fn set_secure(&mut self, secure: bool) {
         self.secure = secure;
+    }
+
+    /// Replaces the upstream, keeping every other field.
+    pub fn set_target(&mut self, target: UpstreamTarget) {
+        self.target = target;
     }
 }
 
@@ -573,5 +583,23 @@ mod tests {
         let mut p = ProxySite::new("reverb", target("http://localhost:8080")).unwrap();
         p.set_secure(true);
         assert!(p.secure());
+    }
+
+    #[test]
+    fn proxy_site_set_target_keeps_name_and_secure() {
+        let mut p = ProxySite::new("reverb", target("http://localhost:8080")).unwrap();
+        p.set_secure(true);
+        p.set_target(target("http://127.0.0.1:3001"));
+        assert_eq!(p.target(), &target("http://127.0.0.1:3001"));
+        assert_eq!(p.name(), "reverb");
+        assert!(p.secure());
+    }
+
+    #[test]
+    fn proxy_rule_set_target_keeps_prefix() {
+        let mut r = ProxyRule::new("/app/", target("http://localhost:8080")).unwrap();
+        r.set_target(target("http://127.0.0.1:3001"));
+        assert_eq!(r.prefix(), "/app");
+        assert_eq!(r.target(), &target("http://127.0.0.1:3001"));
     }
 }

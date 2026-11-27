@@ -81,7 +81,7 @@ describe("useToolPrereqs", () => {
     },
   );
 
-  it("installs the newest PHP the wizard accepts", async () => {
+  it("installs the newest PHP the starter accepts", async () => {
     availablePhp.mockResolvedValue({ available: ["8.1", "8.3", "8.4", "8.6"] });
     const p = useToolPrereqs(() => true);
 

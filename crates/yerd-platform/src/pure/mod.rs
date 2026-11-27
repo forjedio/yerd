@@ -6,8 +6,13 @@
 
 pub mod cert_identity;
 pub mod dns_probe;
+pub mod exe_path;
 pub mod firefox;
 pub mod ide_spec;
+pub mod install_receipt;
+pub mod launchd_daemon;
+pub mod launchd_ports;
+pub mod libvips;
 pub mod networkmanager_dnsmasq;
 pub mod nss;
 pub mod opener_spec;
@@ -15,10 +20,12 @@ pub mod pem_match;
 pub mod pf_anchor;
 pub mod port_plan;
 pub mod proc_metrics;
+pub mod process_signal;
 pub mod ps_metrics;
 pub mod resolv_conf;
 pub mod resolved_drop_in;
 pub mod resolver_file;
 pub mod shell_profile;
+pub mod system_proxy;
 pub mod system_roots;
 pub mod terminal_spec;

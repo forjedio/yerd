@@ -42,6 +42,23 @@ fn display_version(tag: &str) -> &str {
     tag.strip_prefix("bun-").unwrap_or(tag)
 }
 
+/// The latest Bun release as a display version (`v1.3.15`), for the update poll.
+pub(crate) async fn latest(dl: &dyn Downloader) -> Result<String, ToolError> {
+    let body = dl
+        .download(LATEST_API)
+        .await
+        .map_err(|e| ToolError::Download(format!("bun latest release: {e}")))?;
+    let release: LatestRelease = serde_json::from_slice(&body)
+        .map_err(|e| ToolError::Download(format!("bun release parse: {e}")))?;
+    if !release.tag_name.starts_with("bun-v") {
+        return Err(ToolError::Download(format!(
+            "unexpected bun tag {:?}",
+            release.tag_name
+        )));
+    }
+    Ok(display_version(&release.tag_name).to_owned())
+}
+
 /// Install the latest Bun release for the host into `{data}/tools/bun/`.
 pub async fn install(dirs: &PlatformDirs, dl: &dyn Downloader) -> Result<(), ToolError> {
     let plat = host_platform().ok_or(ToolError::UnsupportedHost("Bun"))?;

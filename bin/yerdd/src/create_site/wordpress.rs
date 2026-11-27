@@ -236,10 +236,10 @@ pub(super) async fn run(
 /// installing a Composer nobody asked for. Only reached when WP-CLI has to be
 /// built; once installed, scaffolding never touches Composer at all.
 async fn ensure_wp_cli(id: &str, state: &Arc<DaemonState>) -> Result<(), String> {
-    if tools::installed_version(&state.dirs, Tool::WpCli).is_some() {
+    if tools::installed_version(&state.dirs, Tool::WpCli, None).is_some() {
         return Ok(());
     }
-    if tools::installed_version(&state.dirs, Tool::Composer).is_none() {
+    if tools::installed_version(&state.dirs, Tool::Composer, None).is_none() {
         return Err(
             "Yerd's own Composer is required to build WP-CLI (an external one can't) - \
                     install it from the Tooling page, or run `yerd install tool composer`"
@@ -453,7 +453,9 @@ async fn ensure_database_engine(
                     .jobs
                     .set_phase(id, format!("Installing {}", def.display_name()))
                     .await;
-                resolve_and_install_latest(def, state).await?
+                let installed = resolve_and_install_latest(def, state).await?;
+                crate::ipc_server::reconcile_client_shims_now(state).await;
+                installed
             }
         };
 
@@ -479,7 +481,7 @@ async fn resolve_and_install_latest(
 ) -> Result<ServiceVersion, String> {
     use yerd_supervise::Downloader;
 
-    let dl = crate::php_install::ReqwestDownloader::new();
+    let dl = crate::network::downloader(state).await;
     let (os, arch) = yerd_services::current_os_arch().map_err(|e| e.to_string())?;
     let listing_bytes = dl
         .download(&yerd_services::listing_url())
@@ -708,7 +710,7 @@ mod tests {
         assert!(err.contains("Composer"), "{err}");
         assert!(err.contains("yerd install tool composer"), "{err}");
         assert!(
-            tools::installed_version(&state.dirs, Tool::Composer).is_none(),
+            tools::installed_version(&state.dirs, Tool::Composer, None).is_none(),
             "a create-site job must never install Composer behind the user's back"
         );
     }

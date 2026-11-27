@@ -28,13 +28,24 @@ import type {
   JobProgressResponse,
   MailDetail,
   MailSummary,
+  MajorLine,
+  NetworkSettings,
+  NetworkTestResult,
+  NodeRelease,
+  NodeSiteEntry,
+  NodeSiteResponse,
+  ReleaseNotesResponse,
+  ContributorsResponse,
+  OutboundProxyMode,
   AddableServiceType,
   PhpExtInfo,
   PhpVersion,
   PhpVersionsResponse,
+  ProjectConfig,
   ProxyEntry,
   ProxyRuleEntry,
   Response,
+  ResponseHeaderEntry,
   RouteRuleEntry,
   ServiceAvailability,
   ServiceStatus,
@@ -45,11 +56,15 @@ import type {
   TitleBarStyle,
   ToolStatus,
   TrayIconVariant,
+  TunnelProvider,
+  TunnelProvidersResponse,
   TunnelsResponse,
   UpdateChannel,
   UpdateStatusResponse,
   WordPressAdminUser,
   WordPressVersionInfo,
+  XdebugMode,
+  XdebugStart,
 } from "./types";
 
 /** A normalised IPC/host failure surfaced to the UI (toasts, banners). */
@@ -176,6 +191,11 @@ export async function setSiteGroup(site: string, group: string | null): Promise<
   ensureOk(await call<Response>("set_site_group", { site, group }));
 }
 
+/** Star (`true`) or unstar (`false`) a site. Idempotent. */
+export async function setSiteFavourite(site: string, favourite: boolean): Promise<void> {
+  ensureOk(await call<Response>("set_site_favourite", { site, favourite }));
+}
+
 /**
  * Un-park a directory root: removes it from the parked set and re-scans. Pass a
  * path verbatim from {@link listParked} - the daemon matches it exactly (no
@@ -269,6 +289,17 @@ export async function removeProxyRule(site: string, prefix: string): Promise<voi
   ensureOk(await call<Response>("remove_proxy_rule", { site, prefix }));
 }
 
+/** Replace a whole-host proxy's upstream in place; its domains and HTTPS
+ *  setting are kept. The daemon validates the URL exactly as on add. */
+export async function updateProxy(name: string, url: string): Promise<void> {
+  ensureOk(await call<Response>("update_proxy", { name, url }));
+}
+
+/** Replace a site path rule's upstream in place; its site and prefix are kept. */
+export async function updateProxyRule(site: string, prefix: string, url: string): Promise<void> {
+  ensureOk(await call<Response>("update_proxy_rule", { site, prefix, url }));
+}
+
 // ── routing rules ────────────────────────────────────────────────────────────
 
 /** Every site's path-prefix routing rules. Unlike a proxy rule, a routing rule's
@@ -287,6 +318,63 @@ export async function addRouteRule(site: string, prefix: string, target: string)
 
 export async function removeRouteRule(site: string, prefix: string): Promise<void> {
   ensureOk(await call<Response>("remove_route_rule", { site, prefix }));
+}
+
+// ── response headers ─────────────────────────────────────────────────────────
+
+/** Every site's custom response headers, in each site's configured order. */
+export async function listResponseHeaders(): Promise<ResponseHeaderEntry[]> {
+  const r = ensureOk(await call<Response>("list_response_headers"));
+  return r.type === "response_headers" ? r.headers : [];
+}
+
+/** Set a custom response header on a site, replacing any entry with the same
+ *  name. The daemon validates the name and value. */
+export async function setResponseHeader(site: string, name: string, value: string): Promise<void> {
+  ensureOk(await call<Response>("set_response_header", { site, name, value }));
+}
+
+export async function removeResponseHeader(site: string, name: string): Promise<void> {
+  ensureOk(await call<Response>("remove_response_header", { site, name }));
+}
+
+// ── project file (.yerd.toml) ────────────────────────────────────────────────
+
+function projectConfigOf(r: Response, cmd: string): ProjectConfig {
+  if (r.type !== "project_config") throw new IpcError(`unexpected response to ${cmd}`);
+  return { file: r.file, exists: r.exists, site: r.site, name: r.name, contents: r.contents };
+}
+
+/** The site name Yerd derives from a project folder name (public suffix
+ *  stripped, rest slugified), or `null` when nothing valid remains. Computed
+ *  by the same Rust function `yerd link` and the daemon use. */
+export async function suggestSiteName(folder: string): Promise<string | null> {
+  return call<string | null>("suggest_site_name", { folder });
+}
+
+/** The `.yerd.toml` in `path`, or a draft from the site there when the folder
+ *  has none (`exists: false`). An invalid file throws `project_file_invalid`. */
+export async function projectConfigDraft(path: string): Promise<ProjectConfig> {
+  return projectConfigOf(
+    ensureOk(await call<Response>("project_config_draft", { path })),
+    "project_config_draft",
+  );
+}
+
+/** Start applying the existing `.yerd.toml` in `path`; returns the job id to
+ *  poll. A folder without one throws `not_found`. */
+export async function applyProjectConfig(path: string): Promise<string> {
+  const r = ensureOk(await call<Response>("apply_project_config", { path }));
+  if (r.type !== "job_started") throw new IpcError("unexpected response to apply_project_config");
+  return r.job_id;
+}
+
+/** Write a site's current settings to `.yerd.toml` in its folder. */
+export async function exportProjectConfig(site: string): Promise<ProjectConfig> {
+  return projectConfigOf(
+    ensureOk(await call<Response>("export_project_config", { site })),
+    "export_project_config",
+  );
 }
 
 // ── php versions ───────────────────────────────────────────────────────────
@@ -467,6 +555,30 @@ export async function setPhpPoolSettings(
   ) as PhpVersionsResponse;
 }
 
+/**
+ * Change the bundled Xdebug for one version: turn it on or off, and optionally
+ * change its modes and start trigger. A `null` `enabled` and an omitted
+ * `modes`/`start` keep the version's current value; a `null` version means the
+ * default PHP. The bridge gives up after 120s; the daemon itself gives up on a
+ * stuck download or probe after 90s and reports `xdebug_unavailable` with
+ * nothing changed.
+ */
+export async function setXdebug(
+  version: PhpVersion | null,
+  enabled: boolean | null,
+  modes?: XdebugMode[],
+  start?: XdebugStart,
+): Promise<PhpVersionsResponse> {
+  return ensureOk(
+    await call<Response>("set_xdebug", {
+      version,
+      enabled,
+      modes: modes ?? null,
+      start: start ?? null,
+    }),
+  ) as PhpVersionsResponse;
+}
+
 // ── php extensions ───────────────────────────────────────────────────────────
 
 /** Registered custom extensions, keyed by version string (e.g. `"8.5"`). */
@@ -518,7 +630,7 @@ export async function listServices(): Promise<ServiceStatus[]> {
   return r.type === "services" ? r.services : [];
 }
 
-// ── dev tools (composer / node / bun) ────────────────────────────────────────
+// ── dev tools (composer / node / bun / pnpm) ─────────────────────────────────
 
 export async function listTools(): Promise<ToolStatus[]> {
   const r = ensureOk(await call<Response>("list_tools"));
@@ -542,22 +654,144 @@ export async function installToolStreamed(tool: string): Promise<string> {
   return r.job_id;
 }
 
+// ── node versions ────────────────────────────────────────────────────────────
+
+function versionParts(version: string): number[] {
+  return version.split(".").map((p) => Number.parseInt(p, 10) || 0);
+}
+
+/** Newest first by numeric version, so `26.1.0` sorts above `24.22.3` and `9` below `10`. */
+function newestFirst(a: NodeRelease, b: NodeRelease): number {
+  const x = versionParts(a.version);
+  const y = versionParts(b.version);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (y[i] ?? 0) - (x[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+/** Sorted here too, so every view lists newest first whichever daemon answered. */
+function nodeReleasesOf(r: Response, cmd: string): NodeRelease[] {
+  if (r.type !== "node_versions") throw new IpcError(`unexpected response to ${cmd}`);
+  return [...r.installed].sort(newestFirst);
+}
+
+/** Installed Node releases, each with its default marker and uninstall effects. */
+export async function listNode(): Promise<NodeRelease[]> {
+  return nodeReleasesOf(ensureOk(await call<Response>("list_node")), "list_node");
+}
+
+/** The nodejs.org release index grouped by major, newest first. Network-bound. */
+export async function availableNode(): Promise<MajorLine[]> {
+  const r = ensureOk(await call<Response>("available_node"));
+  if (r.type !== "available_node") throw new IpcError("unexpected response to available_node");
+  return r.majors;
+}
+
+/**
+ * Start a streamed Node install of `version` (a major, or an exact version) and
+ * return the job id. `update` moves the global default onto the new patch when
+ * it currently resolves to an older patch of the same major.
+ */
+export async function installNodeStreamed(version: string, update: boolean): Promise<string> {
+  const r = ensureOk(await call<Response>("install_node_streamed", { version, update }));
+  if (r.type !== "job_started") throw new IpcError("unexpected response to install_node_streamed");
+  return r.job_id;
+}
+
+/**
+ * Install Node as a streamed job, delivering progress lines via `onProgress`,
+ * and resolve only when the job ends. Polls to the end regardless of any modal
+ * the caller shows; throws on a failed or cancelled job.
+ */
+export async function installNodeWithProgress(
+  version: string,
+  update: boolean,
+  onProgress?: (lines: string[]) => void,
+): Promise<void> {
+  const jobId = await installNodeStreamed(version, update);
+  const final = await pollJobToEnd(jobId, (lines) => onProgress?.(lines), undefined, 500, 5);
+  if (final.state !== "succeeded") {
+    throw new IpcError(final.error || `Node ${version} install ${final.state}`);
+  }
+}
+
+/** Uninstall one exact Node release; returns the refreshed installed list. */
+export async function uninstallNode(version: string): Promise<NodeRelease[]> {
+  return nodeReleasesOf(
+    ensureOk(await call<Response>("uninstall_node", { version })),
+    "uninstall_node",
+  );
+}
+
+/** Set the global default (`site === null`) or a site's saved Node preference. */
+export async function setNodeVersion(version: string, site: string | null): Promise<void> {
+  ensureOk(await call<Response>("set_node_version", { version, site }));
+}
+
+/** Remove a site's saved Node preference (idempotent). */
+export async function clearNodeVersion(site: string): Promise<void> {
+  ensureOk(await call<Response>("clear_node_version", { site }));
+}
+
+/** A site's effective Node version and where it comes from. */
+export async function nodeSite(site: string): Promise<NodeSiteResponse> {
+  const r = ensureOk(await call<Response>("node_site", { site }));
+  if (r.type !== "node_site") throw new IpcError("unexpected response to node_site");
+  return r;
+}
+
+/** Every site's Node resolution in one call, in router order. */
+export async function nodeSites(): Promise<NodeSiteEntry[]> {
+  const r = ensureOk(await call<Response>("node_sites"));
+  if (r.type !== "node_sites") throw new IpcError("unexpected response to node_sites");
+  return r.sites;
+}
+
+/** The running release's notes plus a few earlier stable releases. */
+export async function releaseNotes(): Promise<ReleaseNotesResponse> {
+  const r = ensureOk(await call<Response>("release_notes"));
+  if (r.type !== "release_notes") throw new IpcError("unexpected response to release_notes");
+  return r;
+}
+
+/** The human contributors to the Yerd repository, most contributions first. */
+export async function contributors(): Promise<ContributorsResponse> {
+  const r = ensureOk(await call<Response>("contributors"));
+  if (r.type !== "contributors") throw new IpcError("unexpected response to contributors");
+  return r;
+}
+
 /**
  * Poll a job to completion, delivering each batch of new log lines via
  * `onLines`. Resolves with the latest {@link JobProgressResponse} - either the
  * terminal one, or the last seen when `shouldContinue()` returns false (e.g. the
  * viewing modal closed). `onLines` is the only log-delivery channel; the
- * returned `.log` is just the final batch.
+ * returned `.log` is just the final batch. `retries` tolerates that many
+ * consecutive failed status reads (e.g. a daemon restart) before giving up, so a
+ * blip doesn't report a still-running job as failed.
  */
 export async function pollJobToEnd(
   jobId: string,
   onLines: (lines: string[]) => void,
   shouldContinue?: () => boolean,
   intervalMs = 500,
+  retries = 0,
 ): Promise<JobProgressResponse> {
   let cursor = 0;
+  let failures = 0;
   for (;;) {
-    const r = await jobStatus(jobId, cursor);
+    let r: JobProgressResponse;
+    try {
+      r = await jobStatus(jobId, cursor);
+      failures = 0;
+    } catch (e) {
+      failures += 1;
+      if (failures > retries) throw e;
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      continue;
+    }
     if (r.log.length) onLines(r.log);
     // Advance unconditionally (the daemon may report a phase change with no new
     // log lines), so this client never re-fetches a window or stalls.
@@ -570,22 +804,23 @@ export async function pollJobToEnd(
 
 // ── tunnels (Cloudflare Tunnel integration) ──────────────────────────────────
 
-/** Install the `cloudflared` binary as a streamed job; returns the job id to poll. */
-export async function installCloudflaredStreamed(): Promise<string> {
-  const r = ensureOk(await call<Response>("install_cloudflared_streamed"));
-  if (r.type !== "job_started")
-    throw new IpcError("unexpected response to install_cloudflared_streamed");
-  return r.job_id;
+/** Share a site through `provider` (the configured default when omitted);
+ *  `randomUrl` makes an ngrok share ignore the static domain. Returns the
+ *  refreshed tunnel list. */
+export async function startQuickTunnel(
+  site: string,
+  provider?: TunnelProvider,
+  randomUrl = false,
+): Promise<TunnelsResponse> {
+  return ensureOk(
+    await call<Response>("start_quick_tunnel", { site, provider: provider ?? null, randomUrl }),
+  ) as TunnelsResponse;
 }
 
-/** Share a site via a Quick Tunnel; returns the refreshed tunnel list. */
-export async function startQuickTunnel(site: string): Promise<TunnelsResponse> {
-  return ensureOk(await call<Response>("start_quick_tunnel", { site })) as TunnelsResponse;
-}
-
-/** Stop a site's tunnel; returns the refreshed tunnel list. */
-export async function stopTunnel(site: string): Promise<TunnelsResponse> {
-  return ensureOk(await call<Response>("stop_tunnel", { site })) as TunnelsResponse;
+/** Stop a site's share through `provider`, or every per-site share of it when
+ *  omitted; returns the refreshed tunnel list. */
+export async function stopTunnel(site: string, provider?: TunnelProvider): Promise<TunnelsResponse> {
+  return ensureOk(await call<Response>("stop_tunnel", { site, provider: provider ?? null })) as TunnelsResponse;
 }
 
 /** Live tunnels plus `cloudflared` install status. */
@@ -625,7 +860,42 @@ export async function setSiteTunnel(site: string, hostname: string | null): Prom
   ensureOk(await call<Response>("set_site_tunnel", { site, hostname }));
 }
 
-/** (Re)start the consolidated Named Tunnel serving all enabled sites. */
+/** Set (or clear, with `null`) a site's share password. */
+export async function setTunnelPassword(site: string, password: string | null): Promise<void> {
+  ensureOk(await call<Response>("set_tunnel_password", { site, password }));
+}
+
+/** Every tunnel provider's readiness and settings, plus the default for new shares. */
+export async function listTunnelProviders(): Promise<TunnelProvidersResponse> {
+  return ensureOk(await call<Response>("list_tunnel_providers")) as TunnelProvidersResponse;
+}
+
+/** Save (or clear, with `null`) the ngrok authtoken. */
+export async function setNgrokAuthtoken(authtoken: string | null): Promise<void> {
+  ensureOk(await call<Response>("set_ngrok_authtoken", { authtoken }));
+}
+
+/** Save (or clear, with `null`) the ngrok static domain. */
+export async function setNgrokDomain(domain: string | null): Promise<void> {
+  ensureOk(await call<Response>("set_ngrok_domain", { domain }));
+}
+
+/** Enable Yerd's zrok environment with an account token. */
+export async function enableZrok(token: string): Promise<void> {
+  ensureOk(await call<Response>("enable_zrok", { token }));
+}
+
+/** Disable Yerd's zrok environment. */
+export async function disableZrok(): Promise<void> {
+  ensureOk(await call<Response>("disable_zrok"));
+}
+
+/** Set the provider new shares use by default. */
+export async function setDefaultTunnelProvider(provider: TunnelProvider): Promise<void> {
+  ensureOk(await call<Response>("set_default_tunnel_provider", { provider }));
+}
+
+/** Start the consolidated Named Tunnel if it is not running (idempotent). */
 export async function startNamedTunnel(): Promise<TunnelsResponse> {
   return ensureOk(await call<Response>("start_named_tunnel")) as TunnelsResponse;
 }
@@ -701,10 +971,6 @@ export async function setFrontController(name: string, enabled: boolean): Promis
 export async function wordpressAdminUsers(site: string): Promise<WordPressAdminUser[]> {
   const r = ensureOk(await call<Response>("wordpress_admin_users", { site }));
   return r.type === "wordpress_admin_users" ? r.users : [];
-}
-
-export async function installService(service: string, version: string): Promise<void> {
-  ensureOk(await call<Response>("install_service", { service, version }));
 }
 
 export async function changeServiceVersion(service: string, version: string): Promise<void> {
@@ -909,6 +1175,38 @@ export async function setMcpEnabled(enabled: boolean): Promise<void> {
   ensureOk(await call<Response>("set_mcp_enabled", { enabled }));
 }
 
+/** Read the outbound-proxy settings and the proxy they resolve to (redacted). */
+export async function getNetworkSettings(): Promise<NetworkSettings> {
+  const r = ensureOk(await call<Response>("get_network_settings"));
+  if (r.type !== "network_settings") throw new IpcError("unexpected response to get_network_settings");
+  return r.settings;
+}
+
+/**
+ * Save the outbound-proxy settings. An omitted field keeps the stored value; an
+ * empty string clears it (an empty HTTPS URL falls back to the HTTP proxy). A
+ * URL still carrying the redacted `***` password keeps the stored password.
+ */
+export async function setNetworkSettings(
+  mode: OutboundProxyMode,
+  httpProxy?: string,
+  httpsProxy?: string,
+  noProxy?: string[],
+): Promise<NetworkSettings> {
+  const r = ensureOk(
+    await call<Response>("set_network_settings", { mode, httpProxy, httpsProxy, noProxy }),
+  );
+  if (r.type !== "network_settings") throw new IpcError("unexpected response to set_network_settings");
+  return r.settings;
+}
+
+/** Re-detect the proxy and fetch Yerd's release manifest through it. */
+export async function testNetwork(): Promise<NetworkTestResult> {
+  const r = ensureOk(await call<Response>("test_network"));
+  if (r.type !== "network_test") throw new IpcError("unexpected response to test_network");
+  return r.result;
+}
+
 /** Open (or focus) the separate Mails viewer window. Host command, not daemon IPC. */
 export async function showMailsWindow(): Promise<void> {
   await call<void>("show_mails_window");
@@ -948,6 +1246,17 @@ export async function hostPlatform(): Promise<string> {
 }
 
 // ── host helpers (Tauri plugins, NOT daemon IPC) ───────────────────────────
+
+/** The user's home directory, for showing paths as `~/…`. Resolves `null` when
+ *  the path API is unavailable, so callers fall back to absolute paths. */
+export async function homeDirectory(): Promise<string | null> {
+  try {
+    const { homeDir } = await import("@tauri-apps/api/path");
+    return await homeDir();
+  } catch {
+    return null;
+  }
+}
 
 export async function openInBrowser(url: string): Promise<void> {
   const { openUrl } = await import("@tauri-apps/plugin-opener");
@@ -1302,13 +1611,13 @@ export async function guiLog(level: string, message: string): Promise<void> {
   await call<void>("gui_log", { level, message });
 }
 
-/** The GUI session log + a tail of the daemon's own rolling log (About → Logs). */
+/** The GUI session log + a tail of the daemon's own rolling log (Settings → Logs). */
 export async function getGuiLogs(): Promise<GuiLogs> {
   return call<GuiLogs>("get_gui_logs");
 }
 
 /** A pretty-printed JSON diagnostics snapshot (paths, service config, ERROR
- * lines from the logs) for the About → Diagnostics button. */
+ * lines from the logs) for the Settings → Diagnostics button. */
 export async function getDiagnostics(): Promise<string> {
   return call<string>("get_diagnostics");
 }

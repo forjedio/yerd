@@ -29,9 +29,11 @@ src/
 ├── real.rs           # re-export shim → yerd_supervise (SystemClock, TokioProcessSpawner…)
 ├── release.rs        # artifact URL resolution from the distribution listing
 ├── version.rs        # discover_bundled - scan the on-disk install root
+├── probe.rs          # php -m probes through the CommandRunner seam
 ├── pure/
 │   ├── fpm_conf.rs   # render_fpm_conf - PoolConfig → php-fpm.conf text
 │   ├── supervisor.rs # re-export shim → yerd_supervise::supervisor::*
+│   ├── ext_probe.rs  # parse php -m output and load-probe results
 │   └── env_scrub.rs  # allowlist filter over an env snapshot
 └── io/
     ├── atomic_write.rs   # tempfile + rename
@@ -266,6 +268,16 @@ pub trait Downloader: Send + Sync + 'static {
 
 `SystemClock` wraps `Instant::now()`. `TokioProcessSpawner` converts the std `Command` to a tokio one, sets `kill_on_drop(true)` (so a daemon crash takes FPM with it), spawns, and reads the PID once. `TokioChild` wraps `tokio::process::Child`; its `try_wait` / `wait` translate `ExitStatus` into `ExitReason` via `ExitReason::from_status` (which maps a Unix termination signal to `ExitReason::Signal`, otherwise the exit code, otherwise `Unknown`).
 
+### Module probes (`probe.rs`)
+
+`probe.rs` runs a PHP CLI binary through the injectable `CommandRunner` trait
+(`TokioCommandRunner` in production, a fake in tests) and leaves the parsing to
+`pure/ext_probe.rs`. `probe_ffi` answers whether a build includes FFI;
+`probe_modules(runner, php_bin)` returns every module `php -n -m` lists (parsed
+by the pure `listed_modules`), or `None` when the process fails or times out.
+The daemon uses `probe_modules` to check a `.yerd.toml`'s required
+`extensions` against a site's PHP version.
+
 ## The `Listen` enum: Unix socket vs TCP loopback
 
 FPM listens on either a Unix domain socket or a TCP loopback address. `Listen` now lives in [`yerd-supervise`](./yerd-supervise) (re-exported here); `AllocatedListen::plan` - the PHP-specific planning around it - stays in `yerd-php`'s `listen.rs`.
@@ -325,8 +337,24 @@ const _: () = {
 | `set_binaries(map)` | Replaces the known-binary map. A version installed at runtime (`yerd install php`) is invisible to a long-running manager until the daemon calls this. |
 | `set_ini_settings(v)` | Replaces the global ini settings injected into each pool's config on the next `ensure`. |
 | `set_dump_ext(opt)` | Configures (or, with `None`, disables) daemon-managed dump-extension loading. Takes effect on the next `ensure` / restart of a pool. |
+| `set_xdebug(map)` | Replaces the per-version managed Xdebug map (`PhpVersion → XdebugLoad`). Takes effect on the next `ensure` / restart of a pool; the daemon restarts only the version whose load changed. |
 
 The spawned command is assembled by `build_cmd`: `php-fpm --fpm-config <path>`, with `env_clear()` followed by the scrubbed allowlist, and `process_group(0)` on Unix. When dump-extension loading is active for the version, `build_cmd` prepends `-d extension=<so>` plus one `-d key=value` per ini define **before** `--fpm-config` (startup-INI overrides must precede it so they apply at PHP `MINIT`, which the extension needs to register its observers).
+
+### Managed Xdebug loading
+
+`PoolConfig` also carries `xdebug: Option<XdebugLoad>`, where
+
+```rust
+pub struct XdebugLoad {
+    pub path: PathBuf,                  // {data}/php-ext/php-<v>/xdebug.so
+    pub defines: Vec<(String, String)>, // yerd_core::php_xdebug::managed_directives
+}
+```
+
+The daemon builds the per-version map from `[php.xdebug]` (enabled, non-legacy, no hand-registered Xdebug for that version) and pushes it with `set_xdebug`. `ensure` sets `cfg.xdebug` only when the map has the version **and** the `.so` is a file on disk; a missing file is skipped with a warning, like a missing user extension. `build_cmd` then emits `-d zend_extension=<path>` followed by one `-d key=value` per define, **after** the dump extension and the user extensions and **before** `--fpm-config`.
+
+The directives go on the command line rather than into the pool file because `xdebug.mode` is a startup-only setting: FPM ignores it as a pool `php_value`. While `cfg.xdebug` is `Some`, `render_fpm_conf` drops free-form directives named in `yerd_core::php_xdebug::MANAGED_KEYS` (`xdebug.mode`, `xdebug.start_with_request`, `opcache.jit`) so they can't fight the managed values; other `xdebug.*` directives still render as `php_value[…]` and, being applied per request after the `-d` startup values, override `client_host` / `client_port` / `log_level` / `output_dir`. With `xdebug: None` both the argv and the rendered file are byte-identical to a build without Xdebug support, which the existing goldens pin.
 
 ### Dump-extension loading
 

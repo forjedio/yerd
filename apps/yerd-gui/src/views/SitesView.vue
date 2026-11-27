@@ -1,82 +1,87 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import {
-  ArrowDown,
-  ArrowUp,
-  CakeSlice,
-  ChevronDown,
-  ChevronRight,
-  Feather,
-  Flame,
-  FolderMinus,
-  FolderOpen,
-  FolderPlus,
-  Globe,
-  Layers,
-  Link2,
-  Package,
-  Pencil,
-  Plus,
-  Rocket,
-  Search,
-  SearchX,
-  ShieldAlert,
-} from "lucide-vue-next";
+import { FolderMinus, FolderPlus, Layers, Plus, SearchX, Trash2 } from "lucide-vue-next";
 
-import CreateLaravelWizard from "@/components/site-create/CreateLaravelWizard.vue";
-import CreateWordPressWizard from "@/components/site-create/CreateWordPressWizard.vue";
-import CreateComposerSiteWizard from "@/components/site-create/CreateComposerSiteWizard.vue";
-import SiteCard from "@/components/SiteCard.vue";
-import SiteDetailsSidebar from "@/components/SiteDetailsSidebar.vue";
+import NewSiteDialog from "@/components/site-create/NewSiteDialog.vue";
+import LinkFolderDialog, { type LinkRequest } from "@/components/sites/LinkFolderDialog.vue";
+import SiteFilterChips from "@/components/sites/SiteFilterChips.vue";
+import SiteInspector from "@/components/sites/SiteInspector.vue";
+import SitesEmptyState from "@/components/sites/SitesEmptyState.vue";
+import SitesList from "@/components/sites/SitesList.vue";
+import SitesWarningStrip from "@/components/sites/SitesWarningStrip.vue";
 import PageHeader from "@/components/PageHeader.vue";
-import Badge from "@/components/ui/Badge.vue";
-import Button from "@/components/ui/Button.vue";
 import AsyncState from "@/components/ui/AsyncState.vue";
-import EmptyState from "@/components/ui/EmptyState.vue";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import Button from "@/components/ui/Button.vue";
+import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import Input from "@/components/ui/Input.vue";
 import Modal from "@/components/ui/Modal.vue";
-import Spinner from "@/components/ui/Spinner.vue";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
-import { sitesIntent } from "@/lib/shortcuts/sitesIntent";
+import { sitesIntent, sitesSelectIntent } from "@/lib/shortcuts/sitesIntent";
 import { matchesSiteFilter } from "@/lib/siteFilter";
 import { slugifySiteName } from "@/lib/siteName";
+import {
+  asciiLower,
+  buildSections,
+  type ChipKey,
+  groupNameAvailable,
+  matchesChip,
+  memberGroup,
+  parentDir,
+  siteAtPath,
+  siteChips,
+  siteWarnings,
+  tildify,
+} from "@/lib/sites";
 import { useSitesGroupState } from "@/lib/sitesGroupState";
+import { siteHost, siteUrl } from "@/lib/siteUrl";
+import { copyUrlWithToast, toastOnError } from "@/lib/toastActions";
+import { plural } from "@/lib/utils";
 import { useDaemon } from "@/composables/useDaemon";
+import { useOperations } from "@/composables/useOperations";
+import { loadPlatform, usePlatform } from "@/composables/usePlatform";
 import { usePoll } from "@/composables/usePoll";
 import { useResource } from "@/composables/useResource";
+import { openSiteInEditor } from "@/composables/useSiteEditor";
 import { useToast } from "@/composables/useToast";
+import { useWideLayout } from "@/composables/useWideLayout";
 import {
+  applyProjectConfig,
   createGroup,
   deleteGroup,
+  exportProjectConfig,
   IpcError,
   link,
+  nodeSites,
+  openInBrowser,
+  openInTerminal,
   openPath,
   park,
   pickDirectory,
+  pollJobToEnd,
   renameGroup,
   setGroupOrder,
   setPhp,
   setSecure,
+  setSiteFavourite,
   setSiteGroup,
   setWebRoot,
   setWordpressAutoLogin,
   setFrontController,
   sitesAndParked,
+  listTunnelProviders,
   startQuickTunnel,
+  stopTunnel,
+  tunnelStatus,
   unlink,
   unpark,
 } from "@/ipc/client";
-import type { ComposerFramework, GroupsState, Site, SiteEntry } from "@/ipc/types";
+import type { GroupsState, Site, SiteEntry } from "@/ipc/types";
+import { CLEANUP_UNKNOWN_MESSAGE, checkProviderStart, cleanupFailedMessage, siteShare, unsupportedProviderMessage } from "@/lib/share";
 
 const toast = useToast();
+const operations = useOperations();
 const { report } = useDaemon();
+const { home, supportsPathInstall } = usePlatform();
 
 // Cached SWR resource shared with the Overview and the command palette (same
 // "sites" key + fetcher), so revisits render instantly instead of flashing.
@@ -91,54 +96,186 @@ const parked = computed(() => data.value?.parked ?? []);
 // background revalidation keeps the last-good list and never masks it.
 const error = computed(() => (data.value ? null : (resourceError.value?.message ?? null)));
 const rowBusy = ref<string | null>(null);
-const siteFilter = ref("");
-const filterInput = ref<InstanceType<typeof Input> | null>(null);
 
 const tld = computed(() => report.value?.tld ?? "test");
-const caTrusted = computed(() => report.value?.ca.trusted_system === true);
+const phpVersionList = computed(() => (report.value?.php ?? []).map((p) => p.version));
+const defaultPhp = computed(() => report.value?.default_php ?? "");
+const warnings = computed(() => siteWarnings(report.value));
 
-const sidebarTarget = ref<string | null>(null);
-const sidebarSite = computed<SiteEntry | null>(() =>
-  sidebarTarget.value
-    ? (sites.value.find((site) => site.name === sidebarTarget.value) ?? null)
-    : null,
+// ── layout: list + inspector side by side when wide, table + drawer otherwise ──
+const wide = useWideLayout();
+
+// ── Node column (table only): loaded when the table shows and after mutations ──
+const { data: nodeData, refresh: refreshNodeSites } = useResource("node-sites", nodeSites, {
+  immediate: false,
+});
+const nodeVersions = computed<Record<string, string>>(() =>
+  Object.fromEntries(
+    (nodeData.value ?? [])
+      .filter((n) => n.effective)
+      .map((n) => [n.site, n.effective as string]),
+  ),
+);
+watch(
+  wide,
+  (isWide) => {
+    if (!isWide) void refreshNodeSites();
+  },
+  { immediate: true },
 );
 
-function openSidebar(site: SiteEntry): void {
-  sidebarTarget.value = site.name;
+/** Refetch the Node column, only while the table shows it. */
+function refreshNodeColumn(): void {
+  if (!wide.value) void refreshNodeSites({ force: true });
 }
 
-function closeSidebar(): void {
-  sidebarTarget.value = null;
+/** Refetch after a write: the site list always, the Node column when it shows. */
+async function reload(): Promise<void> {
+  await load({ force: true });
+  refreshNodeColumn();
 }
 
-watch(sidebarSite, (site) => {
-  if (!site) closeSidebar();
-});
+/** Whether a site-scoped mutation is in flight for `name`. Matches the exact
+ *  `edit:`/`unlink:` tokens rather than a `:${name}` suffix, so a group op
+ *  (`group:<name>`) can't spuriously spin a same-named site's row. */
+function siteBusy(name: string): boolean {
+  return rowBusy.value === `edit:${name}` || rowBusy.value === `unlink:${name}`;
+}
 
 // ── site groups ──
 const emptyGroups: GroupsState = { order: [], members: {} };
 const groups = computed<GroupsState>(() => data.value?.groups ?? emptyGroups);
 const hasGroups = computed(() => groups.value.order.length > 0);
-const searching = computed(() => siteFilter.value.trim() !== "");
-const { isCollapsed, toggle: toggleCollapse, rename: renameCollapse } = useSitesGroupState();
+const { rename: renameCollapse } = useSitesGroupState();
 
-/** The synthetic bucket for ungrouped sites; never a stored group. */
-const UNALLOCATED = "Unallocated";
-
-interface GroupSection {
-  name: string;
-  sites: Site[];
-  isUnallocated: boolean;
+/** A site's current, sanitised group membership: the canonical `order` casing
+ *  (matched ASCII-case-insensitively, like the daemon), or "" when ungrouped or
+ *  the stored group no longer exists. */
+function currentGroupOf(name: string): string {
+  const g = memberGroup(groups.value, name);
+  if (!g) return "";
+  return groups.value.order.find((o) => asciiLower(o) === asciiLower(g)) ?? "";
 }
 
-/** Whether a site-scoped mutation is in flight for `name`. Matches the exact
- *  `edit:`/`unlink:` tokens rather than a `:${name}` suffix, so a group op
- *  (`group:<name>`) can't spuriously spin a same-named site's card. */
-function siteBusy(name: string): boolean {
-  return rowBusy.value === `edit:${name}` || rowBusy.value === `unlink:${name}`;
+// ── filtering ──
+const activeChip = ref<ChipKey>("all");
+const siteFilter = ref("");
+const chipsRef = ref<InstanceType<typeof SiteFilterChips> | null>(null);
+const chips = computed(() => siteChips(sites.value, defaultPhp.value));
+const filtering = computed(() => siteFilter.value.trim() !== "" || activeChip.value !== "all");
+
+watch(chips, (list) => {
+  if (!list.some((c) => c.key === activeChip.value)) activeChip.value = "all";
+});
+
+const filteredSites = computed(() =>
+  sites.value
+    .filter((s) => matchesChip(s, activeChip.value, defaultPhp.value))
+    .filter((s) => matchesSiteFilter(s, tld.value, siteFilter.value, home.value)),
+);
+
+const sections = computed(() =>
+  buildSections({
+    sites: filteredSites.value,
+    groups: groups.value,
+    parked: parked.value,
+    filtering: filtering.value,
+  }),
+);
+
+const visibleNames = computed(() => sections.value.flatMap((s) => s.sites.map((x) => x.name)));
+const noMatch = computed(() => filtering.value && visibleNames.value.length === 0);
+const isEmpty = computed(
+  () => sites.value.length === 0 && parked.value.length === 0 && !hasGroups.value,
+);
+const createSlug = computed(() => slugifySiteName(siteFilter.value.trim()));
+
+function clearFilter(): void {
+  siteFilter.value = "";
+  activeChip.value = "all";
 }
 
+// ── selection ──
+const selectedName = ref<string | null>(null);
+const drawerOpen = ref(false);
+const selectedSite = computed<SiteEntry | null>(() =>
+  selectedName.value ? (sites.value.find((s) => s.name === selectedName.value) ?? null) : null,
+);
+
+/** The wide layout always inspects a site: it picks the first visible one when
+ *  nothing is selected or the selection no longer exists. A selection that a
+ *  chip or query merely hides stays put, so an edit that drops the site out of
+ *  the filter never retargets the inspector (and the next click) to another. */
+watch(
+  [visibleNames, wide, selectedSite],
+  ([names, isWide, current]) => {
+    if (!isWide || current) return;
+    selectedName.value = names[0] ?? null;
+  },
+  { immediate: true },
+);
+
+watch(selectedSite, (site) => {
+  if (!site) drawerOpen.value = false;
+});
+
+watch(wide, (isWide) => {
+  if (isWide) drawerOpen.value = false;
+});
+
+function selectSite(name: string): void {
+  selectedName.value = name;
+}
+
+function activateSite(name: string): void {
+  selectedName.value = name;
+  drawerOpen.value = true;
+}
+
+/** The parked root serving a site, or null for a linked or unmatched one. */
+function parentDirOf(site: SiteEntry): string | null {
+  if (site.kind !== "parked") return null;
+  const dir = parentDir(site.document_root);
+  return parked.value.includes(dir) ? dir : null;
+}
+
+function siteByName(name: string): SiteEntry | undefined {
+  return sites.value.find((s) => s.name === name);
+}
+
+function toggleFavouriteByName(name: string): void {
+  const site = siteByName(name);
+  if (site) void toggleFavourite(site);
+}
+
+// ── list keyboard actions ──
+async function openSite(name: string): Promise<void> {
+  const site = siteByName(name);
+  if (!site) return;
+  await toastOnError("Couldn't open site", () => openInBrowser(siteUrl(site, report.value)));
+}
+
+function openEditorFor(name: string): void {
+  if (supportsPathInstall.value) void openSiteInEditor(name);
+}
+
+async function openTerminalFor(name: string): Promise<void> {
+  const site = siteByName(name);
+  if (!site) return;
+  await toastOnError("Couldn't open terminal", () => openInTerminal(site.document_root));
+}
+
+async function copyUrlOf(name: string): Promise<void> {
+  const site = siteByName(name);
+  if (!site) return;
+  await copyUrlWithToast(siteUrl(site, report.value));
+}
+
+async function revealDir(dir: string): Promise<void> {
+  await toastOnError("Couldn't reveal folder", () => openPath(dir));
+}
+
+// ── site mutations ──
 async function toggleSecure(site: Site): Promise<void> {
   const next = !site.secure;
   rowBusy.value = `edit:${site.name}`;
@@ -149,7 +286,7 @@ async function toggleSecure(site: Site): Promise<void> {
         ? `HTTPS enabled for ${site.name}.${tld.value}`
         : `HTTPS disabled for ${site.name}.${tld.value}`,
     );
-    await load({ force: true });
+    await reload();
   } catch (e) {
     toast.error("Couldn't change HTTPS", (e as IpcError).message);
   } finally {
@@ -163,7 +300,7 @@ async function changeSitePhp(site: SiteEntry, version: string): Promise<void> {
   try {
     await setPhp(site.name, version);
     toast.success(`PHP ${version} selected for ${site.name}`);
-    await load({ force: true });
+    await reload();
   } catch (e) {
     toast.error("Couldn't change PHP version", (e as IpcError).message);
   } finally {
@@ -178,7 +315,7 @@ async function changeSiteWebRoot(site: SiteEntry, path: string): Promise<void> {
   try {
     await setWebRoot(site.name, path === "" ? null : path);
     toast.success(path === "" ? `Web root reset for ${site.name}` : `Web root changed for ${site.name}`);
-    await load({ force: true });
+    await reload();
   } catch (e) {
     toast.error("Couldn't change web root", (e as IpcError).message);
   } finally {
@@ -196,7 +333,7 @@ async function toggleFrontController(site: SiteEntry, enabled: boolean): Promise
         ? `Front controller enabled for ${site.name}`
         : `Front controller disabled for ${site.name}`,
     );
-    await load({ force: true });
+    await reload();
   } catch (e) {
     toast.error("Couldn't change front controller", (e as IpcError).message);
   } finally {
@@ -204,6 +341,24 @@ async function toggleFrontController(site: SiteEntry, enabled: boolean): Promise
   }
 }
 
+async function toggleFavourite(site: SiteEntry): Promise<void> {
+  const next = !site.favourite;
+  rowBusy.value = `edit:${site.name}`;
+  try {
+    await setSiteFavourite(site.name, next);
+    toast.success(next ? `Starred ${site.name}` : `Unstarred ${site.name}`);
+    await load({ force: true });
+  } catch (e) {
+    toast.error("Couldn't change favourite", (e as IpcError).message);
+  } finally {
+    rowBusy.value = null;
+  }
+}
+
+/** Swap a group with its neighbour. It always reconciles with the daemon's
+ *  actual group set afterwards: on a permutation rejection (a group added or
+ *  removed in another window) that drops the stale section instead of leaving it
+ *  stuck until an unrelated refresh. */
 async function moveGroup(name: string, dir: -1 | 1): Promise<void> {
   const order = [...groups.value.order];
   const i = order.indexOf(name);
@@ -219,28 +374,76 @@ async function moveGroup(name: string, dir: -1 | 1): Promise<void> {
   } catch (e) {
     toast.error("Couldn't reorder groups", (e as IpcError).message);
   } finally {
-    // Always reconcile with the daemon's actual group set - on a permutation
-    // rejection (a group added/removed in another window) this drops the stale
-    // section instead of leaving it stuck until an unrelated refresh.
     await load({ force: true });
     rowBusy.value = null;
   }
 }
 
-// ASCII-only case-fold, matching the daemon's `eq_ignore_ascii_case` group
-// identity; full-Unicode `toLowerCase` disagrees on non-ASCII names.
-function asciiLower(s: string): string {
-  return s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
+async function changeSiteGroup(site: SiteEntry, group: string): Promise<void> {
+  if (group === currentGroupOf(site.name)) return;
+  rowBusy.value = `edit:${site.name}`;
+  try {
+    await setSiteGroup(site.name, group === "" ? null : group);
+    toast.success(
+      group === "" ? `Removed ${site.name} from its group` : `Moved ${site.name} to ${group}`,
+    );
+    await load({ force: true });
+  } catch (e) {
+    toast.error("Couldn't change group", (e as IpcError).message);
+  } finally {
+    rowBusy.value = null;
+  }
 }
 
-// ── create group ──
+/** New group… from Move to group: create it, then move the site into it. */
+async function createGroupAndMove(site: SiteEntry, name: string): Promise<void> {
+  rowBusy.value = `edit:${site.name}`;
+  try {
+    await createGroup(name);
+  } catch (e) {
+    toast.error("Couldn't create group", (e as IpcError).message);
+    rowBusy.value = null;
+    return;
+  }
+  try {
+    await setSiteGroup(site.name, name);
+    toast.success(`Moved ${site.name} to ${name}`);
+  } catch (e) {
+    toast.error("Couldn't change group", (e as IpcError).message);
+  } finally {
+    await load({ force: true });
+    rowBusy.value = null;
+  }
+}
+
+async function changeWpAutoLogin(
+  site: SiteEntry,
+  enabled: boolean,
+  user: string | null,
+): Promise<void> {
+  if (enabled === (site.wp_auto_login ?? false) && (user ?? "") === (site.wp_auto_login_user ?? "")) {
+    return;
+  }
+  rowBusy.value = `edit:${site.name}`;
+  try {
+    await setWordpressAutoLogin(site.name, enabled, user);
+    toast.success(
+      enabled ? `Auto-login enabled for ${site.name}` : `Auto-login disabled for ${site.name}`,
+    );
+    await load({ force: true });
+  } catch (e) {
+    toast.error("Couldn't change auto-login", (e as IpcError).message);
+  } finally {
+    rowBusy.value = null;
+  }
+}
+
+// ── create an empty group ──
 const createGroupOpen = ref(false);
 const createGroupName = ref("");
-const createGroupValid = computed(() => {
-  const n = asciiLower(createGroupName.value.trim());
-  if (!n || n === asciiLower(UNALLOCATED)) return false;
-  return !groups.value.order.some((g) => asciiLower(g) === n);
-});
+const createGroupValid = computed(() =>
+  groupNameAvailable(createGroupName.value, groups.value.order),
+);
 
 function openCreateGroup(): void {
   createGroupName.value = "";
@@ -251,8 +454,9 @@ function openCreateGroup(): void {
 
 async function confirmCreateGroup(close: () => void): Promise<void> {
   const name = createGroupName.value.trim();
+  const wasValid = createGroupValid.value;
   close();
-  if (!name) return;
+  if (!name || !wasValid) return;
   rowBusy.value = "group:create";
   try {
     await createGroup(name);
@@ -271,15 +475,9 @@ const renameGroupOpen = ref(false);
 const renameGroupTarget = ref<string | null>(null);
 const renameGroupName = ref("");
 const renameGroupConfirmingDelete = ref(false);
-const renameGroupValid = computed(() => {
-  const n = asciiLower(renameGroupName.value.trim());
-  if (!n || n === asciiLower(UNALLOCATED)) return false;
-  const from = renameGroupTarget.value ? asciiLower(renameGroupTarget.value) : "";
-  return !groups.value.order.some((g) => {
-    const gl = asciiLower(g);
-    return gl === n && gl !== from;
-  });
-});
+const renameGroupValid = computed(() =>
+  groupNameAvailable(renameGroupName.value, groups.value.order, renameGroupTarget.value),
+);
 
 function openRenameGroup(name: string): void {
   renameGroupTarget.value = name;
@@ -328,170 +526,7 @@ async function confirmDeleteGroup(close: () => void): Promise<void> {
   }
 }
 
-/** A site's current, sanitised group membership: the canonical `order` casing
- *  (matched ASCII-case-insensitively, like the daemon), or "" when ungrouped or
- *  the stored group no longer exists. */
-function currentGroupOf(name: string): string {
-  const g = groups.value.members[name];
-  if (!g) return "";
-  return groups.value.order.find((o) => asciiLower(o) === asciiLower(g)) ?? "";
-}
-
-const groupSelectOptions = computed(() => [
-  { value: "", label: "No group" },
-  ...groups.value.order.map((g) => ({ value: g, label: g })),
-]);
-
-// ── create new site ──
-const createOpen = ref(false);
-const wordpressCreateOpen = ref(false);
-const COMPOSER_FRAMEWORKS: ComposerFramework[] = ["codeigniter", "cakephp", "slim"];
-const composerCreateOpen = ref<ComposerFramework | null>(null);
-const phpVersionList = computed(() => (report.value?.php ?? []).map((p) => p.version));
-const defaultPhp = computed(() => report.value?.default_php ?? "");
-
-function openCreate(): void {
-  // Defer past the dropdown's close so reka-ui's focus-restore doesn't fight the modal.
-  void nextTick(() => {
-    createOpen.value = true;
-  });
-}
-
-function openCreateWordpress(): void {
-  void nextTick(() => {
-    wordpressCreateOpen.value = true;
-  });
-}
-
-function openCreateComposer(framework: ComposerFramework): void {
-  void nextTick(() => {
-    composerCreateOpen.value = framework;
-  });
-}
-
-async function onCreated(): Promise<void> {
-  await load({ force: true });
-}
-
-/** The parent directory of a path (slice before the last `/` or `\`). */
-function parentDir(p: string): string {
-  const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
-  return i <= 0 ? p : p.slice(0, i);
-}
-
-const folderRows = computed(() =>
-  parked.value.map((folder) => ({
-    folder,
-    count: sites.value.filter(
-      (s) => s.kind === "parked" && parentDir(s.document_root) === folder,
-    ).length,
-  })),
-);
-
-// Live, case-insensitive filter across every domain a site serves - its apex
-// plus any added domains, subdomains and wildcards - sorted alphabetically by
-// name so the list is stable and scannable.
-const filteredSites = computed(() => {
-  const q = siteFilter.value.trim();
-  const list = q
-    ? sites.value.filter((s) => matchesSiteFilter(s, tld.value, q))
-    : [...sites.value];
-  return list.sort((a, b) => a.name.localeCompare(b.name));
-});
-
-// One section per group (in order) plus a trailing synthetic "Unallocated"
-// section for sites with no membership (or a membership pointing at a group that
-// no longer exists - defensive). Each section keeps filteredSites' sort order.
-const groupSections = computed<GroupSection[]>(() => {
-  const { order, members } = groups.value;
-  const known = new Set(order.map(asciiLower));
-  const sections: GroupSection[] = order.map((name) => {
-    const folded = asciiLower(name);
-    return {
-      name,
-      isUnallocated: false,
-      sites: filteredSites.value.filter((s) => {
-        const g = members[s.name];
-        return g !== undefined && asciiLower(g) === folded;
-      }),
-    };
-  });
-  const unallocated = filteredSites.value.filter((s) => {
-    const g = members[s.name];
-    return !g || !known.has(asciiLower(g));
-  });
-  sections.push({ name: UNALLOCATED, isUnallocated: true, sites: unallocated });
-  return sections;
-});
-
-// While searching, hide any section with no matching sites. Unallocated is also
-// hidden whenever empty (it has no controls, so an empty header is pure noise).
-// Empty named groups otherwise stay visible so they remain manageable.
-const visibleSections = computed(() =>
-  groupSections.value.filter((sec) => {
-    if (sec.isUnallocated) return sec.sites.length > 0;
-    if (searching.value) return sec.sites.length > 0;
-    return true;
-  }),
-);
-
-// Searching that matches nothing across every group → show the same "No sites
-// match" copy as the flat view instead of a blank pane.
-const groupedNoMatch = computed(() => searching.value && visibleSections.value.length === 0);
-
-/** Shared by the flat and grouped listings, which each render their own
- *  filter-miss state but must word it identically. */
-const filterMissTitle = computed(() => `No sites match “${siteFilter.value}”`);
-
-/** A section renders expanded when searching (to reveal matches) or when not
- *  remembered-collapsed. */
-function sectionExpanded(sec: GroupSection): boolean {
-  return searching.value || !isCollapsed(sec.name);
-}
-
-async function changeSiteGroup(site: SiteEntry, group: string): Promise<void> {
-  if (group === currentGroupOf(site.name)) return;
-  rowBusy.value = `edit:${site.name}`;
-  try {
-    await setSiteGroup(site.name, group === "" ? null : group);
-    toast.success(
-      group === "" ? `Removed ${site.name} from its group` : `Moved ${site.name} to ${group}`,
-    );
-    await load({ force: true });
-  } catch (e) {
-    toast.error("Couldn't change group", (e as IpcError).message);
-  } finally {
-    rowBusy.value = null;
-  }
-}
-
-async function changeWpAutoLogin(
-  site: SiteEntry,
-  enabled: boolean,
-  user: string | null,
-  options?: { silent?: boolean },
-): Promise<void> {
-  if (enabled === (site.wp_auto_login ?? false) && (user ?? "") === (site.wp_auto_login_user ?? "")) {
-    return;
-  }
-  rowBusy.value = `edit:${site.name}`;
-  try {
-    await setWordpressAutoLogin(site.name, enabled, user);
-    if (!options?.silent) {
-      toast.success(
-        enabled
-          ? `Auto-login enabled for ${site.name}`
-          : `Auto-login disabled for ${site.name}`,
-      );
-    }
-    await load({ force: true });
-  } catch (e) {
-    toast.error("Couldn't change auto-login", (e as IpcError).message);
-  } finally {
-    rowBusy.value = null;
-  }
-}
-
+// ── park / un-park ──
 async function onPark(): Promise<void> {
   const dir = await pickDirectory();
   if (!dir) return;
@@ -499,7 +534,7 @@ async function onPark(): Promise<void> {
   try {
     await park(dir);
     toast.success("Parked directory", dir);
-    await load({ force: true });
+    await reload();
   } catch (e) {
     toast.error("Park failed", (e as IpcError).message);
   } finally {
@@ -507,7 +542,6 @@ async function onPark(): Promise<void> {
   }
 }
 
-// ── un-park confirm ──
 const unparkOpen = ref(false);
 const unparkTarget = ref<string | null>(null);
 
@@ -518,15 +552,35 @@ function openUnpark(folder: string): void {
   });
 }
 
-async function confirmUnpark(close: () => void): Promise<void> {
+const unparkCount = computed(() =>
+  unparkTarget.value
+    ? sites.value.filter((s) => s.kind === "parked" && parentDir(s.document_root) === unparkTarget.value)
+        .length
+    : 0,
+);
+
+const unparkBody = computed(() => {
+  const n = unparkCount.value;
+  const rest = "Your files stay where they are, and linked sites aren't affected.";
+  if (n === 0) return `Nothing in this folder is being served yet. ${rest}`;
+  if (n === 1) return `1 site in this folder stops being served. ${rest}`;
+  return `${n} sites in this folder stop being served. ${rest}`;
+});
+
+const unparkLabel = computed(() => {
+  const n = unparkCount.value;
+  if (n === 0) return "Unpark folder";
+  return `Unpark ${plural(n, "site", "sites")}`;
+});
+
+async function confirmUnpark(): Promise<void> {
   const folder = unparkTarget.value;
   if (!folder) return;
-  close();
   rowBusy.value = `unpark:${folder}`;
   try {
     await unpark(folder);
     toast.success("Un-parked folder", folder);
-    await load({ force: true });
+    await reload();
   } catch (e) {
     toast.error("Un-park failed", (e as IpcError).message);
   } finally {
@@ -535,55 +589,134 @@ async function confirmUnpark(close: () => void): Promise<void> {
   }
 }
 
-// ── link modal ──
+// ── link ──
 const linkOpen = ref(false);
-const linkName = ref("");
-const linkPath = ref("");
-// True once the user types in the name field, so choosing a folder never
-// clobbers a name they entered themselves. Native `input` events fire only on
-// real keystrokes, not on the programmatic prefill in `chooseLinkDir`.
-const linkNameDirty = ref(false);
-// A folder-derived or typed name is converted to a valid slug on submit, so
-// validity is "does it slugify to something", not the raw `[a-z0-9-]` shape.
-const linkValid = computed(
-  () => slugifySiteName(linkName.value) !== null && linkPath.value.trim() !== "",
-);
 
-watch(linkOpen, (open) => {
-  if (!open) {
-    linkName.value = "";
-    linkPath.value = "";
-    linkNameDirty.value = false;
-  }
-});
-
-function baseName(path: string): string {
-  const trimmed = path.replace(/[/\\]+$/, "");
-  const parts = trimmed.split(/[/\\]/);
-  return parts[parts.length - 1] ?? "";
+function openLink(): void {
+  void nextTick(() => {
+    linkOpen.value = true;
+  });
 }
 
-async function chooseLinkDir(): Promise<void> {
-  const dir = await pickDirectory();
-  if (!dir) return;
-  linkPath.value = dir;
-  if (!linkNameDirty.value) linkName.value = slugifySiteName(baseName(dir)) ?? "";
-}
-
-async function confirmLink(close: () => void): Promise<void> {
-  const name = slugifySiteName(linkName.value);
-  const path = linkPath.value.trim();
-  if (!name) return;
-  close();
+/** Link the folder, then apply the PHP version and HTTPS the dialog asked for
+ *  (if any: `null` when an unapplied `.yerd.toml` keeps the defaults) where
+ *  they differ from what the daemon assigned. Each follow-up failure is
+ *  reported on its own; the site stays linked either way. */
+async function onLink(request: LinkRequest): Promise<void> {
+  const { name, path, php, secure } = request;
   rowBusy.value = "link";
   try {
-    await link(name, path);
+    if (request.applyProjectFile) {
+      await applyProjectFile(path, name);
+      const linked = siteAtPath(sites.value, path);
+      if (linked) selectedName.value = linked.name;
+      return;
+    }
+    try {
+      await link(name, path);
+    } catch (e) {
+      toast.error("Link failed", (e as IpcError).message);
+      return;
+    }
     toast.success(`Linked ${name}`);
-    await load({ force: true });
-  } catch (e) {
-    toast.error("Link failed", (e as IpcError).message);
+    await reload();
+    selectedName.value = name;
+    const site = siteByName(name);
+    if (!site) return;
+    let changed = false;
+    if (php && site.php !== php) {
+      try {
+        await setPhp(name, php);
+        changed = true;
+      } catch (e) {
+        toast.error("Couldn't change PHP version", (e as IpcError).message);
+      }
+    }
+    if (secure !== null && site.secure !== secure) {
+      try {
+        await setSecure(name, secure);
+        changed = true;
+      } catch (e) {
+        toast.error("Couldn't change HTTPS", (e as IpcError).message);
+      }
+    }
+    if (changed) await reload();
   } finally {
     rowBusy.value = null;
+  }
+}
+
+// ── project file (.yerd.toml) ──
+const WARNING_PREFIX = "warning:";
+const FAILED_PREFIX = "failed:";
+
+function stripPrefix(line: string, prefix: string): string {
+  return line.slice(prefix.length).trim();
+}
+
+/** Apply the `.yerd.toml` in `path` as a daemon job, tracked as an operation,
+ *  then toast the outcome: success, success with the job's warnings, or the
+ *  job's error with its failed items. Resolves true when the job succeeded. */
+async function applyProjectFile(path: string, label: string): Promise<boolean> {
+  const opId = `project-apply:${path}`;
+  operations.begin({ id: opId, kind: "project-apply", label: `Applying .yerd.toml for ${label}` });
+  const warnings: string[] = [];
+  const failures: string[] = [];
+  try {
+    const jobId = await applyProjectConfig(path);
+    const final = await pollJobToEnd(
+      jobId,
+      (lines) => {
+        for (const line of lines) {
+          if (line.startsWith(WARNING_PREFIX)) warnings.push(stripPrefix(line, WARNING_PREFIX));
+          if (line.startsWith(FAILED_PREFIX)) failures.push(stripPrefix(line, FAILED_PREFIX));
+        }
+        const latest = lines[lines.length - 1];
+        if (latest) operations.update(opId, { detail: latest });
+      },
+      undefined,
+      500,
+      5,
+    );
+    if (final.state !== "succeeded") {
+      const reason = final.error || `apply ${final.state}`;
+      toast.error("Couldn't apply .yerd.toml", [reason, ...failures].join(". "));
+      return false;
+    }
+    if (warnings.length) {
+      toast.info(
+        `Applied .yerd.toml for ${label} with ${plural(warnings.length, "warning", "warnings")}`,
+        warnings.join(". "),
+        10000,
+      );
+    } else {
+      toast.success(`Applied .yerd.toml for ${label}`);
+    }
+    return true;
+  } catch (e) {
+    toast.error("Couldn't apply .yerd.toml", (e as IpcError).message);
+    return false;
+  } finally {
+    operations.end(opId);
+    await reload();
+  }
+}
+
+async function applySiteProjectFile(site: SiteEntry): Promise<void> {
+  rowBusy.value = `edit:${site.name}`;
+  try {
+    await applyProjectFile(site.document_root, site.name);
+  } finally {
+    rowBusy.value = null;
+  }
+}
+
+async function exportSiteProjectFile(site: SiteEntry): Promise<void> {
+  try {
+    const written = await exportProjectConfig(site.name);
+    toast.success(`Exported ${site.name} to .yerd.toml`, tildify(written.file, home.value));
+  } catch (e) {
+    toast.error("Couldn't export .yerd.toml", (e as IpcError).message);
   }
 }
 
@@ -598,15 +731,14 @@ function openUnlink(s: Site): void {
   });
 }
 
-async function confirmUnlink(close: () => void): Promise<void> {
+async function confirmUnlink(): Promise<void> {
   const s = unlinkTarget.value;
-  close();
   if (!s) return;
   rowBusy.value = `unlink:${s.name}`;
   try {
     await unlink(s.name);
     toast.success(`Removed ${s.name}`);
-    await load({ force: true });
+    await reload();
   } catch (e) {
     toast.error("Couldn't remove site", (e as IpcError).message);
   } finally {
@@ -615,10 +747,28 @@ async function confirmUnlink(close: () => void): Promise<void> {
   }
 }
 
+// ── new site ──
+const newSiteOpen = ref(false);
+const siteNames = computed(() => sites.value.map((s) => s.name));
+const newSiteName = ref<string | undefined>(undefined);
+
+/** Open New site, optionally prefilled. Deferred a tick so a closing menu's
+ *  focus restore doesn't fight the dialog. */
+function openCreate(opts?: { name?: string }): void {
+  newSiteName.value = opts?.name;
+  void nextTick(() => {
+    newSiteOpen.value = true;
+  });
+}
+
+async function onCreated(): Promise<void> {
+  await reload();
+}
+
 onUnmounted(
   registerViewActions({
-    create: openCreate,
-    find: () => filterInput.value?.focus(),
+    create: () => openCreate(),
+    find: () => chipsRef.value?.focus(),
     refresh: () => void load(),
   }),
 );
@@ -627,26 +777,70 @@ function consumeIntent(): void {
   const intent = sitesIntent.value;
   if (!intent) return;
   sitesIntent.value = null;
-  if (intent === "link") linkOpen.value = true;
+  if (intent === "link") openLink();
   else if (intent === "create") openCreate();
   else if (intent === "park") void onPark();
 }
 
-onMounted(consumeIntent);
+onMounted(() => {
+  void loadPlatform();
+  consumeIntent();
+});
 watch(sitesIntent, consumeIntent);
+
+watch(
+  [sitesSelectIntent, sites, loading],
+  ([name, list, busy]) => {
+    if (!name) return;
+    const found = list.some((s) => s.name === name);
+    if (!found && (busy || data.value === null)) return;
+    sitesSelectIntent.value = null;
+    if (!found) return;
+    if (wide.value) selectSite(name);
+    else activateSite(name);
+  },
+  { immediate: true },
+);
 
 /**
  * Publish a site over a Cloudflare Quick Tunnel. The tunnel is then managed
  * (and stopped) from the Integrations page; here we just kick it off and surface
  * the public URL. A missing `cloudflared` surfaces as a daemon error toast that
- * points at Integrations.
+ * points at Integrations. An older daemon that ignores the default provider and
+ * starts Cloudflare instead is reported as an error, and a Cloudflare share it
+ * created is stopped again.
  */
 const sharing = ref<string | null>(null);
 async function shareSitePublicly(s: Site): Promise<void> {
   sharing.value = s.name;
   try {
-    const r = await startQuickTunnel(s.name);
-    const url = r.tunnels.find((t) => t.site === s.name)?.url;
+    const provider = await listTunnelProviders()
+      .then((p) => p.default_provider)
+      .catch(() => undefined);
+    const before =
+      provider && provider !== "cloudflare"
+        ? await tunnelStatus()
+            .then((t) => t.tunnels)
+            .catch(() => null)
+        : [];
+    const r = await startQuickTunnel(s.name, provider);
+    const check = checkProviderStart(provider, before, r.tunnels);
+    const stray = check.stopCloudflare;
+    const cleaned = stray
+      ? await stopTunnel(stray, "cloudflare")
+          .then(() => true)
+          .catch(() => false)
+      : true;
+    if (check.unsupported && provider) {
+      toast.error(`Couldn't share ${s.name}`, unsupportedProviderMessage(provider));
+      if (stray && !cleaned) toast.error(`Couldn't stop the Cloudflare share of ${stray}`, cleanupFailedMessage(stray));
+      if (check.cleanupUnknown) toast.error("Check your Cloudflare shares", CLEANUP_UNKNOWN_MESSAGE);
+      return;
+    }
+    const entry = provider
+      ? siteShare(r.tunnels, s.name, provider)
+      : (r.tunnels.find((t) => t.site === s.name && t.kind === "quick") ?? null);
+    const url = entry?.url;
     if (url) {
       const copied = await navigator.clipboard
         .writeText(url)
@@ -656,8 +850,18 @@ async function shareSitePublicly(s: Site): Promise<void> {
         `Sharing ${s.name}`,
         copied ? `${url} (copied) - manage in Integrations` : `${url} - manage in Integrations`,
       );
+    } else if (entry?.state === "failed") {
+      toast.info(
+        `Sharing ${s.name}`,
+        entry.last_error
+          ? `Retrying: ${entry.last_error} - see Share for status`
+          : "Retrying - see Share for status",
+      );
     } else {
-      toast.success(`Sharing ${s.name}`, "Starting - see Integrations for the URL");
+      toast.success(`Sharing ${s.name}`, "Connecting - see Share for the URL");
+    }
+    if (entry?.warnings?.length) {
+      toast.info(`Check ${s.name} while it's shared`, entry.warnings.join("\n"), 10000);
     }
   } catch (e) {
     toast.error(`Couldn't share ${s.name}`, (e as IpcError).message);
@@ -665,291 +869,161 @@ async function shareSitePublicly(s: Site): Promise<void> {
     sharing.value = null;
   }
 }
+
+const inspectorProps = computed(() => {
+  const site = selectedSite.value;
+  return {
+    site,
+    report: report.value ?? null,
+    tld: tld.value,
+    home: home.value,
+    phpVersions: phpVersionList.value,
+    defaultPhp: defaultPhp.value,
+    groups: groups.value,
+    currentGroup: site ? currentGroupOf(site.name) : "",
+    busy: site ? siteBusy(site.name) : false,
+    sharing: site ? sharing.value === site.name : false,
+    parentDir: site ? parentDirOf(site) : null,
+  };
+});
 </script>
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader title="Sites" subtitle="Parked and linked .test sites" docs="/guide/sites">
+    <PageHeader title="Sites" docs="/guide/sites">
       <template #actions>
-        <DropdownMenu>
-          <DropdownMenuTrigger as-child>
-            <Button size="sm">
-              <Plus class="size-4" /> Create <ChevronDown class="size-3.5 opacity-70" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" class="w-56">
-            <DropdownMenuItem @select="openCreate">
-              <Rocket class="size-4" /> New Laravel site…
-            </DropdownMenuItem>
-            <DropdownMenuItem @select="openCreateWordpress">
-              <Package class="size-4" /> New WordPress site…
-            </DropdownMenuItem>
-            <DropdownMenuItem @select="openCreateComposer('codeigniter')">
-              <Flame class="size-4" /> New CodeIgniter site…
-            </DropdownMenuItem>
-            <DropdownMenuItem @select="openCreateComposer('cakephp')">
-              <CakeSlice class="size-4" /> New CakePHP site…
-            </DropdownMenuItem>
-            <DropdownMenuItem @select="openCreateComposer('slim')">
-              <Feather class="size-4" /> New Slim site…
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem @select="linkOpen = true">
-              <Link2 class="size-4" /> Link existing site
-            </DropdownMenuItem>
-            <DropdownMenuItem @select="onPark">
-              <FolderPlus class="size-4" /> Park folder
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem @select="openCreateGroup">
-              <Layers class="size-4" /> New group…
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <Button variant="outline" size="sm" :disabled="rowBusy === 'park'" @click="onPark">
+          <FolderPlus /> Park folder
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          :disabled="rowBusy === 'group:create'"
+          @click="openCreateGroup"
+        >
+          <Layers /> New group
+        </Button>
+        <Button size="sm" @click="openCreate()"><Plus /> New site</Button>
       </template>
     </PageHeader>
 
-    <div class="flex-1 overflow-y-auto p-6">
-      <!-- CA-not-trusted warning (sites still serve, browsers just warn). -->
-      <div
-        v-if="!caTrusted && report"
-        class="mb-4 flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs"
-      >
-        <ShieldAlert class="mt-0.5 size-4 shrink-0 text-warning" />
-        <span>
-          The local CA isn't trusted in your system store, so browsers will warn
-          on HTTPS sites. Fix it under
-          <RouterLink to="/doctor" class="font-medium underline">Doctor → Environment</RouterLink>.
-        </span>
-      </div>
+    <SitesWarningStrip v-for="w in warnings" :key="w.key" :warning="w" :compact="!wide" />
 
-      <AsyncState
-        :loading="loading"
-        :error="error"
-        :empty="sites.length === 0 && parked.length === 0 && !hasGroups"
-        pad="py-16"
-        @retry="load"
-      >
+    <div class="min-h-0 flex-1">
+      <AsyncState :loading="loading" :error="error" :empty="isEmpty" pad="py-16" @retry="load">
         <template #empty>
-          <EmptyState
-            :icon="Globe"
-            title="No sites yet"
-            description="Park a folder of projects to serve every child directory, or link a single project directory."
-          >
-            <div class="flex gap-2">
-              <Button @click="openCreate"><Rocket class="size-4" /> New Laravel site</Button>
-              <Button variant="outline" :disabled="rowBusy === 'park'" @click="onPark">
-                <FolderPlus class="size-4" /> Park folder
-              </Button>
-              <Button variant="outline" @click="linkOpen = true"><Link2 class="size-4" /> Link site</Button>
-            </div>
-          </EmptyState>
-        </template>
-
-        <!-- Toolbar: filter + count -->
-        <div
-          v-if="sites.length"
-          class="mb-4 flex items-center justify-between gap-3"
-        >
-          <div class="relative max-w-xs flex-1">
-            <Search
-              class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-            />
-            <Input
-              ref="filterInput"
-              v-model="siteFilter"
-              placeholder="Filter by domain…"
-              aria-label="Filter sites by domain"
-              class="pl-8"
-            />
-          </div>
-          <span class="shrink-0 text-xs text-muted-foreground">
-            {{ filteredSites.length }} of {{ sites.length }}
-          </span>
-        </div>
-
-        <!-- Flat listing (no groups defined): the classic card grid. -->
-        <template v-if="!hasGroups">
-          <div
-            v-if="filteredSites.length"
-            class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
-          >
-            <SiteCard
-              v-for="s in filteredSites"
-              :key="s.name"
-              :site="s"
-              :report="report ?? null"
-              :tld="tld"
-              :busy="siteBusy(s.name)"
-              @edit="openSidebar"
-              @toggle-secure="toggleSecure"
-            />
-          </div>
-          <EmptyState
-            v-else-if="siteFilter"
-            :icon="SearchX"
-            :title="filterMissTitle"
-            description="Every domain a site serves is searched, including added domains and wildcards. Try a shorter fragment, or clear the filter."
-          />
-          <EmptyState
-            v-else
-            :icon="FolderOpen"
-            title="No sites yet"
-            description="Your parked folders have no child directories. Add a project inside one, or link a single project directory."
+          <SitesEmptyState
+            :tld="tld"
+            :parking="rowBusy === 'park'"
+            @park="onPark"
+            @create="openCreate()"
+            @link="openLink"
           />
         </template>
 
-        <!-- Grouped listing: collapsible sections + trailing Unallocated. -->
-        <template v-else>
-          <div class="space-y-3">
-            <section
-              v-for="sec in visibleSections"
-              :key="sec.name"
-              class="rounded-lg border"
+        <div class="flex h-full min-h-0" :data-layout="wide ? 'wide' : 'compact'">
+          <div class="flex min-w-0 flex-1 flex-col pl-4 pt-4">
+            <SiteFilterChips
+              ref="chipsRef"
+              class="pr-4"
+              v-model="activeChip"
+              v-model:query="siteFilter"
+              :chips="chips"
+            />
+
+            <div
+              v-if="noMatch"
+              class="flex flex-1 flex-col items-center justify-center px-6 pb-16 text-center"
+              data-testid="sites-no-match"
             >
-              <div class="group flex items-center gap-2 px-3 py-2.5">
-                <button
-                  class="flex min-w-0 flex-1 items-center gap-2 text-left"
-                  :aria-expanded="sectionExpanded(sec)"
-                  @click="searching ? undefined : toggleCollapse(sec.name)"
-                >
-                  <component
-                    :is="sectionExpanded(sec) ? ChevronDown : ChevronRight"
-                    class="size-4 shrink-0 text-muted-foreground"
-                  />
-                  <span class="truncate text-sm font-semibold">{{ sec.name }}</span>
-                  <Badge variant="secondary">{{ sec.sites.length }}</Badge>
-                </button>
-                <!-- Reorder + edit controls (named groups only; hidden while
-                     searching, since a search-hidden neighbour would make a move
-                     look like a no-op). Faded in only on hover/focus of this row
-                     so the header matches Unallocated's height at rest. -->
-                <div
-                  v-if="!sec.isUnallocated && !searching"
-                  class="flex shrink-0 items-center gap-0.5"
-                >
-                  <Spinner v-if="rowBusy === `group:${sec.name}`" class="size-4" />
-                  <div
-                    v-else
-                    class="flex items-center gap-0.5 pointer-events-none opacity-0 transition-opacity duration-300 group-hover:pointer-events-auto group-hover:opacity-70 focus-within:pointer-events-auto focus-within:opacity-70"
-                  >
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      :disabled="groups.order.indexOf(sec.name) === 0"
-                      :aria-label="`Move ${sec.name} up`"
-                      title="Move up"
-                      @click="moveGroup(sec.name, -1)"
-                    >
-                      <ArrowUp class="size-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      :disabled="groups.order.indexOf(sec.name) === groups.order.length - 1"
-                      :aria-label="`Move ${sec.name} down`"
-                      title="Move down"
-                      @click="moveGroup(sec.name, 1)"
-                    >
-                      <ArrowDown class="size-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      :aria-label="`Edit ${sec.name}`"
-                      title="Edit group"
-                      @click="openRenameGroup(sec.name)"
-                    >
-                      <Pencil class="size-4" />
-                    </Button>
-                  </div>
-                </div>
-              </div>
-              <div v-if="sectionExpanded(sec)" class="border-t p-3">
-                <div
-                  v-if="sec.sites.length"
-                  class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
-                >
-                  <SiteCard
-                    v-for="s in sec.sites"
-                    :key="s.name"
-                    :site="s"
-                    :report="report ?? null"
-                    :tld="tld"
-                    :busy="siteBusy(s.name)"
-                    @edit="openSidebar"
-                    @toggle-secure="toggleSecure"
-                  />
-                </div>
-                <p v-else class="py-4 text-center text-xs text-muted-foreground">
-                  No sites in this group yet.
-                </p>
-              </div>
-            </section>
-          </div>
-          <EmptyState
-            v-if="groupedNoMatch"
-            :icon="SearchX"
-            :title="filterMissTitle"
-            description="Every domain a site serves is searched, including added domains and wildcards. Try a shorter fragment, or clear the filter."
-          />
-        </template>
+              <SearchX class="size-5 text-muted-foreground" aria-hidden="true" />
+              <p class="mt-3 text-[15px] font-semibold">
+                {{ siteFilter.trim() ? `Nothing matches “${siteFilter.trim()}”` : "No sites match this filter" }}
+              </p>
+              <p class="mt-1.5 max-w-[220px] text-[13px] text-muted-foreground">
+                Search looks at names, paths and aliases.
+              </p>
+              <Button
+                v-if="siteFilter.trim() && createSlug"
+                variant="outline"
+                size="sm"
+                class="mt-4"
+                @click="openCreate({ name: createSlug })"
+              >
+                <Plus /> Create {{ createSlug }}.{{ tld }}
+              </Button>
+              <button
+                type="button"
+                class="mt-3 text-[13px] font-medium text-brand hover:underline"
+                @click="clearFilter"
+              >
+                Clear filter
+              </button>
+            </div>
 
-        <!-- Parked folders (demoted: the management surface, below the sites) -->
-        <section v-if="folderRows.length" class="mt-8">
-          <div class="mb-2">
-            <h3 class="text-sm font-semibold">Parked folders</h3>
-            <p class="text-xs text-muted-foreground">
-              Each child directory of a parked folder is served automatically.
+            <SitesList
+              v-else
+              class="mt-1 flex-1"
+              :sections="sections"
+              :layout="wide ? 'list' : 'table'"
+              :selected="selectedName"
+              :tld="tld"
+              :default-php="defaultPhp"
+              :home="home"
+              :node-versions="nodeVersions"
+              :filtering="filtering"
+              :busy="siteBusy"
+              :group-busy="rowBusy"
+              :group-order="groups.order"
+              @select="selectSite"
+              @activate="activateSite"
+              @open="openSite"
+              @editor="openEditorFor"
+              @terminal="openTerminalFor"
+              @copy-url="copyUrlOf"
+              @move-group="moveGroup"
+              @edit-group="openRenameGroup"
+              @reveal-dir="revealDir"
+              @unpark-dir="openUnpark"
+              @toggle-favourite="toggleFavouriteByName"
+            />
+          </div>
+
+          <div v-if="wide" class="w-[58%] max-w-[760px] shrink-0 border-l" data-testid="inspector-column">
+            <SiteInspector
+              v-if="selectedSite"
+              mode="panel"
+              v-bind="inspectorProps"
+              @change-php="changeSitePhp"
+              @change-web-root="changeSiteWebRoot"
+              @toggle-secure="toggleSecure"
+              @toggle-front-controller="toggleFrontController"
+              @change-group="changeSiteGroup"
+              @change-wp-auto-login="changeWpAutoLogin"
+              @share="shareSitePublicly"
+              @unlink="openUnlink"
+              @apply-project-file="applySiteProjectFile"
+              @export-project-file="exportSiteProjectFile"
+              @domains-changed="reload"
+              @toggle-favourite="toggleFavourite"
+              @create-group-and-move="createGroupAndMove"
+              @unpark="openUnpark"
+              @node-changed="refreshNodeColumn"
+            />
+            <p v-else class="flex h-full items-center justify-center text-[13px] text-faint">
+              Select a site to see its details.
             </p>
           </div>
-          <div class="divide-y rounded-lg border">
-            <div
-              v-for="row in folderRows"
-              :key="row.folder"
-              class="flex items-center justify-between gap-3 px-3 py-2.5"
-            >
-              <button
-                class="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
-                :title="`Reveal ${row.folder}`"
-                @click="openPath(row.folder)"
-              >
-                <FolderOpen class="size-3.5 shrink-0" />
-                <span class="truncate font-mono">{{ row.folder }}</span>
-              </button>
-              <div class="flex shrink-0 items-center gap-2">
-                <Badge variant="secondary">
-                  {{ row.count }} {{ row.count === 1 ? "site" : "sites" }}
-                </Badge>
-                <Spinner v-if="rowBusy === `unpark:${row.folder}`" class="size-4" />
-                <Button
-                  v-else
-                  variant="ghost"
-                  size="icon"
-                  :aria-label="`Un-park ${row.folder}`"
-                  title="Un-park"
-                  @click="openUnpark(row.folder)"
-                >
-                  <FolderMinus class="size-4" />
-                </Button>
-              </div>
-            </div>
-          </div>
-        </section>
+        </div>
       </AsyncState>
     </div>
 
-    <SiteDetailsSidebar
-      :site="sidebarSite"
-      :open="sidebarSite !== null"
-      :report="report ?? null"
-      :tld="tld"
-      :php-versions="phpVersionList"
-      :group-options="hasGroups ? groupSelectOptions : []"
-      :current-group="sidebarSite ? currentGroupOf(sidebarSite.name) : ''"
-      :busy="sidebarSite ? siteBusy(sidebarSite.name) : false"
-      :sharing="sidebarSite ? sharing === sidebarSite.name : false"
-      @close="closeSidebar"
+    <SiteInspector
+      v-if="!wide"
+      mode="drawer"
+      :open="drawerOpen && selectedSite !== null"
+      v-bind="inspectorProps"
+      @close="drawerOpen = false"
       @change-php="changeSitePhp"
       @change-web-root="changeSiteWebRoot"
       @toggle-secure="toggleSecure"
@@ -958,112 +1032,74 @@ async function shareSitePublicly(s: Site): Promise<void> {
       @change-wp-auto-login="changeWpAutoLogin"
       @share="shareSitePublicly"
       @unlink="openUnlink"
-      @domains-changed="load({ force: true })"
+      @apply-project-file="applySiteProjectFile"
+      @export-project-file="exportSiteProjectFile"
+      @domains-changed="reload"
+      @toggle-favourite="toggleFavourite"
+      @create-group-and-move="createGroupAndMove"
+      @unpark="openUnpark"
+      @node-changed="refreshNodeColumn"
     />
 
-    <!-- create new Laravel site wizard -->
-    <CreateLaravelWizard
-      v-model:open="createOpen"
+    <NewSiteDialog
+      v-model:open="newSiteOpen"
+      :existing-names="siteNames"
       :parked-folders="parked"
       :php-versions="phpVersionList"
       :default-php="defaultPhp"
       :tld="tld"
       :report="report ?? null"
+      :home="home"
+      :initial-name="newSiteName"
       @created="onCreated"
+      @existing="openLink"
     />
 
-    <!-- create new WordPress site wizard -->
-    <CreateWordPressWizard
-      v-model:open="wordpressCreateOpen"
-      :parked-folders="parked"
+    <LinkFolderDialog
+      v-model:open="linkOpen"
+      :tld="tld"
+      :home="home"
       :php-versions="phpVersionList"
       :default-php="defaultPhp"
-      :tld="tld"
-      :report="report ?? null"
-      @created="onCreated"
+      @link="onLink"
     />
 
-    <!-- create new CodeIgniter / CakePHP / Slim site wizard -->
-    <CreateComposerSiteWizard
-      v-for="framework in COMPOSER_FRAMEWORKS"
-      :key="framework"
-      :open="composerCreateOpen === framework"
-      :framework="framework"
-      :parked-folders="parked"
-      :php-versions="phpVersionList"
-      :default-php="defaultPhp"
-      :tld="tld"
-      :report="report ?? null"
-      @update:open="(v: boolean) => (composerCreateOpen = v ? framework : null)"
-      @created="onCreated"
-    />
-
-    <!-- link modal -->
-    <Modal v-model:open="linkOpen" title="Link a site">
-      <label class="text-sm font-medium" for="linkname">Name (single label)</label>
-      <Input
-        id="linkname"
-        v-model="linkName"
-        placeholder="e.g. myapp"
-        class="mt-2"
-        @input="linkNameDirty = true"
-      />
-      <label class="mt-4 block text-sm font-medium" for="linkpath">Directory</label>
-      <div class="mt-2 flex gap-2">
-        <Input id="linkpath" v-model="linkPath" placeholder="/path/to/project" />
-        <Button variant="outline" @click="chooseLinkDir"><FolderOpen class="size-4" /></Button>
-      </div>
-      <template #footer="{ close }">
-        <Button variant="ghost" @click="close">Cancel</Button>
-        <Button :disabled="!linkValid" @click="confirmLink(close)">Link</Button>
-      </template>
-    </Modal>
-
-    <!-- un-park confirm -->
-    <Modal
+    <ConfirmDialog
       v-model:open="unparkOpen"
-      title="Un-park folder"
-      @update:open="(v: boolean) => { if (!v) unparkTarget = null; }"
+      :title="`Unpark ${unparkTarget ? tildify(unparkTarget, home) : ''}?`"
+      :confirm-label="unparkLabel"
+      tone="danger"
+      :icon="FolderMinus"
+      @confirm="confirmUnpark"
     >
-      <p class="text-sm text-muted-foreground">
-        Un-park <strong class="font-mono text-foreground">{{ unparkTarget }}</strong>?
-        Its child directories stop being served as .test sites. Linked sites are
-        untouched.
-      </p>
-      <template #footer="{ close }">
-        <Button variant="ghost" @click="close">Cancel</Button>
-        <Button variant="destructive" @click="confirmUnpark(close)">Un-park</Button>
-      </template>
-    </Modal>
+      {{ unparkBody }}
+    </ConfirmDialog>
 
-    <!-- remove (unlink) confirm -->
-    <Modal
+    <ConfirmDialog
       v-model:open="unlinkOpen"
-      title="Remove site"
-      @update:open="(v: boolean) => { if (!v) unlinkTarget = null; }"
+      :title="`Remove ${unlinkTarget ? siteHost(unlinkTarget, tld) : ''}?`"
+      confirm-label="Remove site"
+      tone="danger"
+      :icon="Trash2"
+      @confirm="confirmUnlink"
     >
-      <p class="text-sm text-muted-foreground">
-        Remove <strong>{{ unlinkTarget?.name }}.{{ tld }}</strong>? Parked sites
-        re-appear if their folder is still under a parked directory.
-      </p>
-      <template #footer="{ close }">
-        <Button variant="ghost" @click="close">Cancel</Button>
-        <Button variant="destructive" @click="confirmUnlink(close)">Remove</Button>
-      </template>
-    </Modal>
+      Yerd stops serving it.
+      <span class="font-mono">{{ unlinkTarget ? tildify(unlinkTarget.document_root, home) : "" }}</span>
+      is not deleted.
+    </ConfirmDialog>
 
-    <!-- create group -->
+    <!-- create an empty group -->
     <Modal v-model:open="createGroupOpen" title="New group">
-      <label class="text-sm font-medium" for="groupname">Group name</label>
+      <label class="text-sm font-medium" for="newgroupname">Group name</label>
       <Input
-        id="groupname"
+        id="newgroupname"
         v-model="createGroupName"
         placeholder="e.g. Client work"
         class="mt-2"
         @keyup.enter="createGroupValid && confirmCreateGroup(() => (createGroupOpen = false))"
       />
       <p class="mt-1 text-xs text-muted-foreground">
-        Sites can be assigned to a group when you edit them.
+        Only changes how the list is sorted. Move sites in from their ··· menu.
       </p>
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Cancel</Button>
@@ -1096,7 +1132,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
       </template>
       <p v-else class="text-sm text-muted-foreground">
         Delete <strong class="text-foreground">{{ renameGroupTarget }}</strong>? Its
-        sites aren't removed - they move to <strong class="text-foreground">Unallocated</strong>.
+        sites aren't removed - they go back to their folder's section.
       </p>
       <template #footer="{ close }">
         <template v-if="!renameGroupConfirmingDelete">

@@ -182,7 +182,7 @@ fn probe_writable(parent: &Path) -> Result<(), String> {
 /// Install `tool` inline if it's neither managed nor available externally on
 /// the user's PATH, streaming the install into this job's log (see
 /// [`install_tool_inline`]). Only for tools the job actually resolves via PATH
-/// (Laravel's optional Node/Bun); a tool the job runs by its managed
+/// (Laravel's optional Node/Bun/pnpm); a tool the job runs by its managed
 /// filesystem entry point must use [`ensure_managed_tool`] instead - see
 /// [`Tool::accepts_external`] for which is which.
 async fn ensure_tool(
@@ -191,7 +191,8 @@ async fn ensure_tool(
     user_dirs: &[PathBuf],
     state: &Arc<DaemonState>,
 ) -> Result<(), String> {
-    if tools::installed_version(&state.dirs, tool).is_some() {
+    let node_default = state.config.lock().await.node.default.clone();
+    if tools::installed_version(&state.dirs, tool, node_default.as_deref()).is_some() {
         return Ok(());
     }
     let data_bin = tools::bin_dir(&state.dirs);
@@ -209,7 +210,8 @@ async fn ensure_tool(
 /// PATH-resolved `wp`, so accepting an external install would let the job
 /// proceed and then fail spawning a path that doesn't exist.
 async fn ensure_managed_tool(id: &str, tool: Tool, state: &Arc<DaemonState>) -> Result<(), String> {
-    if tools::installed_version(&state.dirs, tool).is_some() {
+    let node_default = state.config.lock().await.node.default.clone();
+    if tools::installed_version(&state.dirs, tool, node_default.as_deref()).is_some() {
         return Ok(());
     }
     install_tool_inline(id, tool, state).await
@@ -240,14 +242,18 @@ async fn install_tool_inline(id: &str, tool: Tool, state: &Arc<DaemonState>) -> 
         })
     };
 
-    let dl = crate::php_install::ReqwestDownloader::new();
+    let dl = crate::network::downloader(state).await;
     let guard = state.tool_mutate.lock().await;
-    let result = tools::install(tool, &state.dirs, &dl, Some(&tx)).await;
+    let proxy_env = crate::network::child_env_plan(state).await;
+    let result = tools::install(tool, &state.dirs, &dl, &proxy_env, Some(&tx)).await;
     drop(guard);
     drop(tx);
     let _ = drain.await;
 
     result.map_err(|e| format!("failed to install {}: {e}", tool.display_name()))?;
+    if tool == Tool::Node {
+        crate::node_updates::poll_and_refresh(state, &dl).await;
+    }
     crate::ipc_server::reconcile_tool_shims_now(state).await;
     Ok(())
 }
@@ -329,6 +335,7 @@ async fn run_streamed(
             );
         }
     }
+    crate::network::apply_child_env(&mut cmd, state).await;
     #[cfg(unix)]
     cmd.process_group(0);
 
@@ -461,12 +468,19 @@ fn resolve_composer(
         .map(Composer::External)
 }
 
-/// Compose `PATH` = `<per-job bin> : <{data}/bin> : <user PATH> : <inherited>`.
+/// Compose `PATH` = `<per-job bin> : [<node bin>] : <{data}/bin> : <user PATH> : <inherited>`.
 /// The user's resolved PATH is appended so externally-installed
 /// composer/node/bun/git/laravel are findable, while the per-job bin (managed
-/// `php`) and Yerd shims keep precedence.
-fn composed_path(job_bin: &Path, data_bin: &Path, user_dirs: &[PathBuf]) -> std::ffi::OsString {
-    let mut entries = vec![job_bin.to_path_buf(), data_bin.to_path_buf()];
+/// `php`), a chosen Node release's `bin`, and Yerd shims keep precedence.
+fn composed_path(
+    job_bin: &Path,
+    node_bin: Option<&Path>,
+    data_bin: &Path,
+    user_dirs: &[PathBuf],
+) -> std::ffi::OsString {
+    let mut entries = vec![job_bin.to_path_buf()];
+    entries.extend(node_bin.map(Path::to_path_buf));
+    entries.push(data_bin.to_path_buf());
     entries.extend(user_dirs.iter().cloned());
     if let Some(existing) = std::env::var_os("PATH") {
         entries.extend(std::env::split_paths(&existing));
@@ -527,6 +541,34 @@ fn build_job_bin(
     Err("site creation is not yet supported on this platform".to_owned())
 }
 
+/// Write a `pnpm` wrapper into the job's bin that drops every `--no-ansi`
+/// argument before running `real_pnpm`.
+///
+/// The Laravel installer appends `--no-ansi` to each command it runs whenever
+/// its output is not a terminal, which is always the case under the daemon.
+/// npm ignores the unknown flag, but pnpm 12 rejects it, and the installer
+/// reports that failure as success, leaving the project with no
+/// `node_modules` or built assets. Colour is still off because the job sets
+/// `NO_COLOR`. Unix-only.
+#[cfg(unix)]
+fn write_pnpm_wrapper(job_bin: &Path, real_pnpm: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let wrapper = job_bin.join("pnpm");
+    let script = format!(
+        "#!/bin/sh\nfor a do\n  shift\n  [ \"$a\" = --no-ansi ] || set -- \"$@\" \"$a\"\ndone\nexec {} \"$@\"\n",
+        sh_quote(real_pnpm)
+    );
+    std::fs::write(&wrapper, script).map_err(|e| format!("write pnpm wrapper: {e}"))?;
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("chmod pnpm wrapper: {e}"))
+}
+
+#[cfg(not(unix))]
+fn write_pnpm_wrapper(_job_bin: &Path, _real_pnpm: &Path) -> Result<(), String> {
+    Err("site creation is not yet supported on this platform".to_owned())
+}
+
 fn error(code: ErrorCode, message: String) -> Response {
     Response::Error { code, message }
 }
@@ -557,6 +599,7 @@ mod tests {
             js: JsRuntime::Skip,
             git: false,
             boost: false,
+            node: None,
         }
     }
 
@@ -743,11 +786,24 @@ mod tests {
         let job_bin = Path::new("/jobs/abc/bin");
         let data_bin = Path::new("/data/bin");
         let user = vec![PathBuf::from("/opt/homebrew/bin")];
-        let composed = composed_path(job_bin, data_bin, &user);
+        let composed = composed_path(job_bin, None, data_bin, &user);
         let entries: Vec<PathBuf> = std::env::split_paths(&composed).collect();
         assert_eq!(entries.first().unwrap(), job_bin);
         assert_eq!(entries.get(1).unwrap(), data_bin);
         assert!(entries.iter().any(|p| p == Path::new("/opt/homebrew/bin")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn composed_path_puts_a_chosen_node_ahead_of_the_shims() {
+        let job_bin = Path::new("/jobs/abc/bin");
+        let node_bin = Path::new("/data/tools/node-versions/22.12.0/node-v22.12.0/bin");
+        let data_bin = Path::new("/data/bin");
+        let composed = composed_path(job_bin, Some(node_bin), data_bin, &[]);
+        let entries: Vec<PathBuf> = std::env::split_paths(&composed).collect();
+        assert_eq!(entries.first().unwrap(), job_bin);
+        assert_eq!(entries.get(1).unwrap(), node_bin);
+        assert_eq!(entries.get(2).unwrap(), data_bin);
     }
 
     #[cfg(unix)]
@@ -782,6 +838,41 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o111, 0o111, "wrapper should be executable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pnpm_wrapper_drops_no_ansi_and_keeps_other_args() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let job_bin = tmp.path().join("bin");
+        std::fs::create_dir_all(&job_bin).unwrap();
+        let real_dir = tmp.path().join("it's real");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        let real = real_dir.join("pnpm");
+        std::fs::write(&real, b"#!/bin/sh\nfor a do printf '[%s]' \"$a\"; done\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        write_pnpm_wrapper(&job_bin, &real).unwrap();
+
+        let cases: &[(&[&str], &str)] = &[
+            (
+                &["install", "--ignore-scripts", "--no-ansi"],
+                "[install][--ignore-scripts]",
+            ),
+            (&["build", "--no-ansi"], "[build]"),
+            (&["--no-ansi"], ""),
+            (&["run", "a b", "--no-ansi-x"], "[run][a b][--no-ansi-x]"),
+            (&[], ""),
+        ];
+        for (args, want) in cases {
+            let out = std::process::Command::new(job_bin.join("pnpm"))
+                .args(*args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), *want, "{args:?}");
+        }
     }
 
     #[cfg(unix)]

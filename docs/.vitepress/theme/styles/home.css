@@ -54,6 +54,35 @@
   letter-spacing: 0.145em;
   color: var(--vp-c-text-2);
 }
+/* The pill as a link, used to announce a release. */
+.y-pill--link {
+  padding-left: 5px;
+  color: var(--vp-c-text-1);
+  transition:
+    border-color 0.2s,
+    transform 0.2s;
+}
+.y-pill--link:hover {
+  border-color: var(--y-blue);
+  transform: translateY(-1px);
+}
+.y-pill__badge {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background-color: var(--y-blue);
+  font-weight: 600;
+  color: #fff;
+}
+.y-pill__arrow {
+  color: var(--y-blue-bright);
+  transition: transform 0.2s;
+}
+.y-pill--link:hover .y-pill__arrow {
+  transform: translateX(3px);
+}
 .y-pill__dot {
   width: 6px;
   height: 6px;
@@ -150,31 +179,50 @@
 /* ---- Hero --------------------------------------------------------------- */
 
 .y-hero {
-  padding: 72px 0 0;
+  padding: 64px 0 0;
 }
+/* Centred copy above a full-width screenshot, so the app itself is the hero. */
 .y-hero__inner {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   padding: 0 24px;
-  grid-template-columns: minmax(0, 1fr) 532px;
-  gap: 56px;
-  align-items: start;
   max-width: var(--y-content-width);
   margin: 0 auto;
 }
 .y-hero__copy {
-  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 1100px;
+  text-align: center;
 }
 .y-hero__demo {
-  margin-top: 80px;
+  position: relative;
+  width: 100%;
+  max-width: 1180px;
+  margin-top: 56px;
+}
+/* A soft brand halo behind the window so it lifts off the page. */
+.y-hero__demo::before {
+  content: '';
+  position: absolute;
+  inset: 6% 4% -4%;
+  z-index: -1;
+  border-radius: 40px;
+  background: radial-gradient(60% 60% at 50% 40%, var(--y-glow-strong), var(--y-glow-none) 75%);
+  filter: blur(40px);
+  pointer-events: none;
 }
 
 .y-hero__title {
   display: flex;
   flex-direction: column;
-  margin: 58px 0 0;
+  align-items: center;
+  margin: 32px 0 0;
   font-family: var(--y-display);
   font-weight: 400;
-  font-size: clamp(38px, 5vw, 72px);
+  font-size: clamp(36px, 5.2vw, 72px);
   line-height: 1.03;
   letter-spacing: -0.017em;
   color: var(--vp-c-text-1);
@@ -183,131 +231,35 @@
   color: var(--y-blue-bright);
 }
 .y-hero__tagline {
-  max-width: 520px;
-  margin: 42px 0 0;
-  font-size: 17.5px;
+  max-width: 720px;
+  margin: 24px 0 0;
+  font-size: 18px;
   line-height: 1.6;
   color: var(--vp-c-text-2);
 }
 .y-hero__actions {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   gap: 16px;
-  margin-top: 36px;
+  margin-top: 28px;
 }
 .y-hero__platforms {
-  margin: 32px 0 0;
+  margin: 22px 0 0;
   font-family: var(--y-mono);
   font-size: 11px;
   color: var(--vp-c-text-3);
 }
-
-/* The copyable first command. */
-.y-cmd {
-  margin-top: 32px;
-  max-width: 520px;
-}
-.y-cmd__label {
-  margin: 0 0 9px;
-  font-family: var(--y-mono);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.145em;
-  color: var(--vp-c-text-3);
-}
-.y-cmd__bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  height: 52px;
-  padding: 0 10px 0 20px;
-  border: 1px solid var(--y-line-2);
-  border-radius: 11px;
-  background-color: var(--y-surface);
-  box-shadow: var(--y-shadow);
-}
-.y-cmd__text {
-  font-family: var(--y-mono);
-  font-size: 13.5px;
-  color: var(--vp-c-text-1);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.y-cmd__prompt {
-  color: var(--y-blue-bright);
-}
-.y-cmd__caret {
-  display: inline-block;
-  width: 8px;
-  height: 16px;
-  margin-left: 3px;
-  vertical-align: -3px;
-  background-color: var(--y-blue-bright);
-  opacity: 0.75;
-  animation: y-blink 1.15s steps(1) infinite;
-}
-.y-cmd__copy {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  border: 1px solid var(--y-line-2);
-  border-radius: 8px;
-  background-color: var(--y-surface-2);
-  color: var(--vp-c-text-2);
-  cursor: pointer;
-  transition:
-    color 0.2s,
-    border-color 0.2s;
-}
-.y-cmd__copy:hover {
-  color: var(--y-blue-bright);
-  border-color: var(--y-blue-bright);
-}
-.y-cmd__copy svg {
-  width: 15px;
-  height: 15px;
-}
-
-@keyframes y-blink {
-  0%,
-  50% {
-    opacity: 0.75;
-  }
-  51%,
-  100% {
-    opacity: 0;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .y-cmd__caret {
-    animation: none;
-  }
-}
-
 /* ---- Hero screenshot --------------------------------------------------- */
 
 .y-hero__shot {
   display: block;
   width: 100%;
-  padding: 0;
   border: 1px solid var(--y-line-2);
-  border-radius: 14px;
+  border-radius: 16px;
   background-color: var(--y-surface);
   box-shadow: var(--y-shadow-lg);
   overflow: hidden;
-  cursor: zoom-in;
-  transition:
-    border-color 0.2s,
-    transform 0.2s;
-}
-.y-hero__shot:hover {
-  border-color: var(--y-blue);
-  transform: translateY(-2px);
 }
 .y-hero__shot img {
   display: block;
@@ -329,6 +281,7 @@
 .y-stats__cell {
   padding: 32px;
   border-left: 1px solid var(--y-line);
+  text-align: center;
 }
 .y-stats__cell:first-child {
   border-left: 0;
@@ -754,27 +707,13 @@
 
 /* ---- Responsive --------------------------------------------------------- */
 
-@media (max-width: 1150px) {
-  .y-hero__inner {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 480px);
-    gap: 40px;
-  }
-}
 
 @media (max-width: 960px) {
   .y-hero {
     padding-top: 56px;
   }
-  .y-hero__inner {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .y-hero__copy,
-  .y-cmd,
-  .y-hero__tagline {
-    max-width: none;
-  }
   .y-hero__demo {
-    margin-top: 0;
+    margin-top: 48px;
   }
   .y-home > .y-section,
   .y-home > .y-section--tight {

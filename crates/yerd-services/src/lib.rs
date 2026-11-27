@@ -14,6 +14,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod client;
 pub mod config_render;
 pub mod database;
 pub mod error;
@@ -24,6 +25,7 @@ pub mod release;
 pub mod service;
 pub mod version;
 
+pub use client::{ClientDefaults, ClientTools, ConnectionPlan, ShimPlan};
 pub use database::{DbNameError, ExistingDbNameError};
 pub use error::ServiceError;
 pub use health::{

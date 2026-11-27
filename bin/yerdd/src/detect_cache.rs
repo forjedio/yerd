@@ -1,31 +1,34 @@
-//! Web-root detection cache.
+//! Project-signal cache for web-root and framework detection.
 //!
 //! Detection reads `composer.json` and stats a handful of files per project.
-//! `scan_sites` runs on every config mutation *and* every filesystem-watcher
-//! tick, so without a cache an unrelated `yerd use`/`yerd secure` would re-read
-//! every parked project. This cache keys a [`Detection`] on a cheap freshness
-//! stamp - `max(project-root dir mtime, composer.json mtime)` - so a rescan that
-//! finds nothing changed reuses the previous result after one or two `stat`s.
+//! `scan_sites` and the per-site framework cache run on every config mutation
+//! *and* every filesystem-watcher tick, so without a cache an unrelated
+//! `yerd use`/`yerd secure` would re-read every project. This cache keys the
+//! gathered [`ProjectSignals`] on a cheap freshness
+//! stamp - the newest of the project-root dir, `composer.json` and `bin/` dir
+//! mtimes - so a rescan that finds nothing changed reuses the previous result
+//! after a few `stat`s.
 //!
-//! The stamp captures the two ways a project's web root can change: adding or
+//! The stamp captures the ways a project's signals can change: adding or
 //! removing a top-level entry (e.g. cloning in `public/`) bumps the directory
-//! mtime; editing `composer.json` in place bumps that file's mtime.
+//! mtime; editing `composer.json` in place bumps that file's mtime; adding a
+//! nested marker such as `bin/console` bumps the `bin/` dir mtime.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-use yerd_core::Detection;
+use yerd_core::{Detection, ProjectSignals};
 use yerd_platform::gather_project_signals;
 
-/// Caches per-project web-root detection, keyed on a freshness stamp.
+/// Caches per-project [`ProjectSignals`], keyed on a freshness stamp.
 ///
 /// Uses a `std::sync::Mutex` (not tokio) because the critical section is a brief
 /// map lookup/insert with no `.await`; `scan_sites` is synchronous.
 #[derive(Default)]
 pub struct DetectCache {
-    inner: Mutex<HashMap<PathBuf, (SystemTime, Detection)>>,
+    inner: Mutex<HashMap<PathBuf, (SystemTime, ProjectSignals)>>,
 }
 
 impl DetectCache {
@@ -35,28 +38,33 @@ impl DetectCache {
         Self::default()
     }
 
-    /// Detect the web root for `project_root`, reusing a cached result while the
-    /// project's freshness stamp is unchanged. When the stamp can't be read
-    /// (unreadable dir), detection runs fresh and is not cached.
+    /// Detect the web root for `project_root` from its cached signals.
     pub fn detect(&self, project_root: &Path) -> Detection {
+        yerd_core::detect(&self.signals(project_root))
+    }
+
+    /// The project's signals, reusing a cached copy while its freshness stamp
+    /// is unchanged. When the stamp can't be read (unreadable dir), the signals
+    /// are gathered fresh and not cached.
+    pub fn signals(&self, project_root: &Path) -> ProjectSignals {
         let Some(stamp) = freshness_stamp(project_root) else {
-            return yerd_core::detect(&gather_project_signals(project_root));
+            return gather_project_signals(project_root);
         };
         let mut guard = self.lock();
-        if let Some((cached_stamp, det)) = guard.get(project_root) {
+        if let Some((cached_stamp, sig)) = guard.get(project_root) {
             if *cached_stamp == stamp {
-                return det.clone();
+                return sig.clone();
             }
         }
-        let det = yerd_core::detect(&gather_project_signals(project_root));
-        guard.insert(project_root.to_path_buf(), (stamp, det.clone()));
-        det
+        let sig = gather_project_signals(project_root);
+        guard.insert(project_root.to_path_buf(), (stamp, sig.clone()));
+        sig
     }
 
     /// Lock helper that recovers from a poisoned mutex rather than panicking
     /// (the crate forbids `unwrap`/`expect`). A poisoned detection cache is
-    /// harmless - the worst case is a stale-but-valid `Detection`.
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<PathBuf, (SystemTime, Detection)>> {
+    /// harmless - the worst case is stale-but-valid signals.
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<PathBuf, (SystemTime, ProjectSignals)>> {
         match self.inner.lock() {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
@@ -64,18 +72,17 @@ impl DetectCache {
     }
 }
 
-/// `max(project-root dir mtime, composer.json mtime)`, or `None` if neither is
-/// stat-able (forces a fresh, uncached detection).
+/// The newest of the project-root dir, `composer.json` and `bin/` dir mtimes,
+/// or `None` if none is stat-able (forces a fresh, uncached detection).
 fn freshness_stamp(root: &Path) -> Option<SystemTime> {
-    let dir = std::fs::metadata(root).and_then(|m| m.modified()).ok();
-    let composer = std::fs::metadata(root.join("composer.json"))
-        .and_then(|m| m.modified())
-        .ok();
-    match (dir, composer) {
-        (Some(a), Some(b)) => Some(a.max(b)),
-        (Some(a), None) | (None, Some(a)) => Some(a),
-        (None, None) => None,
-    }
+    [
+        root.to_path_buf(),
+        root.join("composer.json"),
+        root.join("bin"),
+    ]
+    .iter()
+    .filter_map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+    .max()
 }
 
 #[cfg(test)]
@@ -98,9 +105,48 @@ mod tests {
     }
 
     #[test]
+    fn caches_signals_until_composer_changes() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("composer.json"),
+            br#"{"require":{"statamic/cms":"^5"}}"#,
+        )
+        .unwrap();
+        let cache = DetectCache::new();
+        let first = cache.signals(dir.path());
+        assert!(first.composer_requires.contains("statamic/cms"));
+        assert_eq!(cache.lock().len(), 1);
+        assert_eq!(cache.signals(dir.path()), first);
+        assert_eq!(
+            yerd_core::detect_framework(&first),
+            Some(yerd_core::SiteFramework::Statamic)
+        );
+    }
+
+    #[test]
+    fn nested_bin_marker_refreshes_cached_signals() {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let cache = DetectCache::new();
+        let past = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        for p in [dir.path(), bin.as_path()] {
+            fs::File::open(p).unwrap().set_modified(past).unwrap();
+        }
+        assert!(!cache.signals(dir.path()).markers.contains("bin/console"));
+        fs::write(bin.join("console"), b"").unwrap();
+        fs::File::open(dir.path())
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+        assert!(cache.signals(dir.path()).markers.contains("bin/console"));
+    }
+
+    #[test]
     fn unreadable_root_returns_unresolved_without_caching() {
         let cache = DetectCache::new();
         let det = cache.detect(Path::new("/nonexistent/yerd/xyz"));
         assert!(!det.resolved);
+        assert!(cache.lock().is_empty());
     }
 }

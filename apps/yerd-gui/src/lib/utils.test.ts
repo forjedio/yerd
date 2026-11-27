@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatLoadAvg, humaniseBytes, humaniseUptime } from "./utils";
+import { formatLoadAvg, humaniseBytes, humaniseUptime, runStateDotClass } from "./utils";
 
 describe("humaniseBytes", () => {
   it("renders base-2 units", () => {
@@ -30,4 +30,19 @@ describe("formatLoadAvg", () => {
   it("dashes when unavailable", () => {
     expect(formatLoadAvg(null)).toBe("-");
   });
+});
+
+describe("runStateDotClass", () => {
+  const cases = [
+    { state: "running", dot: "bg-success" },
+    { state: "failed", dot: "bg-destructive" },
+    { state: "stopped", dot: "bg-faint" },
+    { state: undefined, dot: "bg-faint" },
+  ] as const;
+
+  for (const { state, dot } of cases) {
+    it(`colours ${state ?? "an unreported state"} ${dot}`, () => {
+      expect(runStateDotClass(state)).toBe(dot);
+    });
+  }
 });

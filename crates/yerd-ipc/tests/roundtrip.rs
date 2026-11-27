@@ -16,8 +16,8 @@ use yerd_ipc::{
     decode_message, encode_message,
     types::{PhpVersion, Site},
     CaStatus, Diagnosis, DiagnosisCode, ErrorCode, FixReport, FixResult, IpcError, PhpPoolStatus,
-    PoolRunState, PortStatus, Request, Response, RouteRuleEntry, Severity, SiteCounts,
-    StatusReport,
+    PoolRunState, PortStatus, ProxyRuleEntry, Request, Response, ResponseHeaderEntry,
+    RouteRuleEntry, Severity, SiteCounts, StatusReport,
 };
 
 fn assert_request_roundtrips(r: Request) {
@@ -30,6 +30,52 @@ fn assert_response_roundtrips(r: Response) {
     let bytes = encode_message(&r).unwrap();
     let back: Response = decode_message(&bytes).unwrap();
     assert_eq!(back, r);
+}
+
+#[test]
+fn proxies_response_with_managed_rule_roundtrips() {
+    assert_response_roundtrips(Response::Proxies {
+        proxies: vec![],
+        rules: vec![
+            ProxyRuleEntry {
+                site: "app".into(),
+                prefix: "/app".into(),
+                target: "http://127.0.0.1:8080".into(),
+                managed_by: Some("Reverb".into()),
+            },
+            ProxyRuleEntry {
+                site: "app".into(),
+                prefix: "/live".into(),
+                target: "http://127.0.0.1:8082".into(),
+                managed_by: None,
+            },
+        ],
+    });
+}
+
+#[test]
+fn set_xdebug_request_roundtrips() {
+    assert_request_roundtrips(Request::SetXdebug {
+        version: Some(PhpVersion::new(8, 4)),
+        enabled: Some(true),
+        modes: Some(vec![
+            yerd_core::XdebugMode::Coverage,
+            yerd_core::XdebugMode::Gcstats,
+        ]),
+        start: Some(yerd_core::XdebugStart::Always),
+    });
+    assert_request_roundtrips(Request::SetXdebug {
+        version: None,
+        enabled: Some(false),
+        modes: None,
+        start: None,
+    });
+    assert_request_roundtrips(Request::SetXdebug {
+        version: None,
+        enabled: None,
+        modes: Some(vec![yerd_core::XdebugMode::Profile]),
+        start: None,
+    });
 }
 
 #[test]
@@ -74,6 +120,15 @@ fn encode_then_decode_request_roundtrip() {
     assert_request_roundtrips(Request::Diagnose);
     assert_request_roundtrips(Request::DoctorFix);
     assert_request_roundtrips(Request::SetMcpEnabled { enabled: true });
+    assert_request_roundtrips(Request::UpdateProxy {
+        name: "grafana".into(),
+        url: "http://localhost:3001".into(),
+    });
+    assert_request_roundtrips(Request::UpdateProxyRule {
+        site: "codestash".into(),
+        prefix: "/live".into(),
+        url: "http://127.0.0.1:8082".into(),
+    });
     assert_request_roundtrips(Request::CheckUpdate {
         channel: Some(yerd_ipc::Channel::Edge),
     });
@@ -114,6 +169,16 @@ fn encode_then_decode_request_roundtrip() {
         prefix: "/api".into(),
     });
     assert_request_roundtrips(Request::ListRoutes);
+    assert_request_roundtrips(Request::SetResponseHeader {
+        site: "api".into(),
+        name: "Access-Control-Allow-Origin".into(),
+        value: "https://app.test".into(),
+    });
+    assert_request_roundtrips(Request::RemoveResponseHeader {
+        site: "api".into(),
+        name: "Access-Control-Allow-Origin".into(),
+    });
+    assert_request_roundtrips(Request::ListResponseHeaders);
 }
 
 #[test]
@@ -136,20 +201,24 @@ fn encode_then_decode_response_roundtrip() {
     assert_response_roundtrips(Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)],
         default: PhpVersion::new(8, 5),
-        updates: vec![],
+        updates: Box::default(),
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
+        ffi_versions: Box::new(vec![]),
+        libvips_found: None,
+        xdebug: Box::default(),
+        xdebug_versions: Box::default(),
         pool: Box::new(BTreeMap::new()),
     });
     assert_response_roundtrips(Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 5)],
         default: PhpVersion::new(8, 5),
-        updates: vec![yerd_ipc::PhpUpdate {
+        updates: Box::new(vec![yerd_ipc::PhpUpdate {
             version: PhpVersion::new(8, 5),
             installed: "8.5.6".into(),
             latest: "8.5.7".into(),
-        }],
+        }]),
         settings: BTreeMap::from([("memory_limit".to_string(), "512M".to_string())]),
         version_settings: Box::new(BTreeMap::from([(
             PhpVersion::new(8, 5),
@@ -159,6 +228,10 @@ fn encode_then_decode_response_roundtrip() {
             PhpVersion::new(8, 5),
             BTreeMap::from([("xdebug.mode".to_string(), "debug".to_string())]),
         )])),
+        ffi_versions: Box::new(vec![]),
+        libvips_found: None,
+        xdebug: Box::default(),
+        xdebug_versions: Box::default(),
         pool: Box::new(BTreeMap::from([(
             PhpVersion::new(8, 5),
             BTreeMap::from([("max_children".to_string(), "32".to_string())]),
@@ -179,6 +252,9 @@ fn encode_then_decode_response_roundtrip() {
             apex_shadowed_by: None,
             uses_front_controller: false,
             is_laravel: false,
+            favourite: false,
+            framework: None,
+            added_at: None,
         }],
     });
     assert_response_roundtrips(Response::Sites {
@@ -190,6 +266,9 @@ fn encode_then_decode_response_roundtrip() {
             apex_shadowed_by: Some("shop".into()),
             uses_front_controller: true,
             is_laravel: false,
+            favourite: false,
+            framework: None,
+            added_at: None,
         }],
     });
     for code in [
@@ -268,6 +347,8 @@ fn encode_then_decode_response_roundtrip() {
             lan_setup_bound: Some(true),
             port_redirect_targets: None,
             lan_redirect_targets: None,
+            legacy_pf_redirect: None,
+            node_updates: 0,
         }),
     });
     assert_response_roundtrips(Response::Diagnoses {
@@ -315,6 +396,13 @@ fn encode_then_decode_response_roundtrip() {
             site: "portal".into(),
             prefix: "/api".into(),
             target: "api/index.php".into(),
+        }],
+    });
+    assert_response_roundtrips(Response::ResponseHeaders {
+        headers: vec![ResponseHeaderEntry {
+            site: "api".into(),
+            name: "Access-Control-Allow-Origin".into(),
+            value: "https://app.test".into(),
         }],
     });
 }
@@ -369,4 +457,70 @@ fn decode_rejects_unknown_error_code() {
     let bytes = br#"{"type":"error","code":"rate_limited","message":"x"}"#;
     let err = decode_message::<Response>(bytes).unwrap_err();
     assert!(matches!(err, IpcError::Decode(_)), "got {err:?}");
+}
+
+#[test]
+fn network_variants_roundtrip() {
+    assert_request_roundtrips(Request::GetNetworkSettings);
+    assert_request_roundtrips(Request::TestNetwork);
+    assert_request_roundtrips(Request::SetNetworkSettings {
+        mode: yerd_core::network::OutboundProxyMode::Off,
+        http_proxy: None,
+        https_proxy: Some(String::new()),
+        no_proxy: Some(vec![]),
+    });
+    assert_response_roundtrips(Response::NetworkSettings {
+        settings: Box::new(yerd_ipc::NetworkSettings {
+            mode: yerd_core::network::OutboundProxyMode::Manual,
+            http_proxy: Some("http://u:***@proxy:3128".into()),
+            https_proxy: None,
+            no_proxy: vec![".corp.com".into()],
+            effective: Some(yerd_ipc::EffectiveProxy {
+                mode: yerd_core::network::OutboundProxyMode::Manual,
+                source: yerd_core::network::ProxySource::Manual,
+                http_proxy: Some("http://u:***@proxy:3128".into()),
+                https_proxy: Some("http://u:***@proxy:3128".into()),
+                bypass: vec!["localhost".into(), ".test".into()],
+            }),
+        }),
+    });
+    assert_response_roundtrips(Response::NetworkTest {
+        result: Box::new(yerd_ipc::NetworkTestResult {
+            ok: false,
+            url: "https://files.yerd.app/latest.json".into(),
+            status: None,
+            error: Some("connect failed".into()),
+            via: Some("http://proxy:3128".into()),
+            source: yerd_core::network::ProxySource::DaemonEnv,
+        }),
+    });
+}
+
+#[test]
+fn project_config_variants_roundtrip() {
+    assert_request_roundtrips(Request::ProjectConfigDraft {
+        path: PathBuf::from("/p/acme"),
+    });
+    assert_request_roundtrips(Request::ApplyProjectConfig {
+        path: PathBuf::from("/p/acme"),
+        contents: None,
+    });
+    assert_request_roundtrips(Request::ApplyProjectConfig {
+        path: PathBuf::from("/p/acme"),
+        contents: Some("secure = true\n".into()),
+    });
+    assert_request_roundtrips(Request::ExportProjectConfig {
+        site: "acme".into(),
+    });
+    assert_response_roundtrips(Response::ProjectConfig {
+        file: PathBuf::from("/p/acme/.yerd.toml"),
+        exists: false,
+        site: None,
+        name: Some("acme".into()),
+        contents: "name = \"acme\"\n".into(),
+    });
+    assert_response_roundtrips(Response::Error {
+        code: ErrorCode::ProjectFileInvalid,
+        message: "invalid `php` in .yerd.toml".into(),
+    });
 }

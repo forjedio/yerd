@@ -7,6 +7,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
+use yerd_core::network::ProxyUrl;
+use yerd_core::tunnel_provider::TunnelProvider;
 
 use crate::{Config, ConfigError, CURRENT_VERSION};
 
@@ -34,6 +36,8 @@ struct WireSer<'a> {
     lan_setup_port: u16,
     ports: PortsSer<'a>,
     php: PhpSectionSer<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node: Option<NodeSectionSer<'a>>,
     parked: ParkedSectionSer<'a>,
     linked: &'a [yerd_core::Site],
     // Array-of-tables (`[[overrides]]`), a sub-table region like `linked` - any
@@ -89,6 +93,49 @@ struct WireSer<'a> {
     // are empty, so a default config emits no `[route_rules]` region.
     #[serde(skip_serializing_if = "Option::is_none")]
     route_rules: Option<RouteRulesSectionSer<'a>>,
+    // v24: optional `[response_headers]` table, emitted after `[route_rules]`
+    // so an existing config's byte shape is untouched; v33 added the proxy map.
+    // `None` (skipped) when every map is empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_headers: Option<ResponseHeadersSectionSer<'a>>,
+    // v28: optional `[network]` table, emitted last so an existing config's
+    // byte shape is untouched. `None` (skipped) when the section is default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    network: Option<NetworkSectionSer<'a>>,
+    // v30: optional `[favourites]` table, emitted after `[network]` so an
+    // existing config's byte shape is untouched. `None` (skipped) when empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    favourites: Option<FavouritesSectionSer<'a>>,
+    // v34: optional `[added]` table, emitted after `[favourites]` so an
+    // existing config's byte shape is untouched. `None` (skipped) when empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    added: Option<AddedSectionSer<'a>>,
+}
+
+#[derive(Serialize)]
+struct AddedSectionSer<'a> {
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    baseline_pending: &'a BTreeSet<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    linked: &'a BTreeMap<String, u64>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    parked: &'a BTreeMap<String, u64>,
+}
+
+#[derive(Serialize)]
+struct FavouritesSectionSer<'a> {
+    sites: &'a BTreeSet<String>,
+}
+
+#[derive(Serialize)]
+struct NetworkSectionSer<'a> {
+    mode: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    http_proxy: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    https_proxy: Option<&'a str>,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    no_proxy: &'a [String],
 }
 
 #[derive(Serialize)]
@@ -129,6 +176,22 @@ struct RouteRuleSer<'a> {
 }
 
 #[derive(Serialize)]
+struct ResponseHeadersSectionSer<'a> {
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    linked: BTreeMap<&'a str, Vec<ResponseHeaderSer<'a>>>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    parked: BTreeMap<&'a str, Vec<ResponseHeaderSer<'a>>>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    proxy: BTreeMap<&'a str, Vec<ResponseHeaderSer<'a>>>,
+}
+
+#[derive(Serialize)]
+struct ResponseHeaderSer<'a> {
+    name: &'a str,
+    value: &'a str,
+}
+
+#[derive(Serialize)]
 struct DomainsSectionSer<'a> {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     linked: BTreeMap<&'a str, DomainDeltaSer<'a>>,
@@ -152,10 +215,31 @@ struct DomainDeltaSer<'a> {
 
 #[derive(Serialize)]
 struct TunnelSectionSer<'a> {
+    // v32: scalar, so it must stay above the sub-tables.
+    #[serde(skip_serializing_if = "is_cloudflare")]
+    default_provider: TunnelProvider,
     #[serde(skip_serializing_if = "map_is_empty")]
     named: &'a BTreeMap<String, String>,
     #[serde(skip_serializing_if = "map_is_empty")]
     sites: &'a BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "map_is_empty")]
+    passwords: &'a BTreeMap<String, String>,
+    // v32: `[tunnel.ngrok]`, skipped when neither key is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ngrok: Option<NgrokSer<'a>>,
+}
+
+#[derive(Serialize)]
+struct NgrokSer<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    authtoken: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    domain: Option<&'a str>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_cloudflare(p: &TunnelProvider) -> bool {
+    *p == TunnelProvider::Cloudflare
 }
 
 #[derive(Serialize)]
@@ -217,6 +301,11 @@ struct PhpSectionSer<'a> {
     // empty for the same byte-stability reason.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pool: BTreeMap<String, &'a BTreeMap<String, String>>,
+    // Sub-tables keyed by version string (`[php.xdebug."8.4"]`). Skipped when
+    // empty for the same byte-stability reason; entries equal to the default
+    // are never written, so a default entry can't leave an empty-looking table.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    xdebug: BTreeMap<String, &'a yerd_core::XdebugSettings>,
     // Array-of-tables keyed by version string (`[[php.extensions."8.5"]]`).
     // Skipped when empty so a default config emits no `[php.extensions]` region
     // (byte-shape goldens assume no extra tables). A trailing sub-table region,
@@ -243,6 +332,16 @@ fn map_is_empty(m: &&BTreeMap<String, String>) -> bool {
 #[derive(Serialize)]
 struct ParkedSectionSer<'a> {
     paths: &'a BTreeSet<String>,
+    // v31: `[parked.claims."<docroot>"]` sub-tables, skipped when empty so an
+    // existing config's byte shape is untouched.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    claims: BTreeMap<&'a str, ParkedClaimSer<'a>>,
+}
+
+#[derive(Serialize)]
+struct ParkedClaimSer<'a> {
+    name: &'a str,
+    url_synced: bool,
 }
 
 #[derive(Serialize)]
@@ -323,6 +422,13 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 .map(|(v, m)| (v.to_string(), m))
                 .collect(),
             pool: c.php.pool.iter().map(|(v, m)| (v.to_string(), m)).collect(),
+            xdebug: c
+                .php
+                .xdebug
+                .iter()
+                .filter(|(_, s)| **s != yerd_core::XdebugSettings::default())
+                .map(|(v, s)| (v.to_string(), s))
+                .collect(),
             extensions: c
                 .php
                 .extensions
@@ -344,6 +450,20 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
         },
         parked: ParkedSectionSer {
             paths: &c.parked.paths,
+            claims: c
+                .parked
+                .claims
+                .iter()
+                .map(|(doc_root, claim)| {
+                    (
+                        doc_root.as_str(),
+                        ParkedClaimSer {
+                            name: &claim.name,
+                            url_synced: claim.url_synced,
+                        },
+                    )
+                })
+                .collect(),
         },
         linked: &c.linked,
         overrides: c
@@ -398,8 +518,18 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
             None
         } else {
             Some(TunnelSectionSer {
+                default_provider: c.tunnel.default_provider,
                 named: &c.tunnel.named,
                 sites: &c.tunnel.sites,
+                passwords: &c.tunnel.passwords,
+                ngrok: if c.tunnel.ngrok.is_empty() {
+                    None
+                } else {
+                    Some(NgrokSer {
+                        authtoken: c.tunnel.ngrok.authtoken.as_deref(),
+                        domain: c.tunnel.ngrok.domain.as_deref(),
+                    })
+                },
             })
         },
         groups: if c.groups.is_empty() {
@@ -444,6 +574,14 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 Some(ProxyRulesSectionSer { linked, parked })
             }
         },
+        node: if c.node == crate::NodeSection::default() {
+            None
+        } else {
+            Some(NodeSectionSer {
+                default: c.node.default.as_deref(),
+                sites: &c.node.sites,
+            })
+        },
         route_rules: {
             let linked = route_rule_map(&c.route_rules.linked);
             let parked = route_rule_map(&c.route_rules.parked);
@@ -453,8 +591,70 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 Some(RouteRulesSectionSer { linked, parked })
             }
         },
+        response_headers: {
+            let linked = response_header_map(&c.response_headers.linked);
+            let parked = response_header_map(&c.response_headers.parked);
+            let proxy = response_header_map(&c.response_headers.proxy);
+            if linked.is_empty() && parked.is_empty() && proxy.is_empty() {
+                None
+            } else {
+                Some(ResponseHeadersSectionSer {
+                    linked,
+                    parked,
+                    proxy,
+                })
+            }
+        },
+        network: if c.network == crate::NetworkSection::default() {
+            None
+        } else {
+            Some(NetworkSectionSer {
+                mode: c.network.mode.as_str(),
+                http_proxy: c.network.http_proxy.as_ref().map(ProxyUrl::as_str),
+                https_proxy: c.network.https_proxy.as_ref().map(ProxyUrl::as_str),
+                no_proxy: &c.network.no_proxy,
+            })
+        },
+        favourites: if c.favourites.is_empty() {
+            None
+        } else {
+            Some(FavouritesSectionSer {
+                sites: &c.favourites.sites,
+            })
+        },
+        added: if c.added.is_empty() {
+            None
+        } else {
+            Some(AddedSectionSer {
+                baseline_pending: &c.added.baseline_pending,
+                linked: &c.added.linked,
+                parked: &c.added.parked,
+            })
+        },
     };
     toml::to_string_pretty(&w).map_err(Into::into)
+}
+
+/// Build a borrowed `[response_headers.*]` map, pruning any site whose header
+/// list is empty, for the same round-trip reason as [`proxy_rule_map`].
+fn response_header_map(
+    src: &BTreeMap<String, Vec<yerd_core::ResponseHeader>>,
+) -> BTreeMap<&str, Vec<ResponseHeaderSer<'_>>> {
+    src.iter()
+        .filter(|(_, headers)| !headers.is_empty())
+        .map(|(k, headers)| {
+            (
+                k.as_str(),
+                headers
+                    .iter()
+                    .map(|h| ResponseHeaderSer {
+                        name: h.name(),
+                        value: h.value(),
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 /// Build a borrowed `[route_rules.*]` map, pruning any site whose rule list is
@@ -522,6 +722,14 @@ fn domain_delta_map(
         .collect()
 }
 
+#[derive(Serialize)]
+struct NodeSectionSer<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default: Option<&'a str>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    sites: &'a BTreeMap<String, String>,
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -536,8 +744,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 23\n"),
-            "expected `version = 23` first line; got: {s}"
+            s.starts_with("version = 34\n"),
+            "expected `version = 34` first line; got: {s}"
         );
     }
 
@@ -587,12 +795,54 @@ mod tests {
         c.tunnel = crate::TunnelSection {
             named: BTreeMap::from([("mysite".to_owned(), "uuid-123".to_owned())]),
             sites: BTreeMap::from([("app".to_owned(), "app.example.com".to_owned())]),
+            passwords: BTreeMap::from([("app".to_owned(), "secret".to_owned())]),
+            default_provider: TunnelProvider::Zrok,
+            ngrok: crate::NgrokSettings {
+                authtoken: Some("tok_123".to_owned()),
+                domain: Some("demo.ngrok-free.app".to_owned()),
+            },
         };
         let s = to_toml(&c).unwrap();
         assert!(s.contains("[tunnel.named]"), "must emit named table: {s}");
+        assert!(s.contains("[tunnel.ngrok]"), "must emit ngrok table: {s}");
         assert!(s.contains("[tunnel.sites]"), "must emit sites table: {s}");
+        assert!(
+            s.contains("[tunnel.passwords]"),
+            "must emit passwords table: {s}"
+        );
         let back = Config::from_toml(&s).unwrap();
         assert_eq!(back, c);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn only_default_provider_emits_a_bare_tunnel_table() {
+        let mut c = Config::default();
+        c.tunnel.default_provider = TunnelProvider::Ngrok;
+        let s = to_toml(&c).unwrap();
+        assert!(
+            s.contains("[tunnel]\ndefault_provider = \"ngrok\"\n"),
+            "must emit the scalar under [tunnel]: {s}"
+        );
+        assert!(!s.contains("[tunnel.ngrok]"), "no ngrok table: {s}");
+        assert_eq!(Config::from_toml(&s).unwrap(), c);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn ngrok_settings_round_trip() {
+        let mut c = Config::default();
+        c.tunnel.ngrok.authtoken = Some("tok_123".to_owned());
+        let s = to_toml(&c).unwrap();
+        assert!(
+            s.contains("[tunnel.ngrok]\nauthtoken = \"tok_123\"\n"),
+            "must emit the ngrok table: {s}"
+        );
+        assert!(
+            !s.contains("default_provider"),
+            "cloudflare is omitted: {s}"
+        );
+        assert_eq!(Config::from_toml(&s).unwrap(), c);
     }
 
     #[test]

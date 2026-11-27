@@ -81,7 +81,8 @@ pub enum Framework {
 pub struct LaravelOptions {
     /// The starter kit (`--react`/`--vue`/`--livewire`/`--svelte`/`--using`, or none).
     pub starter_kit: StarterKit,
-    /// Authentication provider for kits that scaffold auth (`--workos` vs built-in).
+    /// Authentication provider for kits that scaffold auth (`--workos`,
+    /// `--no-authentication`, or built-in).
     pub auth: AuthProvider,
     /// `--livewire-class-components` (Livewire kit only).
     pub livewire_class_components: bool,
@@ -91,12 +92,17 @@ pub struct LaravelOptions {
     pub testing: Testing,
     /// Database driver written into `.env` (`--database`).
     pub database: Database,
-    /// Frontend dependency install/build (`--npm`/`--bun`/none-to-skip).
+    /// Frontend dependency install/build (`--npm`/`--bun`/`--pnpm`/none-to-skip).
     pub js: JsRuntime,
     /// `--git` - initialise a git repository.
     pub git: bool,
     /// `--boost` - install Laravel Boost (AI assist).
     pub boost: bool,
+    /// Installed Node release (exact or selector) to build frontend assets
+    /// with, also saved as the new site's Node preference. `None` keeps the
+    /// global default, or the first `node` on the user's PATH.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 /// The starter kit to install.
@@ -125,6 +131,9 @@ pub enum AuthProvider {
     Laravel,
     /// `WorkOS` `AuthKit` (`--workos`).
     WorkOs,
+    /// No authentication scaffolding (`--no-authentication`): official kits
+    /// install their blank variant.
+    None,
 }
 
 /// Testing framework selection.
@@ -161,6 +170,8 @@ pub enum JsRuntime {
     Npm,
     /// Install + build via Bun (`--bun`).
     Bun,
+    /// Install + build via pnpm (`--pnpm`).
+    Pnpm,
     /// Skip frontend dependency install/build (no package-manager flag passed,
     /// so the installer does not run install/build).
     Skip,

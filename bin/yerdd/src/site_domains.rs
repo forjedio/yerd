@@ -42,7 +42,10 @@ use yerd_core::{
 ///
 /// Sites are inserted first, each with the subset of its effective domains it
 /// won, then every non-name-shadowed proxy with the subset **it** won: a proxy
-/// that loses one domain keeps the rest. Each site's path-prefix rules are then
+/// that loses one domain keeps the rest, plus its response headers. A
+/// name-shadowed proxy is never inserted, so its headers never reach the
+/// same-named site, and a `[response_headers.proxy]` key naming no proxy is
+/// never attached. Each site's path-prefix rules are then
 /// attached (linked keyed by name, parked by document-root); a rule set for a
 /// dropped/absent site is harmless, as it is only ever consulted for a site the
 /// router actually resolved.
@@ -80,6 +83,8 @@ pub(crate) fn build(cfg: &Config, sites: Vec<Site>) -> SiteRouter {
         let primary = choose_primary(plan.proxy.name(), &won, Some(&plan.primary));
         if let Err(e) = router.insert_proxy_with_domains(plan.proxy.clone(), won, primary) {
             tracing::error!(proxy = plan.proxy.name(), error = %e, "dropping proxy: router insert failed");
+        } else if let Some(headers) = cfg.response_headers.proxy.get(plan.proxy.name()) {
+            router.set_response_headers(plan.proxy.name(), headers.clone());
         }
     }
 
@@ -103,6 +108,16 @@ pub(crate) fn build(cfg: &Config, sites: Vec<Site>) -> SiteRouter {
         };
         if let Some(route_rules) = route_rules {
             router.set_route_rules(plan.site.name(), route_rules.clone());
+        }
+        let response_headers = match plan.site.kind() {
+            yerd_core::SiteKind::Linked => cfg.response_headers.linked.get(plan.site.name()),
+            yerd_core::SiteKind::Parked => cfg
+                .response_headers
+                .parked
+                .get(&plan.site.document_root().to_string_lossy().into_owned()),
+        };
+        if let Some(response_headers) = response_headers {
+            router.set_response_headers(plan.site.name(), response_headers.clone());
         }
     }
     router
@@ -433,6 +448,34 @@ mod tests {
     }
 
     #[test]
+    fn response_headers_fold_into_router_for_both_site_kinds() {
+        let mut cfg = cfg_with_tld("test");
+        cfg.response_headers.linked.insert(
+            "foo".into(),
+            vec![yerd_core::ResponseHeader::new("Access-Control-Allow-Origin", "*").unwrap()],
+        );
+        cfg.response_headers.parked.insert(
+            "/srv/blog".into(),
+            vec![yerd_core::ResponseHeader::new("X-Frame-Options", "DENY").unwrap()],
+        );
+        let r = build(
+            &cfg,
+            vec![
+                linked("foo", "/srv/foo"),
+                Site::parked("blog", "/srv/blog", v()).unwrap(),
+            ],
+        );
+        assert_eq!(r.response_headers_for("foo").len(), 1);
+        assert_eq!(r.response_headers_for("foo")[0].value(), "*");
+        assert_eq!(
+            r.response_headers_for("blog").len(),
+            1,
+            "a parked site's headers key by document root but land under its name"
+        );
+        assert!(r.response_headers_for("absent").is_empty());
+    }
+
+    #[test]
     fn real_site_beats_a_same_named_proxy() {
         let mut cfg = cfg_with_tld("test");
         cfg.proxies
@@ -665,6 +708,45 @@ mod tests {
 
         let r = build(&cfg, vec![parked_app(), linked("corp", "/srv/corp")]);
         assert_eq!(r.resolve("corp.test").map(Site::name), Some("corp"));
+    }
+
+    fn header(name: &str, value: &str) -> yerd_core::ResponseHeader {
+        yerd_core::ResponseHeader::new(name, value).unwrap()
+    }
+
+    #[test]
+    fn proxy_headers_are_attached() {
+        let mut cfg = cfg_with_tld("test");
+        cfg.proxies.push(proxy("reverb"));
+        cfg.response_headers
+            .proxy
+            .insert("reverb".into(), vec![header("X-A", "1")]);
+        let r = build(&cfg, vec![]);
+        let shared = r.shared_response_headers("reverb").unwrap();
+        assert_eq!(shared.len(), 1);
+        assert_eq!(shared[0].value(), "1");
+    }
+
+    #[test]
+    fn name_shadowed_proxy_headers_do_not_reach_the_site() {
+        let mut cfg = cfg_with_tld("test");
+        cfg.proxies.push(proxy("app"));
+        cfg.response_headers
+            .proxy
+            .insert("app".into(), vec![header("X-A", "1")]);
+        let r = build(&cfg, vec![Site::parked("app", "/srv/app", v()).unwrap()]);
+        assert_eq!(r.resolve("app.test").map(Site::name), Some("app"));
+        assert!(r.response_headers_for("app").is_empty());
+    }
+
+    #[test]
+    fn orphan_proxy_headers_are_not_routed() {
+        let mut cfg = cfg_with_tld("test");
+        cfg.response_headers
+            .proxy
+            .insert("ghost".into(), vec![header("X-A", "1")]);
+        let r = build(&cfg, vec![]);
+        assert!(r.shared_response_headers("ghost").is_none());
     }
 
     #[test]

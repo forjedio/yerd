@@ -4,7 +4,8 @@
 //!
 //! ## Purity boundary
 //!
-//! Every function except [`Config::load`] and [`Config::save`] is pure.
+//! Every function except [`Config::load`], [`Config::save`],
+//! [`ProjectFile::load`] and [`ProjectFile::save`] is pure.
 //!
 //! ## Schema versioning
 //!
@@ -18,14 +19,22 @@ mod error;
 mod io;
 mod migrate;
 mod parse;
+mod project;
 mod schema;
 mod serialize;
 
-pub use error::{ConfigError, MigrationErrorReason, ValidateErrorReason};
+pub use error::{ConfigError, MigrationErrorReason, ProjectError, ValidateErrorReason};
+pub use project::{
+    ends_with_tld, extension_satisfied, newest_matching, normalise_module, plan, service_action,
+    service_prefix_matches, PlannedAction, PlannedStep, ProjectFile, ServiceAction, SiteSnapshot,
+    SyncDelta, ANY_SERVICE_VERSION, PROJECT_FILE_MAX_BYTES, PROJECT_FILE_NAME,
+};
 pub use schema::{
-    Config, DomainDelta, DomainsSection, DumpsSection, ExtEntry, GroupsSection, MailSection,
-    ParkedSection, PhpSection, Ports, ServiceInstance, ServicesSection, SiteOverride,
-    TunnelSection, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
+    AddedSection, Config, DomainDelta, DomainsSection, DumpsSection, ExtEntry, FavouritesSection,
+    GroupsSection, MailSection, NetworkSection, NgrokSettings, NodeSection, ParkedClaim,
+    ParkedSection, PhpSection, Ports, ResponseHeadersSection, ServiceInstance, ServicesSection,
+    SiteOverride, TunnelSection, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT,
+    RESERVED_GROUP_NAME,
 };
 
 /// The on-disk schema version this crate writes. Bumped together with a new
@@ -104,7 +113,35 @@ pub use schema::{
 /// v23 added the optional `[domains.proxy]` table ([`Config::domains`]) for
 /// whole-host proxy domain deltas; it defaults (empty) when absent, so v22→v23
 /// is a bare bump too.
+/// v24 added the optional `[tunnel.passwords]` table ([`TunnelSection`]) of
+/// per-site share passwords; it defaults (empty) when absent, so v23→v24 is a
+/// bare bump too.
+/// v25 added the optional `[response_headers]` table
+/// ([`Config::response_headers`]) holding per-site custom response headers; it
+/// defaults (empty) when absent, so v24→v25 is a bare bump too.
+/// v26 added the optional, unseeded `ffi.enable` key to `[php.settings]` and
+/// `[php.version_settings]`; it is absent unless set, so v25→v26 is a bare bump
+/// too. The bump makes an older binary refuse the file by version rather than
+/// failing on an unknown setting name.
+///
+/// v27 added the optional `[node]` table ([`Config::node`]); v28 added the
+/// optional `[network]` outbound-proxy table ([`Config::network`]). Both
+/// default when absent, so v26→v27 and v27→v28 are bare bumps too. v29 added
+/// the optional `[php.xdebug]` per-version table ([`PhpSection::xdebug`]); it
+/// defaults (empty) when absent, so v28→v29 is a bare bump too. v30 added the
+/// optional `[favourites]` table ([`Config::favourites`]); it defaults (empty)
+/// when absent, so v29→v30 is a bare bump too. v31 added the optional
+/// `[parked.claims]` map ([`ParkedSection::claims`]); it defaults (empty) when
+/// absent, so v30→v31 is a bare bump too. v32 added `[tunnel] default_provider`
+/// and the optional `[tunnel.ngrok]` table ([`TunnelSection`]); both default
+/// when absent, so v31→v32 is a bare bump too. v33 added the optional
+/// `[response_headers.proxy]` table of whole-host proxy headers
+/// ([`ResponseHeadersSection::proxy`]); it defaults (empty) when absent, so
+/// v32→v33 is a bare bump too. v34 added the optional `[added]` table
+/// ([`Config::added`]) of per-site added times; v33→v34 is structural because
+/// it copies the parked roots into `[added] baseline_pending` so existing parked
+/// sites are recorded as undated rather than recently added.
 ///
 /// The per-version detail, including how to hand-edit a file back down for an
 /// older binary, lives in `docs/developer/config-schema-history.md`.
-pub const CURRENT_VERSION: u32 = 23;
+pub const CURRENT_VERSION: u32 = 34;

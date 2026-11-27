@@ -24,6 +24,11 @@ results, and may auto-start the daemon if it isn't running.
 - Human-readable output by default; `--json` for scripting. Keep the two paths
   rendering the same underlying `Response` — don't compute different data per
   format.
+- Every multi-call shim that execs a tool which may reach the network calls
+  `shim::apply_network_env` before `exec`. It injects nothing when the caller
+  already names a proxy (`http_proxy`, `https_proxy`, `all_proxy`, either
+  case), and only merges a caller-only `no_proxy`; never overwrite the user's
+  proxy env.
 - The command surface is designed fresh for this product; do not port a prior
   tool's command vocabulary or assume compatibility with it.
 
@@ -46,3 +51,5 @@ results, and may auto-start the daemon if it isn't running.
 - [ ] `--json` and human output derive from the same response.
 - [ ] command→`Request` mapping is pure and tested.
 - [ ] Elevation limited to the explicit, typed helper invocation.
+- [ ] Shims that exec a network-reaching tool call `shim::apply_network_env`
+      before `exec`, and never override a caller's own proxy variables.

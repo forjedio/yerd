@@ -12,7 +12,7 @@
 use std::collections::BTreeSet;
 
 use yerd_config::{Config, ServiceInstance, SiteOverride};
-use yerd_core::{PhpVersion, RouteRule, Site, Tld};
+use yerd_core::{PhpVersion, ResponseHeader, RouteRule, Site, Tld};
 
 fn populated() -> Config {
     let mut c = Config::default();
@@ -54,8 +54,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 23\n"),
-        "expected first line `version = 23`; got: {s}"
+        s.starts_with("version = 34\n"),
+        "expected first line `version = 34`; got: {s}"
     );
 }
 
@@ -453,6 +453,10 @@ fn default_config_emits_no_version_settings_or_directives_tables() {
         !s.contains("[php.pool"),
         "default config must omit pool; got: {s}"
     );
+    assert!(
+        !s.contains("xdebug"),
+        "default config must omit xdebug; got: {s}"
+    );
 }
 
 #[test]
@@ -620,6 +624,168 @@ fn populated_route_rules_section_emits_after_defaults_and_round_trips() {
 }
 
 #[test]
+fn default_config_emits_no_response_headers_table() {
+    let s = Config::default().to_toml().unwrap();
+    assert!(
+        !s.contains("[response_headers"),
+        "default config must omit the response_headers table; got: {s}"
+    );
+}
+
+#[test]
+fn populated_response_headers_section_emits_after_route_rules_and_round_trips() {
+    let mut c = Config::default();
+    c.linked
+        .push(Site::linked("api", "docroot", PhpVersion::new(8, 3)).unwrap());
+    c.route_rules.linked.insert(
+        "api".to_string(),
+        vec![RouteRule::new("/api", "api/index.php").unwrap()],
+    );
+    c.response_headers.linked.insert(
+        "api".to_string(),
+        vec![ResponseHeader::new("Access-Control-Allow-Origin", "https://app.test").unwrap()],
+    );
+    c.response_headers.parked.insert(
+        "docroot-a".to_string(),
+        vec![ResponseHeader::new("X-Frame-Options", "DENY").unwrap()],
+    );
+    let s = c.to_toml().unwrap();
+
+    let php_at = s.find("\n[php]\n").expect("[php] table present");
+    let routes_at = s
+        .find("[route_rules")
+        .expect("[route_rules] region present");
+    let headers_at = s
+        .find("[response_headers")
+        .expect("[response_headers] region present");
+    assert!(
+        php_at < headers_at && routes_at < headers_at,
+        "[response_headers] must trail [php] and [route_rules]; got: {s}"
+    );
+    assert!(
+        s.contains("name = \"Access-Control-Allow-Origin\"\nvalue = \"https://app.test\""),
+        "a header must emit as a name/value pair; got: {s}"
+    );
+
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
+    c.validate().unwrap();
+}
+
+#[test]
+fn proxy_response_headers_emit_after_site_headers_and_round_trip() {
+    let mut c = Config::default();
+    c.linked
+        .push(Site::linked("api", "docroot", PhpVersion::new(8, 3)).unwrap());
+    c.proxies.push(
+        yerd_core::ProxySite::new(
+            "reverb",
+            yerd_core::UpstreamTarget::from_url_str("http://127.0.0.1:8080").unwrap(),
+        )
+        .unwrap(),
+    );
+    c.response_headers.linked.insert(
+        "api".to_string(),
+        vec![ResponseHeader::new("X-Frame-Options", "DENY").unwrap()],
+    );
+    c.response_headers.proxy.insert(
+        "reverb".to_string(),
+        vec![ResponseHeader::new("Access-Control-Allow-Origin", "*").unwrap()],
+    );
+    let s = c.to_toml().unwrap();
+
+    assert!(
+        s.contains(
+            "[[response_headers.proxy.reverb]]\nname = \"Access-Control-Allow-Origin\"\nvalue = \"*\"\n"
+        ),
+        "got: {s}"
+    );
+    let linked_at = s
+        .find("[[response_headers.linked.api]]")
+        .expect("linked headers present");
+    let proxy_at = s
+        .find("[[response_headers.proxy.reverb]]")
+        .expect("proxy headers present");
+    assert!(linked_at < proxy_at, "got: {s}");
+
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
+    c.validate().unwrap();
+}
+
+#[test]
+fn tunnel_passwords_emit_a_sub_table_only_when_set() {
+    let mut c = Config::default();
+    c.tunnel
+        .sites
+        .insert("app".to_string(), "app.example.com".to_string());
+    let without = c.to_toml().unwrap();
+    assert!(
+        without.contains("[tunnel.sites]\napp = \"app.example.com\"\n"),
+        "got: {without}"
+    );
+    assert!(!without.contains("[tunnel.passwords]"), "got: {without}");
+
+    c.tunnel
+        .passwords
+        .insert("app".to_string(), "s3cret".to_string());
+    let with = c.to_toml().unwrap();
+    assert!(
+        with.contains("[tunnel.passwords]\napp = \"s3cret\"\n"),
+        "got: {with}"
+    );
+    let sites_at = with.find("[tunnel.sites]").expect("sites table present");
+    let passwords_at = with
+        .find("[tunnel.passwords]")
+        .expect("passwords table present");
+    assert!(sites_at < passwords_at, "got: {with}");
+    assert_eq!(
+        with.replace("\n[tunnel.passwords]\napp = \"s3cret\"\n", ""),
+        without
+    );
+
+    let back = Config::from_toml(&with).unwrap();
+    assert_eq!(back, c);
+}
+
+#[test]
+fn tunnel_ngrok_and_default_provider_emit_only_when_set() {
+    let mut c = Config::default();
+    c.tunnel
+        .named
+        .insert("yerd".to_string(), "uuid-1".to_string());
+    c.tunnel
+        .passwords
+        .insert("app".to_string(), "s3cret".to_string());
+    let without = c.to_toml().unwrap();
+    assert!(!without.contains("default_provider"), "got: {without}");
+    assert!(!without.contains("[tunnel.ngrok]"), "got: {without}");
+
+    c.tunnel.default_provider = yerd_core::tunnel_provider::TunnelProvider::Ngrok;
+    c.tunnel.ngrok.authtoken = Some("tok_abc".to_string());
+    c.tunnel.ngrok.domain = Some("demo.ngrok-free.app".to_string());
+    let with = c.to_toml().unwrap();
+    assert!(
+        with.contains("[tunnel]\ndefault_provider = \"ngrok\"\n\n[tunnel.named]\n"),
+        "got: {with}"
+    );
+    assert!(
+        with.contains(
+            "[tunnel.ngrok]\nauthtoken = \"tok_abc\"\ndomain = \"demo.ngrok-free.app\"\n"
+        ),
+        "got: {with}"
+    );
+    let passwords_at = with
+        .find("[tunnel.passwords]")
+        .expect("passwords table present");
+    let ngrok_at = with.find("[tunnel.ngrok]").expect("ngrok table present");
+    assert!(passwords_at < ngrok_at, "got: {with}");
+
+    let back = Config::from_toml(&with).unwrap();
+    assert_eq!(back, c);
+}
+
+#[test]
 fn empty_parked_emits_empty_array_and_services_omitted() {
     let c = Config::default();
     let s = c.to_toml().unwrap();
@@ -636,4 +802,174 @@ fn empty_parked_emits_empty_array_and_services_omitted() {
     );
 
     let _: BTreeSet<String> = BTreeSet::new();
+}
+
+#[test]
+fn ffi_enable_emits_quoted_key_and_round_trips() {
+    let mut c = Config::default();
+    c.php
+        .settings
+        .insert("ffi.enable".to_string(), "On".to_string());
+    c.php
+        .version_settings
+        .entry(PhpVersion::new(8, 4))
+        .or_default()
+        .insert("ffi.enable".to_string(), "Off".to_string());
+    let s = c.to_toml().unwrap();
+
+    let settings_at = s.find("[php.settings]").expect("[php.settings] present");
+    let version_at = s
+        .find("[php.version_settings.\"8.4\"]")
+        .expect("[php.version_settings.\"8.4\"] present");
+    let global_line = s.find("\"ffi.enable\" = \"On\"").expect("global ffi line");
+    let version_line = s
+        .find("\"ffi.enable\" = \"Off\"")
+        .expect("per-version ffi line");
+    assert!(settings_at < global_line, "got: {s}");
+    assert!(version_at < version_line, "got: {s}");
+
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
+
+    let default = Config::default().to_toml().unwrap();
+    assert!(!default.contains("ffi"), "got: {default}");
+}
+
+#[test]
+fn manual_network_section_emits_last_and_round_trips() {
+    use yerd_core::network::{OutboundProxyMode, ProxyUrl};
+    let mut c = Config::default();
+    c.network.mode = OutboundProxyMode::Manual;
+    c.network.http_proxy = Some(ProxyUrl::parse("http://u:pw@proxy.corp:3128").unwrap());
+    c.network.no_proxy = vec![".corp.com".to_string()];
+    let s = c.to_toml().unwrap();
+    let expected = "\n[network]\nmode = \"manual\"\nhttp_proxy = \"http://u:pw@proxy.corp:3128\"\nno_proxy = [\".corp.com\"]\n";
+    assert!(s.ends_with(expected), "got: {s}");
+    assert_eq!(Config::from_toml(&s).unwrap(), c);
+
+    let default = Config::default().to_toml().unwrap();
+    assert!(!default.contains("[network]"), "got: {default}");
+}
+
+#[test]
+fn populated_xdebug_emits_exact_table_and_round_trips() {
+    let mut c = Config::default();
+    c.php.xdebug.insert(
+        PhpVersion::new(8, 4),
+        yerd_core::XdebugSettings {
+            enabled: true,
+            ..yerd_core::XdebugSettings::default()
+        },
+    );
+    let s = c.to_toml().unwrap();
+    assert!(
+        s.contains(
+            "[php.xdebug.\"8.4\"]\nenabled = true\nmodes = [\"debug\"]\nstart = \"always\"\n"
+        ),
+        "got: {s}"
+    );
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
+}
+
+#[test]
+fn default_xdebug_entry_is_not_written() {
+    let mut c = Config::default();
+    c.php
+        .xdebug
+        .insert(PhpVersion::new(8, 3), yerd_core::XdebugSettings::default());
+    c.php.xdebug.insert(
+        PhpVersion::new(8, 4),
+        yerd_core::XdebugSettings {
+            enabled: true,
+            ..yerd_core::XdebugSettings::default()
+        },
+    );
+    let s = c.to_toml().unwrap();
+    assert!(!s.contains("[php.xdebug.\"8.3\"]"), "got: {s}");
+    assert!(s.contains("[php.xdebug.\"8.4\"]"), "got: {s}");
+
+    let mut only_default = Config::default();
+    only_default
+        .php
+        .xdebug
+        .insert(PhpVersion::new(8, 3), yerd_core::XdebugSettings::default());
+    let s = only_default.to_toml().unwrap();
+    assert!(!s.contains("xdebug"), "got: {s}");
+}
+
+#[test]
+fn default_config_emits_no_favourites_table() {
+    let s = Config::default().to_toml().unwrap();
+    assert!(!s.contains("[favourites]"), "got: {s}");
+}
+
+#[test]
+fn populated_favourites_section_emits_last_and_round_trips() {
+    use yerd_core::network::OutboundProxyMode;
+    let mut c = Config::default();
+    c.network.mode = OutboundProxyMode::Off;
+    c.favourites.sites.insert("blog".to_string());
+    let s = c.to_toml().unwrap();
+    let network_at = s.find("\n[network]\n").expect("[network] table present");
+    let favourites_at = s.find("\n[favourites]\n").expect("[favourites] present");
+    assert!(network_at < favourites_at, "got: {s}");
+    assert!(
+        s.ends_with("\n[favourites]\nsites = [\"blog\"]\n"),
+        "got: {s}"
+    );
+    assert_eq!(Config::from_toml(&s).unwrap(), c);
+}
+
+#[test]
+fn default_config_emits_no_added_table() {
+    let s = Config::default().to_toml().unwrap();
+    assert!(!s.contains("[added"), "got: {s}");
+}
+
+#[test]
+fn populated_added_section_emits_last_and_round_trips() {
+    let mut c = Config::default();
+    c.favourites.sites.insert("blog".to_string());
+    c.added.baseline_pending.insert("/srv".to_string());
+    c.added.linked.insert("blog".to_string(), 1_764_100_000);
+    c.added.parked.insert("/srv/api".to_string(), 0);
+    let s = c.to_toml().unwrap();
+    let favourites_at = s.find("\n[favourites]\n").expect("[favourites] present");
+    let added_at = s.find("\n[added]\n").expect("[added] present");
+    assert!(favourites_at < added_at, "got: {s}");
+    assert!(
+        s.ends_with(
+            "\n[added]\nbaseline_pending = [\"/srv\"]\n\n[added.linked]\nblog = 1764100000\n\n[added.parked]\n\"/srv/api\" = 0\n"
+        ),
+        "got: {s}"
+    );
+    assert_eq!(Config::from_toml(&s).unwrap(), c);
+}
+
+#[test]
+fn default_config_emits_no_parked_claims() {
+    let s = Config::default().to_toml().unwrap();
+    assert!(!s.contains("claims"), "got: {s}");
+}
+
+#[test]
+fn populated_parked_claims_emit_under_parked_and_round_trip() {
+    let mut c = Config::default();
+    c.parked.paths.insert("/srv".to_string());
+    c.parked.claims.insert(
+        "/srv/laravel.com".to_string(),
+        yerd_config::ParkedClaim {
+            name: "laravel".to_string(),
+            url_synced: false,
+        },
+    );
+    let s = c.to_toml().unwrap();
+    assert!(
+        s.contains(
+            "[parked]\npaths = [\"/srv\"]\n\n[parked.claims.\"/srv/laravel.com\"]\nname = \"laravel\"\nurl_synced = false\n"
+        ),
+        "got: {s}"
+    );
+    assert_eq!(Config::from_toml(&s).unwrap(), c);
 }

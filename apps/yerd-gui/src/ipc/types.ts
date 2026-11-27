@@ -43,6 +43,9 @@ export interface Site {
   front_controller?: boolean;
 }
 
+/** crates/yerd-core/src/detect.rs - SiteFramework. */
+export type SiteFramework = "laravel" | "wordpress" | "symfony" | "statamic" | "craft" | "drupal" | "other";
+
 /**
  * One entry in `Response::Sites` - `Site` plus a WordPress-detection flag
  * served from the daemon's in-memory cache (`SiteEntry` in response.rs,
@@ -67,6 +70,13 @@ export interface SiteEntry extends Site {
   /** Whether an `artisan` marker was found at the site's project root, i.e. it
    *  is a Laravel app (eligible to link a Reverb instance). */
   is_laravel?: boolean;
+  /** Whether the user starred this site. Omitted when false. */
+  favourite?: boolean;
+  /** The framework detected at the site's project root, when recognised. */
+  framework?: SiteFramework;
+  /** Unix seconds when the site was linked or created, or first discovered in
+   *  a parked folder. Absent when unknown. */
+  added_at?: number;
 }
 
 /** crates/yerd-ipc/src/response.rs - WordPressAdminUser, for the auto-login
@@ -192,6 +202,8 @@ export interface MailSummary {
   date_epoch: number;
   /** Whether the email has been marked read (absent against an older daemon). */
   read?: boolean;
+  /** Site attributed from the SMTP EHLO/HELO host; absent when unknown. */
+  site?: string;
 }
 
 /** crates/yerd-ipc/src/status.rs - MailHeader. */
@@ -238,7 +250,7 @@ export interface StatusReport {
   ca: CaStatus;
   /** Tri-state - null means "unknown", never coerce to false. */
   resolver_installed: boolean | null;
-  /** macOS: is the pf redirect carrying 80/443 to the rootless ports? true =
+  /** macOS: is the port forwarder carrying 80/443 to the rootless ports? true =
    *  privileged ports served via the redirect, false = not, null/undefined =
    *  unknown / not applicable (Linux binds directly after setcap). Omitted on the
    *  wire when not set (the Rust field is `#[serde(default, skip_serializing_if)]`,
@@ -295,14 +307,20 @@ export interface StatusReport {
   /** Whether `yerd mcp` serves Yerd's tools to local AI agents. Defaults to
    *  `false` (opt-in) when omitted by a daemon predating the field. */
   mcp_enabled?: boolean;
-  /** macOS: destination ports the installed loopback (`dev.yerd`) pf anchor
-   *  carries 80/443 to. Compare with `http.bound`/`https.bound` to detect a
+  /** macOS: destination ports the installed loopback port forwarder (or a
+   *  legacy pf anchor) carries 80/443 to. Compare with `http.bound`/`https.bound` to detect a
    *  stale redirect that black-holes on-host access. Omitted when not installed,
    *  unreadable, or not macOS. */
   port_redirect_targets?: { http: number; https: number } | null;
   /** macOS: same as `port_redirect_targets` for the LAN (`dev.yerd.lan`) anchor.
    *  A stale target here black-holes other devices while LAN mode is on. */
   lan_redirect_targets?: { http: number; https: number } | null;
+  /** macOS: whether a pf redirect from an older Yerd is still installed, so
+   *  80/443 still go through pf instead of the launchd port forwarder. Omitted
+   *  when not macOS or undeterminable. */
+  legacy_pf_redirect?: boolean | null;
+  /** Installed Node releases with a newer patch (cached check). Absent when 0. */
+  node_updates?: number;
 }
 
 /** One apex-shadow relationship: `site`'s apex is claimed by `shadowed_by`. */
@@ -336,6 +354,9 @@ export type DiagnosisCode =
   | "domain_shadowed"
   | "port_redirect_stale"
   | "lan_redirect_stale"
+  | "legacy_port_redirect"
+  | "outbound_proxy_unreachable"
+  | "outbound_proxy_pac_unsupported"
   | "all_good";
 
 export interface Diagnosis {
@@ -416,10 +437,10 @@ export type StarterKitTag = "none" | "react" | "vue" | "livewire" | "svelte";
 /** StarterKit: a unit tag, or a community kit `{ community: "<package>" }`. */
 export type StarterKit = StarterKitTag | { community: string };
 
-export type AuthProvider = "laravel" | "work_os";
+export type AuthProvider = "laravel" | "work_os" | "none";
 export type Testing = "pest" | "php_unit";
 export type Database = "sqlite" | "mysql" | "mariadb" | "pgsql" | "sqlsrv";
-export type JsRuntime = "npm" | "bun" | "skip";
+export type JsRuntime = "npm" | "bun" | "pnpm" | "skip";
 
 /** crates/yerd-ipc/src/create.rs - LaravelOptions. */
 export interface LaravelOptions {
@@ -432,6 +453,8 @@ export interface LaravelOptions {
   js: JsRuntime;
   git: boolean;
   boost: boolean;
+  /** Installed Node release to build with and save as the site's preference. Omitted for the default. */
+  node?: string;
 }
 
 export type WordPressDbEngine = "mysql" | "mariadb";
@@ -498,6 +521,26 @@ export interface PhpExtInfo {
   present: boolean;
 }
 
+/** One Xdebug mode (a member of the `xdebug.mode` list). `off` is not a mode:
+ *  turning Xdebug off is the toggle's job. */
+export type XdebugMode =
+  | "debug"
+  | "develop"
+  | "coverage"
+  | "profile"
+  | "trace"
+  | "gcstats";
+
+/** When Xdebug starts a session: on every request, or only with a trigger. */
+export type XdebugStart = "always" | "trigger";
+
+/** One PHP version's Xdebug settings (see the `php_versions` response). */
+export interface XdebugSettings {
+  enabled: boolean;
+  modes: XdebugMode[];
+  start: XdebugStart;
+}
+
 export type ErrorCode =
   | "not_found"
   | "already_exists"
@@ -505,6 +548,9 @@ export type ErrorCode =
   | "port_in_use"
   | "extension_load_failed"
   | "legacy_restricted"
+  | "xdebug_unavailable"
+  | "invalid_setting"
+  | "project_file_invalid"
   | "internal";
 
 /** One whole-host reverse proxy (`{name}.{tld}` → `target`). Reply element of a
@@ -528,6 +574,10 @@ export interface ProxyRuleEntry {
   site: string;
   prefix: string;
   target: string;
+  /** Display name of the per-site service that owns this rule (e.g. `Reverb`
+   *  for its `/app` rule). The daemon refuses to edit it, since the service
+   *  re-points it at its own port. Omitted for an ordinary rule. */
+  managed_by?: string;
 }
 
 /** One per-site path-prefix routing rule (`{site}{prefix}` → a file at `target`,
@@ -538,6 +588,30 @@ export interface RouteRuleEntry {
   site: string;
   prefix: string;
   target: string;
+}
+
+/** One per-site custom response header, added to every response the site
+ *  serves. Reply element of a `"response_headers"` response. */
+export interface ResponseHeaderEntry {
+  site: string;
+  name: string;
+  value: string;
+}
+
+/** A project directory's `.yerd.toml`: the existing file, or a draft rendered
+ *  from the site there (or defaults). Reply to `project_config_draft` and
+ *  `export_project_config`. */
+export interface ProjectConfig {
+  /** Absolute path of the `.yerd.toml`. */
+  file: string;
+  /** Whether the file exists on disk (always true after an export). */
+  exists: boolean;
+  /** The site at the project directory, if it is one. */
+  site: string | null;
+  /** The file's declared `name`, if any. */
+  name: string | null;
+  /** The file's TOML text. */
+  contents: string;
 }
 
 /**
@@ -553,6 +627,8 @@ export type Response =
   | { type: "parked"; paths: string[] }
   | { type: "proxies"; proxies: ProxyEntry[]; rules: ProxyRuleEntry[] }
   | { type: "routes"; rules: RouteRuleEntry[] }
+  | { type: "response_headers"; headers: ResponseHeaderEntry[] }
+  | ({ type: "project_config" } & ProjectConfig)
   | {
       type: "info";
       dns_addr: string;
@@ -589,6 +665,19 @@ export type Response =
        *  by version string. A version that is absent runs the built-in
        *  default of 16. Absent when none are set / older daemon. */
       pool?: Record<PhpVersion, Record<string, string>>;
+      /** Installed versions whose PHP build includes the FFI extension. Absent
+       *  when none do / older daemon. */
+      ffi_versions?: PhpVersion[];
+      /** Whether libvips (needed by php-vips) was found on the host. Absent
+       *  when the daemon doesn't check on this OS / older daemon. */
+      libvips_found?: boolean | null;
+      /** Per-version Xdebug settings keyed by version string. Only versions
+       *  whose settings differ from the default (off, debug, always) appear.
+       *  Absent when none are configured / older daemon. */
+      xdebug?: Record<PhpVersion, XdebugSettings>;
+      /** Installed versions a bundled Xdebug is published for on this host.
+       *  Absent when none / older daemon. */
+      xdebug_versions?: PhpVersion[];
     }
   | {
       type: "available_php";
@@ -639,6 +728,40 @@ export type Response =
   | { type: "mails"; mails: MailSummary[] }
   | { type: "mail"; mail: MailDetail }
   | { type: "tools"; tools: ToolStatus[] }
+  | { type: "node_versions"; installed: NodeRelease[] }
+  | { type: "available_node"; majors: MajorLine[] }
+  | {
+      type: "node_site";
+      /** The saved site preference (a selector), when one is set. */
+      preference?: string;
+      /** The nearest `.nvmrc` / `.node-version` inside the site, when found. */
+      project_file?: NodeProjectFile;
+      /** The exact installed release the site resolves to. */
+      effective?: string;
+      /** Where `effective` came from. */
+      source?: NodeSource;
+      /** Why no release could be resolved (missing release, unreadable file, unknown site). */
+      error?: string;
+      /** The chosen selector that matches no installed release, so it can be installed. */
+      missing?: string;
+    }
+  | { type: "node_sites"; sites: NodeSiteEntry[] }
+  | {
+      type: "release_notes";
+      /** The running release's notes; absent when none are published. */
+      current?: ReleaseNotesEntry;
+      /** Earlier stable releases, newest first. */
+      earlier: ReleaseNotesEntry[];
+    }
+  | {
+      type: "contributors";
+      /** Human contributors, most contributions first. */
+      contributors: Contributor[];
+      /** How many contributors are listed. */
+      total: number;
+    }
+  | { type: "network_settings"; settings: NetworkSettings }
+  | { type: "network_test"; result: NetworkTestResult }
   | { type: "job_started"; job_id: string }
   | {
       type: "job_progress";
@@ -675,6 +798,11 @@ export type Response =
       type: "tunnels";
       tunnels: TunnelInfo[];
       cloudflared: CloudflaredStatus;
+    }
+  | {
+      type: "tunnel_providers";
+      providers: TunnelProviderStatus[];
+      default_provider: TunnelProvider;
     }
   | {
       type: "named_tunnels";
@@ -719,6 +847,105 @@ export interface ToolStatus {
    * to report.
    */
   external_path?: string;
+  /** Newer published version of a managed, installed tool; absent otherwise. */
+  update_available?: string;
+}
+
+// ── node versions (crates/yerd-ipc/src/node.rs, crates/yerd-core/src/node.rs) ──
+
+/** crates/yerd-core/src/node.rs - NodeSource. Where a site's Node version comes from. */
+export type NodeSource = "nvmrc" | "node-version" | "site" | "default";
+
+/** crates/yerd-ipc/src/node.rs - NodePreferenceRef. A saved per-project preference. */
+export interface NodePreferenceRef {
+  /** Canonical project root the preference is keyed by. */
+  root: string;
+  /** The registered site with that root, when there is one. */
+  site?: string;
+}
+
+/** crates/yerd-ipc/src/node.rs - NodeRelease. One installed Node release. */
+export interface NodeRelease {
+  /** Exact version, e.g. `22.12.0`. */
+  version: string;
+  lts: boolean;
+  /** LTS codename (e.g. `Jod`), when known. */
+  codename?: string;
+  /** This release is what the effective global default resolves to. */
+  default: boolean;
+  /** Uninstalling is refused: others remain and the global default would no longer resolve. */
+  uninstall_blocked: boolean;
+  /** Saved preferences an uninstall of this release would clear. Omitted when empty. */
+  clears_preferences?: NodePreferenceRef[];
+  /** Newer patch of this release's major from the daemon's last check; only on the highest installed patch. */
+  update?: string;
+}
+
+/** crates/yerd-core/src/node.rs - MajorLine. One major from the nodejs.org index. */
+export interface MajorLine {
+  major: number;
+  /** Newest installable patch of this major. */
+  latest: string;
+  codename?: string;
+  /** End-of-life status; absent when the release schedule is unavailable. */
+  eol?: boolean;
+  /** Highest installed patch of this major, when any is installed. */
+  installed_latest?: string;
+  update_available: boolean;
+}
+
+/** crates/yerd-ipc/src/node.rs - NodeProjectFile. */
+export interface NodeProjectFile {
+  /** Only ever `nvmrc` or `node-version`. */
+  kind: NodeSource;
+  selector: string;
+}
+
+/** crates/yerd-ipc/src/node.rs - NodeSiteEntry. One site's Node resolution,
+ *  with the same optional fields as the `node_site` response. */
+export interface NodeSiteEntry {
+  site: string;
+  preference?: string;
+  project_file?: NodeProjectFile;
+  effective?: string;
+  source?: NodeSource;
+  error?: string;
+  missing?: string;
+}
+
+// ── about (about.rs) ──────────────────────────────────────────────────────────
+
+/** crates/yerd-ipc/src/about.rs - ReleaseNoteItem. One change in a release. */
+export interface ReleaseNoteItem {
+  title: string;
+  /** GitHub login of the author, without the `@`. */
+  author?: string;
+  /** Pull request URL. */
+  url?: string;
+}
+
+/** crates/yerd-ipc/src/about.rs - ReleaseNotesEntry. One release's categorised notes. */
+export interface ReleaseNotesEntry {
+  /** Bare semver version, e.g. `2.1.0`. */
+  version: string;
+  /** Release tag, e.g. `v2.1.0`. */
+  tag: string;
+  /** RFC 3339 publish time. */
+  published_at: string;
+  prerelease: boolean;
+  /** The first feature, else fix, else other title. */
+  summary: string;
+  features: ReleaseNoteItem[];
+  fixes: ReleaseNoteItem[];
+  others: ReleaseNoteItem[];
+}
+
+/** crates/yerd-ipc/src/about.rs - Contributor. One human contributor. */
+export interface Contributor {
+  login: string;
+  avatar_url: string;
+  /** Commits GitHub credits to this contributor. */
+  commits: number;
 }
 
 /** One user database in a SQL service (mirrors the daemon's `DatabaseSummary`). */
@@ -732,17 +959,28 @@ export interface DatabaseSummary {
 export type TunnelKind = "quick" | "named";
 
 /** crates/yerd-ipc/src/status.rs - TunnelRunState. */
-export type TunnelRunState = "running" | "failed";
+export type TunnelRunState = "running" | "failed" | "connecting" | "reconnecting";
 
 /** crates/yerd-ipc/src/status.rs - TunnelInfo. */
 export interface TunnelInfo {
   site: string;
   kind: TunnelKind;
   state: TunnelRunState;
-  /** Public URL of a Quick tunnel once captured; absent otherwise. */
+  /** Public URL of a per-site share once captured; absent otherwise. */
   url?: string;
   /** Configured public hostname of a Named tunnel; absent otherwise. */
   hostname?: string;
+  /** Most recent error reported for the tunnel; absent when none. */
+  last_error?: string;
+  /** Whether the shared site has a share password; absent means false. */
+  protected?: boolean;
+  /** Preflight warnings computed when the share started; absent when none. */
+  warnings?: string[];
+  /** The provider serving this share; absent means Cloudflare. ngrok and zrok
+   *  shares report kind `quick`. */
+  provider?: TunnelProvider;
+  /** Whether an ngrok share serves the configured static domain; absent means false. */
+  static_domain?: boolean;
 }
 
 /** crates/yerd-ipc/src/status.rs - CloudflaredSource. */
@@ -757,6 +995,34 @@ export interface CloudflaredStatus {
   source?: CloudflaredSource;
   /** Whether a Cloudflare account is logged in (Phase 2). */
   logged_in: boolean;
+  /** Newer published release of the Yerd-managed binary; absent for a PATH binary. */
+  update_available?: string;
+}
+
+/** crates/yerd-core/src/tunnel_provider.rs - TunnelProvider. */
+export type TunnelProvider = "cloudflare" | "ngrok" | "zrok";
+
+/** crates/yerd-core/src/tunnel_provider.rs - ProviderReadiness. */
+export type ProviderReadiness = "not_installed" | "needs_setup" | "ready";
+
+/** crates/yerd-ipc/src/status.rs - TunnelProviderStatus. */
+export interface TunnelProviderStatus {
+  provider: TunnelProvider;
+  readiness: ProviderReadiness;
+  /** Binary version without a leading `v`, when known. */
+  version?: string;
+  /** Where the binary came from; absent when not installed. */
+  source?: CloudflaredSource;
+  /** Binary path, only for a copy found on PATH. */
+  path?: string;
+  /** Newer release of the Yerd-managed binary. */
+  update_available?: string;
+  /** Cloudflare: logged in; ngrok: token saved; zrok: enabled. */
+  configured: boolean;
+  /** ngrok only: the saved authtoken, masked. */
+  authtoken_hint?: string;
+  /** ngrok only: the saved static domain. */
+  domain?: string;
 }
 
 /** crates/yerd-ipc/src/status.rs - NamedTunnelMeta. */
@@ -769,6 +1035,8 @@ export interface NamedTunnelMeta {
 export interface SiteHostname {
   site: string;
   hostname: string;
+  /** Whether the site has a share password; absent means false. */
+  protected?: boolean;
 }
 
 // Narrowed aliases for the variants the views actually read.
@@ -790,10 +1058,59 @@ export type DumpsResponse = Extract<Response, { type: "dumps" }>;
 export type DumpsStatusResponse = Extract<Response, { type: "dumps_status" }>;
 export type MailsResponse = Extract<Response, { type: "mails" }>;
 export type MailResponse = Extract<Response, { type: "mail" }>;
+export type NodeVersionsResponse = Extract<Response, { type: "node_versions" }>;
+export type AvailableNodeResponse = Extract<Response, { type: "available_node" }>;
+export type NodeSiteResponse = Extract<Response, { type: "node_site" }>;
+export type ReleaseNotesResponse = Extract<Response, { type: "release_notes" }>;
+export type ContributorsResponse = Extract<Response, { type: "contributors" }>;
+
+/** How the daemon picks its outbound proxy. */
+export type OutboundProxyMode = "system" | "manual" | "off";
+
+/** Where the resolved outbound proxy came from. */
+export type ProxySource =
+  | "manual"
+  | "daemon_env"
+  | "macos_system_settings"
+  | "gnome_settings"
+  | "login_shell"
+  | "none";
+
+/** The proxy the daemon is actually using. URLs are redacted (`***`). */
+export interface EffectiveProxy {
+  mode: OutboundProxyMode;
+  source: ProxySource;
+  http_proxy?: string;
+  https_proxy?: string;
+  /** Effective bypass list, loopback and the site TLD included. */
+  bypass: string[];
+}
+
+/** Saved outbound-proxy settings plus what they resolve to. URLs are redacted. */
+export interface NetworkSettings {
+  mode: OutboundProxyMode;
+  http_proxy?: string;
+  https_proxy?: string;
+  /** User bypass entries. */
+  no_proxy: string[];
+  effective?: EffectiveProxy;
+}
+
+/** Result of a connection test through the resolved proxy. */
+export interface NetworkTestResult {
+  ok: boolean;
+  url: string;
+  status?: number;
+  error?: string;
+  /** Redacted proxy the request went through; absent for a direct request. */
+  via?: string;
+  source: ProxySource;
+}
 export type JobStartedResponse = Extract<Response, { type: "job_started" }>;
 export type JobProgressResponse = Extract<Response, { type: "job_progress" }>;
 export type TunnelsResponse = Extract<Response, { type: "tunnels" }>;
 export type NamedTunnelsResponse = Extract<Response, { type: "named_tunnels" }>;
+export type TunnelProvidersResponse = Extract<Response, { type: "tunnel_providers" }>;
 export type GroupsResponse = Extract<Response, { type: "groups" }>;
 
 /** Privilege targets for the OS-elevated `yerd elevate` host command. */
@@ -835,7 +1152,7 @@ export type TrayIconVariant = "auto" | "light-y" | "dark-y" | "full";
  * resolved client-side from `host_platform`. Drawn entirely by the frontend -
  * the Rust side only persists the preference.
  */
-export type TitleBarStyle = "auto" | "macos" | "linux" | "linux-reversed" | "windows";
+export type TitleBarStyle = "auto" | "macos" | "linux" | "windows";
 
 /**
  * Why the daemon isn't up (host command `daemon_diagnostics`). Gathered when a
@@ -883,7 +1200,7 @@ export interface SetupState {
 }
 
 /**
- * The GUI diagnostic logs surfaced in About → GUI Logs (host command
+ * The GUI diagnostic logs surfaced in Settings → GUI Logs (host command
  * `get_gui_logs`): the per-session GUI host log plus a tail of the daemon's own
  * rolling log. Paths are shown so the dialog can say where each lives.
  */

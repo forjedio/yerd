@@ -23,9 +23,15 @@ helper are all bundled inside it - there is nothing else to install. PHP itself 
 pick a version, so the install stays tiny and fast.
 :::
 
-::: warning Apple Intel not supported
-Intel (x86-64) Macs are not supported at this time. macOS builds target Apple
-Silicon (arm64) only.
+::: warning Intel Macs not supported
+Yerd supports Apple Silicon (arm64) Macs only. There are no Intel (x86-64)
+macOS builds.
+:::
+
+::: tip Installing on a server?
+On a machine you only reach over SSH, skip the desktop app and use the
+[headless install](./headless): just the CLI, daemon and helper, set up with one
+`curl | sh` command, with the daemon starting at boot.
 :::
 
 ## Install
@@ -33,14 +39,34 @@ Silicon (arm64) only.
 Grab the latest **stable release** from the
 [releases page](https://github.com/forjedio/yerd/releases):
 
-| Platform | Download | Install |
+| Platform | Architecture | Download |
 |---|---|---|
-| macOS (Apple Silicon) | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` | open, drag Yerd to Applications |
-| Linux · Debian/Ubuntu (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
-| Linux · Debian/Ubuntu (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_Arm64_v<ver>.deb` |
-| Linux · Arch (x86-64) | `Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` | `sudo pacman -U ./Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` |
-| Linux · Fedora (x86-64) | `Yerd_Linux_x86_64_v<ver>.rpm` | `sudo dnf install ./Yerd_Linux_x86_64_v<ver>.rpm` |
-| Linux · Fedora (arm64) | `Yerd_Linux_Arm64_v<ver>.rpm` | `sudo dnf install ./Yerd_Linux_Arm64_v<ver>.rpm` |
+| macOS | Apple Silicon | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` |
+| Debian / Ubuntu | x86-64 | `Yerd_Linux_x86_64_v<ver>.deb` |
+| Debian / Ubuntu | arm64 | `Yerd_Linux_Arm64_v<ver>.deb` |
+| Arch | x86-64 | `Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` |
+| Fedora | x86-64 | `Yerd_Linux_x86_64_v<ver>.rpm` |
+| Fedora | arm64 | `Yerd_Linux_Arm64_v<ver>.rpm` |
+
+Then install it. On macOS, open the `.dmg` and drag Yerd to Applications. On
+Linux, install the package with your package manager (use `Arm64` in place of
+`x86_64` on an arm64 machine):
+
+::: code-group
+
+```sh [Debian / Ubuntu]
+sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb
+```
+
+```sh [Arch]
+sudo pacman -U ./Yerd_Linux_x86_64_v<ver>.pkg.tar.zst
+```
+
+```sh [Fedora]
+sudo dnf install ./Yerd_Linux_x86_64_v<ver>.rpm
+```
+
+:::
 
 ::: tip Arch Linux
 Remove any leftover `/usr/bin/yerd` from the old v1 (Go) project first - pacman
@@ -99,7 +125,7 @@ unlocks. This is the one required step - everything after it is skippable.
 
 Installing the daemon here also sets sensible login defaults: the **daemon and
 the app both start at login**, with the **app started minimized** to the tray.
-Change any of the three later under **Settings → Start at login**.
+Change any of the three later under **Settings → Startup**.
 
 ::: tip macOS background approval
 On macOS the daemon registers as a background **SMAppService** login item (it
@@ -206,5 +232,6 @@ Trash. Full details in the [Uninstall reference](../reference/cli/uninstall).
 - [PHP Versions](./php-versions) - pools, ini defaults, and updates.
 - [HTTPS & Certificates](./https) and [DNS & .test Domains](./dns).
 - [Elevation & Privileges](./elevation) - exactly what the one-time setup grants.
+- [Headless Install](./headless) - running Yerd on a server without the app.
 - [CLI Reference](../reference/cli/) and
   [Configuration Reference](../reference/configuration) for the full surface.

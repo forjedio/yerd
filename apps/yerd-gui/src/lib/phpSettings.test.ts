@@ -1,12 +1,18 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  changedCount,
   directiveNameProblem,
+  displayErrorsOptions,
+  displayErrorsPick,
+  GRID_ORDER,
   poolMaxChildrenProblem,
   directiveValueProblem,
   effectiveValue,
   overrideCount,
+  POOL_MAX_CHILDREN_KEY,
   SETTING_KEYS,
+  XDEBUG_DIRECTIVES_HINT,
 } from "./phpSettings";
 
 describe("effectiveValue", () => {
@@ -38,9 +44,10 @@ describe("overrideCount", () => {
     expect(overrideCount({ not_a_setting: "x" })).toBe(0);
   });
 
-  it("SETTING_KEYS covers the 8 allowlisted settings", () => {
-    expect(SETTING_KEYS).toHaveLength(8);
+  it("SETTING_KEYS covers the 9 allowlisted settings", () => {
+    expect(SETTING_KEYS).toHaveLength(9);
     expect(SETTING_KEYS).toContain("display_errors");
+    expect(SETTING_KEYS).toContain("ffi.enable");
   });
 });
 
@@ -52,9 +59,13 @@ describe("directiveNameProblem", () => {
   });
 
   it("flags allowlisted settings and reserved names", () => {
-    expect(directiveNameProblem("memory_limit")).toMatch(/settings form/);
+    expect(directiveNameProblem("memory_limit")).toMatch(/Settings grid/);
     expect(directiveNameProblem("extension")).toMatch(/extensions/);
     expect(directiveNameProblem("openssl.cafile")).toMatch(/CA bundle/);
+  });
+
+  it("points ffi.enable at the FFI setting", () => {
+    expect(directiveNameProblem("ffi.enable")).toMatch(/FFI in web requests setting/);
   });
 
   it("treats Object.prototype member names as ordinary directives, not inherited hints", () => {
@@ -71,7 +82,7 @@ describe("directiveNameProblem", () => {
 
   it("flags FPM pool settings, which are not ini directives", () => {
     for (const name of ["pm.max_children", "pm.start_servers", "pm.max_requests"]) {
-      expect(directiveNameProblem(name)).toMatch(/FPM pool/);
+      expect(directiveNameProblem(name)).toMatch(/FPM workers/);
     }
   });
 
@@ -113,5 +124,57 @@ describe("directiveValueProblem", () => {
     for (const value of ["", "  ", "a;b", "a#b", "a=b", "a[b", "a]b", "a\nb"]) {
       expect(directiveValueProblem(value)).not.toBeNull();
     }
+  });
+});
+
+describe("GRID_ORDER", () => {
+  it("lists every allowlisted setting once plus the worker ceiling", () => {
+    const settings = GRID_ORDER.filter((k) => k !== POOL_MAX_CHILDREN_KEY);
+    expect([...settings].sort()).toEqual([...SETTING_KEYS].sort());
+    expect(new Set(GRID_ORDER).size).toBe(GRID_ORDER.length);
+    expect(GRID_ORDER).toContain(POOL_MAX_CHILDREN_KEY);
+  });
+});
+
+describe("changedCount", () => {
+  it.each([
+    ["nothing staged", {}, "", true, 0],
+    ["two settings", { memory_limit: "1G", display_errors: "On" }, "", true, 2],
+    ["blank and whitespace values", { memory_limit: "", max_input_time: "  " }, "", true, 0],
+    ["the worker ceiling", {}, "32", true, 1],
+    ["settings and the ceiling", { memory_limit: "1G" }, "32", true, 2],
+    ["a visible FFI override", { "ffi.enable": "On" }, "", true, 1],
+    ["a hidden FFI override", { "ffi.enable": "On", memory_limit: "1G" }, "", false, 1],
+    ["an unknown key", { not_a_setting: "x" }, "", true, 0],
+  ] as const)("counts %s", (_name, form, pool, ffi, expected) => {
+    expect(changedCount({ ...form }, pool, ffi)).toBe(expected);
+  });
+});
+
+describe("displayErrorsOptions", () => {
+  it("offers only On and Off when a value is inherited", () => {
+    expect(displayErrorsOptions("On").map((o) => o.value)).toEqual(["On", "Off"]);
+  });
+
+  it("adds Default when nothing is inherited", () => {
+    expect(displayErrorsOptions(undefined).map((o) => o.value)).toEqual(["", "On", "Off"]);
+  });
+});
+
+describe("displayErrorsPick", () => {
+  it.each([
+    ["the inherited value means inherit", "On", "On", ""],
+    ["another value is an override", "Off", "On", "Off"],
+    ["any value without an inherited one", "On", undefined, "On"],
+    ["Default without an inherited one", "", undefined, ""],
+  ] as const)("%s", (_name, picked, inherited, expected) => {
+    expect(displayErrorsPick(picked, inherited)).toBe(expected);
+  });
+});
+
+describe("XDEBUG_DIRECTIVES_HINT", () => {
+  it("names the Xdebug section without pointing at a position", () => {
+    expect(XDEBUG_DIRECTIVES_HINT).toContain("the Xdebug section sets");
+    expect(XDEBUG_DIRECTIVES_HINT).not.toContain("above");
   });
 });

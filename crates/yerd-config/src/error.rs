@@ -84,6 +84,57 @@ pub enum ConfigError {
     },
 }
 
+/// Errors from parsing, validating, loading or saving a `.yerd.toml` project
+/// file ([`crate::ProjectFile`]).
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum ProjectError {
+    /// Malformed TOML, a value of the wrong type, or an unknown key (the
+    /// message names it).
+    #[error("could not parse .yerd.toml: {0}")]
+    Parse(#[from] toml::de::Error),
+
+    /// A value failed validation.
+    #[error("invalid `{field}` in .yerd.toml: {reason}")]
+    Invalid {
+        /// The top-level key holding the bad value.
+        field: &'static str,
+        /// Why the value was rejected.
+        reason: String,
+    },
+
+    /// Reading or writing the file failed.
+    #[error(".yerd.toml I/O failed at {}: {source}", path.display())]
+    Io {
+        /// The project file's path.
+        path: PathBuf,
+        /// The underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The file is larger than [`crate::PROJECT_FILE_MAX_BYTES`].
+    #[error("{} is larger than {} bytes", path.display(), crate::PROJECT_FILE_MAX_BYTES)]
+    TooLarge {
+        /// The project file's path.
+        path: PathBuf,
+    },
+
+    /// The path is a symlink, directory or other non-regular file.
+    #[error("{} is not a regular file (symlinks are refused)", path.display())]
+    NotRegularFile {
+        /// The project file's path.
+        path: PathBuf,
+    },
+
+    /// A no-replace save found a file already at the path.
+    #[error("{} already exists", path.display())]
+    AlreadyExists {
+        /// The project file's path.
+        path: PathBuf,
+    },
+}
+
 /// Specific failure modes for [`crate::Config::validate`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -114,6 +165,8 @@ pub enum ValidateErrorReason {
     WebRootEscapes,
     /// `update_channel` was not one of the accepted values (`"stable"` / `"edge"`).
     InvalidUpdateChannel,
+    /// Node preferences require numeric versions and absolute project roots.
+    InvalidNodeSelection,
     /// A `ports.fallback_*` value is below the first unprivileged port (1024).
     /// The rootless fallback must not need elevation, so 80/443 is rejected.
     FallbackPortPrivileged,
@@ -122,6 +175,8 @@ pub enum ValidateErrorReason {
     /// `lan_setup_port` is below the first unprivileged port (1024). The
     /// bootstrap endpoint binds unprivileged, so a privileged port is rejected.
     LanSetupPortPrivileged,
+    /// `[network] mode = "manual"` with neither `http_proxy` nor `https_proxy`.
+    ManualProxyMissingUrl,
     /// A `[tunnel]` map contained an empty key or value.
     TunnelEntryEmpty,
     /// A `[tunnel.sites]` hostname was not a plausible DNS hostname (empty,
@@ -139,6 +194,14 @@ pub enum ValidateErrorReason {
     /// one ingress rule per `(site, hostname)` pair, so a duplicate hostname
     /// would shadow all but the first matching site.
     TunnelDuplicateHostname,
+    /// A `[tunnel.passwords]` value was empty, longer than 128 bytes, or
+    /// contained an ASCII control character.
+    TunnelPasswordInvalid,
+    /// The `[tunnel.ngrok]` authtoken was empty, longer than 256 bytes, held
+    /// whitespace or non-ASCII characters, or started with `-`.
+    TunnelNgrokAuthtokenInvalid,
+    /// The `[tunnel.ngrok]` domain was not a plausible DNS hostname.
+    TunnelNgrokDomainInvalid,
     /// A `[groups]` order entry was an empty string.
     GroupNameEmpty,
     /// A `[groups]` order entry used the reserved name `Unallocated` (the GUI's
@@ -180,6 +243,12 @@ pub enum ValidateErrorReason {
     /// A `[route_rules.linked.<name>]` key names a linked site that does not
     /// exist; the rule would silently never apply.
     RouteRuleUnknownSite,
+    /// Two `[response_headers]` entries for the same site share a header name
+    /// (compared case-insensitively), so one would silently replace the other.
+    ResponseHeaderDuplicateName,
+    /// A `[response_headers.linked.<name>]` key names a linked site that does
+    /// not exist; the headers would silently never apply.
+    ResponseHeaderUnknownSite,
 }
 
 impl fmt::Display for ValidateErrorReason {
@@ -198,17 +267,30 @@ impl fmt::Display for ValidateErrorReason {
             Self::WebRootEscapes => {
                 "a web root must be a plain relative path (no leading '/' or '..')"
             }
+            Self::InvalidNodeSelection => {
+                "Node preferences require numeric versions and absolute project roots"
+            }
             Self::InvalidUpdateChannel => "update_channel must be \"stable\" or \"edge\"",
             Self::FallbackPortPrivileged => {
                 "ports.fallback_http and ports.fallback_https must be 1024 or higher"
             }
             Self::FallbackPortsEqual => "ports.fallback_http and ports.fallback_https must differ",
             Self::LanSetupPortPrivileged => "lan_setup_port must be 1024 or higher",
+            Self::ManualProxyMissingUrl => {
+                "network mode \"manual\" needs http_proxy or https_proxy"
+            }
             Self::TunnelEntryEmpty => "tunnel entries must have non-empty names and values",
             Self::TunnelHostnameInvalid => "tunnel.sites hostnames must be valid DNS names",
             Self::TunnelKeyInvalid => "tunnel keys and UUIDs contain unsafe characters",
             Self::TunnelMultipleNamed => "only one named tunnel is supported",
             Self::TunnelDuplicateHostname => "tunnel.sites hostnames must be unique",
+            Self::TunnelPasswordInvalid => {
+                "tunnel.passwords values must be 1 to 128 bytes with no control characters"
+            }
+            Self::TunnelNgrokAuthtokenInvalid => {
+                "tunnel.ngrok authtoken must be 1-256 printable characters"
+            }
+            Self::TunnelNgrokDomainInvalid => "tunnel.ngrok domain must be a valid DNS name",
             Self::GroupNameEmpty => "groups.order contains an empty group name",
             Self::GroupNameReserved => "\"Unallocated\" is reserved and cannot be a group name",
             Self::GroupDuplicate => "groups.order contains a duplicate group name",
@@ -239,6 +321,12 @@ impl fmt::Display for ValidateErrorReason {
             }
             Self::RouteRuleUnknownSite => {
                 "a routing rule references a linked site that does not exist"
+            }
+            Self::ResponseHeaderDuplicateName => {
+                "two response headers for the same site share a name"
+            }
+            Self::ResponseHeaderUnknownSite => {
+                "a response header references a linked site that does not exist"
             }
         };
         f.write_str(msg)
@@ -306,11 +394,15 @@ mod tests {
             ValidateErrorReason::FallbackPortPrivileged,
             ValidateErrorReason::FallbackPortsEqual,
             ValidateErrorReason::LanSetupPortPrivileged,
+            ValidateErrorReason::ManualProxyMissingUrl,
             ValidateErrorReason::TunnelEntryEmpty,
             ValidateErrorReason::TunnelHostnameInvalid,
             ValidateErrorReason::TunnelKeyInvalid,
             ValidateErrorReason::TunnelMultipleNamed,
             ValidateErrorReason::TunnelDuplicateHostname,
+            ValidateErrorReason::TunnelPasswordInvalid,
+            ValidateErrorReason::TunnelNgrokAuthtokenInvalid,
+            ValidateErrorReason::TunnelNgrokDomainInvalid,
             ValidateErrorReason::GroupNameEmpty,
             ValidateErrorReason::GroupNameReserved,
             ValidateErrorReason::GroupDuplicate,
@@ -418,6 +510,52 @@ mod tests {
             path: PathBuf::from("/x"),
             source: std::io::Error::from(ErrorKind::PermissionDenied),
         };
+    }
+
+    #[test]
+    fn display_project_error_each_variant() {
+        let cases: Vec<(ProjectError, &str)> = vec![
+            (
+                ProjectError::Parse(toml::from_str::<toml::Value>("x =").unwrap_err()),
+                "parse",
+            ),
+            (
+                ProjectError::Invalid {
+                    field: "php",
+                    reason: "bad".to_owned(),
+                },
+                "`php`",
+            ),
+            (
+                ProjectError::Io {
+                    path: PathBuf::from("/p/.yerd.toml"),
+                    source: std::io::Error::from(ErrorKind::PermissionDenied),
+                },
+                "/p/.yerd.toml",
+            ),
+            (
+                ProjectError::TooLarge {
+                    path: PathBuf::from("/p/.yerd.toml"),
+                },
+                "65536",
+            ),
+            (
+                ProjectError::NotRegularFile {
+                    path: PathBuf::from("/p/.yerd.toml"),
+                },
+                "symlinks",
+            ),
+            (
+                ProjectError::AlreadyExists {
+                    path: PathBuf::from("/p/.yerd.toml"),
+                },
+                "already exists",
+            ),
+        ];
+        for (err, want) in cases {
+            let s = err.to_string();
+            assert!(s.contains(want), "{s:?} missing {want:?}");
+        }
     }
 
     /// Construct a real `toml::ser::Error` by attempting to serialise a

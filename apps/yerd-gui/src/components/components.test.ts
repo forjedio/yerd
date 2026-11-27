@@ -2,6 +2,8 @@ import { mount } from "@vue/test-utils";
 import { describe, expect, it } from "vitest";
 
 import ComingSoon from "./ComingSoon.vue";
+import SegmentedControl from "./ui/SegmentedControl.vue";
+import Select from "./ui/Select.vue";
 import StatusPill from "./StatusPill.vue";
 
 describe("ComingSoon", () => {
@@ -27,5 +29,100 @@ describe("StatusPill tri-state tones", () => {
     const w = mount(StatusPill, { props: { tone, label: tone } });
     expect(w.html()).toContain(klass);
     expect(w.text()).toContain(tone);
+  });
+});
+
+describe("SegmentedControl", () => {
+  const options = [
+    { value: "8.3", label: "8.3" },
+    { value: "8.4", label: "8.4" },
+  ];
+
+  it("renders each option and marks the selected one", () => {
+    const w = mount(SegmentedControl, {
+      props: { modelValue: "8.4", options, ariaLabel: "PHP version" },
+    });
+    const radios = w.findAll('[role="radio"]');
+    expect(radios.map((r) => r.text())).toEqual(["8.3", "8.4"]);
+    expect(radios[1]?.attributes("aria-checked")).toBe("true");
+  });
+
+  it("emits the clicked value", async () => {
+    const w = mount(SegmentedControl, {
+      props: { modelValue: "8.4", options, ariaLabel: "PHP version" },
+    });
+    await w.findAll('[role="radio"]')[0]?.trigger("click");
+    expect(w.emitted("update:modelValue")).toEqual([["8.3"]]);
+  });
+
+  it("renders sans options at size md and mono by default", () => {
+    const md = mount(SegmentedControl, {
+      props: { modelValue: "8.4", options, ariaLabel: "PHP version", size: "md" },
+    });
+    const sm = mount(SegmentedControl, {
+      props: { modelValue: "8.4", options, ariaLabel: "PHP version" },
+    });
+    expect(md.find('[role="radio"]').classes()).toContain("font-sans");
+    expect(sm.find('[role="radio"]').classes()).toContain("font-mono");
+  });
+
+  it("emits nothing while disabled", async () => {
+    const w = mount(SegmentedControl, {
+      props: { modelValue: "8.4", options, ariaLabel: "PHP version", disabled: true },
+    });
+    await w.findAll('[role="radio"]')[0]?.trigger("click");
+    expect(w.emitted("update:modelValue")).toBeUndefined();
+  });
+  it("emits nothing when the selected option is picked again", async () => {
+    const w = mount(SegmentedControl, {
+      props: { modelValue: "8.4", options, ariaLabel: "PHP version" },
+    });
+    await w.findAll('[role="radio"]')[1]?.trigger("click");
+    expect(w.emitted("update:modelValue")).toBeUndefined();
+  });
+
+  it.each([
+    [false, [["8.3"]]],
+    [true, undefined],
+  ])("with manualActivation %s, the click an arrow key causes emits %j", async (manualActivation, expected) => {
+    const w = mount(SegmentedControl, {
+      props: { modelValue: "8.4", options, ariaLabel: "PHP version", manualActivation },
+    });
+    const first = w.findAll('[role="radio"]')[0];
+    await first?.trigger("keydown", { key: "ArrowLeft" });
+    await first?.trigger("click");
+    expect(w.emitted("update:modelValue")).toEqual(expected);
+  });
+
+  it("selects on Space or a pointer click once the arrow key is released", async () => {
+    const w = mount(SegmentedControl, {
+      props: { modelValue: "8.4", options, ariaLabel: "PHP version", manualActivation: true },
+    });
+    const first = w.findAll('[role="radio"]')[0];
+    await first?.trigger("keydown", { key: "ArrowLeft" });
+    await first?.trigger("keyup", { key: "ArrowLeft" });
+    await first?.trigger("keydown", { key: " " });
+    await first?.trigger("click");
+    await w.setProps({ modelValue: "8.3" });
+    const second = w.findAll('[role="radio"]')[1];
+    await second?.trigger("keydown", { key: "ArrowRight" });
+    await second?.trigger("pointerdown");
+    await second?.trigger("click");
+    expect(w.emitted("update:modelValue")).toEqual([["8.3"], ["8.4"]]);
+  });
+});
+
+describe("Select", () => {
+  it("lets a caller's classes replace the conflicting defaults", () => {
+    const w = mount(Select, {
+      props: {
+        modelValue: "a",
+        options: [{ value: "a", label: "A" }],
+        class: "h-[34px] w-[200px]",
+      },
+    });
+    const classes = w.find("select").classes();
+    expect(classes).toEqual(expect.arrayContaining(["h-[34px]", "w-[200px]"]));
+    expect(classes).not.toContain("h-8");
   });
 });

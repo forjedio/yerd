@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members  = ["crates/yerd-core", "crates/yerd-ipc", "crates/yerd-config", "crates/yerd-tls", "crates/yerd-platform", "crates/yerd-dns", "crates/yerd-supervise", "crates/yerd-php", "crates/yerd-services", "crates/yerd-tunnel", "crates/yerd-proxy", "crates/yerd-doctor", "crates/yerd-mail", "crates/yerd-mcp", "crates/yerd-update", "crates/yerd-release-manifest", "crates/yerd-service-ctl", "crates/yerd-depcheck", "bin/yerd-helper", "bin/yerdd", "bin/yerd", "apps/yerd-gui/src-tauri", "xtask"]
+members  = ["crates/yerd-core", "crates/yerd-ipc", "crates/yerd-config", "crates/yerd-tls", "crates/yerd-platform", "crates/yerd-dns", "crates/yerd-supervise", "crates/yerd-php", "crates/yerd-services", "crates/yerd-tunnel", "crates/yerd-proxy", "crates/yerd-doctor", "crates/yerd-mail", "crates/yerd-mcp", "crates/yerd-update", "crates/yerd-release-manifest", "crates/yerd-service-ctl", "crates/yerd-depcheck", "bin/yerd-helper", "bin/yerd-forward", "bin/yerdd", "bin/yerd", "apps/yerd-gui/src-tauri", "xtask"]
 
 [workspace.package]
-version      = "2.1.0-rc.1"
+version      = "2.1.0"
 edition      = "2021"
 rust-version = "1.77"
 license      = "MIT"
@@ -64,6 +64,11 @@ fs4                = { version = "0.13", default-features = false, features = ["
 # Pure-Rust MIME parser for the mail-capture viewer. `full_encoding` pulls
 # `encoding_rs` for non-UTF-8 charsets; the `serde` feature is deliberately off.
 mail-parser        = { version = "0.11", default-features = false, features = ["full_encoding"] }
+# Mozilla Public Suffix List (ICANN + private sections) compiled into a pure,
+# no_std lookup, used to strip `.com` / `.co.uk` / `.github.io` style suffixes
+# from folder-derived site names. A patch release ships each list update, so
+# refresh it with `cargo update -p psl`.
+psl                = "2.1"
 
 [workspace.lints.rust]
 unsafe_code  = "forbid"

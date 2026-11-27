@@ -28,6 +28,14 @@ yerd coverage -r 'var_dump(extension_loaded("pcov"));'   # prints bool(true)
 The process exit code is PHP's own, so `yerd coverage` composes in CI exactly
 like the interpreter it wraps.
 
+::: tip Need Xdebug's coverage driver instead?
+pcov is line coverage only. For path/branch coverage, run your suite under the
+Xdebug debug shim with `XDEBUG_MODE=coverage phpdebug vendor/bin/phpunit
+--path-coverage`. It is slower than pcov; see
+[Debugging with Xdebug](../../guide/xdebug#code-coverage-with-xdebug) and
+[`yerd xdebug`](./xdebug).
+:::
+
 ## Pinning a version
 
 `yerd coverage` always tracks your [global default](../../guide/php-versions#the-global-default)
@@ -75,9 +83,8 @@ YERD_COVER=1 vendor/bin/phpunit-watcher watch
 If pcov isn't available for the version a plain shim resolves - a legacy version,
 or a build not fetched yet - the shim prints a one-line notice on stderr and
 **runs the command normally, without coverage**. It does not fail. Only the
-`php` / `php<version>` shims honour the variable: the `wp` shim and `yerd exec`
-set their own `PHPRC` regardless, while the `composer` and `laravel` shims set
-none and inherit whatever the environment already carries. See
+`php` / `php<version>` shims honour the variable: the `wp`, `composer` and
+`laravel` shims and `yerd exec` set their own `PHPRC` regardless. See
 [Code Coverage · Enabling coverage with `YERD_COVER`](../../guide/code-coverage#enabling-coverage-with-yerd-cover).
 
 ## Failure modes
@@ -102,3 +109,4 @@ normal run instead.
 
 - [Code Coverage guide](../../guide/code-coverage) - how pcov is bundled and how the cover shims work.
 - [PHP](./php) - installing versions and setting the global default that `yerd coverage` tracks.
+- [Xdebug](./xdebug) - the `phpdebug` shim, for Xdebug-based coverage.

@@ -8,13 +8,21 @@
 //! that returns canned output, keeping [`probe_extension`] testable without
 //! spawning PHP.
 
+use std::collections::BTreeSet;
 use std::io;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::pure::ext_probe::{interpret_probe, ExtLoadError};
+use crate::pure::ext_probe::{
+    ffi_listed, interpret_probe, listed_modules, require_zend_module, ExtLoadError,
+};
+
+/// Upper bound on one `php -n -m` FFI probe. A cold first run (macOS
+/// Gatekeeper) takes about a second; anything past this is treated as unknown.
+const FFI_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The captured result of a one-shot command: whether it exited successfully and
 /// both of its output streams (UTF-8 lossy). Both are captured because PHP routes
@@ -43,14 +51,17 @@ pub trait CommandRunner: Send + Sync + 'static {
     async fn run(&self, cmd: Command) -> Result<ProbeOutput, io::Error>;
 }
 
-/// Production [`CommandRunner`] backed by `tokio::process`.
+/// Production [`CommandRunner`] backed by `tokio::process`. The child is
+/// killed if the returned future is dropped early (e.g. by a timeout).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TokioCommandRunner;
 
 #[async_trait]
 impl CommandRunner for TokioCommandRunner {
     async fn run(&self, cmd: Command) -> Result<ProbeOutput, io::Error> {
-        let out = tokio::process::Command::from(cmd).output().await?;
+        let mut cmd = tokio::process::Command::from(cmd);
+        cmd.kill_on_drop(true);
+        let out = cmd.output().await?;
         Ok(ProbeOutput {
             status_ok: out.status.success(),
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -77,6 +88,35 @@ pub async fn probe_extension(
     ext_path: &Path,
     zend: bool,
 ) -> Result<(), ExtLoadError> {
+    let out = run_probe(runner, php_bin, ext_path, zend).await?;
+    let diagnostics = format!("{}{}", out.stdout, out.stderr);
+    interpret_probe(out.status_ok, &diagnostics)
+}
+
+/// Load-probe a Zend extension positively: the same run as
+/// [`probe_extension`] with `zend_extension=`, which must also list `module`
+/// (for example `Xdebug`) under `[Zend Modules]`. A probe that merely shows no
+/// failure marker is not enough.
+///
+/// # Errors
+/// [`ExtLoadError::SpawnFailed`] if the probe could not run; otherwise the
+/// classification from [`require_zend_module`].
+pub async fn probe_zend_module(
+    runner: &dyn CommandRunner,
+    php_bin: &Path,
+    ext_path: &Path,
+    module: &str,
+) -> Result<(), ExtLoadError> {
+    let out = run_probe(runner, php_bin, ext_path, true).await?;
+    require_zend_module(out.status_ok, &out.stdout, &out.stderr, module)
+}
+
+async fn run_probe(
+    runner: &dyn CommandRunner,
+    php_bin: &Path,
+    ext_path: &Path,
+    zend: bool,
+) -> Result<ProbeOutput, ExtLoadError> {
     let directive = if zend { "zend_extension" } else { "extension" };
     let mut cmd = Command::new(php_bin);
     cmd.arg("-n")
@@ -86,12 +126,36 @@ pub async fn probe_extension(
         .arg(format!("{directive}={}", ext_path.display()))
         .arg("-m")
         .stdin(Stdio::null());
-    let out = runner
-        .run(cmd)
+    runner.run(cmd).await.map_err(|_| ExtLoadError::SpawnFailed)
+}
+
+/// Whether the PHP build at `php_bin` includes the FFI extension, by running
+/// `php -n -m` (Yerd's builds are static, so `-n` still lists every module).
+/// `None` when the probe could not answer: the process failed to spawn, exited
+/// unsuccessfully, or ran past [`FFI_PROBE_TIMEOUT`]. Callers must not cache a
+/// `None`.
+pub async fn probe_ffi(runner: &dyn CommandRunner, php_bin: &Path) -> Option<bool> {
+    let mut cmd = Command::new(php_bin);
+    cmd.arg("-n").arg("-m").stdin(Stdio::null());
+    let out = tokio::time::timeout(FFI_PROBE_TIMEOUT, runner.run(cmd))
         .await
-        .map_err(|_| ExtLoadError::SpawnFailed)?;
-    let diagnostics = format!("{}{}", out.stdout, out.stderr);
-    interpret_probe(out.status_ok, &diagnostics)
+        .ok()?
+        .ok()?;
+    out.status_ok.then(|| ffi_listed(&out.stdout))
+}
+
+/// Every module the PHP build at `php_bin` lists under `php -n -m`, raw (see
+/// [`listed_modules`]). `None` when the probe could not answer: the process
+/// failed to spawn, exited unsuccessfully, or ran past the same timeout as
+/// [`probe_ffi`].
+pub async fn probe_modules(runner: &dyn CommandRunner, php_bin: &Path) -> Option<BTreeSet<String>> {
+    let mut cmd = Command::new(php_bin);
+    cmd.arg("-n").arg("-m").stdin(Stdio::null());
+    let out = tokio::time::timeout(FFI_PROBE_TIMEOUT, runner.run(cmd))
+        .await
+        .ok()?
+        .ok()?;
+    out.status_ok.then(|| listed_modules(&out.stdout))
 }
 
 #[cfg(test)]
@@ -118,6 +182,19 @@ mod tests {
                 stdout: self.stdout.clone(),
                 stderr: self.stderr.clone(),
             })
+        }
+    }
+
+    /// Like [`FakeRunner`], but asserts the command is a bare `php -n -m`.
+    struct ModulesRunner(FakeRunner);
+
+    #[async_trait]
+    impl CommandRunner for ModulesRunner {
+        async fn run(&self, cmd: Command) -> Result<ProbeOutput, io::Error> {
+            let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+            assert!(args.contains(&std::ffi::OsStr::new("-n")), "{args:?}");
+            assert!(args.contains(&std::ffi::OsStr::new("-m")), "{args:?}");
+            self.0.run(cmd).await
         }
     }
 
@@ -198,5 +275,76 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(e, ExtLoadError::SpawnFailed);
+    }
+
+    #[tokio::test]
+    async fn probe_zend_module_requires_the_module_listed() {
+        let listed = FakeRunner {
+            status_ok: true,
+            stdout: "[PHP Modules]\nCore\n\n[Zend Modules]\nXdebug\n".to_owned(),
+            stderr: String::new(),
+        };
+        let silent = FakeRunner {
+            status_ok: true,
+            stdout: "[PHP Modules]\nCore\n\n[Zend Modules]\n".to_owned(),
+            stderr: String::new(),
+        };
+        let php = Path::new("/php");
+        let so = Path::new("/a/xdebug.so");
+        probe_zend_module(&listed, php, so, "Xdebug").await.unwrap();
+        assert_eq!(
+            probe_zend_module(&silent, php, so, "Xdebug").await,
+            Err(ExtLoadError::NotListed)
+        );
+        assert_eq!(
+            probe_zend_module(&FailingRunner, php, so, "Xdebug").await,
+            Err(ExtLoadError::SpawnFailed)
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_ffi_reports_presence_absence_and_failures() {
+        let with = FakeRunner {
+            status_ok: true,
+            stdout: "[PHP Modules]\nCore\nFFI\n".to_owned(),
+            stderr: String::new(),
+        };
+        let without = FakeRunner {
+            status_ok: true,
+            stdout: "[PHP Modules]\nCore\n".to_owned(),
+            stderr: String::new(),
+        };
+        let failed_exit = FakeRunner {
+            status_ok: false,
+            stdout: "[PHP Modules]\nFFI\n".to_owned(),
+            stderr: String::new(),
+        };
+        let php = Path::new("/php");
+        assert_eq!(probe_ffi(&with, php).await, Some(true));
+        assert_eq!(probe_ffi(&without, php).await, Some(false));
+        assert_eq!(probe_ffi(&failed_exit, php).await, None);
+        assert_eq!(probe_ffi(&FailingRunner, php).await, None);
+    }
+
+    #[tokio::test]
+    async fn probe_modules_lists_modules_or_none() {
+        let ok = ModulesRunner(FakeRunner {
+            status_ok: true,
+            stdout: "[PHP Modules]\nCore\nredis\n\n[Zend Modules]\nZend OPcache\n".to_owned(),
+            stderr: String::new(),
+        });
+        let failed_exit = ModulesRunner(FakeRunner {
+            status_ok: false,
+            stdout: "[PHP Modules]\nCore\n".to_owned(),
+            stderr: String::new(),
+        });
+        let php = Path::new("/php");
+        let want: BTreeSet<String> = ["Core", "Zend OPcache", "redis"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        assert_eq!(probe_modules(&ok, php).await, Some(want));
+        assert_eq!(probe_modules(&failed_exit, php).await, None);
+        assert_eq!(probe_modules(&FailingRunner, php).await, None);
     }
 }

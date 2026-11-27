@@ -1,22 +1,28 @@
 # Tooling
 
 Yerd can install the **developer tools** a typical PHP/Laravel/WordPress project
-reaches for - [Composer](https://getcomposer.org), [Node.js](https://nodejs.org)
-(with `npm`/`npx`), [Bun](https://bun.sh), the **Laravel installer**, and
-**WP-CLI** - the same way it installs [PHP versions](./php-versions):
+reaches for - [Composer](https://getcomposer.org), [Bun](https://bun.sh), [pnpm](https://pnpm.io), the **Laravel installer**,
+**WP-CLI**, **cloudflared** (the Cloudflare Tunnel connector used for
+[sharing](./sharing)), and the **ngrok** and **zrok** tunnel agents - the same way it installs [PHP versions](./php-versions):
 self-contained binaries fetched on demand (the Laravel installer and WP-CLI are
 built via Composer) and dropped onto your `PATH`. No system package manager, no
 global install, nothing to uninstall by hand. Already have one installed
 elsewhere? Yerd [detects it](#external-tools) and, for most tools, uses it
 instead.
 
+Node.js has its own page with side-by-side versions, a global default and
+per-site preferences: see [Node.js](./node).
+
 | Tool | `id` | Provides | Source |
 |---|---|---|---|
 | Composer | `composer` | `composer` | getcomposer.org (phar) |
-| Node.js | `node` | `node`, `npm`, `npx` | nodejs.org (latest LTS) |
 | Bun | `bun` | `bun`, `bunx` | github.com/oven-sh/bun |
+| pnpm | `pnpm` | `pnpm`, `pnpx` | github.com/pnpm/pnpm |
 | Laravel installer | `laravel` | `laravel` | Composer (`laravel/installer`) |
 | WP-CLI | `wp-cli` | `wp` | Composer (`wp-cli/wp-cli-bundle`) |
+| cloudflared | `cloudflared` | `cloudflared` | github.com/cloudflare/cloudflared |
+| ngrok | `ngrok` | `ngrok` | ngrok.com (official download archive) |
+| zrok | `zrok` | `zrok2` | github.com/openziti/zrok |
 
 ::: tip Why bundle these?
 A fresh machine that has Yerd shouldn't also need Homebrew, `nvm`, or a global
@@ -28,19 +34,32 @@ removes them cleanly on uninstall.
 ## In the desktop app
 
 Open the **Tooling** page from the sidebar (under the **Developer** group). It
-lists the developer tools Yerd manages and their install status:
+lists the developer tools Yerd manages in two groups:
 
-<ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="The Tooling page in the Yerd desktop app" />
+<ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="The Tooling page: Composer (with an update to 2.9.1), the Laravel installer, WP-CLI, cloudflared, ngrok and zrok installed, and Bun (found externally in /opt/homebrew/bin) and pnpm available" />
 
-- **Composer**, **Node**, **Bun**, the **Laravel installer**, and **WP-CLI**,
-  each showing the commands it provides.
-- Click **Install** to fetch the latest release; once installed you get
-  **Update** (re-fetch the current latest) and **Uninstall**.
-- A tool you've installed yourself shows an **External** badge and a *Managed by
-  you* note. **Install** is still offered, so you can take Yerd's own copy as
-  well - see [External tools](#external-tools) below.
-- The Laravel installer and WP-CLI are built with Composer, so their **Install**
-  button stays disabled until Yerd's own Composer is installed.
+- **Installed** lists each installed tool (**Composer**, **Bun**, **pnpm**, the
+  **Laravel installer**, **WP-CLI**, **cloudflared**, **ngrok**, **zrok**) with its version and the commands it
+  provides. When Yerd knows a newer version exists, an amber **↑** chip shows it
+  beside the version and **Update** installs it; otherwise **Update** is
+  disabled. Yerd checks for tool updates every 12 hours, and
+  `yerd install tool <id>` always fetches the latest release. The trash button
+  uninstalls the tool after a confirmation; `cloudflared` can't be uninstalled
+  while a tunnel is running.
+- **Available** shows a card for each tool you haven't installed, with an
+  **Install** button that fetches the latest release.
+- A tool you've installed yourself shows an **External** chip, where it was
+  found on your `PATH` (with a button to reveal it), and **Install Yerd's
+  copy** - see [External tools](#external-tools) below.
+- The Laravel installer and WP-CLI are built with Composer, so until Yerd's own
+  Composer is installed their card reads *Needs Composer - install it first*
+  (which installs Composer) and **Install** stays disabled.
+- While a tool installs its card shows progress and **Show log**; if the install
+  fails the card shows the error with **Show log** and **Try again**. Closing
+  the log doesn't stop the install.
+
+  <ThemedImage light="/images/tooling-install-log-light.png" dark="/images/tooling-install-log-dark.png" alt="The Updating Composer log dialog streaming the download, checksum and install steps, with Keeps going if you close this" />
+
 - Each tool is placed on your `PATH` alongside PHP and managed entirely by Yerd,
   so it won't collide with a system install.
 
@@ -48,7 +67,6 @@ lists the developer tools Yerd manages and their install status:
 
 ```sh
 yerd tools                      # list the tools and their install status
-yerd install tool node          # download + install the latest Node LTS
 yerd install tool bun
 yerd install tool composer
 yerd install tool laravel       # build the Laravel installer (needs Composer)
@@ -68,19 +86,26 @@ instead, the same way you wouldn't run `composer self-update` on Yerd's managed
 Composer.
 :::
 
+::: tip Updating ngrok
+Update ngrok with **Update** on the Tooling page or `yerd install tool ngrok`,
+not `ngrok update`: ngrok's self-update rewrites Yerd's managed binary behind
+its back, so Tooling would keep showing the old version.
+:::
+
 ## External tools
 
 You don't have to let Yerd manage most of these tools. If you already have
-`composer`, `node`, `bun`, or the `laravel` installer available on your `PATH` -
+`composer`, `node`, `bun`, `pnpm`, the `laravel` installer, `ngrok`, or `zrok2`
+available on your `PATH` -
 via Homebrew, `nvm`/`fnm`, a global `composer require`, etc. - Yerd **detects**
 it and treats it as already available:
 
-- On the **Tooling** page the tool shows an **External** badge (instead of a
-  version) and a *Managed by you* note - it's yours to manage, not Yerd's. You
-  can still press **Install** to take Yerd's own copy alongside it, which you'll
-  need if you want Yerd to build the Laravel installer or WP-CLI.
+- On the **Tooling** page the tool shows an **External** chip and the location
+  your terminal runs it from - it's yours to manage, not Yerd's. You can still
+  press **Install Yerd's copy**, which goes ahead of yours on your `PATH` and
+  which you'll need if you want Yerd to build the Laravel installer or WP-CLI.
 - The [Laravel site wizard](./sites#create-a-new-laravel-site) and site scaffolding
-  accept external Composer / Node / Bun / Laravel as satisfying their
+  accept external Composer / Node / Bun / pnpm / Laravel as satisfying their
   prerequisites, so you won't be asked to install a second copy. Externally
   installed Composer and the Laravel installer still run under the **Yerd PHP
   version you select**, so versions stay consistent.
@@ -103,6 +128,9 @@ A couple of things to know:
   until you install Yerd's Composer. For the Laravel installer you can skip that
   entirely and keep using your external copy; WP-CLI has no such fallback, per
   the exception above.
+- **zrok is detected as `zrok2`.** zrok v2's official binary is `zrok2`, and
+  that's the name Yerd looks for. Homebrew's `zrok` formula installs it as
+  `zrok`, which isn't detected as External; install Yerd's copy to get `zrok2`.
 
 ::: tip How detection works
 Because the daemon runs with a minimal environment, Yerd reads your login shell's
@@ -115,27 +143,26 @@ mistaken for an external install.
 
 The model mirrors [PHP versions](./php-versions) and [services](./services):
 
-- **Self-contained binaries.** Each tool is a relocatable build - Node's tarball
-  bundles `node` + `npm` + `npx`, Bun is a single binary, Composer is a phar run
+- **Self-contained binaries.** Each tool is a relocatable build - Bun, cloudflared, ngrok and zrok are single binaries, pnpm is a native
+  binary with its bundled `dist/`, Composer is a phar run
   by Yerd's managed PHP. Nothing is compiled and nothing touches system paths.
 - **Verified downloads.** Every artifact is checked against the publisher's
-  `SHASUMS256.txt` (Node, Bun) or `composer.phar.sha256sum` (Composer) before it
-  is installed.
+  `SHASUMS256.txt` (Bun), the GitHub release `digest` (pnpm, cloudflared, zrok),
+  the SHA256 listed on ngrok's official download archive (ngrok), or
+  `composer.phar.sha256sum` (Composer) before it
+  is installed. A missing checksum refuses the install.
 - **Installed under Yerd's data dir.** Tools live in `{data}/tools/<id>/`
   (e.g. `~/Library/Application Support/io.yerd.Yerd/tools` on macOS), a sibling of
   your PHP installs - so a PHP update never disturbs them.
 - **Exposed on `PATH`.** Their commands are symlinked into `{data}/bin`, the same
   directory that holds the `php`/`php<ver>` shims. Put that directory on your
   `PATH` once (see below) and `composer`, `node`, `npm`, `bun`, … just work.
+- **Proxy-aware.** Each command runs through Yerd, which fills in the
+  [outbound proxy](./corporate-networks) when your shell doesn't name a proxy
+  of its own; that includes `ngrok` and `zrok2`. `cloudflared` is the exception: Yerd downloads it through the
+  proxy, but its command links straight to the binary and tunnels run without
+  proxy settings.
 - **Rootless.** Everything runs as your user, no elevation.
-
-### Latest only
-
-Yerd installs the **latest stable** release of each tool (the latest **LTS** for
-Node). There is no per-project version picker - **Update** simply re-fetches the
-current latest and replaces it in place. If you need to pin a specific Node
-version per project, a system version manager like `nvm`/`fnm` is still the right
-tool; Yerd's goal here is a good default that's always there.
 
 ## Put Yerd's bin directory on your PATH
 
@@ -158,7 +185,9 @@ bun --version
 ```
 
 `yerd path install` writes a small, guarded block to your shell's startup file
-(`.zshrc`, `.bashrc`/`.bash_profile`, or `config.fish`). `yerd path uninstall`
+(`.zshrc`, `config.fish`, or for Bash `.bashrc` plus the login file Bash
+actually reads: `.bash_profile`, else `.bash_login`, else `.profile`, creating
+`.bash_profile` only when none exists). `yerd path uninstall`
 removes it; `yerd path print` shows the snippet without touching any file.
 
 ::: info Coexisting with Herd, Homebrew, or nvm
@@ -173,7 +202,7 @@ installs ever shadows a tool you didn't ask it to manage.
 Composer is a phar, so it runs under Yerd's managed PHP - `composer` resolves to
 your [default PHP version](./php-versions). Install at least one PHP version
 first (`yerd install php 8.4`); otherwise `composer` reports that no PHP is
-available. Node and Bun are standalone and have no such dependency.
+available. Node, Bun, and pnpm are standalone and have no such dependency.
 
 The `composer` shim always uses the **global default**, including inside a site
 pinned to another version. To run Composer under a site's pinned version instead,
@@ -193,11 +222,15 @@ extension list.
 | Path | Contents |
 |---|---|
 | `{data}/tools/composer/composer.phar` | The Composer phar. |
-| `{data}/tools/node/node-<ver>-<os>-<arch>/` | The unpacked Node distribution. |
 | `{data}/tools/bun/bun-<os>-<arch>/bun` | The Bun binary. |
+| `{data}/tools/pnpm/pnpm-<os>-<arch>/pnpm` | The pnpm binary (`pnpx` beside it). |
 | `{data}/tools/laravel/bin/laravel` | The Laravel installer (built via Composer). |
 | `{data}/tools/wp-cli/vendor/wp-cli/wp-cli/php/boot-fs.php` | WP-CLI (built via Composer). |
-| `{data}/bin/{composer,node,npm,npx,bun,bunx,laravel,wp}` | The `PATH` shims. |
+| `{data}/tools/cloudflared/cloudflared` | The cloudflared binary. |
+| `{data}/tools/ngrok/ngrok` | The ngrok binary. |
+| `{data}/tools/zrok/zrok2` | The zrok binary. |
+| `{data}/bin/{composer,bun,bunx,pnpm,pnpx,laravel,wp,cloudflared,ngrok,zrok2}` | The `PATH` shims (Node's are on the [Node.js](./node#where-things-live) page). `cloudflared` links straight to the managed binary. |
+| `{data}/bin/{mysql,mysqldump,mariadb,mariadb-dump,psql,pg_dump,pg_dumpall,pg_restore,createdb,valkey-cli}` | Service client commands, present while the engine is installed. See [Services & Databases](./services#client-commands-on-your-path). |
 
 `{data}` is Yerd's per-user data directory (`yerd status` and
 `yerd path print` both show the exact path for your platform).
@@ -205,6 +238,7 @@ extension list.
 ## See also
 
 - [Tooling CLI reference](../reference/cli/tooling) - every command and flag.
+- [Node.js](./node) - Node versions, defaults and per-site preferences.
 - [PHP Versions](./php-versions) - the version model these tools follow.
 - [Services & Databases](./services) - the same install-on-demand approach for
   databases and caches.

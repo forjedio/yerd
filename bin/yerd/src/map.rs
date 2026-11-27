@@ -7,14 +7,18 @@
 
 use std::fmt::Write as _;
 
+use yerd_core::tunnel_provider::TunnelProvider;
 use yerd_core::{PhpVersion, Site, SiteKind};
 use yerd_ipc::{
     Channel, CloudflaredStatus, Diagnosis, FixReport, PhpPoolStatus, PoolRunState, PortStatus,
     Request, Response, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteEntry,
-    StatusReport, ToolStatus, TunnelInfo, TunnelRunState, UpdateSource,
+    StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState, UpdateSource,
 };
 
-use crate::cli::{Command, DbAction, MailAction, ServiceAction, TunnelAction};
+use crate::cli::{
+    Command, DbAction, MailAction, NgrokAction, ServiceAction, TunnelAction, TunnelProviderArg,
+    ZrokAction,
+};
 use crate::error::ClientError;
 
 /// Map a parsed [`Command`] to the wire [`Request`], validating site names and
@@ -114,8 +118,21 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             }
         }
         Command::Install {
-            target: crate::cli::InstallTarget::Tool { id },
-        } => Request::InstallTool { tool: id.clone() },
+            target: crate::cli::InstallTarget::Tool { id, version },
+        } => match version {
+            None => Request::InstallTool { tool: id.clone() },
+            Some(version) if id == "node" => {
+                yerd_core::node::validate_selector(version).map_err(ClientError::Usage)?;
+                Request::InstallNode {
+                    version: version.clone(),
+                }
+            }
+            Some(_) => {
+                return Err(ClientError::Usage(
+                    "only Node supports a tool version selector".to_owned(),
+                ))
+            }
+        },
         Command::Restart {
             target: crate::cli::RestartTarget::Php { version },
         } => match version {
@@ -143,6 +160,43 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             ));
         }
         Command::Tools => Request::ListTools,
+        Command::Node {
+            action: crate::cli::NodeAction::Use { version, site },
+        } => {
+            yerd_core::node::validate_selector(version).map_err(ClientError::Usage)?;
+            if let Some(site) = site {
+                validate_name(site)?;
+            }
+            Request::SetNodeVersion {
+                version: version.clone(),
+                site: site.clone(),
+            }
+        }
+        Command::Node {
+            action: crate::cli::NodeAction::Unset { site },
+        } => {
+            validate_name(site)?;
+            Request::ClearNodeVersion { site: site.clone() }
+        }
+        Command::Node {
+            action: crate::cli::NodeAction::Uninstall { version },
+        } => {
+            if yerd_core::node::numeric_selector(version).map_or(true, |p| p.len() != 3) {
+                return Err(ClientError::Usage(format!(
+                    "expected an exact installed Node version such as 22.12.0, got {version:?}"
+                )));
+            }
+            Request::UninstallNode {
+                version: version.clone(),
+            }
+        }
+        Command::Node {
+            action: crate::cli::NodeAction::List,
+        } => {
+            return Err(ClientError::Usage(
+                "Node listing is handled locally".to_owned(),
+            ))
+        }
         Command::List {
             target: crate::cli::ListTarget::Php { check, available },
         } => {
@@ -188,7 +242,8 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         Command::Domain { action } => domain_request(action)?,
         Command::Proxy { action } => proxy_request(action)?,
         Command::Route { action } => route_request(action)?,
-        Command::Tunnel { action } => tunnel_request(action),
+        Command::Header { action } => header_request(action)?,
+        Command::Tunnel { action } => tunnel_request(action)?,
         Command::Db { action } => db_request(action),
         Command::Mail { action } => match action {
             MailAction::List => Request::ListMails,
@@ -243,6 +298,11 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 "path is handled locally, not over IPC".to_owned(),
             ));
         }
+        Command::Daemon { .. } => {
+            return Err(ClientError::Usage(
+                "daemon is handled locally, not over IPC".to_owned(),
+            ));
+        }
         Command::Coverage { .. } => {
             return Err(ClientError::Usage(
                 "coverage is handled locally, not over IPC".to_owned(),
@@ -263,6 +323,11 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 "mcp runs its own protocol loop, not a single IPC exchange".to_owned(),
             ));
         }
+        Command::Init => {
+            return Err(ClientError::Usage(
+                "init is handled locally, not over IPC".to_owned(),
+            ));
+        }
         Command::Link { .. } => {
             return Err(ClientError::Usage(
                 "link is handled locally, not over IPC".to_owned(),
@@ -275,7 +340,141 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             action: crate::cli::LanAction::Disable,
         } => Request::SetLanEnabled { enabled: false },
         Command::RemoteSetup => Request::MintRemoteSetupCode,
+        Command::Network {
+            action: crate::cli::NetworkAction::Proxy { action },
+        } => network_proxy_request(action),
+        Command::Xdebug { action } => xdebug_request(action)?,
     })
+}
+
+/// Map a `yerd xdebug <action>` to its wire request. `status` reads the state
+/// from `ListPhp`; `on`/`off` without a version leave it to the daemon to pick
+/// the default PHP.
+fn xdebug_request(action: &crate::cli::XdebugAction) -> Result<Request, ClientError> {
+    use crate::cli::XdebugAction;
+    use yerd_core::{XdebugMode, XdebugStart};
+    let version = |v: &Option<String>| v.as_deref().map(parse_php).transpose();
+    Ok(match action {
+        XdebugAction::Status => Request::ListPhp,
+        XdebugAction::Off { version: v } => Request::SetXdebug {
+            version: version(v)?,
+            enabled: Some(false),
+            modes: None,
+            start: None,
+        },
+        XdebugAction::On {
+            version: v,
+            mode,
+            trigger,
+            always,
+        } => {
+            let modes = mode
+                .as_ref()
+                .map(|list| {
+                    list.iter()
+                        .map(|m| {
+                            m.parse::<XdebugMode>()
+                                .map_err(|e| ClientError::Usage(e.to_string()))
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?;
+            let start = if *trigger {
+                Some(XdebugStart::Trigger)
+            } else if *always {
+                Some(XdebugStart::Always)
+            } else {
+                None
+            };
+            Request::SetXdebug {
+                version: version(v)?,
+                enabled: Some(true),
+                modes,
+                start,
+            }
+        }
+    })
+}
+
+/// Map a `yerd network proxy <action>` to its wire request. `set` sends an
+/// empty HTTPS URL when `--https` is absent, which the daemon resolves to the
+/// HTTP proxy; `system` and `off` keep the stored URLs.
+fn network_proxy_request(action: &crate::cli::OutboundProxyAction) -> Request {
+    use crate::cli::OutboundProxyAction as ProxyAction;
+    use yerd_core::network::OutboundProxyMode;
+    match action {
+        ProxyAction::Status => Request::GetNetworkSettings,
+        ProxyAction::Test => Request::TestNetwork,
+        ProxyAction::Set {
+            url,
+            https,
+            no_proxy,
+        } => Request::SetNetworkSettings {
+            mode: OutboundProxyMode::Manual,
+            http_proxy: Some(url.clone()),
+            https_proxy: Some(https.clone().unwrap_or_default()),
+            no_proxy: no_proxy.clone(),
+        },
+        ProxyAction::System => Request::SetNetworkSettings {
+            mode: OutboundProxyMode::System,
+            http_proxy: None,
+            https_proxy: None,
+            no_proxy: None,
+        },
+        ProxyAction::Off => Request::SetNetworkSettings {
+            mode: OutboundProxyMode::Off,
+            http_proxy: None,
+            https_proxy: None,
+            no_proxy: None,
+        },
+    }
+}
+
+/// Human view of [`Response::NetworkSettings`]: the mode, the proxy in use
+/// (redacted) with its source, and the bypass list.
+fn format_network_settings(s: &yerd_ipc::NetworkSettings) -> String {
+    let mut out = format!("mode: {}", s.mode.as_str());
+    if s.http_proxy.is_some() || s.https_proxy.is_some() {
+        let _ = write!(
+            out,
+            "\nmanual: http {} / https {}",
+            s.http_proxy.as_deref().unwrap_or("-"),
+            s.https_proxy.as_deref().unwrap_or("same as http")
+        );
+    }
+    match &s.effective {
+        Some(e) if e.http_proxy.is_some() || e.https_proxy.is_some() => {
+            let _ = write!(
+                out,
+                "\nin use: http {} / https {} (from {})",
+                e.http_proxy.as_deref().unwrap_or("direct"),
+                e.https_proxy.as_deref().unwrap_or("direct"),
+                e.source.label()
+            );
+            let _ = write!(out, "\nbypass: {}", e.bypass.join(", "));
+        }
+        Some(_) => out.push_str("\nin use: direct (no proxy)"),
+        None => {}
+    }
+    if !s.no_proxy.is_empty() {
+        let _ = write!(out, "\nyour bypass entries: {}", s.no_proxy.join(", "));
+    }
+    out
+}
+
+/// Human view of [`Response::NetworkTest`]; a failed test exits 1.
+fn format_network_test(r: &yerd_ipc::NetworkTestResult) -> Rendered {
+    let route = match &r.via {
+        Some(via) => format!("via {via} ({})", r.source.label()),
+        None => "direct".to_owned(),
+    };
+    let status = r.status.map_or_else(String::new, |s| format!(" HTTP {s}"));
+    if r.ok {
+        Rendered::ok(format!("ok: {}{status} {route}", r.url))
+    } else {
+        let reason = r.error.as_deref().unwrap_or("request failed");
+        Rendered::err(format!("failed: {}{status} {route}: {reason}", r.url))
+    }
 }
 
 /// Map a `yerd service <action>` to its wire request. Service ids are passed
@@ -443,9 +642,10 @@ fn domain_request(action: &crate::cli::DomainAction) -> Result<Request, ClientEr
     })
 }
 
-/// Map a `yerd proxy <action>` to its wire request. Arity distinguishes a
-/// whole-host proxy from a path rule (see [`crate::cli::ProxyAction`]). The
-/// upstream URL is validated by the daemon (authoritative); the client only
+/// Map a `yerd proxy <action>` (add, edit, remove, list) to its wire request.
+/// Arity distinguishes a whole-host proxy from a path rule (see
+/// [`crate::cli::ProxyAction`]). The upstream URL is validated by the daemon
+/// (authoritative); the client only
 /// checks the name and, for a rule, that the prefix is absolute. A whole-host
 /// proxy name may be dotted, a path rule's site name may not, so each arm
 /// validates its own name rather than sharing one up-front check.
@@ -469,6 +669,31 @@ fn proxy_request(action: &crate::cli::ProxyAction) -> Result<Request, ClientErro
             } else {
                 validate_target_name(first)?;
                 Request::AddProxy {
+                    name: first.clone(),
+                    url: second.clone(),
+                }
+            }
+        }
+        ProxyAction::Edit {
+            first,
+            second,
+            third,
+        } => {
+            if let Some(url) = third {
+                validate_name(first)?;
+                validate_prefix(second)?;
+                Request::UpdateProxyRule {
+                    site: first.clone(),
+                    prefix: second.clone(),
+                    url: url.clone(),
+                }
+            } else if second.starts_with('/') {
+                return Err(ClientError::Usage(format!(
+                    "missing upstream URL for rule {first}{second}: usage is yerd proxy edit <site> <prefix> <url>"
+                )));
+            } else {
+                validate_target_name(first)?;
+                Request::UpdateProxy {
                     name: first.clone(),
                     url: second.clone(),
                 }
@@ -525,6 +750,33 @@ fn route_request(action: &crate::cli::RouteAction) -> Result<Request, ClientErro
     })
 }
 
+/// Map a `yerd header <action>` to its wire request. Only the target name is
+/// checked client-side, with [`validate_target_name`] since it may be a site
+/// or a (possibly dotted) whole-host proxy; the header name and value are validated by the daemon
+/// (authoritative, via `yerd_core::ResponseHeader`). `List` carries no filter
+/// on the wire, exactly like `yerd route list`.
+fn header_request(action: &crate::cli::HeaderAction) -> Result<Request, ClientError> {
+    use crate::cli::HeaderAction;
+    Ok(match action {
+        HeaderAction::List { .. } => Request::ListResponseHeaders,
+        HeaderAction::Set { site, name, value } => {
+            validate_target_name(site)?;
+            Request::SetResponseHeader {
+                site: site.clone(),
+                name: name.clone(),
+                value: value.clone(),
+            }
+        }
+        HeaderAction::Remove { site, name } => {
+            validate_target_name(site)?;
+            Request::RemoveResponseHeader {
+                site: site.clone(),
+                name: name.clone(),
+            }
+        }
+    })
+}
+
 /// Client-side check that a proxy rule prefix is an absolute path, for a clean
 /// exit-2 error before connecting. The daemon is authoritative.
 fn validate_prefix(prefix: &str) -> Result<(), ClientError> {
@@ -572,14 +824,25 @@ fn validate_domain(domain: &str) -> Result<(), ClientError> {
     Ok(())
 }
 
-/// Map a `yerd tunnel <action>` to its wire request. `Install` and `Login` are
-/// streamed jobs the CLI intercepts before this point; mapping them here keeps
-/// the match total.
-fn tunnel_request(action: &TunnelAction) -> Request {
-    match action {
-        TunnelAction::Install => Request::InstallCloudflaredStreamed,
-        TunnelAction::Share { site } => Request::StartQuickTunnel { site: site.clone() },
-        TunnelAction::Stop { site } => Request::StopTunnel { site: site.clone() },
+/// Map a `yerd tunnel <action>` to its wire request. `Login` is a streamed job
+/// the CLI intercepts before this point; mapping it here keeps the match total.
+/// A token-taking action with the token omitted is a usage error here: the CLI
+/// reads that token from stdin first (see [`stdin_secret_prompt`]).
+fn tunnel_request(action: &TunnelAction) -> Result<Request, ClientError> {
+    let req = match action {
+        TunnelAction::Share {
+            site,
+            provider,
+            random_url,
+        } => Request::StartQuickTunnel {
+            site: site.clone(),
+            provider: provider.map(TunnelProviderArg::provider),
+            random_url: *random_url,
+        },
+        TunnelAction::Stop { site, provider } => Request::StopTunnel {
+            site: site.clone(),
+            provider: provider.map(TunnelProviderArg::provider),
+        },
         TunnelAction::Status => Request::TunnelStatus,
         TunnelAction::Login => Request::CloudflaredLogin,
         TunnelAction::Create { name } => Request::CreateNamedTunnel { name: name.clone() },
@@ -597,8 +860,171 @@ fn tunnel_request(action: &TunnelAction) -> Request {
             site: site.clone(),
             hostname: if *clear { None } else { hostname.clone() },
         },
+        TunnelAction::Password {
+            site,
+            password,
+            clear,
+        } => Request::SetTunnelPassword {
+            site: site.clone(),
+            password: if *clear { None } else { password.clone() },
+        },
         TunnelAction::Publish => Request::StartNamedTunnel,
         TunnelAction::Unpublish => Request::StopNamedTunnel,
+        TunnelAction::Providers => Request::ListTunnelProviders,
+        TunnelAction::Ngrok {
+            action: NgrokAction::Token { clear: true, .. },
+        } => Request::SetNgrokAuthtoken { authtoken: None },
+        TunnelAction::Ngrok {
+            action: NgrokAction::Token { token, .. },
+        }
+        | TunnelAction::Zrok {
+            action: ZrokAction::Enable { token },
+        } => {
+            let token = token
+                .clone()
+                .ok_or_else(|| ClientError::Usage("token required".to_owned()))?;
+            return tunnel_secret_request(action, token);
+        }
+        TunnelAction::Ngrok {
+            action: NgrokAction::Domain { domain, clear },
+        } => Request::SetNgrokDomain {
+            domain: if *clear { None } else { domain.clone() },
+        },
+        TunnelAction::Zrok {
+            action: ZrokAction::Disable,
+        } => Request::DisableZrok,
+        TunnelAction::Default { provider } => Request::SetDefaultTunnelProvider {
+            provider: provider.provider(),
+        },
+    };
+    Ok(req)
+}
+
+/// What the CLI does when a `StartQuickTunnel` reply lacks the share it asked
+/// for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderStartCheck {
+    /// The daemon ignored the requested provider: report an error, not success.
+    pub unsupported: bool,
+    /// The site whose Cloudflare share this start created and must be stopped.
+    pub stop_cloudflare: Option<String>,
+    /// Whether this start may have created a Cloudflare share that couldn't be
+    /// identified, so the user must check and stop it by hand.
+    pub cleanup_unknown: bool,
+}
+
+fn cloudflare_quick_sites(tunnels: &[TunnelInfo]) -> impl Iterator<Item = &str> {
+    tunnels
+        .iter()
+        .filter(|t| t.kind == TunnelKind::Quick && t.provider == TunnelProvider::Cloudflare)
+        .map(|t| t.site.as_str())
+}
+
+/// Check a `StartQuickTunnel` reply against the provider that was asked for.
+/// A daemon that predates ngrok and zrok ignores `provider` and starts a
+/// Cloudflare quick link, so a reply holding no share at all through a
+/// non-Cloudflare `provider` is unsupported. The stray Cloudflare share is the
+/// one Cloudflare quick share in `after` that `before` (the `TunnelStatus`
+/// ahead of the start, or `None` when unknown) lacks; it is left alone when
+/// that can't be told for certain.
+#[must_use]
+pub fn check_provider_start(
+    provider: TunnelProvider,
+    before: Option<&[TunnelInfo]>,
+    after: &[TunnelInfo],
+) -> ProviderStartCheck {
+    if provider == TunnelProvider::Cloudflare || after.iter().any(|t| t.provider == provider) {
+        return ProviderStartCheck {
+            unsupported: false,
+            stop_cloudflare: None,
+            cleanup_unknown: false,
+        };
+    }
+    let Some(prior) = before else {
+        return ProviderStartCheck {
+            unsupported: true,
+            stop_cloudflare: None,
+            cleanup_unknown: true,
+        };
+    };
+    let existing: std::collections::BTreeSet<&str> = cloudflare_quick_sites(prior).collect();
+    let created: Vec<&str> = cloudflare_quick_sites(after)
+        .filter(|s| !existing.contains(s))
+        .collect();
+    let stop_cloudflare = match created.as_slice() {
+        [site] => Some((*site).to_owned()),
+        _ => None,
+    };
+    ProviderStartCheck {
+        unsupported: true,
+        stop_cloudflare,
+        cleanup_unknown: created.len() > 1,
+    }
+}
+
+/// The warning shown when a start may have left a Cloudflare quick link
+/// running that couldn't be identified.
+#[must_use]
+pub fn cleanup_unknown_message() -> String {
+    "a Cloudflare quick link may have been started and still be public - check `yerd tunnel status` and stop it with `yerd tunnel stop <site> --provider cloudflare`".to_owned()
+}
+
+/// The error shown when the running daemon can't share through `provider`.
+#[must_use]
+pub fn unsupported_provider_message(provider: TunnelProvider) -> String {
+    format!(
+        "The running Yerd daemon doesn't support {} sharing yet - restart Yerd and try again",
+        provider.display_name()
+    )
+}
+
+/// The warning shown when the stray Cloudflare share of `site` couldn't be
+/// stopped, naming the command that stops it by hand.
+#[must_use]
+pub fn cleanup_failed_message(site: &str) -> String {
+    format!(
+        "{site} may still be public through its Cloudflare quick link - stop it with `yerd tunnel stop {site} --provider cloudflare`"
+    )
+}
+
+/// The stderr prompt for a token-taking tunnel action whose token was
+/// omitted, so the CLI reads it from stdin; `None` for every other action.
+#[must_use]
+pub fn stdin_secret_prompt(action: &TunnelAction) -> Option<&'static str> {
+    match action {
+        TunnelAction::Ngrok {
+            action:
+                NgrokAction::Token {
+                    token: None,
+                    clear: false,
+                },
+        } => Some("Paste your ngrok authtoken: "),
+        TunnelAction::Zrok {
+            action: ZrokAction::Enable { token: None },
+        } => Some("Paste your zrok account token: "),
+        _ => None,
+    }
+}
+
+/// The request for a token-taking tunnel action given its token, whether it
+/// came from argv or stdin.
+///
+/// # Errors
+///
+/// [`ClientError::Usage`] when `action` does not take a token.
+pub fn tunnel_secret_request(action: &TunnelAction, token: String) -> Result<Request, ClientError> {
+    match action {
+        TunnelAction::Ngrok {
+            action: NgrokAction::Token { .. },
+        } => Ok(Request::SetNgrokAuthtoken {
+            authtoken: Some(token),
+        }),
+        TunnelAction::Zrok {
+            action: ZrokAction::Enable { .. },
+        } => Ok(Request::EnableZrok { token }),
+        _ => Err(ClientError::Usage(
+            "this tunnel action takes no token".to_owned(),
+        )),
     }
 }
 
@@ -967,6 +1393,32 @@ impl Rendered {
     }
 }
 
+/// The installed Node releases left after an uninstall, newest first.
+fn format_node_versions(installed: &[yerd_ipc::NodeRelease]) -> String {
+    if installed.is_empty() {
+        return "no Node releases installed".to_owned();
+    }
+    let lines: Vec<String> = installed
+        .iter()
+        .map(|n| format!("{}{}", n.version, if n.default { " (default)" } else { "" }))
+        .collect();
+    format!("installed Node releases:\n{}", lines.join("\n"))
+}
+
+/// Turn a blocking install request into its streamed job equivalent, so the
+/// CLI can print progress. Other requests pass through unchanged.
+#[must_use]
+pub fn streamed_install(req: Request) -> Request {
+    match req {
+        Request::InstallTool { tool } => Request::InstallToolStreamed { tool },
+        Request::InstallNode { version } => Request::InstallNodeStreamed {
+            version,
+            update: false,
+        },
+        other => other,
+    }
+}
+
 /// Render a daemon [`Response`] to stdout/stderr text + an exit code. With
 /// `json`, prints the response as pretty JSON instead of a human table.
 #[must_use]
@@ -995,6 +1447,7 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             version_settings,
             directives,
             pool,
+            ..
         } => Rendered::ok(format_php_versions(
             installed,
             *default,
@@ -1086,6 +1539,10 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             sites,
             zone,
         } => Rendered::ok(format_named_tunnels(tunnels, sites, zone.as_deref())),
+        Response::TunnelProviders {
+            providers,
+            default_provider,
+        } => Rendered::ok(format_tunnel_providers(providers, *default_provider)),
         Response::UpdateStatus {
             current,
             latest_stable,
@@ -1108,8 +1565,72 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
         )),
         Response::Proxies { proxies, rules } => Rendered::ok(format_proxies(proxies, rules)),
         Response::Routes { rules } => Rendered::ok(format_routes(rules, None)),
+        Response::ResponseHeaders { headers } => {
+            Rendered::ok(format_response_headers(headers, None))
+        }
+        Response::NodeVersions { installed } => Rendered::ok(format_node_versions(installed)),
+        Response::NetworkSettings { settings } => Rendered::ok(format_network_settings(settings)),
+        Response::NetworkTest { result } => format_network_test(result),
         _ => Rendered::err("unexpected response from daemon".to_owned()),
     }
+}
+
+/// Render the reply to `yerd xdebug on|off|status`: one row per installed PHP
+/// version (`on` with its modes and start, `off`, or `not available` where no
+/// Xdebug is published for that version on this host; a version switched on
+/// but not available says it isn't loaded) and an IDE port hint.
+/// With `json`, or for any reply other than `PhpVersions` (an error), this is
+/// [`render`].
+#[must_use]
+pub fn render_xdebug_status(resp: &Response, json: bool) -> Rendered {
+    let Response::PhpVersions {
+        installed,
+        default,
+        xdebug,
+        xdebug_versions,
+        ..
+    } = resp
+    else {
+        return render(resp, json);
+    };
+    if json {
+        return render(resp, json);
+    }
+    if installed.is_empty() {
+        return Rendered::ok(format!(
+            "no PHP versions installed (default: {default}) - `yerd install php {default}`"
+        ));
+    }
+    let labels: Vec<String> = installed
+        .iter()
+        .map(|v| {
+            if v == default {
+                format!("{v} (default)")
+            } else {
+                v.to_string()
+            }
+        })
+        .collect();
+    let width = labels.iter().map(String::len).max().unwrap_or(0);
+    let mut out = String::new();
+    for (v, label) in installed.iter().zip(&labels) {
+        let available = xdebug_versions.contains(v);
+        let state = match xdebug.get(v) {
+            Some(s) if s.enabled && available => {
+                format!("on   modes: {}  start: {}", s.mode_value(), s.start)
+            }
+            Some(s) if s.enabled => "on (not available on this platform, not loaded)".to_owned(),
+            _ if available => "off".to_owned(),
+            _ => "not available".to_owned(),
+        };
+        let _ = writeln!(out, "PHP {label:<width$}  {state}");
+    }
+    let _ = write!(
+        out,
+        "\nYour IDE should listen on port {} by default (match any `xdebug.client_port` override).",
+        yerd_core::php_xdebug::CLIENT_PORT
+    );
+    Rendered::ok(out)
 }
 
 /// Render `yerd route list [site]`. With `filter`, shows only that site's rules.
@@ -1146,7 +1667,8 @@ fn select_routes<'a>(
 /// Render `yerd proxy list`: whole-host proxies then per-site path rules. A
 /// proxy the daemon reports as customized gains an indented `domains:` line,
 /// mirroring `yerd domain list`; an effectively-default proxy carries no domain
-/// fields and renders as a single line.
+/// fields and renders as a single line. A service-managed path rule is suffixed
+/// `(managed by <service>)`.
 fn format_proxies(proxies: &[yerd_ipc::ProxyEntry], rules: &[yerd_ipc::ProxyRuleEntry]) -> String {
     use std::fmt::Write as _;
     if proxies.is_empty() && rules.is_empty() {
@@ -1169,7 +1691,11 @@ fn format_proxies(proxies: &[yerd_ipc::ProxyEntry], rules: &[yerd_ipc::ProxyRule
         }
         out.push_str("Path rules:\n");
         for r in rules {
-            let _ = writeln!(out, "  {} {} -> {}", r.site, r.prefix, r.target);
+            let _ = write!(out, "  {} {} -> {}", r.site, r.prefix, r.target);
+            if let Some(service) = &r.managed_by {
+                let _ = write!(out, " (managed by {service})");
+            }
+            out.push('\n');
         }
     }
     out.trim_end().to_owned()
@@ -1190,6 +1716,59 @@ fn format_proxy_domains(proxy: &yerd_ipc::ProxyEntry) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Render `yerd header list [site]`. With `filter`, shows only that site's
+/// headers; the filter is applied client-side, as for [`render_routes`]. The
+/// JSON form keeps the `response_headers` envelope, so filtered and unfiltered
+/// output share one shape.
+#[must_use]
+pub fn render_response_headers(
+    headers: &[yerd_ipc::ResponseHeaderEntry],
+    filter: Option<&str>,
+    json: bool,
+) -> Rendered {
+    if json {
+        let selected = select_response_headers(headers, filter)
+            .into_iter()
+            .cloned()
+            .collect();
+        return render(&Response::ResponseHeaders { headers: selected }, true);
+    }
+    Rendered::ok(format_response_headers(headers, filter))
+}
+
+fn select_response_headers<'a>(
+    headers: &'a [yerd_ipc::ResponseHeaderEntry],
+    filter: Option<&str>,
+) -> Vec<&'a yerd_ipc::ResponseHeaderEntry> {
+    match filter {
+        Some(f) => {
+            let f = f.to_ascii_lowercase();
+            headers.iter().filter(|h| h.site == f).collect()
+        }
+        None => headers.iter().collect(),
+    }
+}
+
+/// Render `yerd header list`: one row per header, `site Name: value`.
+fn format_response_headers(
+    headers: &[yerd_ipc::ResponseHeaderEntry],
+    filter: Option<&str>,
+) -> String {
+    use std::fmt::Write as _;
+    let selected = select_response_headers(headers, filter);
+    if selected.is_empty() {
+        return match filter {
+            Some(site) => format!("no response headers configured for {site}"),
+            None => "no response headers configured".to_owned(),
+        };
+    }
+    let mut out = String::from("Response headers:\n");
+    for h in selected {
+        let _ = writeln!(out, "  {} {}: {}", h.site, h.name, h.value);
+    }
+    out.trim_end().to_owned()
 }
 
 /// Render `yerd route list`: one row per rule, `site prefix -> target`.
@@ -1221,6 +1800,7 @@ pub fn doctor_exit_code(resp: &Response) -> u8 {
         Response::DoctorFix { report } => {
             u8::from(report.manual.iter().any(|d| d.severity == Severity::Fail))
         }
+        Response::NetworkTest { result } => u8::from(!result.ok),
         _ => 0,
     }
 }
@@ -1434,22 +2014,114 @@ fn format_tunnels(tunnels: &[TunnelInfo], cloudflared: &CloudflaredStatus) -> St
             |v| format!("cloudflared: {v}"),
         )
     } else {
-        "cloudflared: not installed (run `yerd tunnel install`)".to_owned()
+        "cloudflared: not installed (run `yerd install tool cloudflared`)".to_owned()
     };
     if tunnels.is_empty() {
         return format!("{cf}\nno active tunnels");
     }
-    let mut out = format!("{cf}\n\nSITE\tSTATE\tURL");
+    let mut out = format!("{cf}\n\nSITE\tPROVIDER\tSTATE\tURL");
     for t in tunnels {
-        let state = match t.state {
-            TunnelRunState::Running => "running",
-            TunnelRunState::Failed => "failed",
-            _ => "unknown",
-        };
         let target = t.url.as_deref().or(t.hostname.as_deref()).unwrap_or("-");
-        let _ = write!(out, "\n{}\t{}\t{}", t.site, state, target);
+        let protected = if t.protected { "\t(password)" } else { "" };
+        let static_domain = if t.static_domain {
+            " (static domain)"
+        } else {
+            ""
+        };
+        let _ = write!(
+            out,
+            "\n{}\t{}{}\t{}\t{}{}",
+            t.site,
+            t.provider.display_name(),
+            static_domain,
+            tunnel_state_label(t),
+            target,
+            protected
+        );
+        if let Some(err) = &t.last_error {
+            let _ = write!(out, "\n  error: {err}");
+        }
+        for warning in &t.warnings {
+            let _ = write!(out, "\n  warning: {warning}");
+        }
     }
     out
+}
+
+fn format_tunnel_providers(
+    providers: &[yerd_ipc::TunnelProviderStatus],
+    default_provider: yerd_core::tunnel_provider::TunnelProvider,
+) -> String {
+    use yerd_core::tunnel_provider::{ProviderReadiness, TunnelProvider};
+    let mut out = String::from("PROVIDER\tSTATUS\tBINARY\tSETTINGS");
+    for p in providers {
+        let status = match p.readiness {
+            ProviderReadiness::Ready => "ready",
+            ProviderReadiness::NeedsSetup => "needs setup",
+            ProviderReadiness::NotInstalled => "not installed",
+        };
+        let bin_name = match p.provider {
+            TunnelProvider::Cloudflare => "cloudflared",
+            TunnelProvider::Ngrok => "ngrok",
+            TunnelProvider::Zrok => "zrok2",
+        };
+        let mut binary = match (&p.source, &p.version) {
+            (None, _) => "-".to_owned(),
+            (Some(_), Some(v)) => format!("{bin_name} {v}"),
+            (Some(_), None) => bin_name.to_owned(),
+        };
+        match (&p.source, &p.path) {
+            (Some(yerd_ipc::CloudflaredSource::System), Some(path)) => {
+                let _ = write!(binary, " (PATH {path})");
+            }
+            (Some(yerd_ipc::CloudflaredSource::System), None) => binary.push_str(" (PATH)"),
+            (Some(_), _) => binary.push_str(" (Yerd)"),
+            (None, _) => {}
+        }
+        if let Some(update) = &p.update_available {
+            let _ = write!(binary, " - update {update} in Tooling");
+        }
+        let settings = match p.provider {
+            TunnelProvider::Cloudflare if p.configured => "account connected".to_owned(),
+            TunnelProvider::Cloudflare => "no account".to_owned(),
+            TunnelProvider::Ngrok => {
+                let token = p
+                    .authtoken_hint
+                    .as_deref()
+                    .map_or_else(|| "no token".to_owned(), |h| format!("token {h}"));
+                match &p.domain {
+                    Some(domain) => format!("{token}, domain {domain}"),
+                    None => token,
+                }
+            }
+            TunnelProvider::Zrok if p.configured => "enabled".to_owned(),
+            TunnelProvider::Zrok => "not enabled".to_owned(),
+        };
+        let _ = write!(
+            out,
+            "\n{}\t{status}\t{binary}\t{settings}",
+            p.provider.display_name()
+        );
+    }
+    let _ = write!(
+        out,
+        "\n\ndefault for new shares: {}",
+        default_provider.display_name()
+    );
+    out
+}
+
+/// The human state label. Every reported failure is being retried: the daemon
+/// removes a quick share whose first start fails rather than reporting it, so a
+/// failed tunnel of either kind reads as retrying.
+fn tunnel_state_label(t: &TunnelInfo) -> &'static str {
+    match t.state {
+        TunnelRunState::Running => "online",
+        TunnelRunState::Failed => "failed, retrying",
+        TunnelRunState::Connecting => "connecting",
+        TunnelRunState::Reconnecting => "reconnecting",
+        _ => "unknown",
+    }
 }
 
 fn format_named_tunnels(
@@ -1472,7 +2144,8 @@ fn format_named_tunnels(
     if !sites.is_empty() {
         out.push_str("\n\nEXPOSED SITE\tHOSTNAME");
         for s in sites {
-            let _ = write!(out, "\n{}\t{}", s.site, s.hostname);
+            let protected = if s.protected { "\t(password)" } else { "" };
+            let _ = write!(out, "\n{}\t{}{}", s.site, s.hostname, protected);
         }
     }
     out
@@ -1836,7 +2509,7 @@ fn fmt_tristate(b: Option<bool>) -> &'static str {
     }
 }
 
-/// A `ports` status line when an installed macOS pf redirect targets a port the
+/// A `ports` status line when an installed macOS port forwarder targets a port the
 /// daemon is no longer serving. The host (loopback) case takes precedence and
 /// names both elevate commands; a LAN-only mismatch (host fine) names the LAN
 /// step. `None` when nothing is stale. Mirrors the doctor's stale findings.
@@ -1845,7 +2518,7 @@ fn redirect_stale_line(r: &StatusReport) -> Option<String> {
         |t: yerd_ipc::PortRedirectTargets| t.http != r.http.bound || t.https != r.https.bound;
     if r.port_redirect_targets.is_some_and(mismatched) {
         return Some(
-            "ports     stale redirect: pf targets a dead port (run `sudo yerd elevate ports`, \
+            "ports     stale redirect: forwarder targets a dead port (run `sudo yerd elevate ports`, \
              then `sudo yerd elevate lan` if LAN is on; see `yerd doctor`)"
                 .to_owned(),
         );
@@ -1902,6 +2575,747 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use yerd_ipc::ErrorCode;
+
+    #[test]
+    fn format_tunnels_renders_each_run_state() {
+        let cf = CloudflaredStatus {
+            installed: true,
+            version: None,
+            source: None,
+            logged_in: false,
+            update_available: None,
+        };
+        for (state, label) in [
+            (TunnelRunState::Running, "online"),
+            (TunnelRunState::Failed, "failed, retrying"),
+            (TunnelRunState::Connecting, "connecting"),
+            (TunnelRunState::Reconnecting, "reconnecting"),
+        ] {
+            let tunnel = TunnelInfo {
+                site: "app".into(),
+                kind: yerd_ipc::TunnelKind::Quick,
+                state,
+                url: Some("https://x.trycloudflare.com".into()),
+                hostname: None,
+                last_error: None,
+                protected: false,
+                warnings: Vec::new(),
+                provider: yerd_core::tunnel_provider::TunnelProvider::Cloudflare,
+                static_domain: false,
+            };
+            let out = format_tunnels(&[tunnel], &cf);
+            assert!(
+                out.contains(&format!(
+                    "\napp\tCloudflare\t{label}\thttps://x.trycloudflare.com"
+                )),
+                "{out}"
+            );
+        }
+    }
+
+    fn tunnel_info(kind: yerd_ipc::TunnelKind, state: TunnelRunState) -> TunnelInfo {
+        TunnelInfo {
+            site: "app".into(),
+            kind,
+            state,
+            url: None,
+            hostname: Some("app.example.com".into()),
+            last_error: None,
+            protected: false,
+            warnings: Vec::new(),
+            provider: yerd_core::tunnel_provider::TunnelProvider::Cloudflare,
+            static_domain: false,
+        }
+    }
+
+    fn installed_cloudflared() -> CloudflaredStatus {
+        CloudflaredStatus {
+            installed: true,
+            version: None,
+            source: None,
+            logged_in: true,
+            update_available: None,
+        }
+    }
+
+    #[test]
+    fn failed_tunnels_of_either_kind_render_as_retrying() {
+        let cf = installed_cloudflared();
+        for (kind, label) in [
+            (yerd_ipc::TunnelKind::Named, "failed, retrying"),
+            (yerd_ipc::TunnelKind::Quick, "failed, retrying"),
+        ] {
+            let out = format_tunnels(&[tunnel_info(kind, TunnelRunState::Failed)], &cf);
+            assert!(
+                out.contains(&format!("\napp\tCloudflare\t{label}\tapp.example.com")),
+                "{out}"
+            );
+        }
+    }
+
+    #[test]
+    fn format_tunnels_renders_last_error_warnings_and_protected() {
+        let mut tunnel = tunnel_info(yerd_ipc::TunnelKind::Quick, TunnelRunState::Reconnecting);
+        tunnel.last_error = Some("connection refused".into());
+        tunnel.protected = true;
+        tunnel.warnings = vec!["Vite dev server is running".into(), "SESSION_DOMAIN".into()];
+        let out = format_tunnels(&[tunnel], &installed_cloudflared());
+        assert!(
+            out.contains("\napp\tCloudflare\treconnecting\tapp.example.com\t(password)"),
+            "{out}"
+        );
+        assert!(out.contains("\n  error: connection refused"), "{out}");
+        assert!(
+            out.contains("\n  warning: Vite dev server is running\n  warning: SESSION_DOMAIN"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn format_tunnels_points_a_missing_cloudflared_at_the_tool_install() {
+        let cf = CloudflaredStatus {
+            installed: false,
+            ..installed_cloudflared()
+        };
+        let out = format_tunnels(&[], &cf);
+        assert!(out.contains("yerd install tool cloudflared"), "{out}");
+    }
+
+    #[test]
+    fn format_tunnels_omits_extras_when_absent() {
+        let tunnel = tunnel_info(yerd_ipc::TunnelKind::Named, TunnelRunState::Running);
+        let out = format_tunnels(&[tunnel], &installed_cloudflared());
+        assert!(
+            out.ends_with("\napp\tCloudflare\tonline\tapp.example.com"),
+            "{out}"
+        );
+        assert!(!out.contains("error:"), "{out}");
+        assert!(!out.contains("warning:"), "{out}");
+        assert!(!out.contains("(password)"), "{out}");
+    }
+
+    #[test]
+    fn format_tunnels_renders_the_provider_column() {
+        use yerd_core::tunnel_provider::TunnelProvider;
+        let mut ngrok = tunnel_info(yerd_ipc::TunnelKind::Quick, TunnelRunState::Running);
+        ngrok.provider = TunnelProvider::Ngrok;
+        ngrok.static_domain = true;
+        ngrok.hostname = None;
+        ngrok.url = Some("https://demo.ngrok-free.app".into());
+        let mut zrok = tunnel_info(yerd_ipc::TunnelKind::Quick, TunnelRunState::Connecting);
+        zrok.provider = TunnelProvider::Zrok;
+        zrok.hostname = None;
+        let out = format_tunnels(&[ngrok, zrok], &installed_cloudflared());
+        assert!(out.contains("\n\nSITE\tPROVIDER\tSTATE\tURL\n"), "{out}");
+        assert!(
+            out.contains("\napp\tngrok (static domain)\tonline\thttps://demo.ngrok-free.app"),
+            "{out}"
+        );
+        assert!(out.ends_with("\napp\tzrok\tconnecting\t-"), "{out}");
+    }
+
+    #[test]
+    fn tunnel_share_and_stop_map_their_provider() {
+        use crate::cli::TunnelProviderArg;
+        use yerd_core::tunnel_provider::TunnelProvider;
+        for (action, expected) in [
+            (
+                TunnelAction::Share {
+                    site: "app".into(),
+                    provider: None,
+                    random_url: false,
+                },
+                Request::StartQuickTunnel {
+                    site: "app".into(),
+                    provider: None,
+                    random_url: false,
+                },
+            ),
+            (
+                TunnelAction::Share {
+                    site: "app".into(),
+                    provider: Some(TunnelProviderArg::Ngrok),
+                    random_url: true,
+                },
+                Request::StartQuickTunnel {
+                    site: "app".into(),
+                    provider: Some(TunnelProvider::Ngrok),
+                    random_url: true,
+                },
+            ),
+            (
+                TunnelAction::Stop {
+                    site: "app".into(),
+                    provider: None,
+                },
+                Request::StopTunnel {
+                    site: "app".into(),
+                    provider: None,
+                },
+            ),
+            (
+                TunnelAction::Stop {
+                    site: "app".into(),
+                    provider: Some(TunnelProviderArg::Zrok),
+                },
+                Request::StopTunnel {
+                    site: "app".into(),
+                    provider: Some(TunnelProvider::Zrok),
+                },
+            ),
+        ] {
+            assert_eq!(tunnel_request(&action).unwrap(), expected, "{action:?}");
+        }
+    }
+
+    #[test]
+    fn tunnel_provider_actions_map_to_requests() {
+        use crate::cli::TunnelProviderArg;
+        use yerd_core::tunnel_provider::TunnelProvider;
+        let token = |t: Option<&str>, clear: bool| TunnelAction::Ngrok {
+            action: NgrokAction::Token {
+                token: t.map(str::to_owned),
+                clear,
+            },
+        };
+        let domain = |d: Option<&str>, clear: bool| TunnelAction::Ngrok {
+            action: NgrokAction::Domain {
+                domain: d.map(str::to_owned),
+                clear,
+            },
+        };
+        for (action, expected) in [
+            (TunnelAction::Providers, Request::ListTunnelProviders),
+            (
+                token(Some("tok"), false),
+                Request::SetNgrokAuthtoken {
+                    authtoken: Some("tok".into()),
+                },
+            ),
+            (
+                token(None, true),
+                Request::SetNgrokAuthtoken { authtoken: None },
+            ),
+            (
+                domain(Some("x.ngrok-free.app"), false),
+                Request::SetNgrokDomain {
+                    domain: Some("x.ngrok-free.app".into()),
+                },
+            ),
+            (domain(None, true), Request::SetNgrokDomain { domain: None }),
+            (
+                TunnelAction::Zrok {
+                    action: ZrokAction::Enable {
+                        token: Some("zt".into()),
+                    },
+                },
+                Request::EnableZrok { token: "zt".into() },
+            ),
+            (
+                TunnelAction::Zrok {
+                    action: ZrokAction::Disable,
+                },
+                Request::DisableZrok,
+            ),
+            (
+                TunnelAction::Default {
+                    provider: TunnelProviderArg::Ngrok,
+                },
+                Request::SetDefaultTunnelProvider {
+                    provider: TunnelProvider::Ngrok,
+                },
+            ),
+        ] {
+            assert_eq!(tunnel_request(&action).unwrap(), expected, "{action:?}");
+            assert_eq!(stdin_secret_prompt(&action), None, "{action:?}");
+        }
+    }
+
+    #[test]
+    fn omitted_tokens_are_read_from_stdin() {
+        let ngrok = TunnelAction::Ngrok {
+            action: NgrokAction::Token {
+                token: None,
+                clear: false,
+            },
+        };
+        let zrok = TunnelAction::Zrok {
+            action: ZrokAction::Enable { token: None },
+        };
+        for action in [&ngrok, &zrok] {
+            assert!(matches!(
+                tunnel_request(action),
+                Err(ClientError::Usage(m)) if m == "token required"
+            ));
+            assert!(stdin_secret_prompt(action).is_some());
+        }
+        assert_eq!(
+            tunnel_secret_request(&ngrok, "tok".into()).unwrap(),
+            Request::SetNgrokAuthtoken {
+                authtoken: Some("tok".into())
+            }
+        );
+        assert_eq!(
+            tunnel_secret_request(&zrok, "zt".into()).unwrap(),
+            Request::EnableZrok { token: "zt".into() }
+        );
+        assert!(tunnel_secret_request(&TunnelAction::Providers, "x".into()).is_err());
+    }
+
+    fn share(site: &str, provider: TunnelProvider) -> TunnelInfo {
+        TunnelInfo {
+            site: site.into(),
+            provider,
+            hostname: None,
+            ..tunnel_info(yerd_ipc::TunnelKind::Quick, TunnelRunState::Running)
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn check_provider_start_spots_a_daemon_that_ignored_the_provider() {
+        type Case = (
+            &'static str,
+            TunnelProvider,
+            Option<Vec<TunnelInfo>>,
+            Vec<TunnelInfo>,
+            ProviderStartCheck,
+        );
+        let cf = || share("app", TunnelProvider::Cloudflare);
+        let ngrok = || share("app", TunnelProvider::Ngrok);
+        let zrok_blog = || share("blog", TunnelProvider::Zrok);
+        let other = || share("blog", TunnelProvider::Cloudflare);
+        let third = || share("shop", TunnelProvider::Cloudflare);
+        let ok = ProviderStartCheck {
+            unsupported: false,
+            stop_cloudflare: None,
+            cleanup_unknown: false,
+        };
+        let unsupported = |stop: Option<&str>| ProviderStartCheck {
+            unsupported: true,
+            stop_cloudflare: stop.map(str::to_owned),
+            cleanup_unknown: false,
+        };
+        let unknown = ProviderStartCheck {
+            unsupported: true,
+            stop_cloudflare: None,
+            cleanup_unknown: true,
+        };
+        let cases: Vec<Case> = vec![
+            (
+                "cloudflare asked",
+                TunnelProvider::Cloudflare,
+                Some(vec![]),
+                vec![cf()],
+                ok.clone(),
+            ),
+            (
+                "share present",
+                TunnelProvider::Ngrok,
+                Some(vec![]),
+                vec![cf(), ngrok()],
+                ok.clone(),
+            ),
+            (
+                "share present under the daemon's canonical name",
+                TunnelProvider::Ngrok,
+                None,
+                vec![ngrok()],
+                ok.clone(),
+            ),
+            (
+                "another site shares through the provider",
+                TunnelProvider::Zrok,
+                Some(vec![]),
+                vec![zrok_blog()],
+                ok.clone(),
+            ),
+            (
+                "old daemon created cloudflare",
+                TunnelProvider::Ngrok,
+                Some(vec![other()]),
+                vec![other(), cf()],
+                unsupported(Some("app")),
+            ),
+            (
+                "old daemon, created share found by diff alone",
+                TunnelProvider::Zrok,
+                Some(vec![]),
+                vec![cf()],
+                unsupported(Some("app")),
+            ),
+            (
+                "cloudflare existed",
+                TunnelProvider::Ngrok,
+                Some(vec![cf()]),
+                vec![cf()],
+                unsupported(None),
+            ),
+            (
+                "prior list unknown",
+                TunnelProvider::Ngrok,
+                None,
+                vec![cf()],
+                unknown.clone(),
+            ),
+            (
+                "nothing came back",
+                TunnelProvider::Zrok,
+                Some(vec![other()]),
+                vec![other()],
+                unsupported(None),
+            ),
+            (
+                "two new cloudflare shares are ambiguous",
+                TunnelProvider::Ngrok,
+                Some(vec![]),
+                vec![cf(), third()],
+                unknown,
+            ),
+        ];
+        for (label, provider, before, after, want) in cases {
+            assert_eq!(
+                check_provider_start(provider, before.as_deref(), &after),
+                want,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn cleanup_failed_message_names_the_manual_stop() {
+        assert_eq!(
+            cleanup_failed_message("app"),
+            "app may still be public through its Cloudflare quick link - stop it with `yerd tunnel stop app --provider cloudflare`"
+        );
+    }
+
+    #[test]
+    fn cleanup_unknown_message_names_status_and_the_manual_stop() {
+        let m = cleanup_unknown_message();
+        assert!(m.contains("`yerd tunnel status`"), "{m}");
+        assert!(
+            m.contains("`yerd tunnel stop <site> --provider cloudflare`"),
+            "{m}"
+        );
+    }
+
+    #[test]
+    fn unsupported_provider_message_names_the_provider() {
+        assert_eq!(
+            unsupported_provider_message(TunnelProvider::Zrok),
+            "The running Yerd daemon doesn't support zrok sharing yet - restart Yerd and try again"
+        );
+    }
+
+    fn provider_status(
+        provider: yerd_core::tunnel_provider::TunnelProvider,
+        readiness: yerd_core::tunnel_provider::ProviderReadiness,
+    ) -> yerd_ipc::TunnelProviderStatus {
+        yerd_ipc::TunnelProviderStatus {
+            provider,
+            readiness,
+            version: None,
+            source: None,
+            path: None,
+            update_available: None,
+            configured: false,
+            authtoken_hint: None,
+            domain: None,
+        }
+    }
+
+    #[test]
+    fn format_tunnel_providers_cases() {
+        use yerd_core::tunnel_provider::{ProviderReadiness, TunnelProvider};
+        let cloudflare = yerd_ipc::TunnelProviderStatus {
+            version: Some("2026.6.1".into()),
+            source: Some(yerd_ipc::CloudflaredSource::Managed),
+            configured: true,
+            ..provider_status(TunnelProvider::Cloudflare, ProviderReadiness::Ready)
+        };
+        let ngrok = yerd_ipc::TunnelProviderStatus {
+            version: Some("3.18.4".into()),
+            source: Some(yerd_ipc::CloudflaredSource::Managed),
+            update_available: Some("3.19.0".into()),
+            configured: true,
+            authtoken_hint: Some("2fXk••••••••Qa".into()),
+            domain: Some("x.ngrok-free.app".into()),
+            ..provider_status(TunnelProvider::Ngrok, ProviderReadiness::Ready)
+        };
+        let zrok = yerd_ipc::TunnelProviderStatus {
+            version: Some("2.0.11".into()),
+            source: Some(yerd_ipc::CloudflaredSource::System),
+            path: Some("/opt/bin/zrok2".into()),
+            configured: true,
+            ..provider_status(TunnelProvider::Zrok, ProviderReadiness::Ready)
+        };
+        let out = format_tunnel_providers(&[cloudflare, ngrok, zrok], TunnelProvider::Ngrok);
+        assert_eq!(
+            out,
+            "PROVIDER\tSTATUS\tBINARY\tSETTINGS\n\
+             Cloudflare\tready\tcloudflared 2026.6.1 (Yerd)\taccount connected\n\
+             ngrok\tready\tngrok 3.18.4 (Yerd) - update 3.19.0 in Tooling\ttoken 2fXk••••••••Qa, domain x.ngrok-free.app\n\
+             zrok\tready\tzrok2 2.0.11 (PATH /opt/bin/zrok2)\tenabled\n\n\
+             default for new shares: ngrok"
+        );
+
+        let missing = [
+            provider_status(TunnelProvider::Cloudflare, ProviderReadiness::NotInstalled),
+            provider_status(TunnelProvider::Ngrok, ProviderReadiness::NotInstalled),
+            provider_status(TunnelProvider::Zrok, ProviderReadiness::NotInstalled),
+        ];
+        let out = format_tunnel_providers(&missing, TunnelProvider::Cloudflare);
+        assert!(
+            out.contains("\nCloudflare\tnot installed\t-\tno account"),
+            "{out}"
+        );
+        assert!(out.contains("\nngrok\tnot installed\t-\tno token"), "{out}");
+        assert!(
+            out.contains("\nzrok\tnot installed\t-\tnot enabled"),
+            "{out}"
+        );
+        assert!(out.ends_with("default for new shares: Cloudflare"), "{out}");
+    }
+
+    #[test]
+    fn format_named_tunnels_marks_protected_sites() {
+        let sites = [
+            yerd_ipc::SiteHostname {
+                site: "a".into(),
+                hostname: "a.example.com".into(),
+                protected: true,
+            },
+            yerd_ipc::SiteHostname {
+                site: "b".into(),
+                hostname: "b.example.com".into(),
+                protected: false,
+            },
+        ];
+        let out = format_named_tunnels(&[], &sites, None);
+        assert!(out.contains("\na\ta.example.com\t(password)"), "{out}");
+        assert!(out.ends_with("\nb\tb.example.com"), "{out}");
+    }
+
+    #[test]
+    fn maps_tunnel_password_set_and_clear() {
+        assert_eq!(
+            to_request(&Command::Tunnel {
+                action: TunnelAction::Password {
+                    site: "app".into(),
+                    password: Some("hunter2".into()),
+                    clear: false,
+                }
+            })
+            .unwrap(),
+            Request::SetTunnelPassword {
+                site: "app".into(),
+                password: Some("hunter2".into()),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Tunnel {
+                action: TunnelAction::Password {
+                    site: "app".into(),
+                    password: None,
+                    clear: true,
+                }
+            })
+            .unwrap(),
+            Request::SetTunnelPassword {
+                site: "app".into(),
+                password: None,
+            }
+        );
+    }
+
+    #[test]
+    fn maps_publish_and_unpublish_to_named_start_and_stop() {
+        assert_eq!(
+            to_request(&Command::Tunnel {
+                action: TunnelAction::Publish
+            })
+            .unwrap(),
+            Request::StartNamedTunnel
+        );
+        assert_eq!(
+            to_request(&Command::Tunnel {
+                action: TunnelAction::Unpublish
+            })
+            .unwrap(),
+            Request::StopNamedTunnel
+        );
+    }
+
+    fn proxy_cmd(action: crate::cli::OutboundProxyAction) -> Command {
+        Command::Network {
+            action: crate::cli::NetworkAction::Proxy { action },
+        }
+    }
+
+    #[test]
+    fn maps_network_proxy_commands() {
+        use crate::cli::OutboundProxyAction as ProxyAction;
+        use yerd_core::network::OutboundProxyMode;
+        let cases = [
+            (ProxyAction::Status, Request::GetNetworkSettings),
+            (ProxyAction::Test, Request::TestNetwork),
+            (
+                ProxyAction::Set {
+                    url: "http://proxy:3128".into(),
+                    https: None,
+                    no_proxy: None,
+                },
+                Request::SetNetworkSettings {
+                    mode: OutboundProxyMode::Manual,
+                    http_proxy: Some("http://proxy:3128".into()),
+                    https_proxy: Some(String::new()),
+                    no_proxy: None,
+                },
+            ),
+            (
+                ProxyAction::Set {
+                    url: "http://a:1".into(),
+                    https: Some("http://b:2".into()),
+                    no_proxy: Some(vec!["corp.com".into(), "10.0.0.0/8".into()]),
+                },
+                Request::SetNetworkSettings {
+                    mode: OutboundProxyMode::Manual,
+                    http_proxy: Some("http://a:1".into()),
+                    https_proxy: Some("http://b:2".into()),
+                    no_proxy: Some(vec!["corp.com".into(), "10.0.0.0/8".into()]),
+                },
+            ),
+            (
+                ProxyAction::System,
+                Request::SetNetworkSettings {
+                    mode: OutboundProxyMode::System,
+                    http_proxy: None,
+                    https_proxy: None,
+                    no_proxy: None,
+                },
+            ),
+            (
+                ProxyAction::Off,
+                Request::SetNetworkSettings {
+                    mode: OutboundProxyMode::Off,
+                    http_proxy: None,
+                    https_proxy: None,
+                    no_proxy: None,
+                },
+            ),
+        ];
+        for (action, expected) in cases {
+            assert_eq!(to_request(&proxy_cmd(action)).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn parses_network_proxy_set_flags() {
+        use clap::Parser as _;
+        let cli = crate::cli::Cli::try_parse_from([
+            "yerd",
+            "network",
+            "proxy",
+            "set",
+            "http://p:1",
+            "--https",
+            "http://s:2",
+            "--no-proxy",
+            "corp.com,10.0.0.0/8",
+        ])
+        .unwrap();
+        let Command::Network {
+            action: crate::cli::NetworkAction::Proxy { action },
+        } = cli.command
+        else {
+            panic!("expected network proxy");
+        };
+        assert_eq!(
+            action,
+            crate::cli::OutboundProxyAction::Set {
+                url: "http://p:1".into(),
+                https: Some("http://s:2".into()),
+                no_proxy: Some(vec!["corp.com".into(), "10.0.0.0/8".into()]),
+            }
+        );
+    }
+
+    #[test]
+    fn renders_network_status_redacted() {
+        use yerd_core::network::{OutboundProxyMode, ProxySource};
+        let resp = Response::NetworkSettings {
+            settings: Box::new(yerd_ipc::NetworkSettings {
+                mode: OutboundProxyMode::Manual,
+                http_proxy: Some("http://u:***@proxy:3128".into()),
+                https_proxy: None,
+                no_proxy: vec![".corp.com".into()],
+                effective: Some(yerd_ipc::EffectiveProxy {
+                    mode: OutboundProxyMode::Manual,
+                    source: ProxySource::Manual,
+                    http_proxy: Some("http://u:***@proxy:3128".into()),
+                    https_proxy: Some("http://u:***@proxy:3128".into()),
+                    bypass: vec!["localhost".into(), ".test".into(), ".corp.com".into()],
+                }),
+            }),
+        };
+        let r = render(&resp, false);
+        assert_eq!(r.code, 0);
+        assert!(r.stdout.contains("mode: manual"), "{}", r.stdout);
+        assert!(r.stdout.contains("http://u:***@proxy:3128"), "{}", r.stdout);
+        assert!(r.stdout.contains("(from manual setting)"), "{}", r.stdout);
+        assert!(
+            r.stdout.contains("bypass: localhost, .test, .corp.com"),
+            "{}",
+            r.stdout
+        );
+
+        let direct = Response::NetworkSettings {
+            settings: Box::new(yerd_ipc::NetworkSettings {
+                mode: OutboundProxyMode::System,
+                http_proxy: None,
+                https_proxy: None,
+                no_proxy: vec![],
+                effective: Some(yerd_ipc::EffectiveProxy {
+                    mode: OutboundProxyMode::System,
+                    source: ProxySource::None,
+                    http_proxy: None,
+                    https_proxy: None,
+                    bypass: vec![],
+                }),
+            }),
+        };
+        assert!(render(&direct, false).stdout.contains("in use: direct"));
+    }
+
+    #[test]
+    fn renders_network_test_and_exit_code() {
+        use yerd_core::network::ProxySource;
+        let result = |ok: bool| Response::NetworkTest {
+            result: Box::new(yerd_ipc::NetworkTestResult {
+                ok,
+                url: "https://files.yerd.app/latest.json".into(),
+                status: ok.then_some(200),
+                error: (!ok).then(|| "connection refused".into()),
+                via: Some("http://u:***@proxy:3128".into()),
+                source: ProxySource::LoginShell,
+            }),
+        };
+        let pass = render(&result(true), false);
+        assert_eq!(pass.code, 0);
+        assert!(pass
+            .stdout
+            .contains("HTTP 200 via http://u:***@proxy:3128 (login shell)"));
+        let fail = render(&result(false), false);
+        assert_eq!(fail.code, 1);
+        assert!(
+            fail.stderr.contains("connection refused"),
+            "{}",
+            fail.stderr
+        );
+        assert_eq!(render(&result(false), true).code, 1);
+        assert_eq!(render(&result(true), true).code, 0);
+    }
 
     #[test]
     fn maps_lan_and_remote_setup_commands() {
@@ -2150,7 +3564,10 @@ mod tests {
         assert_eq!(to_request(&Command::Tools).unwrap(), Request::ListTools);
         assert_eq!(
             to_request(&Command::Install {
-                target: crate::cli::InstallTarget::Tool { id: "node".into() }
+                target: crate::cli::InstallTarget::Tool {
+                    id: "node".into(),
+                    version: None
+                }
             })
             .unwrap(),
             Request::InstallTool {
@@ -2588,6 +4005,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn renders_human_responses_and_exit_codes() {
         assert_eq!(render(&Response::Pong, false).stdout, "pong");
         assert_eq!(render(&Response::Pong, false).code, 0);
@@ -2608,6 +4026,7 @@ mod tests {
                         binaries: vec!["node".into(), "npm".into(), "npx".into()],
                         external: false,
                         external_path: None,
+                        update_available: None,
                     },
                     ToolStatus {
                         id: "bun".into(),
@@ -2617,6 +4036,7 @@ mod tests {
                         binaries: vec!["bun".into(), "bunx".into()],
                         external: true,
                         external_path: Some("/opt/homebrew/bin/bun".into()),
+                        update_available: None,
                     },
                 ],
             },
@@ -2640,6 +4060,9 @@ mod tests {
                     apex_shadowed_by: None,
                     uses_front_controller: true,
                     is_laravel: false,
+                    favourite: false,
+                    framework: None,
+                    added_at: None,
                 }],
             },
             false,
@@ -2672,6 +4095,9 @@ mod tests {
                     apex_shadowed_by: None,
                     uses_front_controller: false,
                     is_laravel: false,
+                    favourite: false,
+                    framework: None,
+                    added_at: None,
                 }],
             },
             false,
@@ -2718,14 +4144,18 @@ mod tests {
             &Response::PhpVersions {
                 installed: vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)],
                 default: PhpVersion::new(8, 5),
-                updates: vec![yerd_ipc::PhpUpdate {
+                updates: Box::new(vec![yerd_ipc::PhpUpdate {
                     version: PhpVersion::new(8, 3),
                     installed: "8.3.6".into(),
                     latest: "8.3.31".into(),
-                }],
+                }]),
                 settings: std::collections::BTreeMap::new(),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
                 directives: Box::new(std::collections::BTreeMap::new()),
+                ffi_versions: Box::new(vec![]),
+                libvips_found: None,
+                xdebug: Box::default(),
+                xdebug_versions: Box::default(),
                 pool: Box::new(std::collections::BTreeMap::new()),
             },
             false,
@@ -2741,10 +4171,14 @@ mod tests {
             &Response::PhpVersions {
                 installed: vec![],
                 default: PhpVersion::new(8, 3),
-                updates: vec![],
+                updates: Box::default(),
                 settings: std::collections::BTreeMap::new(),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
                 directives: Box::new(std::collections::BTreeMap::new()),
+                ffi_versions: Box::new(vec![]),
+                libvips_found: None,
+                xdebug: Box::default(),
+                xdebug_versions: Box::default(),
                 pool: Box::new(std::collections::BTreeMap::new()),
             },
             false,
@@ -2759,7 +4193,7 @@ mod tests {
             &Response::PhpVersions {
                 installed: vec![v83, PhpVersion::new(8, 5)],
                 default: PhpVersion::new(8, 5),
-                updates: vec![],
+                updates: Box::default(),
                 settings: std::collections::BTreeMap::from([(
                     "memory_limit".to_string(),
                     "512M".to_string(),
@@ -2778,6 +4212,10 @@ mod tests {
                         "debug".to_string(),
                     )]),
                 )])),
+                ffi_versions: Box::new(vec![]),
+                libvips_found: None,
+                xdebug: Box::default(),
+                xdebug_versions: Box::default(),
                 pool: Box::new(std::collections::BTreeMap::from([(
                     v83,
                     std::collections::BTreeMap::from([(
@@ -2937,13 +4375,17 @@ mod tests {
             &Response::PhpVersions {
                 installed: vec![PhpVersion::new(8, 5)],
                 default: PhpVersion::new(8, 5),
-                updates: vec![],
+                updates: Box::default(),
                 settings: std::collections::BTreeMap::from([
                     ("memory_limit".to_string(), "512M".to_string()),
                     ("display_errors".to_string(), "On".to_string()),
                 ]),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
                 directives: Box::new(std::collections::BTreeMap::new()),
+                ffi_versions: Box::new(vec![]),
+                libvips_found: None,
+                xdebug: Box::default(),
+                xdebug_versions: Box::default(),
                 pool: Box::new(std::collections::BTreeMap::new()),
             },
             false,
@@ -3114,6 +4556,8 @@ mod tests {
             lan_setup_bound: None,
             port_redirect_targets: None,
             lan_redirect_targets: None,
+            legacy_pf_redirect: None,
+            node_updates: 0,
         }
     }
 
@@ -3242,6 +4686,19 @@ mod tests {
             },
         })
         .is_err());
+        let err = to_request(&Command::Proxy {
+            action: ProxyAction::Edit {
+                first: "codestash".into(),
+                second: "/live".into(),
+                third: None,
+            },
+        })
+        .unwrap_err();
+        assert!(matches!(err, ClientError::Usage(_)), "got: {err:?}");
+        assert_eq!(
+            err.to_string(),
+            "missing upstream URL for rule codestash/live: usage is yerd proxy edit <site> <prefix> <url>"
+        );
     }
 
     #[test]
@@ -3275,6 +4732,9 @@ mod tests {
             apex_shadowed_by: Some("shop".into()),
             uses_front_controller: false,
             is_laravel: false,
+            favourite: false,
+            framework: None,
+            added_at: None,
         };
         let r = render_domains(&[e], "test", None, false);
         assert!(r.stdout.contains("corp.test (primary)"));
@@ -3292,6 +4752,9 @@ mod tests {
             apex_shadowed_by: None,
             uses_front_controller: false,
             is_laravel: false,
+            favourite: false,
+            framework: None,
+            added_at: None,
         };
         let r = render_domains(&[e], "test", None, false);
         assert!(r.stdout.contains("foo.test (primary)"));
@@ -3606,6 +5069,172 @@ mod tests {
     }
 
     #[test]
+    fn maps_header_command() {
+        use crate::cli::HeaderAction;
+        assert_eq!(
+            to_request(&Command::Header {
+                action: HeaderAction::Set {
+                    site: "api".into(),
+                    name: "Access-Control-Allow-Origin".into(),
+                    value: "https://app.test".into(),
+                },
+            })
+            .unwrap(),
+            Request::SetResponseHeader {
+                site: "api".into(),
+                name: "Access-Control-Allow-Origin".into(),
+                value: "https://app.test".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Header {
+                action: HeaderAction::Remove {
+                    site: "api".into(),
+                    name: "access-control-allow-origin".into(),
+                },
+            })
+            .unwrap(),
+            Request::RemoveResponseHeader {
+                site: "api".into(),
+                name: "access-control-allow-origin".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Header {
+                action: HeaderAction::List { site: None },
+            })
+            .unwrap(),
+            Request::ListResponseHeaders
+        );
+        assert_eq!(
+            to_request(&Command::Header {
+                action: HeaderAction::List {
+                    site: Some("api".into())
+                },
+            })
+            .unwrap(),
+            Request::ListResponseHeaders,
+            "the site filter is applied client-side, not on the wire"
+        );
+    }
+
+    #[test]
+    fn maps_header_command_on_a_dotted_proxy_name() {
+        use crate::cli::HeaderAction;
+        assert_eq!(
+            to_request(&Command::Header {
+                action: HeaderAction::Set {
+                    site: "api.account".into(),
+                    name: "X-A".into(),
+                    value: "1".into(),
+                },
+            })
+            .unwrap(),
+            Request::SetResponseHeader {
+                site: "api.account".into(),
+                name: "X-A".into(),
+                value: "1".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Header {
+                action: HeaderAction::Remove {
+                    site: "api.account".into(),
+                    name: "X-A".into(),
+                },
+            })
+            .unwrap(),
+            Request::RemoveResponseHeader {
+                site: "api.account".into(),
+                name: "X-A".into(),
+            }
+        );
+        for bad in ["", "bad name", "-api"] {
+            assert!(
+                matches!(
+                    to_request(&Command::Header {
+                        action: HeaderAction::Set {
+                            site: bad.into(),
+                            name: "X-A".into(),
+                            value: "1".into(),
+                        },
+                    }),
+                    Err(ClientError::Usage(_))
+                ),
+                "{bad:?} must be a usage error"
+            );
+        }
+    }
+
+    #[test]
+    fn renders_header_list_with_and_without_a_filter() {
+        let headers = vec![
+            yerd_ipc::ResponseHeaderEntry {
+                site: "api".into(),
+                name: "Access-Control-Allow-Origin".into(),
+                value: "https://app.test".into(),
+            },
+            yerd_ipc::ResponseHeaderEntry {
+                site: "app".into(),
+                name: "X-Frame-Options".into(),
+                value: "DENY".into(),
+            },
+        ];
+
+        let all = render_response_headers(&headers, None, false);
+        assert_eq!(all.code, 0);
+        assert!(all
+            .stdout
+            .contains("api Access-Control-Allow-Origin: https://app.test"));
+        assert!(all.stdout.contains("app X-Frame-Options: DENY"));
+
+        let one = render_response_headers(&headers, Some("API"), false);
+        assert!(one.stdout.contains("api Access-Control-Allow-Origin"));
+        assert!(
+            !one.stdout.contains("X-Frame-Options"),
+            "the filter must be case-insensitive and exclusive"
+        );
+
+        let json = render_response_headers(&headers, Some("api"), true);
+        let parsed: serde_json::Value = serde_json::from_str(&json.stdout).unwrap();
+        assert_eq!(
+            parsed,
+            serde_json::json!({
+                "type": "response_headers",
+                "headers": [{
+                    "site": "api",
+                    "name": "Access-Control-Allow-Origin",
+                    "value": "https://app.test"
+                }]
+            })
+        );
+
+        let none = render_response_headers(&headers, Some("ghost"), false);
+        assert_eq!(none.stdout, "no response headers configured for ghost");
+
+        let empty = render_response_headers(&[], None, false);
+        assert_eq!(empty.stdout, "no response headers configured");
+    }
+
+    #[test]
+    fn filtered_header_json_matches_the_unfiltered_shape() {
+        let headers = vec![yerd_ipc::ResponseHeaderEntry {
+            site: "api".into(),
+            name: "X-Frame-Options".into(),
+            value: "DENY".into(),
+        }];
+        let unfiltered = render(
+            &Response::ResponseHeaders {
+                headers: headers.clone(),
+            },
+            true,
+        );
+        let filtered = render_response_headers(&headers, Some("api"), true);
+        assert_eq!(filtered.stdout, unfiltered.stdout);
+        assert_eq!(filtered.code, unfiltered.code);
+    }
+
+    #[test]
     fn maps_proxy_command() {
         use crate::cli::ProxyAction;
         assert_eq!(
@@ -3660,6 +5289,35 @@ mod tests {
             Request::RemoveProxyRule {
                 site: "myapp".into(),
                 prefix: "/app".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Proxy {
+                action: ProxyAction::Edit {
+                    first: "grafana".into(),
+                    second: "http://localhost:3001".into(),
+                    third: None,
+                },
+            })
+            .unwrap(),
+            Request::UpdateProxy {
+                name: "grafana".into(),
+                url: "http://localhost:3001".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Proxy {
+                action: ProxyAction::Edit {
+                    first: "codestash".into(),
+                    second: "/live".into(),
+                    third: Some("http://127.0.0.1:8082".into()),
+                },
+            })
+            .unwrap(),
+            Request::UpdateProxyRule {
+                site: "codestash".into(),
+                prefix: "/live".into(),
+                url: "http://127.0.0.1:8082".into(),
             }
         );
         assert_eq!(
@@ -3729,6 +5387,21 @@ mod tests {
             format_proxies(std::slice::from_ref(&apex_primary), &[]),
             "Whole-host proxies:\n  account-dev (http) -> http://127.0.0.1:48087\n    \
              domains: account-dev.test, custom-domain.test"
+        );
+    }
+
+    #[test]
+    fn format_proxies_marks_service_managed_rules() {
+        let rule = |prefix: &str, managed_by: Option<&str>| yerd_ipc::ProxyRuleEntry {
+            site: "app".into(),
+            prefix: prefix.into(),
+            target: "http://127.0.0.1:8080".into(),
+            managed_by: managed_by.map(Into::into),
+        };
+        assert_eq!(
+            format_proxies(&[], &[rule("/app", Some("Reverb")), rule("/live", None)]),
+            "Path rules:\n  app /app -> http://127.0.0.1:8080 (managed by Reverb)\n  \
+             app /live -> http://127.0.0.1:8080"
         );
     }
 
@@ -4182,6 +5855,37 @@ mod tests {
     }
 
     #[test]
+    fn set_php_ffi_enable_maps_and_rejects_preload() {
+        assert_eq!(
+            to_request(&Command::Set {
+                target: crate::cli::SetTarget::Php {
+                    setting: "ffi.enable".into(),
+                    value: "on".into(),
+                    only: Some("8.4".into())
+                }
+            })
+            .unwrap(),
+            Request::SetPhpVersionSettings {
+                version: PhpVersion::new(8, 4),
+                settings: std::collections::BTreeMap::from([(
+                    "ffi.enable".to_string(),
+                    "on".to_string()
+                )])
+            }
+        );
+        match to_request(&Command::Set {
+            target: crate::cli::SetTarget::Php {
+                setting: "ffi.enable".into(),
+                value: "preload".into(),
+                only: None,
+            },
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn root_rejects_bad_name() {
         match to_request(&Command::Root {
             name: "bad name".into(),
@@ -4252,6 +5956,9 @@ mod tests {
             Command::Path {
                 action: crate::cli::PathAction::Install,
             },
+            Command::Daemon {
+                action: crate::cli::DaemonAction::Install,
+            },
             Command::Coverage { args: vec![] },
             Command::Exec {
                 site: None,
@@ -4263,6 +5970,7 @@ mod tests {
                 site: None,
             },
             Command::Mcp,
+            Command::Init,
             Command::Link {
                 name_or_path: None,
                 path: None,
@@ -4453,6 +6161,7 @@ mod tests {
                         subject: "hello\tthere\nworld".into(),
                         date_epoch: 0,
                         read: false,
+                        site: None,
                     },
                     yerd_ipc::MailSummary {
                         id: "id2".into(),
@@ -4461,6 +6170,7 @@ mod tests {
                         subject: String::new(),
                         date_epoch: 0,
                         read: false,
+                        site: None,
                     },
                 ],
             },
@@ -4522,5 +6232,317 @@ mod tests {
         )
         .stdout
         .contains("(empty message)"));
+    }
+
+    fn node_request(args: &[&str]) -> Result<Request, ClientError> {
+        use clap::Parser as _;
+        let cli = crate::cli::Cli::try_parse_from(args).unwrap();
+        to_request(&cli.command)
+    }
+
+    #[test]
+    fn node_commands_map_to_requests() {
+        for (args, expected) in [
+            (
+                &["yerd", "node", "unset", "--site", "blog"][..],
+                Request::ClearNodeVersion {
+                    site: "blog".into(),
+                },
+            ),
+            (
+                &["yerd", "node", "uninstall", "v22.12.0"][..],
+                Request::UninstallNode {
+                    version: "v22.12.0".into(),
+                },
+            ),
+            (
+                &["yerd", "node", "use", "lts/iron", "--site", "blog"][..],
+                Request::SetNodeVersion {
+                    version: "lts/iron".into(),
+                    site: Some("blog".into()),
+                },
+            ),
+            (
+                &["yerd", "node", "use", "lts/*"][..],
+                Request::SetNodeVersion {
+                    version: "lts/*".into(),
+                    site: None,
+                },
+            ),
+            (
+                &["yerd", "node", "use", "node"][..],
+                Request::SetNodeVersion {
+                    version: "node".into(),
+                    site: None,
+                },
+            ),
+            (
+                &["yerd", "install", "tool", "node", "lts/iron"][..],
+                Request::InstallNode {
+                    version: "lts/iron".into(),
+                },
+            ),
+        ] {
+            assert_eq!(node_request(args).unwrap(), expected, "{args:?}");
+        }
+        for args in [
+            &["yerd", "node", "unset", "--site", "bad name"][..],
+            &["yerd", "node", "uninstall", "22"][..],
+            &["yerd", "node", "uninstall", "lts/iron"][..],
+            &["yerd", "node", "use", "latest"][..],
+            &["yerd", "install", "tool", "node", "lts/"][..],
+            &["yerd", "install", "tool", "bun", "1"][..],
+        ] {
+            assert!(
+                matches!(node_request(args), Err(ClientError::Usage(_))),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn installs_stream_as_jobs() {
+        for (req, expected) in [
+            (
+                Request::InstallTool {
+                    tool: "node".into(),
+                },
+                Request::InstallToolStreamed {
+                    tool: "node".into(),
+                },
+            ),
+            (
+                Request::InstallNode {
+                    version: "lts/iron".into(),
+                },
+                Request::InstallNodeStreamed {
+                    version: "lts/iron".into(),
+                    update: false,
+                },
+            ),
+            (Request::ListNode, Request::ListNode),
+        ] {
+            assert_eq!(streamed_install(req), expected);
+        }
+    }
+
+    #[test]
+    fn node_versions_render_remaining_releases() {
+        let release = |version: &str, default| yerd_ipc::NodeRelease {
+            version: version.into(),
+            lts: true,
+            codename: None,
+            default,
+            uninstall_blocked: false,
+            clears_preferences: vec![],
+            update: None,
+        };
+        let text = render(
+            &Response::NodeVersions {
+                installed: vec![release("24.1.0", false), release("22.12.0", true)],
+            },
+            false,
+        );
+        assert_eq!(text.code, 0);
+        assert_eq!(
+            text.stdout,
+            "installed Node releases:\n24.1.0\n22.12.0 (default)"
+        );
+        assert_eq!(
+            render(&Response::NodeVersions { installed: vec![] }, false).stdout,
+            "no Node releases installed"
+        );
+    }
+
+    fn xdebug_request_from(args: &[&str]) -> Result<Request, ClientError> {
+        use clap::Parser as _;
+        let cli = crate::cli::Cli::try_parse_from(args).unwrap();
+        to_request(&cli.command)
+    }
+
+    #[test]
+    fn xdebug_commands_map_to_requests() {
+        use yerd_core::{XdebugMode, XdebugStart};
+        let cases = [
+            (
+                &["yerd", "xdebug", "on"][..],
+                Request::SetXdebug {
+                    version: None,
+                    enabled: Some(true),
+                    modes: None,
+                    start: None,
+                },
+            ),
+            (
+                &[
+                    "yerd",
+                    "xdebug",
+                    "on",
+                    "8.4",
+                    "--mode",
+                    "debug,profile",
+                    "--trigger",
+                ][..],
+                Request::SetXdebug {
+                    version: Some(PhpVersion::new(8, 4)),
+                    enabled: Some(true),
+                    modes: Some(vec![XdebugMode::Debug, XdebugMode::Profile]),
+                    start: Some(XdebugStart::Trigger),
+                },
+            ),
+            (
+                &["yerd", "xdebug", "on", "--always"][..],
+                Request::SetXdebug {
+                    version: None,
+                    enabled: Some(true),
+                    modes: None,
+                    start: Some(XdebugStart::Always),
+                },
+            ),
+            (
+                &["yerd", "xdebug", "off"][..],
+                Request::SetXdebug {
+                    version: None,
+                    enabled: Some(false),
+                    modes: None,
+                    start: None,
+                },
+            ),
+            (
+                &["yerd", "xdebug", "off", "8.3"][..],
+                Request::SetXdebug {
+                    version: Some(PhpVersion::new(8, 3)),
+                    enabled: Some(false),
+                    modes: None,
+                    start: None,
+                },
+            ),
+            (&["yerd", "xdebug", "status"][..], Request::ListPhp),
+        ];
+        for (args, expected) in cases {
+            assert_eq!(xdebug_request_from(args).unwrap(), expected, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn xdebug_bad_arguments_are_usage_errors() {
+        for args in [
+            &["yerd", "xdebug", "on", "--mode", "off"][..],
+            &["yerd", "xdebug", "on", "--mode", "debug,bogus"][..],
+            &["yerd", "xdebug", "on", "nope"][..],
+            &["yerd", "xdebug", "off", "8"][..],
+        ] {
+            assert!(
+                matches!(xdebug_request_from(args), Err(ClientError::Usage(_))),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn xdebug_trigger_and_always_conflict() {
+        use clap::Parser as _;
+        let err =
+            crate::cli::Cli::try_parse_from(["yerd", "xdebug", "on", "--trigger", "--always"])
+                .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    fn xdebug_versions_reply() -> Response {
+        let v82 = PhpVersion::new(8, 2);
+        let v84 = PhpVersion::new(8, 4);
+        Response::PhpVersions {
+            installed: vec![PhpVersion::new(7, 4), v82, v84],
+            default: v84,
+            updates: Box::default(),
+            settings: std::collections::BTreeMap::new(),
+            version_settings: Box::default(),
+            directives: Box::default(),
+            ffi_versions: Box::default(),
+            libvips_found: None,
+            xdebug: Box::new(std::collections::BTreeMap::from([(
+                v84,
+                yerd_core::XdebugSettings {
+                    enabled: true,
+                    modes: vec![yerd_core::XdebugMode::Debug, yerd_core::XdebugMode::Profile],
+                    start: yerd_core::XdebugStart::Trigger,
+                },
+            )])),
+            xdebug_versions: Box::new(vec![v82, v84]),
+            pool: Box::default(),
+        }
+    }
+
+    #[test]
+    fn xdebug_status_renders_on_off_and_unavailable_rows() {
+        let r = render_xdebug_status(&xdebug_versions_reply(), false);
+        assert_eq!(r.code, 0);
+        assert_eq!(
+            r.stdout,
+            "PHP 7.4            not available\n\
+             PHP 8.2            off\n\
+             PHP 8.4 (default)  on   modes: debug,profile  start: trigger\n\
+             \n\
+             Your IDE should listen on port 9003 by default (match any `xdebug.client_port` override)."
+        );
+    }
+
+    #[test]
+    fn xdebug_status_flags_an_enabled_version_that_is_not_available() {
+        let mut reply = xdebug_versions_reply();
+        if let Response::PhpVersions { xdebug, .. } = &mut reply {
+            xdebug.insert(
+                PhpVersion::new(7, 4),
+                yerd_core::XdebugSettings {
+                    enabled: true,
+                    ..yerd_core::XdebugSettings::default()
+                },
+            );
+        }
+        let r = render_xdebug_status(&reply, false);
+        assert!(
+            r.stdout
+                .contains("PHP 7.4            on (not available on this platform, not loaded)\n"),
+            "{}",
+            r.stdout
+        );
+        assert!(
+            r.stdout.contains("PHP 8.2            off\n"),
+            "{}",
+            r.stdout
+        );
+    }
+
+    #[test]
+    fn xdebug_status_json_and_errors_pass_through_render() {
+        let reply = xdebug_versions_reply();
+        assert_eq!(render_xdebug_status(&reply, true), render(&reply, true));
+        let err = Response::Error {
+            code: yerd_ipc::ErrorCode::XdebugUnavailable,
+            message: "nope".into(),
+        };
+        let r = render_xdebug_status(&err, false);
+        assert_eq!(r, render(&err, false));
+        assert_eq!(r.code, 1);
+    }
+
+    #[test]
+    fn xdebug_status_with_nothing_installed_points_at_install() {
+        let reply = Response::PhpVersions {
+            installed: vec![],
+            default: PhpVersion::new(8, 4),
+            updates: Box::default(),
+            settings: std::collections::BTreeMap::new(),
+            version_settings: Box::default(),
+            directives: Box::default(),
+            ffi_versions: Box::default(),
+            libvips_found: None,
+            xdebug: Box::default(),
+            xdebug_versions: Box::default(),
+            pool: Box::default(),
+        };
+        assert!(render_xdebug_status(&reply, false)
+            .stdout
+            .contains("yerd install php 8.4"));
     }
 }

@@ -29,12 +29,15 @@ src/
   paths.rs          Paths trait + PlatformDirs struct
   port_binder.rs    PortBinder trait + BoundPort / PortPair
   port_redirect.rs  PortRedirector trait + loopback_port_reachable / loopback_redirect_reaches_proxy
+  process_table.rs  ProcessTable trait (best-effort) + FakeProcessTable
   resolver.rs       ResolverInstaller trait
+  system_proxy.rs   SystemProxySource trait + FakeSystemProxySource
   terminal.rs       TerminalLauncher trait
+  tool_root.rs      single_top_level_dir (the one top-level dir of an unpacked tool)
   trust_store.rs    TrustStore trait + CaFingerprint + NssOutcome / NssFailure
   os/
     mod.rs          cfg-selects exactly one impl; exposes `active` aliases
-    unix.rs         executable_in_directories + spawn_and_check (Linux + macOS)
+    unix.rs         executable_in_directories + spawn_and_check + process-group signalling (Linux + macOS)
     linux.rs        Linux* impls
     macos.rs        Macos* impls (+ security-framework)
     unsupported.rs  Unsupported* stubs (Windows, Phase 1)
@@ -43,20 +46,23 @@ src/
     firefox.rs          parse_profiles_ini
     ide_spec.rs         IDE_SPECS table (id, display_name, rank) + name/id/exec matchers
     opener_spec.rs      ordered system-opener candidates per desktop
+    launchd_ports.rs    compose/parse macOS launchd port-forwarder plists, labels, paths
     pem_match.rs        find_by_fingerprint, sha256, der_to_pem
-    pf_anchor.rs        compose/insert/remove macOS pf redirect rules
+    pf_anchor.rs        legacy macOS pf redirect: detection, removal, release gate
     port_plan.rs        classify_desired / classify_fallback
     proc_metrics.rs     parse_vmrss_bytes / parse_loadavg (Linux /proc)
     ps_metrics.rs       parse_ps_rss_bytes (macOS `ps`)
+    process_signal.rs   signal_target (pid guard) + decode_proc_cmdline / decode_ps_command
     resolv_conf.rs      select supported Linux resolver backend
     networkmanager_dnsmasq.rs compose/match NetworkManager snippets
     dns_probe.rs        compose/validate the loopback DNS probe
     resolved_drop_in.rs compose/parse systemd-resolved drop-in
     resolver_file.rs    compose/parse macOS /etc/resolver/<tld>
+    system_proxy.rs     parse_gsettings / parse_scutil_proxy + MacProxySettings
     terminal_spec.rs    TERMINAL_SPECS probe table
 ```
 
-Runtime dependencies are deliberately tiny: `thiserror`, `directories`, `sha2`, `hex`, `pem`, `serde_json` (only to read `composer.json` during signal gathering), plus `yerd-tls` and `yerd-core` (for the `ProjectSignals` / `Detection` types the detector feeds), with `security-framework` gated to macOS only. A test (`tests/no_runtime_deps.rs`) walks the resolved dependency graph (scoped with `--filter-platform` so cfg gates apply) and asserts that `tokio`, `anyhow`, `reqwest`, `openssl`, `openssl-sys`, and `native-tls` never appear in the normal-kind runtime graph - none of which `serde_json` or `yerd-core` pull in.
+Runtime dependencies are deliberately tiny: `thiserror`, `directories`, `sha2`, `hex`, `pem`, `serde_json` (only to read `composer.json` during signal gathering), plus `yerd-tls` and `yerd-core` (for the `ProjectSignals` / `Detection` types the detector feeds), with `security-framework` gated to macOS only and `nix` (signals) gated to unix. A test (`tests/no_runtime_deps.rs`) walks the resolved dependency graph (scoped with `--filter-platform` so cfg gates apply) and asserts that `tokio`, `anyhow`, `reqwest`, `openssl`, `openssl-sys`, and `native-tls` never appear in the normal-kind runtime graph - none of which `serde_json` or `yerd-core` pull in.
 
 ## The core traits
 
@@ -171,7 +177,7 @@ pub trait PortRedirector {
 }
 ```
 
-On macOS the unprivileged daemon cannot bind 80/443, so `yerd elevate ports` installs a pf `rdr` redirect to its rootless ports. Because the daemon still binds the high ports, `StatusReport.http.fell_back` stays `true` even when the redirect works - the doctor needs an independent signal that 80/443 are *actually reachable*. `is_active` is therefore an **active, unprivileged** check, and it goes further than "something answers": it speaks HTTP to loopback and requires the proxy's `Server` marker (`yerd_core::PROXY_SERVER_ID`) on the reply, so a foreign listener or a stale `pf` rule can't read as a live Yerd redirect.
+On macOS the unprivileged daemon cannot bind 80/443, so `yerd elevate ports` installs launchd socket-activated port forwarders (`yerd-forward`) that relay to its rootless ports. Because the daemon still binds the high ports, `StatusReport.http.fell_back` stays `true` even when the redirect works - the doctor needs an independent signal that 80/443 are *actually reachable*. `is_active` is therefore an **active, unprivileged** check, and it goes further than "something answers": it speaks HTTP to loopback and requires the proxy's `Server` marker (`yerd_core::PROXY_SERVER_ID`) on the reply, so a foreign listener can't read as a live Yerd redirect. `MacosPortRedirector` learns the forward targets from the forwarder plists (`launchd_ports::parse_forwarder_target`), falling back to the legacy pf anchor files on machines that haven't re-elevated since upgrading. `legacy_pf_redirect` reports whether any legacy pf boot job or anchor file is still on disk (an unprivileged existence check), which the doctor turns into a `LegacyPortRedirect` nudge; Linux and unsupported platforms return `None`.
 
 ```rust
 // Bare reachability: does *anything* answer?
@@ -193,6 +199,30 @@ pub trait SystemMetrics {
 ```
 
 Unlike every other trait here, metrics return `Option`, not `Result`. `None` collapses two cases - "OS unsupported" and "transient read failed" - because the only caller (`yerd status`) treats both identically: show nothing. The OS impls do only the file read / subprocess; the actual decoding lives in the table-tested `proc_metrics` / `ps_metrics` parsers.
+
+### `ProcessTable`
+
+```rust
+pub trait ProcessTable {
+    fn command_line(&self, pid: u32) -> Option<String>;
+    fn signal_group(&self, pid: u32, force: bool);
+    fn is_alive(&self, pid: u32) -> bool;
+}
+```
+
+Best-effort process inspection and signalling, used by the daemon to reap a `cloudflared` orphaned by a previous daemon crash (see [`yerd-tunnel`](./yerd-tunnel)). Like `SystemMetrics` it is sync and infallible at the type level: a process that is gone or unreadable simply reads as absent, and signal failures are ignored. The trait only reads and signals; the caller decides *which* PIDs are safe to touch (the daemon requires both `cloudflared` and its own tunnel data path in the command line, which guards against PID reuse).
+
+- `command_line` returns the arguments joined by single spaces.
+- `signal_group` sends SIGTERM (or SIGKILL when `force`) to the process group led by `pid`, falling back to the single process. It refuses pid 0, pid 1, and any pid that overflows `i32` before signalling anything; that guard is the table-tested `pure::process_signal::signal_target`.
+- `is_alive` is a signal-0 probe (`EPERM` counts as alive).
+
+Per OS (`ActiveProcessTable`):
+
+- **Linux** reads `/proc/<pid>/cmdline` (NUL-separated, decoded by `decode_proc_cmdline`) and signals through `nix::sys::signal::killpg`.
+- **macOS** runs `/bin/ps -ww -o command= -p <pid>` (absolute path, untruncated) decoded by `decode_ps_command`, and signals through `killpg`.
+- **Unsupported** returns `None` from `command_line`, `false` from `is_alive`, and does nothing on `signal_group`. Unlike the `Result`-returning traits it does **not** return `PlatformError::Unsupported`: the table is best-effort, and an unsupported OS simply has no orphans to reap.
+
+`FakeProcessTable` is a fixed table of command lines that records every signal (`RecordedSignal { pid, force }`). A process dies on its first signal unless it was added with `with_stubborn_process`, in which case it survives SIGTERM and only dies on a forced signal, so a caller's escalation path can be tested.
 
 ### `IdeLauncher`
 
@@ -229,7 +259,7 @@ pub trait TerminalLauncher {
 }
 ```
 
-Opens a terminal with `path` as its working directory - what the site details sidebar's **Terminal** button drives. macOS is one line (`/usr/bin/open -a Terminal <path>`); Linux is where the work is, and its decision half lives in the table-tested `pure/terminal_spec.rs`.
+Opens a terminal with `path` as its working directory - what the Sites inspector's **Terminal** button drives. macOS is one line (`/usr/bin/open -a Terminal <path>`); Linux is where the work is, and its decision half lives in the table-tested `pure/terminal_spec.rs`.
 
 `TERMINAL_SPECS` pairs each terminal we know how to launch with the flags that set its working directory (`gnome-terminal --working-directory`, `konsole --workdir`, `kitty --directory`, `wezterm start --cwd`, …). Two matching rules matter:
 
@@ -237,6 +267,24 @@ Opens a terminal with `path` as its working directory - what the site details si
 - **A trailing `.wrapper` is stripped first.** Debian's `x-terminal-emulator` alternative points at `gnome-terminal.wrapper`, which forwards its arguments to `gnome-terminal` and so takes the same flags.
 
 `x-terminal-emulator` itself is deliberately absent from the table: it is an alternatives symlink rather than a terminal, so it carries no flags of its own. The Linux impl probes it separately and resolves the link before looking flags up. An unrecognised program returns `None`, and the caller falls back to the spawned child inheriting the current directory.
+
+### `SystemProxySource`
+
+`kind() -> ProxySource` and `read() -> Option<SystemProxy>`: the OS proxy
+settings the daemon's outbound-proxy System mode falls back to after its own
+environment. macOS runs `scutil --proxy` (the `SCDynamicStore` proxy
+dictionary; the safe Core Foundation bindings can't read its `ExceptionsList`
+without `unsafe`), Linux runs `gsettings list-recursively
+org.gnome.system.proxy`; both are bounded by a 3 s timeout and parsed by the pure
+`pure::system_proxy` helpers. A missing tool, non-GNOME desktop, or timeout
+reads as `None`; the unsupported stub always returns `None`.
+`FakeSystemProxySource { reading, kind }` serves tests.
+
+### `single_top_level_dir`
+
+Returns the single child directory of an unpacked tool archive (Node, pnpm,
+Bun), or a `RootDirError`. The daemon uses it when linking `{data}/bin` and the
+CLI's tool shims use it at run time, so both always agree on the target.
 
 ## OS implementations and the `Active*` aliases
 
@@ -257,7 +305,7 @@ pub(crate) mod active {
 
 `lib.rs` re-exports these, so callers write `ActiveTrustStore`, `ActivePaths`, etc. and the right concrete type is selected at compile time - no `cfg` leaks into consumer crates.
 
-The **`unsupported` stub** (Windows in Phase 1) implements every trait so `cargo check --workspace` stays green on any host. Every fallible method returns `Err(PlatformError::Unsupported { operation })`; `SystemMetrics` returns `None`; `PortRedirector` returns `None`. `tests/unsupported.rs` (gated to non-Linux/non-macOS targets) asserts each method returns `Unsupported`.
+The **`unsupported` stub** (Windows in Phase 1) implements every trait so `cargo check --workspace` stays green on any host. Every fallible method returns `Err(PlatformError::Unsupported { operation })`; `SystemMetrics` returns `None`; `PortRedirector` returns `None`; `ProcessTable` reads every process as absent. `tests/unsupported.rs` (gated to non-Linux/non-macOS targets) asserts each method returns `Unsupported`.
 
 ## The `pure` module
 
@@ -271,16 +319,21 @@ Every function in `pure` is sync, runtime-free, and free of I/O, clock reads, an
 
 `find_by_fingerprint(blobs: &[(PathBuf, Vec<u8>)], fp: &[u8;32]) -> Result<Option<PemMatch>, PathBuf>` searches pre-read PEM blobs (the caller does the I/O) for the first `CERTIFICATE` block whose DER body hashes to `fp`, returning the matching path and 0-based block index. `Err(path)` signals a blob that failed PEM parsing, which the OS layer translates to `TrustStoreErrorReason::AnchorPemInvalid`. A blob with no certificate blocks (e.g. a README in an anchor dir) is `Ok(None)`, not an error. Also exports `sha256`, `der_to_pem`, and `fingerprint_of_first_cert_in_pem`.
 
+### launchd_ports
+
+Composes and parses the macOS port-forwarder LaunchDaemons. Labels: `PORTS_HTTP_LABEL = "dev.yerd.ports.http"`, `PORTS_HTTPS_LABEL = "dev.yerd.ports.https"`, `LAN_PORTS_HTTP_LABEL = "dev.yerd.lan.ports.http"`, `LAN_PORTS_HTTPS_LABEL = "dev.yerd.lan.ports.https"`, each with a matching `/Library/LaunchDaemons/<label>.plist` path constant. `FORWARDER_BIN = "yerd-forward"` is the sibling of `yerd-helper` the plist runs.
+
+`compose_forwarder_plist(scope, label, forwarder, user, from, to)` emits a plist whose `Sockets` make launchd bind `scope.node():from` (`127.0.0.1` for `Scope::Loopback`, `0.0.0.0` for `Scope::Lan`) and, on the first connection, spawn `yerd-forward --scope <scope> --to <to>` as `UserName` with `inetdCompatibility` `Wait = true`, which passes the listening socket on stdin. There is deliberately no `RunAtLoad` or `KeepAlive`: launchd holds the socket from load (and every boot) and spawns the forwarder on demand. `ProcessType` `Interactive` stops launchd throttling it. Every interpolated value is XML-escaped.
+
+`parse_forwarder_target` reads the `--to` port back for `MacosPortRedirector`. `is_persistent_forwarder_path` rejects relative paths, anything under `AppTranslocation` (a randomised read-only mount that is gone after reboot), and anything under `/Volumes` (an app run from its disk image). `Scope::jobs()` lists the two `Job`s (label, plist path, role) for a scope.
+
+The plist lives in root-owned `/Library/LaunchDaemons` (root:wheel `0644`), so only root can change `UserName` or `ProgramArguments`. See [yerd-forward](../binaries/yerd-forward) for the threat model.
+
 ### pf_anchor
 
-Composes the macOS pf redirect. Key constants: `ANCHOR_NAME = "dev.yerd"`, `ANCHOR_PATH = "/etc/pf.anchors/dev.yerd"`, `PLIST_PATH = "/Library/LaunchDaemons/dev.yerd.pf.plist"`, `PF_CONF_PATH = "/etc/pf.conf"`.
+Legacy only. Older Yerd served 80/443 on macOS through pf `rdr` rules in its own anchors (`dev.yerd`, `dev.yerd.lan`), hooked into `/etc/pf.conf` by `# yerd-managed` / `# yerd-lan-managed` lines and re-applied at boot by `dev.yerd.pf.plist` / `dev.yerd.lan.pf.plist`. The module now exists only to detect and remove that state: `is_installed` / `is_lan_installed`, `remove_anchor_refs` / `remove_lan_anchor_refs` / `remove_all_refs`, and `parse_anchor_targets` (stale detection on un-migrated machines still reads the anchor files).
 
-```text
-rdr pass on lo0 inet proto tcp from any to any port 80  -> 127.0.0.1 port <http_to>
-rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port <https_to>
-```
-
-`on lo0` is load-bearing: pf `rdr` only fires for `127.0.0.1→127.0.0.1` traffic when the rule is anchored to `lo0`. Functions: `compose_anchor_rules`, `is_installed`, `insert_anchor_refs`, `remove_anchor_refs`, `compose_launchdaemon_plist`. Inserted lines carry a `# yerd-managed` marker so insertion is idempotent and removal is unambiguous; the `rdr-anchor` reference is placed after the last existing translation anchor (pf requires the translation section before filter rules). The design **edits** `/etc/pf.conf` rather than loading a self-contained ruleset, because `pfctl -f <full-ruleset>` would flush Apple's default `com.apple/*` anchors. The boot-persistence plist is one-shot (`RunAtLoad`, no `KeepAlive`).
+Removal must not switch pf off for other software (VPN kill switches and firewalls enable pf through `pfctl` too, and their references look identical to Yerd's). `parse_pf_references` parses `pfctl -s References`, `yerd_owned_tokens` picks every token taken by a process named `pfctl` (references don't record which tool took them, so this can include another tool's) (returning `None` if any isn't a plain decimal, so nothing unvalidated reaches `pfctl -X`), and `only_apple_and_yerd_pf_state` is the **fail-closed** gate: it returns true only when every loaded anchor is in an exact Apple allowlist (`com.apple` and its `200.AirDrop` and `250.ApplicationFirewall` sub-anchors) or is a Yerd anchor, and every main-ruleset line is a `com.apple/*` or Yerd anchor hook. Anything unrecognised returns false, and the only cost is that pf stays enabled until the next reboot. The `com.apple.internet-sharing` anchors (added once Internet Sharing or a VM network such as OrbStack's has run) are deliberately not allowlisted: Internet Sharing needs pf enabled, and its reference can't be told apart from Yerd's.
 
 ### port_plan
 
@@ -306,6 +359,11 @@ The precedence is pinned by tests: a hard (non-retry) kind always beats a retry 
 
 - `proc_metrics::parse_vmrss_bytes(status)` reads the `VmRSS:` line of `/proc/<pid>/status` (kibibytes → bytes); `parse_loadavg(text)` reads the first three figures of `/proc/loadavg`. Using `VmRSS` avoids needing `_SC_PAGESIZE`, keeping the parser `unsafe`-free.
 - `ps_metrics::parse_ps_rss_bytes(stdout)` parses the headerless first token of `ps -o rss= -p <pid>` (kibibytes → bytes) on macOS, which has no cheap `unsafe`-free per-process RSS source in `std`. All three return `None` on malformed input - metrics are best-effort.
+
+### process_signal
+
+- `signal_target(pid)` maps a PID to the `i32` passed to `killpg`/`kill`, or `None` for pid 0, pid 1, and anything that overflows `i32`, so a bad pidfile can never signal the daemon's own process group, `init`/`launchd`, or (through a wrapped negative value) an arbitrary group.
+- `decode_proc_cmdline(raw)` turns Linux's NUL-separated `/proc/<pid>/cmdline` into a space-joined string; `decode_ps_command(stdout)` trims macOS `ps` output. Both return `None` for empty input.
 
 ## Web-root signal gathering (`detect`)
 

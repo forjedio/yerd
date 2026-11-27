@@ -9,6 +9,8 @@ mod error;
 mod ipc;
 #[cfg(target_os = "macos")]
 mod launch_probe;
+#[cfg(target_os = "linux")]
+mod linux_gfx;
 mod logging;
 #[cfg(target_os = "macos")]
 mod mac_trust;
@@ -18,6 +20,7 @@ mod mail_window;
 #[cfg(target_os = "macos")]
 mod smappservice;
 mod tray;
+mod window_fit;
 
 #[cfg(target_os = "macos")]
 use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -31,10 +34,19 @@ use tauri_plugin_autostart::MacosLauncher;
 const AUTOSTART_ARG: &str = "--autostarted";
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    let nv_explicit_sync_off = linux_gfx::apply();
+
     logging::init();
 
     #[cfg(target_os = "linux")]
     {
+        if nv_explicit_sync_off {
+            tracing::info!(
+                "NVIDIA + Wayland detected: set {}=1 to avoid the WebKitGTK Error 71 crash",
+                linux_gfx::NV_EXPLICIT_SYNC_VAR
+            );
+        }
         glib::set_prgname(Some("yerd-gui"));
         glib::set_application_name("Yerd");
     }
@@ -59,6 +71,7 @@ fn main() {
             commands::park,
             commands::link,
             commands::unlink,
+            commands::suggest_site_name,
             commands::list_parked,
             commands::unpark,
             commands::set_php,
@@ -73,14 +86,23 @@ fn main() {
             commands::remove_proxy,
             commands::add_proxy_rule,
             commands::remove_proxy_rule,
+            commands::update_proxy,
+            commands::update_proxy_rule,
             commands::list_routes,
             commands::add_route_rule,
             commands::remove_route_rule,
+            commands::list_response_headers,
+            commands::set_response_header,
+            commands::remove_response_header,
+            commands::project_config_draft,
+            commands::apply_project_config,
+            commands::export_project_config,
             commands::list_groups,
             commands::create_group,
             commands::delete_group,
             commands::set_group_order,
             commands::set_site_group,
+            commands::set_site_favourite,
             commands::rename_group,
             commands::list_php,
             commands::check_php_updates,
@@ -97,6 +119,7 @@ fn main() {
             commands::set_php_version_settings,
             commands::set_php_directives,
             commands::set_php_pool_settings,
+            commands::set_xdebug,
             commands::list_php_extensions,
             commands::add_php_extension,
             commands::remove_php_extension,
@@ -142,6 +165,9 @@ fn main() {
             commands::set_mail_enabled,
             commands::set_symlink_protection,
             commands::set_mcp_enabled,
+            commands::get_network_settings,
+            commands::set_network_settings,
+            commands::test_network,
             mail_window::show_mails_window,
             commands::status,
             commands::diagnose,
@@ -167,7 +193,16 @@ fn main() {
             commands::install_tool,
             commands::uninstall_tool,
             commands::install_tool_streamed,
-            commands::install_cloudflared_streamed,
+            commands::list_node,
+            commands::available_node,
+            commands::install_node_streamed,
+            commands::uninstall_node,
+            commands::set_node_version,
+            commands::clear_node_version,
+            commands::node_site,
+            commands::node_sites,
+            commands::release_notes,
+            commands::contributors,
             commands::start_quick_tunnel,
             commands::stop_tunnel,
             commands::tunnel_status,
@@ -177,6 +212,13 @@ fn main() {
             commands::list_named_tunnels,
             commands::route_tunnel_dns,
             commands::set_site_tunnel,
+            commands::set_tunnel_password,
+            commands::list_tunnel_providers,
+            commands::set_ngrok_authtoken,
+            commands::set_ngrok_domain,
+            commands::enable_zrok,
+            commands::disable_zrok,
+            commands::set_default_tunnel_provider,
             commands::open_terminal,
             commands::open_in_default,
             commands::open_in_ide,
@@ -434,6 +476,7 @@ fn decide_initial_window(app: &tauri::AppHandle) {
     let Some(win) = app.get_webview_window("main") else {
         return;
     };
+    fit_main_window_to_display(&win);
     #[cfg(not(target_os = "macos"))]
     restore_main_window_state(&win);
     let autostarted = std::env::args().any(|a| a == AUTOSTART_ARG);
@@ -445,6 +488,56 @@ fn decide_initial_window(app: &tauri::AppHandle) {
         let _ = win.show();
         let _ = win.set_focus();
     }
+}
+
+/// Shrink the main window to fit the display's work area when the configured
+/// launch size (`tauri.conf.json`) is larger, so it never opens partly off
+/// screen. Works from the configured logical size rather than `outer_size()`,
+/// which is unreliable for a hidden, never-realized window (tao on Linux seeds
+/// it with the window position). The fitted window keeps a small margin inside
+/// the work area so macOS never treats it as already zoomed.
+#[allow(clippy::cast_possible_truncation)]
+fn fit_main_window_to_display(win: &tauri::WebviewWindow) {
+    let Some(configured) = win
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|cfg| cfg.label == win.label())
+        .map(|cfg| (cfg.width, cfg.height))
+    else {
+        return;
+    };
+    let monitor = match win.current_monitor() {
+        Ok(Some(m)) => m,
+        _ => match win.primary_monitor() {
+            Ok(Some(m)) => m,
+            _ => return,
+        },
+    };
+    let scale = monitor.scale_factor();
+    if scale <= 0.0 {
+        return;
+    }
+    let work = monitor.work_area();
+    let area = (
+        f64::from(work.size.width) / scale,
+        f64::from(work.size.height) / scale,
+    );
+    if !window_fit::needs_fit(configured, area) {
+        return;
+    }
+    let size = window_fit::fit_size(configured, area);
+    let origin = (
+        f64::from(work.position.x) / scale,
+        f64::from(work.position.y) / scale,
+    );
+    let (x, y) = window_fit::centered_origin(size, origin, area);
+    let _ = win.set_size(tauri::LogicalSize::new(size.0, size.1));
+    let _ = win.set_position(tauri::PhysicalPosition::new(
+        (x * scale).round() as i32,
+        (y * scale).round() as i32,
+    ));
 }
 
 /// Apply the persisted native state before revealing the main window. The

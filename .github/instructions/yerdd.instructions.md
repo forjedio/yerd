@@ -37,6 +37,14 @@ coordinates them.
 - Auto-install PHP. **PHP updates are notify-only**: the periodic checker
   (startup + every 12h) and `list` only *report* newer patches. Installs happen
   solely on an explicit update request. Keep it that way.
+- Bypass the configured outbound proxy. Every external HTTP request uses a
+  client from `crate::network` (`network::downloader` / `network::client`),
+  never `reqwest::Client::builder()` or a new `ReqwestDownloader` directly.
+  Every subprocess that reaches the network gets `network::apply_child_env` (or
+  `network::apply_plan` with a plan from `network::child_env_plan`). The
+  documented exception is cloudflared (tunnel edge traffic and its management
+  commands, which are deferred; see docs). Never call the factory while holding
+  `state.config`.
 
 ## Tests / invariants
 
@@ -48,4 +56,6 @@ coordinates them.
 - [ ] New behaviour lives in a crate, not in a handler.
 - [ ] Privileged work routed through the helper; daemon stays unprivileged.
 - [ ] PHP updates remain notify-only; no silent auto-install.
+- [ ] External HTTP goes through `network::downloader` / `network::client`;
+      network subprocesses get `network::apply_child_env` / `apply_plan`.
 - [ ] Daemon remains the single source of truth (no client-side state authority).

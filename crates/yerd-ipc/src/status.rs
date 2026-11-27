@@ -18,6 +18,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use yerd_core::tunnel_provider::{ProviderReadiness, TunnelProvider};
 use yerd_core::PhpVersion;
 
 /// A read-only snapshot of daemon runtime health, returned for
@@ -47,7 +48,7 @@ pub struct StatusReport {
     /// could not determine it (treat as "unknown", **not** as `false`).
     pub resolver_installed: Option<bool>,
     /// Whether a privileged-port redirect is active so 80/443 reach the
-    /// daemon's rootless ports (macOS pf `rdr`). `Some(true)` lets the doctor
+    /// daemon's rootless ports (the macOS launchd port forwarder). `Some(true)` lets the doctor
     /// treat a port *fallback* as satisfied; `None` = not applicable (Linux,
     /// where elevation binds 80/443 directly) or undeterminable. `#[serde(default,
     /// skip_serializing_if)]` keeps the Linux wire bytes unchanged and older
@@ -55,8 +56,8 @@ pub struct StatusReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port_redirect: Option<bool>,
     /// `Some(true)` when a privileged web port (80/443) is held by a listener
-    /// that is **not** this daemon's proxy - a foreign process (or stale `pf`
-    /// rule) squatting the port Yerd wants. Confirmed via the proxy's `Server:`
+    /// that is **not** this daemon's proxy - a foreign process (or an
+    /// undelivering forwarder) squatting the port Yerd wants. Confirmed via the proxy's `Server:`
     /// marker, so it never mistakes Yerd for a foreign listener. `Some(false)` =
     /// no conflict; `None` = not probed. Cross-platform (unlike `port_redirect`).
     /// `#[serde(default, skip_serializing_if)]` keeps the wire additive for older
@@ -166,23 +167,35 @@ pub struct StatusReport {
     /// is on but the listener couldn't bind (degraded).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lan_setup_bound: Option<bool>,
-    /// Destination ports of the installed macOS loopback (`dev.yerd`) pf anchor,
-    /// read from disk at status time. Compare with [`Self::http`]/[`Self::https`]
+    /// Destination ports of the installed macOS loopback port forwarder (or a
+    /// legacy `dev.yerd` pf anchor), read from disk at status time. Compare with [`Self::http`]/[`Self::https`]
     /// `bound` to detect a stale redirect that black-holes on-host 80/443. `None`
     /// = not installed, unreadable, or not macOS. `#[serde(default,
     /// skip_serializing_if)]` keeps the wire additive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port_redirect_targets: Option<PortRedirectTargets>,
-    /// Same as [`Self::port_redirect_targets`] for the macOS LAN (`dev.yerd.lan`)
-    /// anchor. A stale target here black-holes other devices' access while LAN
+    /// Same as [`Self::port_redirect_targets`] for the macOS LAN port forwarder
+    /// (or legacy `dev.yerd.lan` anchor). A stale target here black-holes other devices' access while LAN
     /// mode is on. `None` = not installed, unreadable, or not macOS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lan_redirect_targets: Option<PortRedirectTargets>,
+    /// macOS: whether a pf redirect installed by an older Yerd is still on disk,
+    /// so 80/443 still go through pf instead of the launchd port forwarder.
+    /// `None` = not macOS or undeterminable. `#[serde(default,
+    /// skip_serializing_if)]` keeps the wire additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_pf_redirect: Option<bool>,
+    /// Installed Node releases with a newer patch, from the daemon's cached
+    /// release-index check (no network). `0` (omitted from the wire) when up to
+    /// date or never checked. `#[serde(default, skip_serializing_if)]` keeps the
+    /// wire additive.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub node_updates: u32,
 }
 
-/// Destination ports `(http, https)` an installed macOS pf redirect anchor
-/// carries 80/443 to. A wire-side mirror of the platform layer's parsed anchor
-/// targets (`yerd-ipc` must not depend on `yerd-platform`).
+/// Destination ports `(http, https)` an installed macOS port forwarder (or
+/// legacy pf anchor) carries 80/443 to. A wire-side mirror of the platform
+/// layer's parsed targets (`yerd-ipc` must not depend on `yerd-platform`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortRedirectTargets {
     /// Port the anchor redirects inbound 80 to.
@@ -268,6 +281,10 @@ pub struct MailSummary {
     /// `index.json` (no `read`) decodes as `false` (unread).
     #[serde(default)]
     pub read: bool,
+    /// The site the mail was attributed to from the SMTP `EHLO`/`HELO` host.
+    /// Absent when the host did not resolve to a site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
 }
 
 /// A single decoded header line, for [`MailDetail::headers`].
@@ -593,6 +610,11 @@ pub struct ToolStatus {
     /// additive for older clients/daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_path: Option<String>,
+    /// The newer published version of a Yerd-managed install, matching
+    /// [`PhpPoolStatus::update_available`]. `None` when up to date, unknown,
+    /// external or not installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_available: Option<String>,
 }
 
 /// A single doctor finding.
@@ -678,22 +700,36 @@ pub enum DiagnosisCode {
     /// filesystem scan order of parked directories, so the winner may change
     /// across restarts. See [`StatusReport::shadows`].
     DomainShadowed,
-    /// The installed macOS loopback pf redirect targets a port the daemon is no
+    /// The installed macOS loopback port forwarder targets a port the daemon is no
     /// longer serving, so on-host 80/443 are black-holed even though the daemon
     /// is up. Remedy: restart the daemon if it recently changed ports, then
     /// `sudo yerd elevate ports`; if LAN mode is on, also `sudo yerd elevate lan`.
     /// See [`StatusReport::port_redirect_targets`].
     PortRedirectStale,
-    /// The installed macOS LAN pf redirect (`dev.yerd.lan`) targets a port the
+    /// The installed macOS LAN port forwarder targets a port the
     /// daemon is no longer serving, so other devices reach a dead port while LAN
     /// mode is on. Remedy: `sudo yerd elevate lan` (restart the daemon first if it
     /// still holds a privileged port). See [`StatusReport::lan_redirect_targets`].
     LanRedirectStale,
+    /// macOS: ports 80/443 still go through the pf redirect an older Yerd
+    /// installed, which other pf users can break and which keeps iCloud Private
+    /// Relay from working. Remedy: `sudo yerd elevate ports` (and `sudo yerd
+    /// elevate lan` when LAN mode is on) to switch to the launchd port
+    /// forwarder. See [`StatusReport::legacy_pf_redirect`].
+    LegacyPortRedirect,
     /// A hand-edited service override file (`conf.d/50-local.<ext>`, which Yerd
     /// never rewrites) names a directive Yerd manages itself, or carries a line
     /// the engine's option-file grammar won't parse. Remedy: edit the file, then
     /// restart that service.
     ServiceOverrideInvalid,
+    /// The resolved outbound proxy did not accept a TCP connection, so
+    /// downloads and updates will fail. Remedy: `yerd network proxy test`, then
+    /// fix or switch off the proxy.
+    OutboundProxyUnreachable,
+    /// System proxy detection found a PAC script or WPAD and no static proxy.
+    /// Yerd cannot evaluate PAC, so it connects directly. Remedy: set a manual
+    /// proxy, or run a local PAC-aware proxy such as px.
+    OutboundProxyPacUnsupported,
     /// Everything checks out.
     AllGood,
 }
@@ -718,13 +754,17 @@ pub struct FixResult {
     pub message: String,
 }
 
-/// Which Cloudflare Tunnel tier a published site uses. Wire-level mirror of
-/// `yerd_tunnel::TunnelKind` (this crate stays free of that dependency).
+/// Which kind of share a tunnel entry is. Wire-level mirror of the Cloudflare
+/// variants of `yerd_tunnel::TunnelKind` (this crate stays free of that
+/// dependency). ngrok and zrok shares report `quick` with their
+/// [`TunnelInfo::provider`] set, since a new variant would break older
+/// clients' deserialisation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum TunnelKind {
-    /// Ephemeral `*.trycloudflare.com` tunnel (no account).
+    /// A per-site share: an ephemeral `*.trycloudflare.com` tunnel (no
+    /// account), or an ngrok or zrok share.
     Quick,
     /// Named tunnel on the user's Cloudflare domain (stable hostname).
     Named,
@@ -735,10 +775,16 @@ pub enum TunnelKind {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum TunnelRunState {
-    /// The `cloudflared` process is alive and serving.
+    /// The tunnel process is alive and connected to its provider's edge.
     Running,
-    /// The process has exited unexpectedly.
+    /// The process has exited unexpectedly. A supervised tunnel stays in this
+    /// state while a restart is pending.
     Failed,
+    /// The process is starting and has never reached the edge in this run.
+    Connecting,
+    /// The tunnel was online before and is now restarting or has lost its edge
+    /// connection.
+    Reconnecting,
 }
 
 /// One live tunnel, as reported in [`crate::Response::Tunnels`].
@@ -746,16 +792,41 @@ pub enum TunnelRunState {
 pub struct TunnelInfo {
     /// The site the tunnel publishes.
     pub site: String,
-    /// Quick vs Named.
+    /// Quick (any per-site share) vs Named.
     pub kind: TunnelKind,
-    /// Whether the process is alive or has died.
+    /// Edge health: connecting (never online yet), running (online),
+    /// reconnecting (was online, now restarting or edge lost), or failed (the
+    /// process exited and a restart is pending).
     pub state: TunnelRunState,
-    /// The public URL (Quick tunnels) once captured.
+    /// The public URL (per-site shares) once captured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// The configured public hostname (Named tunnels).
+    /// A public hostname for this entry. The daemon currently leaves it unset:
+    /// named-tunnel hostnames are listed per site by `ListNamedTunnels`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
+    /// The most recent error reported for this tunnel, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// Whether the shared site is protected by a share password.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub protected: bool,
+    /// Non-blocking preflight warnings computed when the share started.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    /// The provider serving this share; omitted for Cloudflare, so an absent
+    /// field means Cloudflare.
+    #[serde(default, skip_serializing_if = "is_cloudflare")]
+    pub provider: TunnelProvider,
+    /// Whether an ngrok share serves the configured static domain; omitted
+    /// when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub static_domain: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_cloudflare(provider: &TunnelProvider) -> bool {
+    *provider == TunnelProvider::Cloudflare
 }
 
 /// One named tunnel recorded on the account, for
@@ -775,9 +846,13 @@ pub struct SiteHostname {
     pub site: String,
     /// The public hostname it is exposed at.
     pub hostname: String,
+    /// Whether the site is protected by a share password.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub protected: bool,
 }
 
-/// Where the `cloudflared` binary Yerd is using came from.
+/// Where a tunnel provider binary Yerd is using came from (`cloudflared`,
+/// `ngrok` or `zrok2`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -786,6 +861,39 @@ pub enum CloudflaredSource {
     Managed,
     /// A pre-existing binary found on the user's `PATH`.
     System,
+}
+
+/// One tunnel provider's readiness and settings, as reported by
+/// [`crate::Request::ListTunnelProviders`]. Secrets never appear here: the
+/// ngrok authtoken is only ever sent masked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TunnelProviderStatus {
+    /// The provider this entry describes.
+    pub provider: TunnelProvider,
+    /// Whether the provider can run shares now.
+    pub readiness: ProviderReadiness,
+    /// The binary version, without a leading `v`, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Where the binary came from, when installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<CloudflaredSource>,
+    /// The binary's path, set only for a copy found on the user's `PATH`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The newer published release, set only for a Yerd-managed binary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_available: Option<String>,
+    /// Whether the account step is done: Cloudflare logged in, ngrok token
+    /// saved, zrok environment enabled.
+    #[serde(default)]
+    pub configured: bool,
+    /// The saved ngrok authtoken, masked. ngrok only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authtoken_hint: Option<String>,
+    /// The saved ngrok static domain. ngrok only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
 }
 
 /// `cloudflared` install / account status, reported alongside the live tunnels.
@@ -802,4 +910,9 @@ pub struct CloudflaredStatus {
     /// Whether a Cloudflare account is logged in (a `cert.pem` is present).
     #[serde(default)]
     pub logged_in: bool,
+    /// The newer published `cloudflared` release, set only for the
+    /// Yerd-managed binary. A binary found on `PATH` belongs to the user's
+    /// package manager and always reports `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_available: Option<String>,
 }

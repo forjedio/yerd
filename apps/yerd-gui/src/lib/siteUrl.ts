@@ -8,7 +8,7 @@ export type SiteLike = Pick<Site, "name" | "secure"> & { primary_domain?: string
 
 /** The site's address host (no scheme/port): its primary domain FQDN when set,
  *  else `{name}.{tld}`. */
-function siteHost(s: SiteLike, tld: string): string {
+export function siteHost(s: SiteLike, tld: string): string {
   return s.primary_domain ?? `${s.name}.${tld}`;
 }
 

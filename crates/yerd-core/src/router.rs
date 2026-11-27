@@ -27,11 +27,13 @@
 //! its leftmost label replaced by `*`); exact always wins.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use crate::domain::Domain;
 use crate::error::CoreError;
 use crate::host::{self, HostKind};
 use crate::proxy::{ProxyRule, ProxySite};
+use crate::response_header::ResponseHeader;
 use crate::route_rule::RouteRule;
 use crate::site::Site;
 use crate::tld::Tld;
@@ -157,6 +159,12 @@ pub struct SiteRouter {
     /// forward to an HTTP upstream, these resolve to a file under the served
     /// root.
     route_rules: BTreeMap<String, Vec<RouteRule>>,
+    /// Custom response headers, keyed by PHP-site or whole-host proxy name (the
+    /// two namespaces are disjoint). Populated by the daemon at build time from
+    /// config and applied by the proxy to every response it produces for the
+    /// site or proxy. Shared so the proxy can take a per-request handle without
+    /// copying.
+    response_headers: BTreeMap<String, Arc<[ResponseHeader]>>,
 }
 
 impl SiteRouter {
@@ -173,6 +181,7 @@ impl SiteRouter {
             proxy_sites: BTreeMap::new(),
             proxy_rules: BTreeMap::new(),
             route_rules: BTreeMap::new(),
+            response_headers: BTreeMap::new(),
         }
     }
 
@@ -267,6 +276,7 @@ impl SiteRouter {
         self.primaries.remove(name);
         self.proxy_rules.remove(name);
         self.route_rules.remove(name);
+        self.response_headers.remove(name);
         Ok(site)
     }
 
@@ -484,8 +494,8 @@ impl SiteRouter {
         Ok(())
     }
 
-    /// Removes a whole-host proxy by name, together with its domain-index and
-    /// primary entries. Errors with [`CoreError::SiteNotFound`] if missing.
+    /// Removes a whole-host proxy by name, together with its domain-index,
+    /// primary and response-header entries. Errors with [`CoreError::SiteNotFound`] if missing.
     pub fn remove_proxy(&mut self, name: &str) -> Result<ProxySite, CoreError> {
         let proxy = self
             .proxy_sites
@@ -506,6 +516,7 @@ impl SiteRouter {
             }
         }
         self.primaries.remove(name);
+        self.response_headers.remove(name);
         Ok(proxy)
     }
 
@@ -543,6 +554,33 @@ impl SiteRouter {
             self.route_rules.remove(site);
         } else {
             self.route_rules.insert(site.to_owned(), rules);
+        }
+    }
+
+    /// The custom response headers attached to the site or whole-host proxy
+    /// `site` (empty slice if none).
+    #[must_use]
+    pub fn response_headers_for(&self, site: &str) -> &[ResponseHeader] {
+        self.response_headers.get(site).map_or(&[], |h| h)
+    }
+
+    /// A shared handle to the custom response headers of the site or
+    /// whole-host proxy `site`, or `None` when it has none. Cloning the handle is a reference-count bump, so the proxy
+    /// can hold the list for a request after releasing the router lock.
+    #[must_use]
+    pub fn shared_response_headers(&self, site: &str) -> Option<Arc<[ResponseHeader]>> {
+        self.response_headers.get(site).cloned()
+    }
+
+    /// Sets (or clears, when `headers` is empty) the custom response headers
+    /// for a PHP site or whole-host proxy. Called by the daemon while building
+    /// the router from config.
+    pub fn set_response_headers(&mut self, site: &str, headers: Vec<ResponseHeader>) {
+        if headers.is_empty() {
+            self.response_headers.remove(site);
+        } else {
+            self.response_headers
+                .insert(site.to_owned(), headers.into());
         }
     }
 }
@@ -828,6 +866,42 @@ mod tests {
         r.set_route_rules("app", vec![rule]);
         r.remove("app").unwrap();
         assert!(r.route_rules_for("app").is_empty());
+    }
+
+    #[test]
+    fn response_headers_set_get_and_clear() {
+        let mut r = router_with("test", &["app"]);
+        assert!(r.response_headers_for("app").is_empty());
+        assert!(r.shared_response_headers("app").is_none());
+        let header = ResponseHeader::new("Access-Control-Allow-Origin", "*").unwrap();
+        r.set_response_headers("app", vec![header]);
+        assert_eq!(r.response_headers_for("app").len(), 1);
+        assert_eq!(r.response_headers_for("app")[0].value(), "*");
+        let shared = r.shared_response_headers("app").unwrap();
+        assert_eq!(&*shared, r.response_headers_for("app"));
+        r.set_response_headers("app", vec![]);
+        assert!(r.response_headers_for("app").is_empty());
+        assert!(r.shared_response_headers("app").is_none());
+    }
+
+    #[test]
+    fn removing_a_proxy_clears_its_response_headers() {
+        let mut r = SiteRouter::new(RouterConfig::new("test").unwrap());
+        r.insert_proxy(proxy("reverb")).unwrap();
+        let header = ResponseHeader::new("Access-Control-Allow-Origin", "*").unwrap();
+        r.set_response_headers("reverb", vec![header]);
+        assert!(r.shared_response_headers("reverb").is_some());
+        r.remove_proxy("reverb").unwrap();
+        assert!(r.response_headers_for("reverb").is_empty());
+    }
+
+    #[test]
+    fn removing_a_site_clears_its_response_headers() {
+        let mut r = router_with("test", &["app"]);
+        let header = ResponseHeader::new("Access-Control-Allow-Origin", "*").unwrap();
+        r.set_response_headers("app", vec![header]);
+        r.remove("app").unwrap();
+        assert!(r.response_headers_for("app").is_empty());
     }
 
     /// Default (apex-only) resolution: exact apex resolves, subdomains do not.

@@ -112,6 +112,76 @@ pub enum CoreError {
         /// Why it failed.
         reason: RouteRuleErrorReason,
     },
+
+    /// A name or value failed to validate as a
+    /// [`ResponseHeader`](crate::ResponseHeader).
+    #[error("invalid response header {input:?}: {reason}")]
+    InvalidResponseHeader {
+        /// The raw name or value that failed validation.
+        input: String,
+        /// Why it failed.
+        reason: ResponseHeaderErrorReason,
+    },
+
+    /// A string was not an
+    /// [`OutboundProxyMode`](crate::network::OutboundProxyMode).
+    #[error("invalid proxy mode {input:?}: expected system, manual, or off")]
+    InvalidProxyMode {
+        /// The raw input.
+        input: String,
+    },
+
+    /// A string failed to parse as an outbound
+    /// [`ProxyUrl`](crate::network::ProxyUrl). Carries no input, so the message
+    /// can never echo a proxy password.
+    #[error("invalid proxy URL: {reason}")]
+    InvalidProxyUrl {
+        /// Why it failed.
+        reason: ProxyUrlErrorReason,
+    },
+}
+
+/// Specific failure modes for outbound [`ProxyUrl`](crate::network::ProxyUrl)
+/// parsing and merging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProxyUrlErrorReason {
+    /// Input was empty.
+    Empty,
+    /// Scheme was neither `http` nor `https` (SOCKS included).
+    UnsupportedScheme,
+    /// Input carried a path, query, or fragment.
+    HasPathOrQuery,
+    /// The `user[:password]@` part was malformed (empty user, whitespace).
+    InvalidUserinfo,
+    /// The host was empty.
+    MissingHost,
+    /// The host was not an IP address or a plain DNS hostname.
+    InvalidHost,
+    /// The port was non-numeric, zero, or out of `u16` range.
+    InvalidPort,
+    /// A redacted `***` password was submitted for a URL whose scheme, user,
+    /// host, or port changed (or with nothing stored), so the real password
+    /// must be re-entered.
+    RedactedPasswordChanged,
+}
+
+impl fmt::Display for ProxyUrlErrorReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let msg = match self {
+            Self::Empty => "proxy URL must not be empty",
+            Self::UnsupportedScheme => {
+                "proxy scheme must be http or https (SOCKS is not supported)"
+            }
+            Self::HasPathOrQuery => "proxy URL must not contain a path, query, or fragment",
+            Self::InvalidUserinfo => "proxy credentials must be user[:password]@ with no spaces",
+            Self::MissingHost => "proxy host must not be empty",
+            Self::InvalidHost => "proxy host is not a valid IP or hostname",
+            Self::InvalidPort => "proxy port must be a number in 1..=65535",
+            Self::RedactedPasswordChanged => "re-enter the proxy password",
+        };
+        f.write_str(msg)
+    }
 }
 
 /// Specific failure modes for [`UpstreamTarget`](crate::UpstreamTarget) parsing.
@@ -233,6 +303,39 @@ impl fmt::Display for RouteRuleErrorReason {
             Self::PrefixContainsDotDot => "prefix must not contain a '..' component",
             Self::EmptyTarget => "target must not be empty",
             Self::InvalidTarget => "target must be a relative path with no '..' component",
+        };
+        f.write_str(msg)
+    }
+}
+
+/// Specific failure modes for [`ResponseHeader`](crate::ResponseHeader)
+/// validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ResponseHeaderErrorReason {
+    /// Name was empty.
+    EmptyName,
+    /// Name was not an RFC 9110 token.
+    InvalidName,
+    /// Name is a header Yerd manages (hop-by-hop, framing, `Host`) or one whose
+    /// replacement would break the response (`Set-Cookie`, `Location`, ...).
+    ReservedName,
+    /// Value was empty after trimming surrounding spaces and tabs.
+    EmptyValue,
+    /// Value contained a control character other than a tab.
+    InvalidValue,
+}
+
+impl fmt::Display for ResponseHeaderErrorReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let msg = match self {
+            Self::EmptyName => "name must not be empty",
+            Self::InvalidName => "name must be a valid HTTP header name",
+            Self::ReservedName => {
+                "Yerd manages this header or replacing it would break responses, so it cannot be set"
+            },
+            Self::EmptyValue => "value must not be empty",
+            Self::InvalidValue => "value must not contain control characters such as CR, LF or NUL",
         };
         f.write_str(msg)
     }
@@ -504,6 +607,24 @@ mod tests {
             DomainErrorReason::LabelTooLong,
             DomainErrorReason::LeadingOrTrailingHyphen,
             DomainErrorReason::TooLong,
+        ] {
+            assert!(!r.to_string().is_empty());
+            let _debug = format!("{r:?}");
+        }
+
+        let _ = CoreError::InvalidProxyMode { input: "x".into() };
+        let _ = CoreError::InvalidProxyUrl {
+            reason: ProxyUrlErrorReason::Empty,
+        };
+        for r in [
+            ProxyUrlErrorReason::Empty,
+            ProxyUrlErrorReason::UnsupportedScheme,
+            ProxyUrlErrorReason::HasPathOrQuery,
+            ProxyUrlErrorReason::InvalidUserinfo,
+            ProxyUrlErrorReason::MissingHost,
+            ProxyUrlErrorReason::InvalidHost,
+            ProxyUrlErrorReason::InvalidPort,
+            ProxyUrlErrorReason::RedactedPasswordChanged,
         ] {
             assert!(!r.to_string().is_empty());
             let _debug = format!("{r:?}");

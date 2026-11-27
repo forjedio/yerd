@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ExternalLink, Play } from "lucide-vue-next";
+import { ExternalLink, Play, ShieldCheck } from "lucide-vue-next";
 import { computed } from "vue";
 
 import DaemonDiagnosticsPanel from "@/components/DaemonDiagnosticsPanel.vue";
@@ -16,10 +16,14 @@ import logoUrl from "@/assets/logo.svg";
 // thing when the daemon is down. The start→wait→diagnose logic (with auto-clear
 // on connect) lives in useDaemonStart; on failure we show actionable diagnostics
 // instead of a blind toast, and on macOS pending-approval we show the Login-Items
-// affordance rather than a "failure".
+// affordance rather than a "failure". An optional default slot renders a quiet
+// note at the bottom of the card (the Overview's footer line).
 const { report } = useDaemon();
 const { starting, activeLabel, pendingApproval, diagnostics, start } = useDaemonStart();
 const tld = computed(() => report.value?.tld ?? "test");
+const startLabel = computed(
+  () => activeLabel.value ?? (pendingApproval.value ? "Waiting for approval…" : "Start Yerd"),
+);
 
 function onStart(): void {
   // nudge=true: a single-button start may open Login Items on pending approval.
@@ -34,41 +38,47 @@ function onOpenLoginItems(): void {
 </script>
 
 <template>
-  <Card class="flex flex-col items-center justify-center gap-4 py-16 text-center">
-    <img :src="logoUrl" alt="" class="size-12 rounded-xl" />
-    <div>
-      <h2 class="text-lg font-semibold">Yerd isn't running</h2>
-      <p class="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
+  <Card class="flex h-full flex-col items-center rounded-xl px-8 py-12 text-center">
+    <div class="flex w-full flex-1 flex-col items-center justify-center">
+      <img :src="logoUrl" alt="" class="size-14 rounded-[14px]" />
+      <h2 class="mt-4 text-xl font-semibold tracking-[-0.2px]">Yerd isn't running</h2>
+      <p class="mx-auto mt-1.5 max-w-sm text-[13px] text-muted-foreground">
         Start the daemon to serve your <span class="font-mono">.{{ tld }}</span>
-        sites, PHP runtimes, and services.
+        sites, PHP and services.
       </p>
-    </div>
 
-    <!-- macOS: registered but awaiting the user's Login-Items approval. -->
-    <div
-      v-if="pendingApproval"
-      class="mx-auto max-w-md rounded-md border border-warning/40 bg-warning/10 p-3 text-left text-sm"
-    >
-      <p class="font-medium">One more step</p>
-      <p class="mt-1 text-muted-foreground">
-        macOS needs you to allow Yerd in the background. Enable it under Login
-        Items, then it'll connect automatically.
-      </p>
-      <Button variant="outline" size="sm" class="mt-2" @click="onOpenLoginItems">
-        <ExternalLink class="size-4" /> Open Login Items
+      <div
+        v-if="pendingApproval"
+        data-testid="login-items-panel"
+        class="mt-6 w-full max-w-[468px] rounded-[10px] border border-warning/50 bg-warning/5 p-4 text-left text-[13px]"
+      >
+        <div class="flex items-center gap-2">
+          <ShieldCheck class="size-4 shrink-0 text-warning" aria-hidden="true" />
+          <p class="font-semibold">One more step</p>
+        </div>
+        <p class="mt-2 text-muted-foreground">
+          macOS needs you to allow Yerd in the background. Turn it on under Login
+          Items and Yerd connects automatically.
+        </p>
+        <Button variant="outline" size="sm" class="mt-3" @click="onOpenLoginItems">
+          <ExternalLink /> Open Login Items
+        </Button>
+      </div>
+
+      <Button class="mt-6" :disabled="starting" @click="onStart">
+        <Spinner v-if="starting || pendingApproval" class="size-4 text-current" />
+        <Play v-else /> {{ startLabel }}
       </Button>
+
+      <DaemonDiagnosticsPanel
+        v-if="!pendingApproval && diagnostics"
+        :diagnostics="diagnostics"
+        class="mt-5 w-full max-w-[468px] text-left"
+      />
     </div>
 
-    <!-- Why the daemon didn't come up. -->
-    <DaemonDiagnosticsPanel
-      v-else-if="diagnostics"
-      :diagnostics="diagnostics"
-      class="mx-auto max-w-md text-left"
-    />
-
-    <Button :disabled="starting" @click="onStart">
-      <Spinner v-if="starting" class="size-4" />
-      <Play v-else class="size-4" /> {{ activeLabel ?? "Start Yerd" }}
-    </Button>
+    <div v-if="$slots.default" class="mt-auto pt-6 text-xs text-faint">
+      <slot />
+    </div>
   </Card>
 </template>

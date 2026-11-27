@@ -101,6 +101,8 @@ struct Wire {
     #[serde(default)]
     php: PhpSectionWire,
     #[serde(default)]
+    node: NodeSectionWire,
+    #[serde(default)]
     parked: ParkedSectionWire,
     #[serde(default)]
     linked: Vec<SiteWire>,
@@ -145,6 +147,19 @@ struct Wire {
     // v20: optional `[route_rules]` table; absent in v19 and earlier → empty.
     #[serde(default)]
     route_rules: RouteRulesSectionWire,
+    // v24: optional `[response_headers]` table; absent in v23 and earlier → empty.
+    #[serde(default)]
+    response_headers: ResponseHeadersSectionWire,
+    // v28: optional `[network]` table; absent in v27 and earlier → system mode.
+    #[serde(default)]
+    network: NetworkSectionWire,
+    // v30: optional `[favourites]` table; absent in v29 and earlier → empty.
+    #[serde(default)]
+    favourites: FavouritesSectionWire,
+    // v34: optional `[added]` table; absent in v33 and earlier → empty, then
+    // the v33→v34 migration sets `baseline_pending`.
+    #[serde(default)]
+    added: AddedSectionWire,
 }
 
 /// One `[[proxies]]` table: a whole-host proxy's name, upstream, and HTTPS flag.
@@ -199,6 +214,30 @@ struct RouteRuleWire {
     target: String,
 }
 
+/// The `[response_headers]` table. Both maps default to empty, so an absent
+/// table parses to [`crate::schema::ResponseHeadersSection::default`].
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResponseHeadersSectionWire {
+    #[serde(default)]
+    linked: BTreeMap<String, Vec<ResponseHeaderWire>>,
+    #[serde(default)]
+    parked: BTreeMap<String, Vec<ResponseHeaderWire>>,
+    #[serde(default)]
+    proxy: BTreeMap<String, Vec<ResponseHeaderWire>>,
+}
+
+/// One `[[response_headers.linked.<name>]]` /
+/// `[[response_headers.parked."<docroot>"]]` /
+/// `[[response_headers.proxy.<name>]]` header (validated into
+/// `yerd_core::ResponseHeader` in `TryFrom`).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResponseHeaderWire {
+    name: String,
+    value: String,
+}
+
 /// The `[domains]` table. Every map defaults to empty, so an absent table parses
 /// to [`crate::schema::DomainsSection::default`].
 #[derive(Default, Deserialize)]
@@ -237,7 +276,29 @@ struct GroupsSectionWire {
     members: BTreeMap<String, String>,
 }
 
-/// The `[tunnel]` table. Both maps default to empty, so an absent table parses
+/// The `[favourites]` table. `sites` defaults to empty, so an absent table
+/// parses to [`crate::schema::FavouritesSection::default`].
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FavouritesSectionWire {
+    #[serde(default)]
+    sites: BTreeSet<String>,
+}
+
+/// The `[added]` table. Every key defaults, so an absent table parses to
+/// [`crate::schema::AddedSection::default`].
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddedSectionWire {
+    #[serde(default)]
+    linked: BTreeMap<String, u64>,
+    #[serde(default)]
+    parked: BTreeMap<String, u64>,
+    #[serde(default)]
+    baseline_pending: BTreeSet<String>,
+}
+
+/// The `[tunnel]` table. Every key defaults, so an absent table parses
 /// to [`crate::schema::TunnelSection::default`].
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -246,6 +307,22 @@ struct TunnelSectionWire {
     named: BTreeMap<String, String>,
     #[serde(default)]
     sites: BTreeMap<String, String>,
+    #[serde(default)]
+    passwords: BTreeMap<String, String>,
+    #[serde(default)]
+    default_provider: yerd_core::tunnel_provider::TunnelProvider,
+    #[serde(default)]
+    ngrok: NgrokWire,
+}
+
+/// The `[tunnel.ngrok]` table; both keys are optional.
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NgrokWire {
+    #[serde(default)]
+    authtoken: Option<String>,
+    #[serde(default)]
+    domain: Option<String>,
 }
 
 /// The `[dumps]` table. All fields default, so an absent table parses to
@@ -334,6 +411,23 @@ struct PhpSectionWire {
     // pre-v20 files omit it.
     #[serde(default)]
     pool: BTreeMap<String, BTreeMap<String, String>>,
+    // v29: per-version bundled Xdebug settings, keyed by version string.
+    // Additive: pre-v29 files omit it.
+    #[serde(default)]
+    xdebug: BTreeMap<String, XdebugWire>,
+}
+
+/// One `[php.xdebug."<ver>"]` table, kept as raw strings so a hand-edited typo
+/// drops the entry in [`convert_xdebug`] instead of failing the load.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct XdebugWire {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    modes: Vec<String>,
+    #[serde(default)]
+    start: String,
 }
 
 impl Default for PhpSectionWire {
@@ -345,6 +439,7 @@ impl Default for PhpSectionWire {
             version_settings: BTreeMap::new(),
             directives: BTreeMap::new(),
             pool: BTreeMap::new(),
+            xdebug: BTreeMap::new(),
         }
     }
 }
@@ -367,6 +462,18 @@ struct ExtEntryWire {
 struct ParkedSectionWire {
     #[serde(default)]
     paths: BTreeSet<String>,
+    // v31: optional `[parked.claims."<docroot>"]` tables; absent → empty.
+    #[serde(default)]
+    claims: BTreeMap<String, ParkedClaimWire>,
+}
+
+/// One `[parked.claims."<docroot>"]` table.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ParkedClaimWire {
+    name: String,
+    #[serde(default = "default_true")]
+    url_synced: bool,
 }
 
 /// One `[services.<id>]` table. `enabled` defaults to `true` (a configured
@@ -533,6 +640,7 @@ impl TryFrom<Wire> for Config {
             version_settings: convert_version_settings(w.php.version_settings)?,
             directives: convert_directives(w.php.directives)?,
             pool: convert_pool(w.php.pool)?,
+            xdebug: convert_xdebug(w.php.xdebug)?,
         };
         let ports = Ports {
             http: w.ports.http,
@@ -542,6 +650,7 @@ impl TryFrom<Wire> for Config {
         };
         let parked = ParkedSection {
             paths: w.parked.paths,
+            claims: convert_parked_claims(w.parked.claims),
         };
         let mut overrides = BTreeMap::new();
         for o in w.overrides {
@@ -597,6 +706,12 @@ impl TryFrom<Wire> for Config {
         let tunnel = crate::schema::TunnelSection {
             named: w.tunnel.named,
             sites: w.tunnel.sites,
+            passwords: w.tunnel.passwords,
+            default_provider: w.tunnel.default_provider,
+            ngrok: crate::schema::NgrokSettings {
+                authtoken: w.tunnel.ngrok.authtoken,
+                domain: w.tunnel.ngrok.domain,
+            },
         };
         let groups = crate::schema::GroupsSection {
             order: w.groups.order,
@@ -616,6 +731,12 @@ impl TryFrom<Wire> for Config {
             linked: convert_route_rules(w.route_rules.linked)?,
             parked: convert_route_rules(w.route_rules.parked)?,
         };
+        let response_headers = crate::schema::ResponseHeadersSection {
+            linked: convert_response_headers(w.response_headers.linked)?,
+            parked: convert_response_headers(w.response_headers.parked)?,
+            proxy: convert_response_headers(w.response_headers.proxy)?,
+        };
+        let network = convert_network(w.network)?;
         Ok(Config {
             version: crate::CURRENT_VERSION,
             tld,
@@ -627,6 +748,10 @@ impl TryFrom<Wire> for Config {
             lan_setup_port: w.lan_setup_port,
             ports,
             php,
+            node: crate::NodeSection {
+                default: w.node.default,
+                sites: w.node.sites,
+            },
             parked,
             linked,
             overrides,
@@ -639,8 +764,40 @@ impl TryFrom<Wire> for Config {
             proxies,
             proxy_rules,
             route_rules,
+            response_headers,
+            network,
+            favourites: crate::schema::FavouritesSection {
+                sites: w
+                    .favourites
+                    .sites
+                    .into_iter()
+                    .map(|name| name.trim().to_ascii_lowercase())
+                    .filter(|name| !name.is_empty())
+                    .collect(),
+            },
+            added: crate::schema::AddedSection {
+                linked: w.added.linked,
+                parked: w.added.parked,
+                baseline_pending: w.added.baseline_pending,
+            },
         })
     }
+}
+
+/// Convert the `[network]` wire table. A bad proxy URL surfaces as
+/// [`ConfigError::Core`] without echoing the URL.
+fn convert_network(w: NetworkSectionWire) -> Result<crate::NetworkSection, ConfigError> {
+    let parse = |s: Option<String>| {
+        s.filter(|v| !v.trim().is_empty())
+            .map(|v| yerd_core::network::ProxyUrl::parse(&v))
+            .transpose()
+    };
+    Ok(crate::NetworkSection {
+        mode: w.mode,
+        http_proxy: parse(w.http_proxy)?,
+        https_proxy: parse(w.https_proxy)?,
+        no_proxy: yerd_core::network::normalize_bypass_entries(&w.no_proxy),
+    })
 }
 
 /// Convert `[[proxies]]` wire tables into validated [`yerd_core::ProxySite`]s.
@@ -687,6 +844,52 @@ fn convert_route_rules(
                 .map(|r| Ok(yerd_core::RouteRule::new(&r.prefix, &r.target)?))
                 .collect::<Result<Vec<_>, ConfigError>>()?;
             Ok((key, rules))
+        })
+        .collect()
+}
+
+/// Convert a `[response_headers.*]` wire map into validated
+/// [`yerd_core::ResponseHeader`] lists. A bad name or value surfaces as
+/// [`ConfigError::Core`].
+fn convert_response_headers(
+    wire: BTreeMap<String, Vec<ResponseHeaderWire>>,
+) -> Result<BTreeMap<String, Vec<yerd_core::ResponseHeader>>, ConfigError> {
+    wire.into_iter()
+        .map(|(key, headers)| {
+            let headers = headers
+                .into_iter()
+                .map(|h| Ok(yerd_core::ResponseHeader::new(&h.name, &h.value)?))
+                .collect::<Result<Vec<_>, ConfigError>>()?;
+            Ok((key, headers))
+        })
+        .collect()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Convert the raw `[parked.claims]` map, dropping any entry with an empty key
+/// or a name that is not a valid site name. Claims are daemon-maintained state
+/// rebuilt after every scan, so a bad entry is discarded rather than failing
+/// the whole config.
+fn convert_parked_claims(
+    wire: BTreeMap<String, ParkedClaimWire>,
+) -> BTreeMap<String, crate::schema::ParkedClaim> {
+    wire.into_iter()
+        .filter(|(doc_root, claim)| {
+            !doc_root.is_empty()
+                && yerd_core::normalize_site_name(&claim.name).as_deref()
+                    == Some(claim.name.as_str())
+        })
+        .map(|(doc_root, claim)| {
+            (
+                doc_root,
+                crate::schema::ParkedClaim {
+                    name: claim.name,
+                    url_synced: claim.url_synced,
+                },
+            )
         })
         .collect()
 }
@@ -849,6 +1052,43 @@ fn convert_pool(
     Ok(out)
 }
 
+/// Convert the raw wire per-version Xdebug map into the typed
+/// [`PhpSection::xdebug`] shape. A bad version key errors, as in
+/// [`convert_pool`]. An entry is dropped leniently when it names a legacy
+/// version, when a mode or the start is missing or unparseable, or when the
+/// mode list is empty. An entry equal to the default is dropped too, matching
+/// the serializer, which never writes one, so the loaded map only ever holds
+/// real overrides.
+fn convert_xdebug(
+    wire: BTreeMap<String, XdebugWire>,
+) -> Result<BTreeMap<yerd_core::PhpVersion, yerd_core::XdebugSettings>, ConfigError> {
+    use yerd_core::php_xdebug;
+    let mut out = BTreeMap::new();
+    for (ver, entry) in wire {
+        let v = yerd_core::PhpVersion::from_str(&ver)?;
+        if v.is_legacy() {
+            continue;
+        }
+        let modes: Result<Vec<yerd_core::XdebugMode>, _> =
+            entry.modes.iter().map(|m| m.parse()).collect();
+        let (Ok(modes), Ok(start)) = (modes, entry.start.parse::<yerd_core::XdebugStart>()) else {
+            continue;
+        };
+        let mut settings = yerd_core::XdebugSettings {
+            enabled: entry.enabled,
+            modes,
+            start,
+        };
+        settings.normalize();
+        if php_xdebug::validate(&settings).is_ok()
+            && settings != yerd_core::XdebugSettings::default()
+        {
+            out.insert(v, settings);
+        }
+    }
+    Ok(out)
+}
+
 /// Filter one instance's raw wire overrides into the typed
 /// [`ServiceInstance::overrides`] shape. Same lenient policy as
 /// [`convert_directives`], keyed by dialect instead of PHP version: the
@@ -879,6 +1119,14 @@ fn convert_service_overrides(
 }
 
 pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
+    let valid_node = |value: &str| yerd_core::node::numeric_selector(value).is_ok();
+    if c.node.default.as_deref().is_some_and(|v| !valid_node(v))
+        || c.node.sites.iter().any(|(root, version)| {
+            !std::path::Path::new(root).is_absolute() || !valid_node(version)
+        })
+    {
+        return Err(ve(ValidateErrorReason::InvalidNodeSelection));
+    }
     validate_ports(c)?;
     validate_unique_linked(c)?;
     validate_nonempty_paths(c)?;
@@ -892,6 +1140,13 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     validate_domains(c)?;
     validate_proxies(c)?;
     validate_route_rules(c)?;
+    validate_response_headers(c)?;
+    if c.network.mode == yerd_core::network::OutboundProxyMode::Manual
+        && c.network.http_proxy.is_none()
+        && c.network.https_proxy.is_none()
+    {
+        return Err(ve(ValidateErrorReason::ManualProxyMissingUrl));
+    }
     Ok(())
 }
 
@@ -968,6 +1223,40 @@ fn validate_route_rule_set(rules: &[yerd_core::RouteRule]) -> Result<(), ConfigE
     for r in rules {
         if !seen_prefix.insert(r.prefix()) {
             return Err(ve(ValidateErrorReason::RouteRuleDuplicatePrefix));
+        }
+    }
+    Ok(())
+}
+
+/// Linked `[response_headers]` keys must name a `[[linked]]` site, and each
+/// site's or proxy's header names must be unique ignoring ASCII case. Parked
+/// headers key by document-root and can't be checked here, exactly as for
+/// `[route_rules]`. Proxy keys naming no current proxy are tolerated, as
+/// `[domains.proxy]` tolerates them: the daemon neither routes nor lists them.
+fn validate_response_headers(c: &Config) -> Result<(), ConfigError> {
+    let linked_names: BTreeSet<&str> = c.linked.iter().map(yerd_core::Site::name).collect();
+    for (site, headers) in &c.response_headers.linked {
+        if !linked_names.contains(site.as_str()) {
+            return Err(ve(ValidateErrorReason::ResponseHeaderUnknownSite));
+        }
+        validate_response_header_set(headers)?;
+    }
+    for headers in c
+        .response_headers
+        .parked
+        .values()
+        .chain(c.response_headers.proxy.values())
+    {
+        validate_response_header_set(headers)?;
+    }
+    Ok(())
+}
+
+fn validate_response_header_set(headers: &[yerd_core::ResponseHeader]) -> Result<(), ConfigError> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for h in headers {
+        if !seen.insert(h.name().to_ascii_lowercase()) {
+            return Err(ve(ValidateErrorReason::ResponseHeaderDuplicateName));
         }
     }
     Ok(())
@@ -1091,9 +1380,16 @@ fn validate_groups(c: &Config) -> Result<(), ConfigError> {
 /// Two cardinality invariants the daemon relies on are also enforced, so a
 /// hand-edited config can't load into a state the runtime silently mishandles:
 /// at most one `[tunnel.named]` entry (the daemon runs a single consolidated
-/// tunnel and starts only the first), and unique `[tunnel.sites]` hostnames (one
-/// ingress rule is emitted per pair, so a duplicate hostname would shadow all
-/// but the first site).
+/// tunnel and starts only the first), and unique `[tunnel.sites]` hostnames,
+/// compared case-insensitively (the tunnel listener routes by the lowercased
+/// host, so a duplicate would shadow all but the first site).
+///
+/// `[tunnel.passwords]` keys follow the same safe-key rule as site names, and
+/// each password is 1..=128 bytes with no ASCII control characters.
+///
+/// A `[tunnel.ngrok]` authtoken must have the provider-token shape (visible
+/// ASCII, no whitespace, no leading `-`) and a domain must look like a DNS
+/// name. Errors never echo either value.
 fn validate_tunnel(c: &Config) -> Result<(), ConfigError> {
     if c.tunnel.named.len() > 1 {
         return Err(ve(ValidateErrorReason::TunnelMultipleNamed));
@@ -1117,11 +1413,35 @@ fn validate_tunnel(c: &Config) -> Result<(), ConfigError> {
         if !is_plausible_hostname(hostname) {
             return Err(ve(ValidateErrorReason::TunnelHostnameInvalid));
         }
-        if !seen_hostnames.insert(hostname.as_str()) {
+        if !seen_hostnames.insert(hostname.to_ascii_lowercase()) {
             return Err(ve(ValidateErrorReason::TunnelDuplicateHostname));
         }
     }
+    for (site, password) in &c.tunnel.passwords {
+        if !is_safe_key(site) {
+            return Err(ve(ValidateErrorReason::TunnelKeyInvalid));
+        }
+        if !is_valid_tunnel_password(password) {
+            return Err(ve(ValidateErrorReason::TunnelPasswordInvalid));
+        }
+    }
+    if let Some(token) = &c.tunnel.ngrok.authtoken {
+        if !yerd_core::tunnel_provider::is_valid_provider_token(token) {
+            return Err(ve(ValidateErrorReason::TunnelNgrokAuthtokenInvalid));
+        }
+    }
+    if let Some(domain) = &c.tunnel.ngrok.domain {
+        if !is_plausible_hostname(domain) {
+            return Err(ve(ValidateErrorReason::TunnelNgrokDomainInvalid));
+        }
+    }
     Ok(())
+}
+
+/// A share password is 1..=128 bytes with no ASCII control characters, so it
+/// stays a single printable TOML line and a sane basic-auth credential.
+fn is_valid_tunnel_password(password: &str) -> bool {
+    (1..=128).contains(&password.len()) && !password.chars().any(|c| c.is_ascii_control())
 }
 
 /// A `[tunnel]` map key or UUID is safe when it is a short token of DNS-label-ish
@@ -1304,6 +1624,29 @@ fn web_root_escapes(p: &std::path::Path) -> bool {
         .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
 }
 
+/// The `[network]` table. Every key defaults, so an absent table parses to
+/// system mode with no manual URLs.
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NetworkSectionWire {
+    #[serde(default)]
+    mode: yerd_core::network::OutboundProxyMode,
+    #[serde(default)]
+    http_proxy: Option<String>,
+    #[serde(default)]
+    https_proxy: Option<String>,
+    #[serde(default)]
+    no_proxy: Vec<String>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NodeSectionWire {
+    default: Option<String>,
+    #[serde(default)]
+    sites: BTreeMap<String, String>,
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -1359,7 +1702,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 23,
+                current: 34,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -1444,6 +1787,15 @@ mod tests {
         let unique = "version = 8\n[tunnel.sites]\n\
                       app = \"app.example.com\"\nblog = \"blog.example.com\"\n";
         assert!(Config::from_toml(unique).is_ok());
+
+        let differs_by_case = "version = 8\n[tunnel.sites]\n\
+                               app = \"Shared.Example.com\"\nblog = \"shared.example.COM\"\n";
+        assert!(matches!(
+            Config::from_toml(differs_by_case),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::TunnelDuplicateHostname,
+            })
+        ));
     }
 
     #[test]
@@ -1464,6 +1816,100 @@ mod tests {
     fn groups_absent_table_is_empty_and_migrates() {
         let c = Config::from_toml("version = 8\n").unwrap();
         assert!(c.groups.is_empty());
+    }
+
+    #[test]
+    fn parked_claims_absent_is_empty_and_v30_migrates() {
+        let c = Config::from_toml("version = 30\n[parked]\npaths = [\"/srv\"]\n").unwrap();
+        assert!(c.parked.claims.is_empty());
+    }
+
+    #[test]
+    fn parked_claims_parse_and_round_trip() {
+        let s = "version = 31\n[parked]\npaths = [\"/srv\"]\n\n[parked.claims.\"/srv/laravel.com\"]\nname = \"laravel\"\nurl_synced = false\n";
+        let c = Config::from_toml(s).unwrap();
+        let claim = c.parked.claims.get("/srv/laravel.com").unwrap();
+        assert_eq!(claim.name, "laravel");
+        assert!(!claim.url_synced);
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn parked_claims_drop_invalid_entries() {
+        let s = "version = 31\n[parked.claims.\"/srv/a.com\"]\nname = \"Not Valid\"\n\n[parked.claims.\"\"]\nname = \"x\"\n\n[parked.claims.\"/srv/b.com\"]\nname = \"b\"\n";
+        let c = Config::from_toml(s).unwrap();
+        let keys: Vec<&str> = c.parked.claims.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["/srv/b.com"]);
+        assert!(c.parked.claims.get("/srv/b.com").unwrap().url_synced);
+    }
+
+    #[test]
+    fn favourites_absent_table_is_empty_and_v29_migrates() {
+        let c = Config::from_toml("version = 29\n").unwrap();
+        assert!(c.favourites.is_empty());
+    }
+
+    #[test]
+    fn favourites_section_parses_and_round_trips() {
+        let s = "version = 30\n[favourites]\nsites = [\"api\", \"blog\"]\n";
+        let c = Config::from_toml(s).unwrap();
+        assert_eq!(
+            c.favourites
+                .sites
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["api", "blog"]
+        );
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn added_absent_table_is_empty() {
+        let c = Config::from_toml("version = 34\n").unwrap();
+        assert!(c.added.is_empty());
+    }
+
+    #[test]
+    fn added_section_parses_and_round_trips() {
+        let s = "version = 34\n[added]\nbaseline_pending = [\"/srv\"]\n\n[added.linked]\nblog = 1764100000\n\n[added.parked]\n\"/srv/api\" = 1764100500\n\"/srv/old\" = 0\n";
+        let c = Config::from_toml(s).unwrap();
+        assert!(c.added.baseline_pending.contains("/srv"));
+        assert_eq!(c.added.linked.get("blog"), Some(&1_764_100_000));
+        assert_eq!(c.added.parked.get("/srv/api"), Some(&1_764_100_500));
+        assert_eq!(c.added.parked.get("/srv/old"), Some(&0));
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn v33_config_gets_a_baseline_for_its_parked_roots() {
+        let c = Config::from_toml("version = 33\n[parked]\npaths = [\"/srv\"]\n").unwrap();
+        assert_eq!(
+            c.added.baseline_pending.iter().collect::<Vec<_>>(),
+            ["/srv"]
+        );
+        assert!(Config::from_toml("version = 33\n")
+            .unwrap()
+            .added
+            .is_empty());
+        assert!(Config::default().added.baseline_pending.is_empty());
+    }
+
+    #[test]
+    fn favourites_are_canonicalised_on_load() {
+        let s = "version = 30\n[favourites]\nsites = [\"Blog\", \" api \", \"blog\", \" \", \"gone\"]\n";
+        let c = Config::from_toml(s).unwrap();
+        assert_eq!(
+            c.favourites
+                .sites
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["api", "blog", "gone"]
+        );
     }
 
     #[test]
@@ -1576,7 +2022,7 @@ mod tests {
 
     #[test]
     #[allow(clippy::field_reassign_with_default)]
-    fn v22_config_migrates_to_v23_changing_only_the_version_line() {
+    fn v22_config_migrates_to_current_changing_only_the_version_line() {
         let mut c = Config::default();
         c.domains.linked.insert(
             "blog".to_owned(),
@@ -1586,15 +2032,164 @@ mod tests {
                 primary: None,
             },
         );
-        let v23 = c.to_toml().unwrap();
-        let v22 = v23.replacen("version = 23\n", "version = 22\n", 1);
+        let current = c.to_toml().unwrap();
+        let v22 = current.replacen(
+            &format!("version = {}\n", crate::CURRENT_VERSION),
+            "version = 22\n",
+            1,
+        );
         assert_ne!(
-            v22, v23,
+            v22, current,
             "the replace must actually downgrade the version line"
         );
         let migrated = Config::from_toml(&v22).unwrap();
         assert_eq!(migrated, c);
-        assert_eq!(migrated.to_toml().unwrap(), v23);
+        assert_eq!(migrated.to_toml().unwrap(), current);
+    }
+
+    #[test]
+    fn v25_config_with_ffi_enable_migrates_to_current_keeping_it() {
+        let mut c = Config::default();
+        c.php
+            .settings
+            .insert("ffi.enable".to_owned(), "On".to_owned());
+        let current = c.to_toml().unwrap();
+        let v25 = current.replacen(
+            &format!("version = {}\n", crate::CURRENT_VERSION),
+            "version = 25\n",
+            1,
+        );
+        assert_ne!(v25, current);
+        let migrated = Config::from_toml(&v25).unwrap();
+        assert_eq!(migrated, c);
+        assert_eq!(migrated.to_toml().unwrap(), current);
+    }
+
+    #[test]
+    fn v23_tunnel_config_migrates_to_current_keeping_both_maps() {
+        let s = "version = 23\n[tunnel.named]\nmysite = \"uuid-1\"\n\
+                 [tunnel.sites]\napp = \"app.example.com\"\n";
+        let c = Config::from_toml(s).unwrap();
+        assert_eq!(c.version, crate::CURRENT_VERSION);
+        assert_eq!(
+            c.tunnel.named.get("mysite").map(String::as_str),
+            Some("uuid-1")
+        );
+        assert_eq!(
+            c.tunnel.sites.get("app").map(String::as_str),
+            Some("app.example.com")
+        );
+        assert!(c.tunnel.passwords.is_empty());
+        let emitted = c.to_toml().unwrap();
+        assert!(!emitted.contains("[tunnel.passwords]"), "got: {emitted}");
+    }
+
+    #[test]
+    fn tunnel_passwords_accept_valid_values() {
+        for password in ["s", "secret with spaces", "p\u{e9}ss", &"x".repeat(128)] {
+            let mut c = Config::default();
+            c.tunnel
+                .passwords
+                .insert("app".to_owned(), password.to_owned());
+            c.validate().unwrap();
+            let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+            assert_eq!(back.tunnel.passwords, c.tunnel.passwords);
+        }
+    }
+
+    #[test]
+    fn tunnel_passwords_reject_invalid_values() {
+        for password in ["", "tab\there", "nl\nhere", "del\u{7f}", &"x".repeat(129)] {
+            let mut c = Config::default();
+            c.tunnel
+                .passwords
+                .insert("app".to_owned(), password.to_owned());
+            assert!(
+                matches!(
+                    c.validate(),
+                    Err(ConfigError::Validate {
+                        reason: ValidateErrorReason::TunnelPasswordInvalid,
+                    })
+                ),
+                "password {password:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn tunnel_passwords_reject_unsafe_site_keys() {
+        let mut c = Config::default();
+        c.tunnel
+            .passwords
+            .insert("../escape".to_owned(), "secret".to_owned());
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::TunnelKeyInvalid,
+            })
+        ));
+    }
+
+    #[test]
+    fn tunnel_ngrok_v32_file_parses() {
+        let c = Config::from_toml(
+            "version = 32\n[tunnel]\ndefault_provider = \"zrok\"\n\n[tunnel.ngrok]\nauthtoken = \"tok_1\"\ndomain = \"demo.ngrok-free.app\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            c.tunnel.default_provider,
+            yerd_core::tunnel_provider::TunnelProvider::Zrok
+        );
+        assert_eq!(c.tunnel.ngrok.authtoken.as_deref(), Some("tok_1"));
+        assert_eq!(
+            c.tunnel.ngrok.domain.as_deref(),
+            Some("demo.ngrok-free.app")
+        );
+    }
+
+    #[test]
+    fn tunnel_ngrok_rejects_invalid_values() {
+        for (body, reason) in [
+            (
+                "[tunnel.ngrok]\nauthtoken = \"a b\"\n",
+                ValidateErrorReason::TunnelNgrokAuthtokenInvalid,
+            ),
+            (
+                "[tunnel.ngrok]\nauthtoken = \"-x\"\n",
+                ValidateErrorReason::TunnelNgrokAuthtokenInvalid,
+            ),
+            (
+                "[tunnel.ngrok]\ndomain = \"nodot\"\n",
+                ValidateErrorReason::TunnelNgrokDomainInvalid,
+            ),
+        ] {
+            let err = Config::from_toml(&format!("version = 32\n{body}")).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::Validate { reason: r } if r == reason),
+                "{body:?} gave {err:?}"
+            );
+            assert!(!err.to_string().contains("a b"), "{err}");
+        }
+    }
+
+    #[test]
+    fn tunnel_rejects_unknown_default_provider() {
+        assert!(
+            Config::from_toml("version = 32\n[tunnel]\ndefault_provider = \"other\"\n").is_err()
+        );
+        assert!(Config::from_toml("version = 32\n[tunnel.ngrok]\nextra = \"x\"\n").is_err());
+    }
+
+    #[test]
+    fn ngrok_settings_debug_redacts_the_token() {
+        let settings = crate::NgrokSettings {
+            authtoken: Some("supersecrettoken".to_owned()),
+            domain: Some("demo.ngrok-free.app".to_owned()),
+        };
+        let debug = format!("{settings:?}");
+        assert!(debug.contains("***"), "{debug}");
+        assert!(!debug.contains("supersecrettoken"), "{debug}");
+        assert!(debug.contains("demo.ngrok-free.app"), "{debug}");
     }
 
     #[test]
@@ -2136,6 +2731,159 @@ target = \"../../etc/passwd\"\n";
     }
 
     #[test]
+    fn response_headers_round_trip() {
+        let mut c = Config::default();
+        c.linked.push(linked_site("app", "/srv/app"));
+        c.response_headers.linked.insert(
+            "app".to_owned(),
+            vec![
+                yerd_core::ResponseHeader::new("Access-Control-Allow-Origin", "*").unwrap(),
+                yerd_core::ResponseHeader::new("X-Frame-Options", "DENY").unwrap(),
+            ],
+        );
+        c.response_headers.parked.insert(
+            "/srv/blog".to_owned(),
+            vec![yerd_core::ResponseHeader::new("Cache-Control", "no-store").unwrap()],
+        );
+        let toml = c.to_toml().unwrap();
+        let back = Config::from_toml(&toml).unwrap();
+        assert_eq!(c, back);
+        assert_eq!(back.to_toml().unwrap(), toml);
+    }
+
+    #[test]
+    fn removing_last_response_header_returns_to_byte_identical_default() {
+        let mut c = Config::default();
+        c.response_headers
+            .linked
+            .insert("app".to_owned(), Vec::new());
+        c.response_headers
+            .proxy
+            .insert("reverb".to_owned(), Vec::new());
+        assert_eq!(c.to_toml().unwrap(), Config::default().to_toml().unwrap());
+    }
+
+    #[test]
+    fn response_headers_proxy_round_trip() {
+        let mut c = Config::default();
+        for name in ["reverb", "api.account"] {
+            c.proxies
+                .push(yerd_core::ProxySite::new(name, upstream("http://127.0.0.1:3000")).unwrap());
+        }
+        c.response_headers.proxy.insert(
+            "reverb".to_owned(),
+            vec![
+                yerd_core::ResponseHeader::new("Access-Control-Allow-Origin", "*").unwrap(),
+                yerd_core::ResponseHeader::new("X-Frame-Options", "DENY").unwrap(),
+            ],
+        );
+        c.response_headers.proxy.insert(
+            "api.account".to_owned(),
+            vec![yerd_core::ResponseHeader::new("Cache-Control", "no-store").unwrap()],
+        );
+        let toml = c.to_toml().unwrap();
+        assert!(
+            toml.contains("[[response_headers.proxy.reverb]]"),
+            "got: {toml}"
+        );
+        assert!(
+            toml.contains("[[response_headers.proxy.\"api.account\"]]"),
+            "got: {toml}"
+        );
+        let back = Config::from_toml(&toml).unwrap();
+        assert_eq!(back.response_headers, c.response_headers);
+        assert_eq!(back.to_toml().unwrap(), toml);
+    }
+
+    #[test]
+    fn response_headers_proxy_orphan_key_is_tolerated() {
+        let mut c = Config::default();
+        c.response_headers.proxy.insert(
+            "ghost".to_owned(),
+            vec![yerd_core::ResponseHeader::new("X-A", "1").unwrap()],
+        );
+        assert!(c.validate().is_ok());
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back.response_headers.proxy.len(), 1);
+    }
+
+    #[test]
+    fn validate_rejects_unknown_response_header_site() {
+        let mut c = Config::default();
+        c.response_headers.linked.insert(
+            "ghost".to_owned(),
+            vec![yerd_core::ResponseHeader::new("X-A", "1").unwrap()],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::ResponseHeaderUnknownSite,
+            }) => {}
+            other => panic!("expected ResponseHeaderUnknownSite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_response_header_name_ignoring_case() {
+        let mut c = Config::default();
+        c.linked.push(linked_site("app", "/srv/app"));
+        c.response_headers.parked.insert(
+            "/srv/blog".to_owned(),
+            vec![
+                yerd_core::ResponseHeader::new("X-A", "1").unwrap(),
+                yerd_core::ResponseHeader::new("x-a", "2").unwrap(),
+            ],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::ResponseHeaderDuplicateName,
+            }) => {}
+            other => panic!("expected ResponseHeaderDuplicateName, got {other:?}"),
+        }
+        c.response_headers.parked.clear();
+        c.response_headers.proxy.insert(
+            "reverb".to_owned(),
+            vec![
+                yerd_core::ResponseHeader::new("X-A", "1").unwrap(),
+                yerd_core::ResponseHeader::new("X-a", "2").unwrap(),
+            ],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::ResponseHeaderDuplicateName,
+            }) => {}
+            other => panic!("expected ResponseHeaderDuplicateName, got {other:?}"),
+        }
+        c.response_headers.proxy.clear();
+        c.response_headers.linked.insert(
+            "app".to_owned(),
+            vec![
+                yerd_core::ResponseHeader::new("Access-Control-Allow-Origin", "*").unwrap(),
+                yerd_core::ResponseHeader::new("ACCESS-CONTROL-ALLOW-ORIGIN", "x").unwrap(),
+            ],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::ResponseHeaderDuplicateName,
+            }) => {}
+            other => panic!("expected ResponseHeaderDuplicateName, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_rejects_bad_response_headers() {
+        for entry in [
+            "name = \"Content-Length\"\nvalue = \"5\"\n",
+            "name = \"X-A\"\nvalue = \"a\\u0001b\"\n",
+        ] {
+            let s = format!("version = 25\n[[response_headers.linked.app]]\n{entry}");
+            assert!(
+                matches!(Config::from_toml(&s), Err(ConfigError::Core(_))),
+                "a hand-edited invalid header must fail at load: {entry}"
+            );
+        }
+    }
+
+    #[test]
     fn validate_rejects_proxy_name_collision_with_linked() {
         let mut c = Config::default();
         c.linked.push(
@@ -2603,6 +3351,17 @@ target = \"../../etc/passwd\"\n";
                 reason: ValidateErrorReason::InvalidPhpSetting,
             })
         ));
+
+        let mut c = Config::default();
+        c.php
+            .settings
+            .insert("ffi.enable".to_string(), "preload".to_string());
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::InvalidPhpSetting,
+            })
+        ));
     }
 
     #[test]
@@ -2692,12 +3451,14 @@ target = \"../../etc/passwd\"\n";
                  memory_limit = \"1G\"\n\
                  allow_url_fopen = \"1\"\n\
                  max_execution_time = \"bogus\"\n\
+                 \"ffi.enable\" = \"preload\"\n\
                  [php.directives.\"8.3\"]\n\
                  \"xdebug.mode\" = \"debug\"\n\
                  \"1bad\" = \"x\"\n\
                  \"opcache.bad\" = \"a;b\"\n\
                  extension = \"/evil.so\"\n\
-                 memory_limit = \"2G\"\n";
+                 memory_limit = \"2G\"\n\
+                 \"ffi.enable\" = \"true\"\n";
         let c = Config::from_toml(s).unwrap();
         let v83 = yerd_core::PhpVersion::new(8, 3);
         let vs = c.php.version_settings.get(&v83).unwrap();
@@ -2783,6 +3544,66 @@ target = \"../../etc/passwd\"\n";
     }
 
     #[test]
+    fn xdebug_round_trip() {
+        let s = "version = 29\n[php]\ndefault = \"8.3\"\n\
+                 [php.xdebug.\"8.4\"]\nenabled = true\n\
+                 modes = [\"trace\", \"debug\", \"trace\"]\nstart = \"trigger\"\n";
+        let c = Config::from_toml(s).unwrap();
+        let got = c.php.xdebug.get(&yerd_core::PhpVersion::new(8, 4)).unwrap();
+        assert_eq!(
+            *got,
+            yerd_core::XdebugSettings {
+                enabled: true,
+                modes: vec![yerd_core::XdebugMode::Debug, yerd_core::XdebugMode::Trace],
+                start: yerd_core::XdebugStart::Trigger,
+            }
+        );
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
+    }
+
+    /// A hand-edited typo in a `[php.xdebug]` entry drops that entry rather
+    /// than failing the load, while valid siblings survive.
+    #[test]
+    fn invalid_xdebug_entries_are_dropped_leniently() {
+        let s = "version = 29\n[php]\ndefault = \"8.3\"\n\
+                 [php.xdebug.\"8.2\"]\nenabled = true\nmodes = []\nstart = \"always\"\n\
+                 [php.xdebug.\"8.3\"]\nenabled = true\nmodes = [\"off\"]\nstart = \"always\"\n\
+                 [php.xdebug.\"8.4\"]\nenabled = true\nmodes = [\"debug\"]\nstart = \"always\"\n\
+                 [php.xdebug.\"8.5\"]\nenabled = true\nmodes = [\"debug\"]\nstart = \"sometimes\"\n\
+                 [php.xdebug.\"8.1\"]\nenabled = true\nmodes = [\"debug\"]\nstart = \"always\"\n\
+                 [php.xdebug.\"8.6\"]\nenabled = true\nmodes = [\"debug\"]\n";
+        let c = Config::from_toml(s).unwrap();
+        let kept: Vec<_> = c.php.xdebug.keys().copied().collect();
+        assert_eq!(kept, vec![yerd_core::PhpVersion::new(8, 4)]);
+    }
+
+    #[test]
+    fn xdebug_entries_equal_to_the_default_are_dropped_at_load() {
+        let s = "version = 29\n[php]\ndefault = \"8.3\"\n\
+                 [php.xdebug.\"8.3\"]\nenabled = false\nmodes = [\"debug\"]\nstart = \"always\"\n\
+                 [php.xdebug.\"8.4\"]\nenabled = false\nmodes = [\"debug\", \"debug\"]\nstart = \"always\"\n\
+                 [php.xdebug.\"8.5\"]\nenabled = false\nmodes = [\"profile\"]\nstart = \"always\"\n";
+        let c = Config::from_toml(s).unwrap();
+        let kept: Vec<_> = c.php.xdebug.keys().copied().collect();
+        assert_eq!(kept, vec![yerd_core::PhpVersion::new(8, 5)]);
+    }
+
+    #[test]
+    fn bad_xdebug_version_key_errors() {
+        let bad = "version = 29\n[php]\ndefault = \"8.3\"\n\
+                   [php.xdebug.\"eight\"]\nenabled = true\nmodes = [\"debug\"]\nstart = \"always\"\n";
+        assert!(Config::from_toml(bad).is_err());
+    }
+
+    #[test]
+    fn unknown_xdebug_field_fails_the_load() {
+        let bad = "version = 29\n[php]\ndefault = \"8.3\"\n\
+                   [php.xdebug.\"8.4\"]\nenabled = true\nmodes = [\"debug\"]\nstart = \"always\"\nport = 9000\n";
+        assert!(Config::from_toml(bad).is_err());
+    }
+
+    #[test]
     fn validate_rejects_invalid_extension_path() {
         let mut c = Config::default();
         c.php.extensions.insert(
@@ -2838,5 +3659,60 @@ target = \"../../etc/passwd\"\n";
             .insert("max_execution_time".to_string(), "300".to_string());
         let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
         assert_eq!(back, c);
+    }
+    #[test]
+    fn network_section_absent_loads_default() {
+        let c = Config::from_toml("version = 28\n").unwrap();
+        assert_eq!(c.network, crate::NetworkSection::default());
+    }
+
+    #[test]
+    fn manual_network_section_round_trips() {
+        let toml = "version = 28\n[network]\nmode = \"manual\"\nhttp_proxy = \"proxy:3128\"\nhttps_proxy = \"https://u:p@s:8443\"\nno_proxy = [\"*.corp.com\", \"<local>\"]\n";
+        let c = Config::from_toml(toml).unwrap();
+        assert_eq!(
+            c.network.mode,
+            yerd_core::network::OutboundProxyMode::Manual
+        );
+        assert_eq!(
+            c.network
+                .http_proxy
+                .as_ref()
+                .map(yerd_core::network::ProxyUrl::as_str),
+            Some("http://proxy:3128")
+        );
+        assert_eq!(c.network.no_proxy, vec![".corp.com".to_string()]);
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn bad_proxy_url_is_rejected_without_echo() {
+        let toml =
+            "version = 28\n[network]\nmode = \"manual\"\nhttp_proxy = \"socks5://u:hunter2@x:1\"\n";
+        let err = Config::from_toml(toml).unwrap_err();
+        assert!(matches!(err, ConfigError::Core(_)), "{err:?}");
+        assert!(!err.to_string().contains("hunter2"));
+    }
+
+    #[test]
+    fn manual_network_without_url_is_rejected() {
+        let toml = "version = 28\n[network]\nmode = \"manual\"\n";
+        match Config::from_toml(toml) {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::ManualProxyMissingUrl,
+            }) => {}
+            other => panic!("expected ManualProxyMissingUrl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn network_debug_hides_password() {
+        let toml =
+            "version = 28\n[network]\nmode = \"manual\"\nhttp_proxy = \"http://u:hunter2@x:1\"\n";
+        let c = Config::from_toml(toml).unwrap();
+        let dbg = format!("{c:?}");
+        assert!(!dbg.contains("hunter2"));
+        assert!(dbg.contains("u:***@x:1"));
     }
 }

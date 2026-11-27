@@ -101,12 +101,11 @@ everything you run.
 
 Two limits worth knowing:
 
-- **It applies to the `php` and `php<version>` shims.** The `wp` shim and `yerd
-  exec` point `PHPRC` at the clean per-version ini regardless, so they do not
-  pick up `YERD_COVER`. The `composer` and `laravel` shims set no `PHPRC` of
-  their own at all: they simply inherit whatever the environment carries, so a
-  `composer` run nested inside a cover shim keeps the *parent's* cover ini even
-  though it resolves your default PHP version.
+- **It applies to the `php` and `php<version>` shims.** The `wp`, `composer`
+  and `laravel` shims and `yerd exec` point `PHPRC` at the clean per-version ini
+  regardless, so they do not pick up `YERD_COVER`. A `composer` run nested inside
+  a cover shim therefore runs without coverage, though any `php` it starts from
+  your `PATH` still honours the inherited `YERD_COVER`.
 - **It never fails your command.** If pcov isn't available for the version the
   shim resolves - a [legacy version](./php-versions#legacy-php-versions), or a
   build that hasn't been fetched yet - the shim prints a one-line notice on
@@ -167,3 +166,4 @@ front doors, subcommand and shim, share one implementation.
 
 - [PHP Versions](./php-versions) - installing versions and the `php`/`php<version>` shims.
 - [Laravel Dumps](./laravel-dumps) - the other extension served from `yerd-php-ext`.
+- [Debugging with Xdebug](./xdebug#code-coverage-with-xdebug) - branch and path coverage with `XDEBUG_MODE=coverage phpdebug`.

@@ -5,31 +5,59 @@ const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
+const homeDirMock = vi.fn();
+vi.mock("@tauri-apps/api/path", () => ({
+  homeDir: (...args: unknown[]) => homeDirMock(...args),
+}));
 
 import {
   addDomain,
   addRouteRule,
+  applyProjectConfig,
+  exportProjectConfig,
+  projectConfigDraft,
+  suggestSiteName,
+  availableNode,
   clearMails,
+  clearNodeVersion,
+  contributors,
   deleteMails,
   getMail,
+  homeDirectory,
   IpcError,
+  installNodeStreamed,
+  installNodeWithProgress,
   listMails,
+  listNode,
   listPhp,
+  listResponseHeaders,
   listRoutes,
   listSites,
+  nodeSite,
+  nodeSites,
+  releaseNotes,
   removeDomain,
+  removeResponseHeader,
   removeRouteRule,
   resetDomains,
   setFrontController,
   setMailEnabled,
   setMailPort,
+  setNodeVersion,
   setPhpDirectives,
   setPhpPoolSettings,
   setPhpVersionSettings,
   setPrimaryDomain,
+  setResponseHeader,
+  setSiteFavourite,
   setSymlinkProtection,
   setMcpEnabled,
+  setXdebug,
+  getNetworkSettings,
+  setNetworkSettings,
+  testNetwork,
   status,
+  uninstallNode,
   unlink,
   updatePhp,
 } from "./client";
@@ -86,12 +114,14 @@ describe("client → command mapping", () => {
           to: ["d@e.f"],
           subject: "Hi",
           date_epoch: 1700000000,
+          site: "blog",
         },
       ],
     });
     const r = await listMails();
     expect(r).toHaveLength(1);
     expect(r[0].subject).toBe("Hi");
+    expect(r[0].site).toBe("blog");
     expect(invokeMock).toHaveBeenCalledWith("list_mails", undefined);
   });
 
@@ -141,6 +171,24 @@ describe("client → command mapping", () => {
     invokeMock.mockResolvedValue({ type: "ok" });
     await setMcpEnabled(true);
     expect(invokeMock).toHaveBeenCalledWith("set_mcp_enabled", { enabled: true });
+  });
+
+  it("network settings calls send camelCase args and unwrap the reply", async () => {
+    const settings = { mode: "manual", http_proxy: "http://u:***@p:1", no_proxy: [] };
+    invokeMock.mockResolvedValue({ type: "network_settings", settings });
+    expect(await getNetworkSettings()).toEqual(settings);
+    expect(invokeMock).toHaveBeenCalledWith("get_network_settings", undefined);
+    await setNetworkSettings("manual", "http://u:***@p:1", "", [".corp.com"]);
+    expect(invokeMock).toHaveBeenCalledWith("set_network_settings", {
+      mode: "manual",
+      httpProxy: "http://u:***@p:1",
+      httpsProxy: "",
+      noProxy: [".corp.com"],
+    });
+    const result = { ok: true, url: "https://files.yerd.app/latest.json", status: 200, source: "none" };
+    invokeMock.mockResolvedValue({ type: "network_test", result });
+    expect(await testNetwork()).toEqual(result);
+    expect(invokeMock).toHaveBeenCalledWith("test_network", undefined);
   });
 
   it("setFrontController sends the site name and flag", async () => {
@@ -193,9 +241,61 @@ describe("client → command mapping", () => {
     await expect(addRouteRule("portal", "/api", "../escape.php")).rejects.toBeInstanceOf(IpcError);
   });
 
+  it("setResponseHeader sends the site, name and value", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await setResponseHeader("api", "Access-Control-Allow-Origin", "https://app.test");
+    expect(invokeMock).toHaveBeenCalledWith("set_response_header", {
+      site: "api",
+      name: "Access-Control-Allow-Origin",
+      value: "https://app.test",
+    });
+  });
+
+  it("removeResponseHeader sends the site and name", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await removeResponseHeader("api", "Access-Control-Allow-Origin");
+    expect(invokeMock).toHaveBeenCalledWith("remove_response_header", {
+      site: "api",
+      name: "Access-Control-Allow-Origin",
+    });
+  });
+
+  it("listResponseHeaders returns the headers, and an empty list for an unexpected reply", async () => {
+    invokeMock.mockResolvedValue({
+      type: "response_headers",
+      headers: [{ site: "api", name: "X-Frame-Options", value: "DENY" }],
+    });
+    expect(await listResponseHeaders()).toEqual([
+      { site: "api", name: "X-Frame-Options", value: "DENY" },
+    ]);
+
+    invokeMock.mockResolvedValue({ type: "ok" });
+    expect(await listResponseHeaders()).toEqual([]);
+  });
+
+  it("setResponseHeader propagates a daemon rejection as an IpcError", async () => {
+    invokeMock.mockResolvedValue({
+      type: "error",
+      code: "invalid_path",
+      message: "invalid response header",
+    });
+    await expect(setResponseHeader("api", "Host", "x")).rejects.toBeInstanceOf(IpcError);
+  });
+
   it("setFrontController rejects on a non-ok response", async () => {
     invokeMock.mockResolvedValue({ type: "error", code: "internal", message: "boom" });
     await expect(setFrontController("blog", false)).rejects.toThrow("boom");
+  });
+
+  it("setSiteFavourite sends site + favourite and rejects on error", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await setSiteFavourite("blog", true);
+    expect(invokeMock).toHaveBeenCalledWith("set_site_favourite", {
+      site: "blog",
+      favourite: true,
+    });
+    invokeMock.mockResolvedValue({ type: "error", code: "internal", message: "boom" });
+    await expect(setSiteFavourite("blog", false)).rejects.toBeInstanceOf(IpcError);
   });
 
   it("addDomain / removeDomain / setPrimaryDomain send name + domain", async () => {
@@ -264,10 +364,97 @@ describe("client → command mapping", () => {
     expect(r.pool?.["8.4"]?.["max_children"]).toBe("32");
   });
 
+  it("setXdebug sends the version, toggle, modes and start", async () => {
+    invokeMock.mockResolvedValue({
+      type: "php_versions",
+      installed: ["8.4"],
+      default: "8.4",
+      xdebug: { "8.4": { enabled: true, modes: ["debug", "profile"], start: "trigger" } },
+      xdebug_versions: ["8.4"],
+    });
+    const r = await setXdebug("8.4", true, ["debug", "profile"], "trigger");
+    expect(invokeMock).toHaveBeenCalledWith("set_xdebug", {
+      version: "8.4",
+      enabled: true,
+      modes: ["debug", "profile"],
+      start: "trigger",
+    });
+    expect(r.xdebug?.["8.4"]?.start).toBe("trigger");
+    expect(r.xdebug_versions).toEqual(["8.4"]);
+  });
+
+  it("setXdebug sends null for omitted modes and start", async () => {
+    invokeMock.mockResolvedValue({ type: "php_versions", installed: ["8.4"], default: "8.4" });
+    await setXdebug("8.4", false);
+    expect(invokeMock).toHaveBeenCalledWith("set_xdebug", {
+      version: "8.4",
+      enabled: false,
+      modes: null,
+      start: null,
+    });
+  });
+
+  it("setXdebug sends a null enabled to keep the current state", async () => {
+    invokeMock.mockResolvedValue({ type: "php_versions", installed: ["8.4"], default: "8.4" });
+    await setXdebug("8.4", null, undefined, "trigger");
+    expect(invokeMock).toHaveBeenCalledWith("set_xdebug", {
+      version: "8.4",
+      enabled: null,
+      modes: null,
+      start: "trigger",
+    });
+  });
+
   it("resetDomains sends just the name", async () => {
     invokeMock.mockResolvedValue({ type: "ok" });
     await resetDomains("blog");
     expect(invokeMock).toHaveBeenCalledWith("reset_domains", { name: "blog" });
+  });
+});
+
+describe("project file commands", () => {
+  const config = {
+    file: "/code/acme/.yerd.toml",
+    exists: true,
+    site: "acme",
+    name: "acme",
+    contents: 'name = "acme"\n',
+  };
+
+  it("projectConfigDraft sends the path and unwraps the reply", async () => {
+    invokeMock.mockResolvedValue({ type: "project_config", ...config });
+    await expect(projectConfigDraft("/code/acme")).resolves.toEqual(config);
+    expect(invokeMock).toHaveBeenCalledWith("project_config_draft", { path: "/code/acme" });
+  });
+
+  it("suggestSiteName sends the folder name and returns the reply", async () => {
+    invokeMock.mockResolvedValue("laravel");
+    await expect(suggestSiteName("laravel.com")).resolves.toBe("laravel");
+    expect(invokeMock).toHaveBeenCalledWith("suggest_site_name", { folder: "laravel.com" });
+  });
+
+  it("applyProjectConfig returns the job id", async () => {
+    invokeMock.mockResolvedValue({ type: "job_started", job_id: "j9" });
+    await expect(applyProjectConfig("/code/acme")).resolves.toBe("j9");
+    expect(invokeMock).toHaveBeenCalledWith("apply_project_config", { path: "/code/acme" });
+  });
+
+  it("exportProjectConfig sends the site name", async () => {
+    invokeMock.mockResolvedValue({ type: "project_config", ...config });
+    await expect(exportProjectConfig("acme")).resolves.toEqual(config);
+    expect(invokeMock).toHaveBeenCalledWith("export_project_config", { site: "acme" });
+  });
+
+  it("keeps the project_file_invalid code on a daemon error", async () => {
+    invokeMock.mockResolvedValue({ type: "error", code: "project_file_invalid", message: "bad php" });
+    await expect(projectConfigDraft("/code/acme")).rejects.toMatchObject({
+      code: "project_file_invalid",
+    });
+  });
+
+  it("rejects an unexpected reply", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await expect(applyProjectConfig("/code/acme")).rejects.toBeInstanceOf(IpcError);
   });
 });
 
@@ -286,6 +473,184 @@ describe("error handling", () => {
 
 });
 
+describe("node commands", () => {
+  const release = {
+    version: "22.12.0",
+    lts: true,
+    codename: "Jod",
+    default: true,
+    uninstall_blocked: false,
+  };
+
+  it("listNode unwraps the installed releases", async () => {
+    invokeMock.mockResolvedValue({ type: "node_versions", installed: [release] });
+    await expect(listNode()).resolves.toEqual([release]);
+    expect(invokeMock).toHaveBeenCalledWith("list_node", undefined);
+  });
+
+  it("installNodeWithProgress keeps polling through a failed status read", async () => {
+    vi.useFakeTimers();
+    try {
+      invokeMock
+        .mockResolvedValueOnce({ type: "job_started", job_id: "j1" })
+        .mockRejectedValueOnce({ code: "unreachable", message: "daemon unreachable" })
+        .mockResolvedValueOnce({
+          type: "job_progress",
+          state: "succeeded",
+          phase: "",
+          log: ["Installed Node 22.12.0"],
+          next_cursor: 1,
+          error: null,
+        });
+      const lines: string[] = [];
+      const done = installNodeWithProgress("22", false, (l) => lines.push(...l));
+      await vi.runAllTimersAsync();
+      await expect(done).resolves.toBeUndefined();
+      expect(lines).toEqual(["Installed Node 22.12.0"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("listNode lists the newest release first", async () => {
+    const older = ["9.11.2", "24.22.3", "26.13.1", "24.3.0"].map((version) => ({
+      ...release,
+      version,
+    }));
+    invokeMock.mockResolvedValue({ type: "node_versions", installed: older });
+    const listed = await listNode();
+    expect(listed.map((r) => r.version)).toEqual(["26.13.1", "24.22.3", "24.3.0", "9.11.2"]);
+  });
+
+  it("availableNode unwraps the major lines", async () => {
+    const line = { major: 22, latest: "22.12.0", update_available: false };
+    invokeMock.mockResolvedValue({ type: "available_node", majors: [line] });
+    await expect(availableNode()).resolves.toEqual([line]);
+    expect(invokeMock).toHaveBeenCalledWith("available_node", undefined);
+  });
+
+  it("installNodeStreamed sends version and update and returns the job id", async () => {
+    invokeMock.mockResolvedValue({ type: "job_started", job_id: "j9" });
+    await expect(installNodeStreamed("22", true)).resolves.toBe("j9");
+    expect(invokeMock).toHaveBeenCalledWith("install_node_streamed", {
+      version: "22",
+      update: true,
+    });
+  });
+
+  it("installNodeWithProgress polls to the end and throws on failure", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "install_node_streamed") {
+        return Promise.resolve({ type: "job_started", job_id: "j1" });
+      }
+      return Promise.resolve({
+        type: "job_progress",
+        state: "failed",
+        phase: "",
+        log: ["Downloading"],
+        next_cursor: 1,
+        error: "checksum mismatch",
+      });
+    });
+    const lines: string[] = [];
+    await expect(
+      installNodeWithProgress("24", false, (l) => lines.push(...l)),
+    ).rejects.toMatchObject({ message: "checksum mismatch" });
+    expect(lines).toEqual(["Downloading"]);
+    expect(invokeMock).toHaveBeenCalledWith("job_status", { jobId: "j1", cursor: 0 });
+  });
+
+  it("uninstallNode sends the version and returns the refreshed list", async () => {
+    invokeMock.mockResolvedValue({ type: "node_versions", installed: [] });
+    await expect(uninstallNode("20.18.0")).resolves.toEqual([]);
+    expect(invokeMock).toHaveBeenCalledWith("uninstall_node", { version: "20.18.0" });
+  });
+
+  it("setNodeVersion sends a null site for the global default", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await setNodeVersion("22.12.0", null);
+    expect(invokeMock).toHaveBeenCalledWith("set_node_version", {
+      version: "22.12.0",
+      site: null,
+    });
+    await setNodeVersion("20.18.0", "blog");
+    expect(invokeMock).toHaveBeenLastCalledWith("set_node_version", {
+      version: "20.18.0",
+      site: "blog",
+    });
+  });
+
+  it("clearNodeVersion sends the site", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await clearNodeVersion("blog");
+    expect(invokeMock).toHaveBeenCalledWith("clear_node_version", { site: "blog" });
+  });
+
+  it("nodeSite passes the reply through with optional fields absent", async () => {
+    invokeMock.mockResolvedValue({ type: "node_site", effective: "22.12.0", source: "default" });
+    const r = await nodeSite("blog");
+    expect(invokeMock).toHaveBeenCalledWith("node_site", { site: "blog" });
+    expect(r.effective).toBe("22.12.0");
+    expect(r.source).toBe("default");
+    expect(r.preference).toBeUndefined();
+  });
+
+  it("nodeSites returns every entry and rejects an unexpected reply", async () => {
+    invokeMock.mockResolvedValue({
+      type: "node_sites",
+      sites: [
+        { site: "blog", effective: "22.12.0", source: "nvmrc" },
+        { site: "shop", error: "Node 18 is not installed", missing: "18" },
+      ],
+    });
+    const sites = await nodeSites();
+    expect(invokeMock).toHaveBeenCalledWith("node_sites", undefined);
+    expect(sites.map((s) => s.site)).toEqual(["blog", "shop"]);
+    expect(sites[1].missing).toBe("18");
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await expect(nodeSites()).rejects.toBeInstanceOf(IpcError);
+  });
+
+  it("releaseNotes passes current and earlier through and rejects an unexpected reply", async () => {
+    const entry = {
+      version: "2.0.4",
+      tag: "v2.0.4",
+      published_at: "2026-07-25T15:49:58Z",
+      prerelease: false,
+      summary: "Support xdebug",
+      features: [{ title: "Support xdebug", author: "dev", url: "https://x.test/1" }],
+      fixes: [],
+      others: [],
+    };
+    invokeMock.mockResolvedValue({ type: "release_notes", earlier: [entry] });
+    const r = await releaseNotes();
+    expect(invokeMock).toHaveBeenCalledWith("release_notes", undefined);
+    expect(r.current).toBeUndefined();
+    expect(r.earlier[0].features[0].author).toBe("dev");
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await expect(releaseNotes()).rejects.toBeInstanceOf(IpcError);
+  });
+
+  it("contributors returns the list and total and rejects an unexpected reply", async () => {
+    invokeMock.mockResolvedValue({
+      type: "contributors",
+      contributors: [{ login: "totov", avatar_url: "https://a.test/1", commits: 12 }],
+      total: 1,
+    });
+    const r = await contributors();
+    expect(invokeMock).toHaveBeenCalledWith("contributors", undefined);
+    expect(r.total).toBe(1);
+    expect(r.contributors[0].login).toBe("totov");
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await expect(contributors()).rejects.toBeInstanceOf(IpcError);
+  });
+
+  it("listNode rejects an unexpected response type", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await expect(listNode()).rejects.toBeInstanceOf(IpcError);
+  });
+});
+
 describe("IpcError categorisation", () => {
   it("detects an unreachable daemon from the message", () => {
     expect(
@@ -302,5 +667,17 @@ describe("IpcError categorisation", () => {
 
   it("the explicit unreachable code sets the flag", () => {
     expect(new IpcError("x", "unreachable").unreachable).toBe(true);
+  });
+});
+
+describe("homeDirectory", () => {
+  it("returns the host's home directory", async () => {
+    homeDirMock.mockResolvedValue("/Users/a");
+    await expect(homeDirectory()).resolves.toBe("/Users/a");
+  });
+
+  it("resolves null when the path API fails", async () => {
+    homeDirMock.mockRejectedValue(new Error("no path api"));
+    await expect(homeDirectory()).resolves.toBeNull();
   });
 });
