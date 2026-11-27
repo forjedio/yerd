@@ -232,6 +232,7 @@ export default withMermaid({
             { text: 'Tooling', link: '/reference/cli/tooling' },
             { text: 'Services', link: '/reference/cli/services' },
             { text: 'Databases', link: '/reference/cli/db' },
+            { text: 'S3 storage', link: '/reference/cli/s3' },
             { text: 'Mail', link: '/reference/cli/mail' },
             { text: 'MCP', link: '/reference/cli/mcp' },
             { text: 'LAN sharing', link: '/reference/cli/lan' },

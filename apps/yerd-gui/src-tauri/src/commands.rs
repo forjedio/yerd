@@ -809,6 +809,33 @@ pub async fn restore_database(
     )
 }
 
+// ── S3 storage (versitygw) ─────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn list_buckets() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListBuckets).await?)
+}
+
+#[tauri::command]
+pub async fn create_bucket(name: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::CreateBucket { name }).await?)
+}
+
+#[tauri::command]
+pub async fn drop_bucket(name: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::DropBucket { name }).await?)
+}
+
+#[tauri::command]
+pub async fn bucket_stats(name: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::BucketStats { name }).await?)
+}
+
+#[tauri::command]
+pub async fn s3_credentials(show_secret: bool) -> Result<Response, GuiError> {
+    finish(exchange(&Request::S3Credentials { show_secret }).await?)
+}
+
 // ── mail capture ───────────────────────────────────────────────────────────
 
 #[tauri::command]

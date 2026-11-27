@@ -1,12 +1,12 @@
 # Services
 
-Yerd installs and supervises local database, cache, and search engines as native,
-per-user processes - no Docker. Each service is identified by a short `id`:
-`redis`, `mysql`, `mariadb`, `postgres`, `meilisearch`, or - per site -
+Yerd installs and supervises local database, cache, search, and S3 storage engines
+as native, per-user processes - no Docker. Each service is identified by a short `id`:
+`redis`, `mysql`, `mariadb`, `postgres`, `meilisearch`, `versitygw`, or - per site -
 `reverb:<site>` (see [Instances](#instances)). The [Services & Databases
 guide](../../guide/services) covers the model in depth; this page is the command
 reference. For creating and managing the databases *inside* a SQL engine, see
-[Databases](./db).
+[Databases](./db); for the buckets inside S3 storage, see [S3 storage](./s3).
 
 ::: info Redis is Valkey
 The `redis` slot is served by **Valkey** (the BSD-licensed, wire-compatible fork).
@@ -43,7 +43,8 @@ yerd service uninstall redis 8 --purge # remove binaries AND data
 ::: warning `--purge` deletes data
 Without `--purge`, uninstalling keeps the data directory so a later reinstall
 picks up where you left off. With `--purge` the engine's stored data is deleted -
-there is no undo.
+there is no undo. For `versitygw`, `--purge` also deletes the generated access
+keys, so a reinstall gets new ones.
 :::
 
 ::: info PostgreSQL has a `full` (PostGIS) variant
@@ -158,7 +159,7 @@ yerd service remove reverb:blog --purge
 ```
 
 - `--type` is a type id (`redis`, `mysql`, `mariadb`, `postgres`, `meilisearch`,
-  `reverb`), not a wire id.
+  `versitygw`, `reverb`), not a wire id.
 - `--site` is **required** for a per-site type, and must name a **linked Laravel**
   site (one with an `artisan` file). The instance runs against that site's PHP and
   document root, which is why `--version` doesn't apply to it.
@@ -175,5 +176,6 @@ yerd service remove reverb:blog --purge
 
 - [Services & Databases guide](../../guide/services) - the supervision model and posture
 - [Databases](./db) - creating, dropping, backing up databases inside a SQL engine
+- [S3 storage](./s3) - managing the buckets inside `versitygw`
 - [Configuration Reference](../configuration) - the `[services.<id>]` config tables
 - [yerd-services](../../developer/crates/yerd-services) - the crate behind these commands

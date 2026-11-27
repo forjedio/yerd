@@ -64,6 +64,20 @@ const REDIS = svc({
   supports_databases: false,
   port: 6379,
 });
+const S3 = svc({
+  service: "versitygw",
+  type_id: "versitygw",
+  display_name: "S3 (versitygw)",
+  installed_versions: ["1.7.0"],
+  selected_version: "1.7.0",
+  supports_databases: false,
+  port: 7070,
+  pid: 61204,
+});
+const BUCKET_STATS: Record<string, { objects: number; bytes: number }> = {
+  avatars: { objects: 1284, bytes: 312_400_000 },
+  "codestash-uploads": { objects: 86, bytes: 48_100_000 },
+};
 const REVERB = svc({
   service: "reverb:codestash",
   type_id: "reverb",
@@ -93,6 +107,7 @@ function meilisearchType(): AddableServiceType {
 interface StubOpts {
   services?: ServiceStatus[];
   databases?: Record<string, string[]>;
+  buckets?: string[];
   addService?: () => Promise<unknown>;
   listServices?: () => Promise<unknown>;
   available?: { service: string; available: string[]; installed: string[] }[];
@@ -137,6 +152,22 @@ function stubIpc(opts: StubOpts = {}) {
         return Promise.resolve({ type: "service_logs", lines: ["ready"] });
       case "status":
         return Promise.resolve({ type: "status", report: useDaemon().report.value });
+      case "list_buckets":
+        return Promise.resolve({
+          type: "buckets",
+          buckets: (opts.buckets ?? ["avatars", "codestash-uploads"]).map((name) => ({ name })),
+        });
+      case "bucket_stats":
+        return Promise.resolve({ type: "bucket_stats", ...(BUCKET_STATS[String(args?.name)] ?? { objects: 0, bytes: 0 }) });
+      case "s3_credentials":
+        return Promise.resolve({
+          type: "s3_credentials",
+          endpoint: "http://127.0.0.1:7070",
+          access_key: "yerd_7Kq2XH9PmA",
+          ...(args?.showSecret ? { secret_key: "s3cr3t" } : {}),
+        });
+      case "drop_bucket":
+        return Promise.resolve({ type: "bucket_dropped", objects_removed: 86 });
       case "start_service":
       case "stop_service":
       case "restart_service":
@@ -147,6 +178,7 @@ function stubIpc(opts: StubOpts = {}) {
       case "remove_service":
       case "create_database":
       case "drop_database":
+      case "create_bucket":
         return Promise.resolve({ type: "ok" });
       default:
         return Promise.reject(new Error(`unexpected invoke ${cmd}`));
@@ -761,5 +793,104 @@ describe("ServicesView drawer layering", () => {
     await flushPromises();
     expect(w.find('[data-testid="service-log"]').exists()).toBe(false);
     expect(w.find('[data-testid="service-inspector"]').exists()).toBe(true);
+  });
+});
+
+describe("ServicesView S3 storage", () => {
+  const clipboardWriteText = vi.fn();
+
+  beforeEach(() => {
+    clipboardWriteText.mockReset().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWriteText },
+    });
+  });
+
+  it("lists S3 under Storage with its bucket count", async () => {
+    stubIpc({ services: [MYSQL, REDIS, S3, REVERB] });
+    const w = await mountView();
+    const groups = w.findAll("[data-section]").map((s) => s.attributes("data-section"));
+    expect(groups).toEqual(["databases", "cache", "storage", "site"]);
+    expect(w.get('[data-section="storage"]').text()).toContain("Storage");
+    expect(row(w, "versitygw").get('[data-testid="row-status"]').text()).toBe("running · :7070 · 2 buckets");
+    expect(calls("list_buckets")).toHaveLength(1);
+  });
+
+  it("shows the buckets with their stats in the inspector", async () => {
+    stubIpc({ services: [S3] });
+    const w = await mountView();
+    const text = inspector(w).text();
+    expect(text).toContain("codestash-uploads");
+    expect(text).toContain("1,284 objects");
+    expect(text).toContain("312.4 MB");
+    expect(inspector(w).get('[data-testid="buckets-footer"]').text()).toBe("2 buckets · 1,370 objects · 360.5 MB");
+    expect(inspector(w).get('[data-testid="cred-access"]').text()).toBe("yerd_7Kq2XH9PmA");
+  });
+
+  it("shows the stopped state without listing buckets", async () => {
+    stubIpc({ services: [svc({ ...S3, state: "stopped", pid: null })] });
+    const w = await mountView();
+    expect(inspector(w).text()).toContain("S3 is stopped");
+    expect(calls("list_buckets")).toHaveLength(0);
+  });
+
+  it("re-lists after a create and removes a dropped bucket", async () => {
+    stubIpc({ services: [S3] });
+    const w = await mountView();
+    await button(w, "New bucket").trigger("click");
+    await w.get('[aria-label="New bucket name"]').setValue("user-uploads");
+    await button(w, "Create").trigger("click");
+    await flushPromises();
+    expect(invokeMock).toHaveBeenCalledWith("create_bucket", { name: "user-uploads" });
+    expect(calls("list_buckets")).toHaveLength(2);
+
+    await w.get('[data-bucket="codestash-uploads"] [data-action="drop"]').trigger("click");
+    await flushPromises();
+    await button(w, "Delete").trigger("click");
+    await flushPromises();
+    expect(invokeMock).toHaveBeenCalledWith("drop_bucket", { name: "codestash-uploads" });
+    expect(w.find('[data-bucket="codestash-uploads"]').exists()).toBe(false);
+    expect(row(w, "versitygw").get('[data-testid="row-status"]').text()).toBe("running · :7070 · 1 bucket");
+  });
+
+  it("shows the Connect block masked and copies it with the secret", async () => {
+    stubIpc({ services: [S3] });
+    const w = await mountView();
+    const env = inspector(w).get('[data-testid="connect-env"]').text();
+    expect(env).toContain("AWS_BUCKET=avatars");
+    expect(env).toContain("AWS_SECRET_ACCESS_KEY=••••••••••••••••");
+    await button(w, "Copy for .env").trigger("click");
+    await flushPromises();
+    expect(invokeMock).toHaveBeenCalledWith("s3_credentials", { showSecret: true });
+    expect(clipboardWriteText.mock.lastCall?.[0]).toContain("AWS_SECRET_ACCESS_KEY=s3cr3t");
+  });
+
+  it("uses the S3 uninstall copy and purge label", async () => {
+    stubIpc({ services: [S3] });
+    const w = await mountView();
+    await w.get('[data-action="uninstall"]').trigger("click");
+    await flushPromises();
+    const dialog = w.get('[role="alertdialog"]');
+    expect(dialog.text()).toContain("Uninstall S3 (versitygw) 1.7.0?");
+    expect(dialog.text()).toContain(
+      "The gateway stops and its binary is removed. Your 2 buckets stay on disk as plain folders, so reinstalling picks them back up.",
+    );
+    expect(dialog.text()).toContain("Also delete the stored buckets");
+    await w.get('[data-testid="uninstall-purge"]').setValue(true);
+    expect(w.get('[role="alertdialog"]').text()).toContain(
+      "The gateway stops, its binary is removed, and your 2 buckets and access keys are deleted. Reinstalling generates new keys.",
+    );
+    await button(w, "Uninstall").trigger("click");
+    await flushPromises();
+    expect(invokeMock).toHaveBeenCalledWith("uninstall_service", { service: "versitygw", version: "1.7.0", purge: true });
+  });
+
+  it("re-lists buckets on the refresh shortcut", async () => {
+    stubIpc({ services: [S3] });
+    await mountView();
+    getViewActions().refresh?.();
+    await flushPromises();
+    expect(calls("list_buckets")).toHaveLength(2);
   });
 });

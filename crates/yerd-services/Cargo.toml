@@ -5,7 +5,7 @@ edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
 publish.workspace      = true
-description            = "Local service supervision and version management for Yerd (Redis/Valkey, MySQL, MariaDB, Postgres, Meilisearch)."
+description            = "Local service supervision and version management for Yerd (Redis/Valkey, MySQL, MariaDB, Postgres, Meilisearch, versitygw S3)."
 
 [dependencies]
 yerd-core      = { path = "../yerd-core" }
@@ -15,6 +15,12 @@ thiserror      = { workspace = true }
 async-trait    = { workspace = true }
 serde          = { workspace = true }
 serde_json     = { workspace = true }
+rand           = { workspace = true }
+sha2           = { workspace = true }
+hex            = { workspace = true }
+hmac           = { workspace = true }
+quick-xml      = { workspace = true }
+time           = { workspace = true }
 tokio          = { workspace = true, features = ["process", "net", "rt", "time", "io-util", "macros", "sync"] }
 
 [dev-dependencies]

@@ -22,7 +22,19 @@ use yerd_supervise::supervisor::{StopProtocol, SupervisorPolicy};
 
 use crate::client::{ClientDefaults, ClientTools};
 use crate::config_render;
+use crate::credentials::RootCredentials;
 use crate::error::ServiceError;
+
+/// The path versitygw answers its health check on (`--health`).
+///
+/// It starts with `_`, which no S3 bucket name can, so it never shadows a
+/// bucket: on versitygw 1.7.0 a health path equal to `/<bucket>` breaks that
+/// bucket's object listing. Shared by [`VersityGw::plan_launch`] and the
+/// readiness probe.
+pub const VERSITYGW_HEALTH_PATH: &str = "/_yerd/health";
+
+/// The S3 region the local gateway runs as and requests are signed for.
+pub const S3_REGION: &str = "us-east-1";
 
 /// Whether a service is a cache, a SQL database, or a long-running app server -
 /// gates the "Create Database" action and the version/site UI affordances.
@@ -37,6 +49,8 @@ pub enum ServiceKind {
     /// A supervised application server (e.g. Laravel Reverb) - no databases, no
     /// downloadable version; runs against a linked site's PHP.
     AppServer,
+    /// S3-compatible object storage (versitygw): buckets, no SQL databases.
+    ObjectStorage,
 }
 
 /// How a service's mutable data is isolated from installed binary versions.
@@ -75,6 +89,8 @@ pub enum ReadinessKind {
     /// A bare TCP connect succeeds (the listener is open). Used by app servers
     /// (Reverb) whose readiness is "the socket accepts connections".
     TcpConnect,
+    /// versitygw `GET` [`VERSITYGW_HEALTH_PATH`] returning HTTP 200.
+    VersityGwHealth,
 }
 
 /// The SQL dialect of a database-capable service, returned by
@@ -133,6 +149,10 @@ pub struct LaunchContext<'a> {
     pub geo_env: &'a [(OsString, OsString)],
     /// Working directory to launch in (per-site services: the site document root).
     pub cwd: Option<&'a std::path::Path>,
+    /// The generated root credentials, for types whose
+    /// [`ServiceDefinition::uses_root_credentials`] is true. Handed to the server
+    /// as environment only, never argv, so they stay out of `ps` output.
+    pub credentials: Option<&'a RootCredentials>,
 }
 
 /// The concrete launch recipe a [`ServiceDefinition`] produces. The manager
@@ -328,6 +348,12 @@ pub trait ServiceDefinition: Send + Sync + 'static {
         None
     }
 
+    /// Whether the manager must load or generate root credentials
+    /// ([`crate::credentials`]) and pass them in [`LaunchContext::credentials`].
+    fn uses_root_credentials(&self) -> bool {
+        false
+    }
+
     /// Build the server command for this type from the resolved context. Pure:
     /// no stdio or process group is applied here (the manager does that).
     fn plan_launch(&self, ctx: &LaunchContext<'_>) -> Result<LaunchPlan, ServiceError>;
@@ -340,8 +366,8 @@ pub struct ServiceRegistry {
 }
 
 impl ServiceRegistry {
-    /// The built-in registry: the four database/cache engines plus the Reverb
-    /// per-site app server.
+    /// The built-in registry: the database/cache/search engines, the versitygw S3
+    /// gateway, and the Reverb per-site app server.
     #[must_use]
     pub fn builtin() -> Self {
         Self {
@@ -351,6 +377,7 @@ impl ServiceRegistry {
                 Arc::new(MariaDb),
                 Arc::new(Postgres),
                 Arc::new(Meilisearch),
+                Arc::new(VersityGw),
                 Arc::new(Reverb),
             ],
         }
@@ -785,6 +812,103 @@ impl ServiceDefinition for Meilisearch {
     }
 }
 
+/// versitygw: a local S3-compatible gateway on its POSIX backend.
+///
+/// The POSIX backend maps each bucket to a directory under the datadir and each
+/// object to a plain file, so the data stays readable without the gateway. The
+/// datadir is [`DatadirScope::Shared`] so a version change keeps every bucket.
+///
+/// versitygw's default `--port :7070` binds every interface, so the plan always
+/// passes an explicit `127.0.0.1:<port>`. The explicit flags also override any
+/// inherited `VGW_PORT`/`VGW_REGION`/`VGW_HEALTH`, and the inherited env that
+/// would open extra listeners (the web UI, admin, website and pprof servers),
+/// enable TLS or force read-only mode is removed.
+///
+/// Root credentials go in as `ROOT_ACCESS_KEY`/`ROOT_SECRET_KEY` environment,
+/// never argv. versitygw reads `ROOT_ACCESS_KEY_ID`/`ROOT_SECRET_ACCESS_KEY`
+/// first, so those are removed to keep an inherited pair from overriding the
+/// generated one.
+pub struct VersityGw;
+
+/// Inherited env versitygw 1.7.0 reads that would open listeners beyond the S3
+/// port, switch the S3 port to TLS (which the plain-HTTP readiness probe and
+/// admin client cannot speak), make the gateway read-only, or replace the
+/// generated root credentials.
+const VERSITYGW_STRIPPED_ENV: &[&str] = &[
+    "VGW_WEBUI_PORT",
+    "VGW_ADMIN_PORT",
+    "VGW_WEBSITE_PORT",
+    "VGW_PPROF",
+    "VGW_CERT",
+    "VGW_KEY",
+    "VGW_READ_ONLY",
+    "ROOT_ACCESS_KEY_ID",
+    "ROOT_SECRET_ACCESS_KEY",
+];
+
+impl ServiceDefinition for VersityGw {
+    fn id(&self) -> &'static str {
+        "versitygw"
+    }
+    fn display_name(&self) -> &'static str {
+        "S3 (versitygw)"
+    }
+    fn kind(&self) -> ServiceKind {
+        ServiceKind::ObjectStorage
+    }
+    fn multiplicity(&self) -> Multiplicity {
+        Multiplicity::Single
+    }
+    fn default_autostart(&self) -> bool {
+        true
+    }
+    fn default_port(&self) -> u16 {
+        7070
+    }
+    fn requires_version(&self) -> bool {
+        true
+    }
+    fn server_binary(&self) -> Option<&'static str> {
+        Some("versitygw")
+    }
+    fn supervisor_policy(&self) -> SupervisorPolicy {
+        SupervisorPolicy::database()
+    }
+    fn readiness(&self) -> ReadinessKind {
+        ReadinessKind::VersityGwHealth
+    }
+    fn uses_root_credentials(&self) -> bool {
+        true
+    }
+    fn plan_launch(&self, ctx: &LaunchContext<'_>) -> Result<LaunchPlan, ServiceError> {
+        let Some(creds) = ctx.credentials else {
+            return Err(ServiceError::Unsupported {
+                service: "versitygw".to_owned(),
+                detail: "versitygw needs root credentials".to_owned(),
+            });
+        };
+        let mut command = base_command(ctx);
+        for key in VERSITYGW_STRIPPED_ENV {
+            command.env_remove(key);
+        }
+        command
+            .env("ROOT_ACCESS_KEY", &creds.access_key)
+            .env("ROOT_SECRET_KEY", &creds.secret_key)
+            .arg("--port")
+            .arg(format!("127.0.0.1:{}", ctx.port))
+            .arg("--region")
+            .arg(S3_REGION)
+            .arg("--health")
+            .arg(VERSITYGW_HEALTH_PATH)
+            .arg("posix")
+            .arg(ctx.datadir);
+        Ok(LaunchPlan {
+            command,
+            capture_output_to_log: true,
+        })
+    }
+}
+
 /// Laravel Reverb: a per-site WebSocket app server, supervised as
 /// `php{ver} artisan reverb:start` on a loopback port. No installed version, no
 /// datadir, no config file - it runs against the linked site's PHP and code.
@@ -884,18 +1008,33 @@ mod tests {
     #[test]
     fn registry_lookup_round_trips_every_type() {
         let r = reg();
-        for id in ["redis", "mysql", "mariadb", "postgres", "meilisearch"] {
+        for id in [
+            "redis",
+            "mysql",
+            "mariadb",
+            "postgres",
+            "meilisearch",
+            "versitygw",
+            "reverb",
+        ] {
             assert_eq!(r.get(id).map(|d| d.id()), Some(id));
         }
         assert!(r.get("nope").is_none());
     }
 
     #[test]
-    fn registry_has_five_single_and_one_per_site() {
+    fn registry_has_six_single_and_one_per_site() {
         let r = reg();
-        assert_eq!(r.iter().count(), 6);
-        assert_eq!(r.single_instance().count(), 5);
-        for id in ["redis", "mysql", "mariadb", "postgres", "meilisearch"] {
+        assert_eq!(r.iter().count(), 7);
+        assert_eq!(r.single_instance().count(), 6);
+        for id in [
+            "redis",
+            "mysql",
+            "mariadb",
+            "postgres",
+            "meilisearch",
+            "versitygw",
+        ] {
             assert!(matches!(
                 r.get(id).unwrap().multiplicity(),
                 Multiplicity::Single
@@ -944,8 +1083,8 @@ mod tests {
     }
 
     #[test]
-    fn meilisearch_and_reverb_expose_no_clients() {
-        for id in ["meilisearch", "reverb"] {
+    fn meilisearch_versitygw_and_reverb_expose_no_clients() {
+        for id in ["meilisearch", "versitygw", "reverb"] {
             assert!(reg().get(id).unwrap().client_tools().is_none(), "{id}");
         }
     }
@@ -977,6 +1116,7 @@ mod tests {
             log_path: std::path::Path::new("/l/reverb.log"),
             geo_env: &[],
             cwd: Some(docroot),
+            credentials: None,
         };
         let plan = Reverb.plan_launch(&ctx).unwrap();
         assert_eq!(plan.command.get_program(), php.as_os_str());
@@ -1024,6 +1164,7 @@ mod tests {
             log_path: std::path::Path::new("/logs/meili.log"),
             geo_env: &[],
             cwd: None,
+            credentials: None,
         };
         let plan = d.plan_launch(&ctx).unwrap();
         let args: Vec<_> = plan
@@ -1062,6 +1203,7 @@ mod tests {
             log_path: std::path::Path::new("/logs/meili.log"),
             geo_env: &[],
             cwd: None,
+            credentials: None,
         };
         let plan = reg().get("meilisearch").unwrap().plan_launch(&ctx).unwrap();
         let args: Vec<_> = plan
@@ -1079,6 +1221,148 @@ mod tests {
             };
             assert_eq!(args.get(at + 1).map(String::as_str), Some(expected));
         }
+    }
+
+    fn versitygw_ctx(creds: Option<&RootCredentials>) -> LaunchContext<'_> {
+        LaunchContext {
+            port: 7071,
+            program: std::path::Path::new("/bin/versitygw"),
+            config_path: std::path::Path::new("/c/versitygw.conf"),
+            datadir: std::path::Path::new("/data/versitygw/data"),
+            log_path: std::path::Path::new("/logs/versitygw.log"),
+            geo_env: &[],
+            cwd: None,
+            credentials: creds,
+        }
+    }
+
+    fn sample_creds() -> RootCredentials {
+        RootCredentials {
+            access_key: "yerd_7Kq2XH9PmA".to_owned(),
+            secret_key: "Zx9SecretValueThatMustNeverReachArgv0001".to_owned(),
+        }
+    }
+
+    #[test]
+    fn versitygw_metadata() {
+        let d = reg().get("versitygw").unwrap();
+        assert_eq!(d.id(), "versitygw");
+        assert_eq!(d.display_name(), "S3 (versitygw)");
+        assert_eq!(d.kind(), ServiceKind::ObjectStorage);
+        assert!(matches!(d.multiplicity(), Multiplicity::Single));
+        assert!(!d.requires_site());
+        assert!(d.default_autostart());
+        assert_eq!(d.default_port(), 7070);
+        assert!(d.requires_version());
+        assert_eq!(d.server_binary(), Some("versitygw"));
+        assert_eq!(d.datadir_scope(), DatadirScope::Shared);
+        assert_eq!(d.readiness(), ReadinessKind::VersityGwHealth);
+        assert_eq!(d.stop_protocol(), StopProtocol::GroupTerm);
+        assert!(d.override_capability().is_none());
+        assert!(d.as_database().is_none());
+        assert!(!d.needs_init());
+        assert!(d.uses_root_credentials());
+        assert!(d.proxy_path().is_none());
+        assert!(!d.uses_unix_socket());
+    }
+
+    #[test]
+    fn only_versitygw_uses_root_credentials() {
+        for d in reg().iter() {
+            assert_eq!(
+                d.uses_root_credentials(),
+                d.id() == "versitygw",
+                "{}",
+                d.id()
+            );
+        }
+    }
+
+    #[test]
+    fn versitygw_launch_pins_loopback_region_health_and_posix_datadir() {
+        let creds = sample_creds();
+        let plan = VersityGw.plan_launch(&versitygw_ctx(Some(&creds))).unwrap();
+        assert_eq!(plan.command.get_program(), "/bin/versitygw");
+        let args: Vec<String> = plan
+            .command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "--port",
+                "127.0.0.1:7071",
+                "--region",
+                "us-east-1",
+                "--health",
+                "/_yerd/health",
+                "posix",
+                "/data/versitygw/data",
+            ]
+        );
+        assert!(plan.capture_output_to_log);
+    }
+
+    #[test]
+    fn versitygw_launch_passes_credentials_as_env_only() {
+        let creds = sample_creds();
+        let plan = VersityGw.plan_launch(&versitygw_ctx(Some(&creds))).unwrap();
+        let envs: std::collections::BTreeMap<String, Option<String>> = plan
+            .command
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        for removed in [
+            "VGW_WEBUI_PORT",
+            "VGW_ADMIN_PORT",
+            "VGW_WEBSITE_PORT",
+            "VGW_PPROF",
+            "VGW_CERT",
+            "VGW_KEY",
+            "VGW_READ_ONLY",
+            "ROOT_ACCESS_KEY_ID",
+            "ROOT_SECRET_ACCESS_KEY",
+        ] {
+            assert_eq!(envs.get(removed), Some(&None), "{removed}");
+        }
+        assert_eq!(
+            envs.get("ROOT_ACCESS_KEY"),
+            Some(&Some(creds.access_key.clone()))
+        );
+        assert_eq!(
+            envs.get("ROOT_SECRET_KEY"),
+            Some(&Some(creds.secret_key.clone()))
+        );
+        for arg in plan.command.get_args() {
+            let arg = arg.to_string_lossy();
+            assert!(!arg.contains(&creds.secret_key), "{arg}");
+            assert!(!arg.contains(&creds.access_key), "{arg}");
+        }
+    }
+
+    #[test]
+    fn versitygw_launch_without_credentials_errors() {
+        match VersityGw.plan_launch(&versitygw_ctx(None)) {
+            Err(ServiceError::Unsupported { service, detail }) => {
+                assert_eq!(service, "versitygw");
+                assert_eq!(detail, "versitygw needs root credentials");
+            }
+            Err(other) => panic!("unexpected error {other:?}"),
+            Ok(_) => panic!("expected an error without credentials"),
+        }
+    }
+
+    #[test]
+    fn versitygw_health_path_cannot_be_a_bucket() {
+        let first = VERSITYGW_HEALTH_PATH.trim_start_matches('/').chars().next();
+        assert_eq!(first, Some('_'));
+        assert_eq!(S3_REGION, "us-east-1");
     }
 
     #[test]
@@ -1115,7 +1399,7 @@ mod tests {
             reg().get("meilisearch").unwrap().datadir_scope(),
             DatadirScope::Version
         );
-        for id in ["redis", "mysql", "mariadb"] {
+        for id in ["redis", "mysql", "mariadb", "versitygw"] {
             assert_eq!(reg().get(id).unwrap().datadir_scope(), DatadirScope::Shared);
         }
     }
@@ -1150,6 +1434,7 @@ mod tests {
             log_path: log,
             geo_env: &[],
             cwd: None,
+            credentials: None,
         };
         let plan = Redis.plan_launch(&ctx).unwrap();
         assert_eq!(plan.command.get_program(), program.as_os_str());
@@ -1173,6 +1458,7 @@ mod tests {
             log_path: std::path::Path::new("/l/service.log"),
             geo_env: &[],
             cwd: None,
+            credentials: None,
         };
         for id in ["redis", "mysql", "mariadb", "postgres"] {
             let def = reg().get(id).unwrap();
@@ -1194,6 +1480,7 @@ mod tests {
             log_path: std::path::Path::new("/l/mysql.log"),
             geo_env: &[],
             cwd: None,
+            credentials: None,
         };
         let plan = MySql.plan_launch(&ctx).unwrap();
         let args: Vec<_> = plan
@@ -1216,6 +1503,7 @@ mod tests {
             log_path: std::path::Path::new("/l/pg.log"),
             geo_env: &[],
             cwd: None,
+            credentials: None,
         };
         let plan = Postgres.plan_launch(&ctx).unwrap();
         let args: Vec<_> = plan
@@ -1245,6 +1533,7 @@ mod tests {
             log_path: std::path::Path::new("/l/pg.log"),
             geo_env: &env,
             cwd: None,
+            credentials: None,
         };
         let plan = Postgres.plan_launch(&ctx).unwrap();
         let got: std::collections::BTreeMap<_, _> = plan

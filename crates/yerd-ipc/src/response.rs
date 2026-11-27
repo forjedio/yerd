@@ -13,9 +13,9 @@ use yerd_core::{PhpVersion, Site, SiteFramework, XdebugSettings};
 
 use crate::dump::{DumpCounts, DumpEvent, DumpExtStatus};
 use crate::status::{
-    AddableServiceType, CloudflaredStatus, DatabaseSummary, Diagnosis, FixReport, MailDetail,
-    MailSummary, NamedTunnelMeta, ServiceAvailability, ServiceStatus, SiteHostname, StatusReport,
-    ToolStatus, TunnelInfo, TunnelProviderStatus, WordPressVersionInfo,
+    AddableServiceType, BucketSummary, CloudflaredStatus, DatabaseSummary, Diagnosis, FixReport,
+    MailDetail, MailSummary, NamedTunnelMeta, ServiceAvailability, ServiceStatus, SiteHostname,
+    StatusReport, ToolStatus, TunnelInfo, TunnelProviderStatus, WordPressVersionInfo,
 };
 
 // Same rule: no per-field serde renames.
@@ -274,6 +274,33 @@ pub enum Response {
     Databases {
         /// One entry per database, sorted by name.
         databases: Vec<DatabaseSummary>,
+    },
+    /// Reply to [`crate::Request::ListBuckets`]. Additive.
+    Buckets {
+        /// One entry per bucket, sorted by name.
+        buckets: Vec<BucketSummary>,
+    },
+    /// Reply to [`crate::Request::BucketStats`]. Additive.
+    BucketStats {
+        /// Number of objects in the bucket.
+        objects: u64,
+        /// Total size of those objects in bytes.
+        bytes: u64,
+    },
+    /// Reply to [`crate::Request::DropBucket`]. Additive.
+    BucketDropped {
+        /// How many objects were deleted before the bucket itself.
+        objects_removed: u64,
+    },
+    /// Reply to [`crate::Request::S3Credentials`]. Additive.
+    S3Credentials {
+        /// The gateway endpoint, e.g. `http://127.0.0.1:7070`.
+        endpoint: String,
+        /// The root access key id.
+        access_key: String,
+        /// The root secret key, present only when `show_secret` was requested.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        secret_key: Option<String>,
     },
     /// Reply to [`crate::Request::ListDumps`] - events newer than the client's
     /// cursor, the ids removed since then, the per-category counts, and the
@@ -863,6 +890,10 @@ mod variant_name_pinning {
             Response::ServiceOverrides { .. } => {}
             Response::ServiceLogs { .. } => {}
             Response::Databases { .. } => {}
+            Response::Buckets { .. } => {}
+            Response::BucketStats { .. } => {}
+            Response::BucketDropped { .. } => {}
+            Response::S3Credentials { .. } => {}
             Response::Dumps { .. } => {}
             Response::DumpsStatus { .. } => {}
             Response::Mails { .. } => {}
@@ -1069,6 +1100,21 @@ mod variant_name_pinning {
         pin_response(Response::ServiceLogs { lines: vec![] });
         pin_response(Response::Databases {
             databases: vec![DatabaseSummary { name: "app".into() }],
+        });
+        pin_response(Response::Buckets {
+            buckets: vec![BucketSummary {
+                name: "assets".into(),
+            }],
+        });
+        pin_response(Response::BucketStats {
+            objects: 1,
+            bytes: 2,
+        });
+        pin_response(Response::BucketDropped { objects_removed: 3 });
+        pin_response(Response::S3Credentials {
+            endpoint: "http://127.0.0.1:7070".into(),
+            access_key: "yerd_x".into(),
+            secret_key: None,
         });
         pin_response(Response::Dumps {
             events: vec![],

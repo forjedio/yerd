@@ -2,7 +2,7 @@
 //! `ProcessSpawner`, `Clock`, `ReadinessProbe`, and `ChildHandle`. Verifies that
 //! `ServiceManager::ensure` drives the shared supervisor through the happy path,
 //! crash + recovery, permanent failure, clean stop / shutdown, snapshots, and
-//! the port pre-flight.
+//! the port pre-flight and versitygw root-credential injection.
 //!
 //! Mirrors `yerd_php::tests::supervisor_states`. Stays fakes-only (no real
 //! database binaries, no real sockets) so it passes on every CI target. Happy-path
@@ -105,10 +105,15 @@ struct SpawnPlan {
     behavior: ChildBehavior,
 }
 
+/// The explicit environment of one spawned command: `Some(value)` for a set
+/// variable, `None` for one removed with `env_remove`.
+type SpawnEnv = BTreeMap<String, Option<String>>;
+
 struct FakeSpawner {
     plans: Mutex<std::collections::VecDeque<SpawnPlan>>,
     spawn_count: Mutex<usize>,
     last_kills: Arc<Mutex<Vec<KillSignal>>>,
+    spawned_envs: Arc<Mutex<Vec<SpawnEnv>>>,
 }
 
 impl FakeSpawner {
@@ -117,18 +122,23 @@ impl FakeSpawner {
             plans: Mutex::new(plans.into()),
             spawn_count: Mutex::new(0),
             last_kills: Arc::new(Mutex::new(Vec::new())),
+            spawned_envs: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     fn kills_handle(&self) -> Arc<Mutex<Vec<KillSignal>>> {
         Arc::clone(&self.last_kills)
     }
+
+    fn envs_handle(&self) -> Arc<Mutex<Vec<SpawnEnv>>> {
+        Arc::clone(&self.spawned_envs)
+    }
 }
 
 impl ProcessSpawner for FakeSpawner {
     type Child = FakeChild;
 
-    fn spawn(&self, _cmd: std::process::Command) -> Result<FakeChild, io::Error> {
+    fn spawn(&self, cmd: std::process::Command) -> Result<FakeChild, io::Error> {
         let mut plans = self
             .plans
             .try_lock()
@@ -141,6 +151,19 @@ impl ProcessSpawner for FakeSpawner {
             .pop_front()
             .ok_or_else(|| io::Error::other("spawn: no more plans"))?;
         *counter += 1;
+        let env: SpawnEnv = cmd
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        self.spawned_envs
+            .try_lock()
+            .map_err(|_| io::Error::other("spawn: envs lock contended"))?
+            .push(env);
         Ok(FakeChild {
             pid: plan.pid,
             behavior: Arc::new(Mutex::new(plan.behavior)),
@@ -545,4 +568,147 @@ async fn ensure_reports_port_conflict_as_port_in_use() {
         "got: {err:?}"
     );
     drop(listener);
+}
+
+fn versitygw_def() -> Arc<dyn ServiceDefinition> {
+    ServiceRegistry::builtin().get("versitygw").unwrap()
+}
+
+fn install_versitygw_binary(dirs: &PlatformDirs, v: &ServiceVersion) {
+    let def = versitygw_def();
+    let path = version::server_path(dirs, def.id(), def.server_binary().unwrap(), v);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"#!/bin/sh\n").unwrap();
+}
+
+fn env_value(env: &SpawnEnv, key: &str) -> Option<String> {
+    env.get(key).cloned().flatten()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn versitygw_ensure_and_restart_inject_the_stored_credentials() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dirs = dirs_in(tmp.path());
+    let v = ServiceVersion::from_str("1.7.0").unwrap();
+    install_versitygw_binary(&dirs, &v);
+    let port = free_port();
+
+    let spawner = FakeSpawner::new(vec![
+        SpawnPlan {
+            pid: 301,
+            behavior: ChildBehavior::LivesUntilKilled,
+        },
+        SpawnPlan {
+            pid: 302,
+            behavior: ChildBehavior::Lives,
+        },
+    ]);
+    let envs = spawner.envs_handle();
+    let mut mgr = make_manager(dirs.clone(), spawner, FakeProbe::always_ok());
+
+    mgr.ensure(
+        versitygw_def(),
+        "versitygw",
+        Some(v.clone()),
+        port,
+        None,
+        None,
+        BTreeMap::new(),
+    )
+    .await
+    .unwrap();
+
+    let path = version::credentials_path(&dirs, "versitygw");
+    assert!(path.is_file());
+    let stored = yerd_services::credentials::load(&dirs, "versitygw")
+        .unwrap()
+        .unwrap();
+
+    mgr.restart(
+        versitygw_def(),
+        "versitygw",
+        Some(v),
+        port,
+        None,
+        None,
+        BTreeMap::new(),
+    )
+    .await
+    .unwrap();
+
+    let envs = envs.lock().await;
+    assert_eq!(envs.len(), 2);
+    for env in envs.iter() {
+        assert_eq!(
+            env_value(env, "ROOT_ACCESS_KEY"),
+            Some(stored.access_key.clone())
+        );
+        assert_eq!(
+            env_value(env, "ROOT_SECRET_KEY"),
+            Some(stored.secret_key.clone())
+        );
+    }
+    drop(envs);
+    assert_eq!(
+        yerd_services::credentials::load(&dirs, "versitygw").unwrap(),
+        Some(stored)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn versitygw_ensure_refuses_a_corrupt_credentials_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dirs = dirs_in(tmp.path());
+    let v = ServiceVersion::from_str("1.7.0").unwrap();
+    install_versitygw_binary(&dirs, &v);
+    let path = version::credentials_path(&dirs, "versitygw");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "nonsense").unwrap();
+
+    let spawner = FakeSpawner::new(vec![SpawnPlan {
+        pid: 401,
+        behavior: ChildBehavior::Lives,
+    }]);
+    let envs = spawner.envs_handle();
+    let mut mgr = make_manager(dirs, spawner, FakeProbe::always_ok());
+
+    let err = mgr
+        .ensure(
+            versitygw_def(),
+            "versitygw",
+            Some(v),
+            free_port(),
+            None,
+            None,
+            BTreeMap::new(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ServiceError::Credentials { path: ref p, .. } if *p == path),
+        "got: {err:?}"
+    );
+    assert!(envs.lock().await.is_empty());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "nonsense");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn redis_ensure_creates_no_credentials() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dirs = dirs_in(tmp.path());
+    let v = redis_version();
+    install_redis_binary(&dirs, &v);
+
+    let spawner = FakeSpawner::new(vec![SpawnPlan {
+        pid: 501,
+        behavior: ChildBehavior::Lives,
+    }]);
+    let envs = spawner.envs_handle();
+    let mut mgr = make_manager(dirs.clone(), spawner, FakeProbe::always_ok());
+    ensure_redis(&mut mgr, v, free_port()).await.unwrap();
+
+    assert!(!version::credentials_path(&dirs, "redis").exists());
+    let envs = envs.lock().await;
+    assert_eq!(envs.len(), 1);
+    assert!(!envs[0].contains_key("ROOT_SECRET_KEY"));
 }

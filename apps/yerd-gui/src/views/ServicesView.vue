@@ -17,6 +17,7 @@ import Spinner from "@/components/ui/Spinner.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { usePoll } from "@/composables/usePoll";
 import { useResource } from "@/composables/useResource";
+import { useS3Storage } from "@/composables/useS3Storage";
 import { useToast } from "@/composables/useToast";
 import { useWideLayout } from "@/composables/useWideLayout";
 import {
@@ -42,7 +43,10 @@ import {
   currentVersion,
   isInstalled,
   isPerSite,
+  isS3,
   purgeCopy,
+  S3_PURGE_LABEL,
+  s3UninstallCopy,
   serviceSections,
   siteDomain,
   uninstallVersion,
@@ -118,11 +122,19 @@ const runningSql = computed(() =>
 );
 const runningSqlKey = computed(() => runningSql.value.join(","));
 
+// ── S3 storage ──
+/** The S3 gateway's buckets, stats and credentials, shared by the list row's
+ *  bucket count, the Uninstall copy and the inspector's S3 cards. */
+const s3Service = computed(() => services.value.find(isS3) ?? null);
+const storage = useS3Storage(s3Service);
+
 const dbCounts = computed<Record<string, number>>(() => {
   const counts: Record<string, number> = {};
   for (const [id, list] of Object.entries(dbLists.value)) {
     if (list.names) counts[id] = list.names.length;
   }
+  const bucketNames = storage.state.value.buckets.names;
+  if (s3Service.value && bucketNames) counts[s3Service.value.service] = bucketNames.length;
   return counts;
 });
 
@@ -178,6 +190,7 @@ watch(
 function reloadAll(): void {
   void load({ force: true });
   for (const id of runningSql.value) void loadDatabases(id);
+  storage.reload();
 }
 
 const emptyList: DatabaseListState = { names: null, loading: false, error: null };
@@ -448,8 +461,13 @@ const uninstallPurge = ref(false);
 const uninstallBody = computed(() => {
   const s = uninstallTarget.value;
   if (!s) return "";
+  if (isS3(s)) return s3UninstallCopy(dbCounts.value[s.service] ?? null, uninstallPurge.value);
   return purgeCopy(s.display_name, dbCounts.value[s.service] ?? null, uninstallPurge.value);
 });
+
+const uninstallPurgeLabel = computed(() =>
+  uninstallTarget.value && isS3(uninstallTarget.value) ? S3_PURGE_LABEL : "Also delete the stored data",
+);
 
 /** Opens on the next tick so the closing menu's focus restore doesn't fight the dialog. */
 function openUninstall(s: ServiceStatus): void {
@@ -543,6 +561,7 @@ onUnmounted(registerViewActions({ refresh: reloadAll }));
               :sites="sites"
               :tld="tld"
               :busy="selectedBusy"
+              :s3="storage.state.value"
               @close="drawerOpen = false"
               @start="selected && doStart(selected)"
               @stop="selected && doStop(selected)"
@@ -554,6 +573,8 @@ onUnmounted(registerViewActions({ refresh: reloadAll }));
               @uninstall="selected && openUninstall(selected)"
               @remove="selected && doRemove(selected)"
               @databases-changed="onDatabasesChanged"
+              @buckets-changed="storage.reload()"
+              @bucket-dropped="storage.bucketDropped"
               @open-site="openSite"
             />
             <p
@@ -633,7 +654,7 @@ onUnmounted(registerViewActions({ refresh: reloadAll }));
           class="size-4 accent-destructive"
           data-testid="uninstall-purge"
         />
-        <span class="flex-1">Also delete the stored data</span>
+        <span class="flex-1">{{ uninstallPurgeLabel }}</span>
         <span class="text-[11px] text-destructive">Can't be undone</span>
       </label>
     </ConfirmDialog>

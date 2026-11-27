@@ -16,8 +16,8 @@ use yerd_ipc::{
 };
 
 use crate::cli::{
-    Command, DbAction, MailAction, NgrokAction, ServiceAction, TunnelAction, TunnelProviderArg,
-    ZrokAction,
+    Command, DbAction, MailAction, NgrokAction, S3Action, ServiceAction, TunnelAction,
+    TunnelProviderArg, ZrokAction,
 };
 use crate::error::ClientError;
 
@@ -245,6 +245,7 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         Command::Header { action } => header_request(action)?,
         Command::Tunnel { action } => tunnel_request(action)?,
         Command::Db { action } => db_request(action),
+        Command::S3 { action } => s3_request(action),
         Command::Mail { action } => match action {
             MailAction::List => Request::ListMails,
             MailAction::Show { id } => Request::GetMail { id: id.clone() },
@@ -1028,6 +1029,18 @@ pub fn tunnel_secret_request(action: &TunnelAction, token: String) -> Result<Req
     }
 }
 
+fn s3_request(action: &S3Action) -> Request {
+    match action {
+        S3Action::Buckets => Request::ListBuckets,
+        S3Action::CreateBucket { name } => Request::CreateBucket { name: name.clone() },
+        S3Action::DropBucket { name } => Request::DropBucket { name: name.clone() },
+        S3Action::BucketStats { name } => Request::BucketStats { name: name.clone() },
+        S3Action::Creds { show_secret } => Request::S3Credentials {
+            show_secret: *show_secret,
+        },
+    }
+}
+
 fn db_request(action: &DbAction) -> Request {
     match action {
         DbAction::List { service } => Request::ListDatabases {
@@ -1527,6 +1540,32 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
                 .collect::<Vec<_>>()
                 .join("\n")
         }),
+        Response::Buckets { buckets } => Rendered::ok(if buckets.is_empty() {
+            "no buckets".to_owned()
+        } else {
+            buckets
+                .iter()
+                .map(|b| b.name.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }),
+        Response::BucketStats { objects, bytes } => Rendered::ok(format!(
+            "{objects} objects, {} ({bytes} bytes)",
+            fmt_bytes(*bytes)
+        )),
+        Response::BucketDropped { objects_removed } => Rendered::ok(format!(
+            "deleted bucket - {objects_removed} objects removed"
+        )),
+        Response::S3Credentials {
+            endpoint,
+            access_key,
+            secret_key,
+        } => Rendered::ok(format!(
+            "endpoint: {endpoint}\naccess key: {access_key}\nsecret key: {}",
+            secret_key
+                .as_deref()
+                .unwrap_or("(hidden - pass --show-secret)")
+        )),
         Response::Mails { mails } => Rendered::ok(format_mails(mails)),
         Response::Mail { mail } => Rendered::ok(format_mail(mail)),
         Response::Tools { tools } => Rendered::ok(format_tools(tools)),
@@ -5702,6 +5741,49 @@ mod tests {
     }
 
     #[test]
+    fn maps_every_s3_action() {
+        use crate::cli::S3Action;
+        let cases = [
+            (S3Action::Buckets, Request::ListBuckets),
+            (
+                S3Action::CreateBucket {
+                    name: "assets".into(),
+                },
+                Request::CreateBucket {
+                    name: "assets".into(),
+                },
+            ),
+            (
+                S3Action::DropBucket {
+                    name: "assets".into(),
+                },
+                Request::DropBucket {
+                    name: "assets".into(),
+                },
+            ),
+            (
+                S3Action::BucketStats {
+                    name: "assets".into(),
+                },
+                Request::BucketStats {
+                    name: "assets".into(),
+                },
+            ),
+            (
+                S3Action::Creds { show_secret: false },
+                Request::S3Credentials { show_secret: false },
+            ),
+            (
+                S3Action::Creds { show_secret: true },
+                Request::S3Credentials { show_secret: true },
+            ),
+        ];
+        for (action, want) in cases {
+            assert_eq!(to_request(&Command::S3 { action }).unwrap(), want);
+        }
+    }
+
+    #[test]
     fn maps_every_db_action() {
         use crate::cli::DbAction;
         assert_eq!(
@@ -6144,6 +6226,76 @@ mod tests {
             false,
         );
         assert_eq!(listed.stdout, "app\nblog");
+    }
+
+    #[test]
+    fn renders_s3_responses() {
+        let cases = [
+            (Response::Buckets { buckets: vec![] }, "no buckets"),
+            (
+                Response::Buckets {
+                    buckets: vec![
+                        yerd_ipc::BucketSummary {
+                            name: "assets".into(),
+                        },
+                        yerd_ipc::BucketSummary {
+                            name: "media".into(),
+                        },
+                    ],
+                },
+                "assets\nmedia",
+            ),
+            (
+                Response::BucketStats {
+                    objects: 3,
+                    bytes: 2048,
+                },
+                "3 objects, 2 KiB (2048 bytes)",
+            ),
+            (
+                Response::BucketDropped { objects_removed: 5 },
+                "deleted bucket - 5 objects removed",
+            ),
+            (
+                Response::S3Credentials {
+                    endpoint: "http://127.0.0.1:7070".into(),
+                    access_key: "yerd_abc".into(),
+                    secret_key: None,
+                },
+                "endpoint: http://127.0.0.1:7070\naccess key: yerd_abc\nsecret key: (hidden - pass --show-secret)",
+            ),
+            (
+                Response::S3Credentials {
+                    endpoint: "http://127.0.0.1:7070".into(),
+                    access_key: "yerd_abc".into(),
+                    secret_key: Some("s3cr3t".into()),
+                },
+                "endpoint: http://127.0.0.1:7070\naccess key: yerd_abc\nsecret key: s3cr3t",
+            ),
+        ];
+        for (resp, want) in cases {
+            let r = render(&resp, false);
+            assert_eq!(r.stdout, want, "{resp:?}");
+            assert_eq!(r.code, 0);
+        }
+    }
+
+    #[test]
+    fn renders_s3_credentials_as_json_without_hidden_secret() {
+        let r = render(
+            &Response::S3Credentials {
+                endpoint: "http://127.0.0.1:7070".into(),
+                access_key: "yerd_abc".into(),
+                secret_key: None,
+            },
+            true,
+        );
+        assert!(
+            r.stdout.contains("\"access_key\": \"yerd_abc\""),
+            "{}",
+            r.stdout
+        );
+        assert!(!r.stdout.contains("secret_key"), "{}", r.stdout);
     }
 
     #[test]

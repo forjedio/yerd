@@ -47,6 +47,7 @@ The exceptions are the two passthrough commands. Anything after [`coverage`](./c
 | [Tooling](./tooling) | `tools`, `install tool`, `uninstall tool`, `path install`, `path uninstall`, `path print` |
 | [Services](./services) | `services`, `service available`, `service install`, `service change-version`, `service uninstall`, `service start`, `service stop`, `service restart`, `service set-port`, `service set`, `service unset`, `service overrides`, `service logs`, `service add`, `service remove`, `service set-autostart`, `service set-site` |
 | [Databases](./db) | `db list`, `db create`, `db drop`, `db backup`, `db restore` |
+| [S3 storage](./s3) | `s3 buckets`, `s3 create-bucket`, `s3 drop-bucket`, `s3 bucket-stats`, `s3 creds` |
 | [Mail](./mail) | `mail list`, `mail show`, `mail clear` |
 | [LAN sharing](./lan) | `lan enable`, `lan disable`, `lan status`, `remote-setup` |
 | [Network](./network) | `network proxy status`, `network proxy set`, `network proxy system`, `network proxy off`, `network proxy test` |

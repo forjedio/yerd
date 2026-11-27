@@ -18,14 +18,15 @@ use std::path::PathBuf;
 
 use yerd_ipc::{
     types::{MajorLine, NodeSource, PhpVersion, Site},
-    AddableServiceType, CaStatus, Channel, CloudflaredSource, CloudflaredStatus, Contributor,
-    DatabaseSummary, Diagnosis, DiagnosisCode, DumpCategory, DumpCounts, DumpEvent, DumpExtStatus,
-    ErrorCode, FixReport, FixResult, MailAttachment, MailDetail, MailHeader, MailStatus,
-    MailSummary, NamedTunnelMeta, NodePreferenceRef, NodeProjectFile, NodeRelease, NodeSiteEntry,
-    PhpPoolStatus, PoolRunState, PortRedirectTargets, PortStatus, ProxyEntry, ProxyRuleEntry,
-    ReleaseNoteItem, ReleaseNotesEntry, Request, Response, ServiceAvailability, ServiceRunState,
-    ServiceStatus, Severity, SiteCounts, SiteHostname, StagedArtifact, StatusReport, ToolStatus,
-    TunnelInfo, TunnelKind, TunnelProviderStatus, TunnelRunState, UpdateSource,
+    AddableServiceType, BucketSummary, CaStatus, Channel, CloudflaredSource, CloudflaredStatus,
+    Contributor, DatabaseSummary, Diagnosis, DiagnosisCode, DumpCategory, DumpCounts, DumpEvent,
+    DumpExtStatus, ErrorCode, FixReport, FixResult, MailAttachment, MailDetail, MailHeader,
+    MailStatus, MailSummary, NamedTunnelMeta, NodePreferenceRef, NodeProjectFile, NodeRelease,
+    NodeSiteEntry, PhpPoolStatus, PoolRunState, PortRedirectTargets, PortStatus, ProxyEntry,
+    ProxyRuleEntry, ReleaseNoteItem, ReleaseNotesEntry, Request, Response, ServiceAvailability,
+    ServiceRunState, ServiceStatus, Severity, SiteCounts, SiteHostname, StagedArtifact,
+    StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelProviderStatus, TunnelRunState,
+    UpdateSource,
 };
 
 // ---------- Request ----------
@@ -4510,4 +4511,105 @@ fn response_project_config_draft_without_site_byte_shape() {
         r#"{"type":"project_config","file":"/p/new/.yerd.toml","exists":false,"site":null,"name":null,"contents":""}"#
     );
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+fn assert_request_shape(r: &Request, want: &str) {
+    let s = serde_json::to_string(r).unwrap();
+    assert_eq!(s, want);
+    assert_eq!(&serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+fn assert_response_shape(r: &Response, want: &str) {
+    let s = serde_json::to_string(r).unwrap();
+    assert_eq!(s, want);
+    assert_eq!(&serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn s3_request_byte_shapes() {
+    let cases = [
+        (Request::ListBuckets, r#"{"type":"list_buckets"}"#),
+        (
+            Request::CreateBucket {
+                name: "assets".into(),
+            },
+            r#"{"type":"create_bucket","name":"assets"}"#,
+        ),
+        (
+            Request::DropBucket {
+                name: "assets".into(),
+            },
+            r#"{"type":"drop_bucket","name":"assets"}"#,
+        ),
+        (
+            Request::BucketStats {
+                name: "assets".into(),
+            },
+            r#"{"type":"bucket_stats","name":"assets"}"#,
+        ),
+        (
+            Request::S3Credentials { show_secret: false },
+            r#"{"type":"s3_credentials","show_secret":false}"#,
+        ),
+        (
+            Request::S3Credentials { show_secret: true },
+            r#"{"type":"s3_credentials","show_secret":true}"#,
+        ),
+    ];
+    for (r, want) in &cases {
+        assert_request_shape(r, want);
+    }
+}
+
+#[test]
+fn s3_response_byte_shapes() {
+    let cases = [
+        (
+            Response::Buckets {
+                buckets: vec![
+                    BucketSummary {
+                        name: "assets".into(),
+                    },
+                    BucketSummary {
+                        name: "media".into(),
+                    },
+                ],
+            },
+            r#"{"type":"buckets","buckets":[{"name":"assets"},{"name":"media"}]}"#,
+        ),
+        (
+            Response::Buckets { buckets: vec![] },
+            r#"{"type":"buckets","buckets":[]}"#,
+        ),
+        (
+            Response::BucketStats {
+                objects: 1001,
+                bytes: 5005,
+            },
+            r#"{"type":"bucket_stats","objects":1001,"bytes":5005}"#,
+        ),
+        (
+            Response::BucketDropped { objects_removed: 3 },
+            r#"{"type":"bucket_dropped","objects_removed":3}"#,
+        ),
+        (
+            Response::S3Credentials {
+                endpoint: "http://127.0.0.1:7070".into(),
+                access_key: "yerd_x".into(),
+                secret_key: None,
+            },
+            r#"{"type":"s3_credentials","endpoint":"http://127.0.0.1:7070","access_key":"yerd_x"}"#,
+        ),
+        (
+            Response::S3Credentials {
+                endpoint: "http://127.0.0.1:7070".into(),
+                access_key: "yerd_x".into(),
+                secret_key: Some("s3cr3t".into()),
+            },
+            r#"{"type":"s3_credentials","endpoint":"http://127.0.0.1:7070","access_key":"yerd_x","secret_key":"s3cr3t"}"#,
+        ),
+    ];
+    for (r, want) in &cases {
+        assert_response_shape(r, want);
+    }
 }

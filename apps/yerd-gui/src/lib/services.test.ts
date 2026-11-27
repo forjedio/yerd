@@ -2,6 +2,16 @@ import { describe, expect, it } from "vitest";
 
 import {
   address,
+  BUCKET_NAME_HINT,
+  bucketNameError,
+  bucketsFooter,
+  formatBytes,
+  isS3,
+  isValidBucketName,
+  objectsLabel,
+  S3_PURGE_LABEL,
+  s3Env,
+  s3UninstallCopy,
   canStart,
   canStop,
   changeVersionNote,
@@ -66,6 +76,15 @@ const reverb = svc({
   port: 8081,
 });
 const unknown = svc({ service: "s3", display_name: "S3", supports_databases: false });
+const s3 = svc({
+  service: "versitygw",
+  type_id: "versitygw",
+  display_name: "S3 (versitygw)",
+  installed_versions: ["1.7.0"],
+  selected_version: "1.7.0",
+  supports_databases: false,
+  port: 7070,
+});
 
 function report(overrides: Partial<StatusReport> = {}): StatusReport {
   return {
@@ -113,6 +132,22 @@ describe("serviceSections", () => {
     ]);
   });
 
+  it("lists S3 under Storage between cache and per-site", () => {
+    const sections = serviceSections([reverb, s3, redis, svc()]);
+    expect(sections.map((s) => [s.group, s.label, s.items.map((i) => i.service)])).toEqual([
+      ["databases", "Databases", ["mysql"]],
+      ["cache", "Cache & search", ["redis"]],
+      ["storage", "Storage", ["versitygw"]],
+      ["site", "Per-site", ["reverb:blog"]],
+    ]);
+  });
+
+  it("recognises S3 by its type id", () => {
+    expect(isS3(s3)).toBe(true);
+    expect(isS3(svc({ service: "versitygw", type_id: undefined }))).toBe(true);
+    expect(isS3(unknown)).toBe(false);
+  });
+
   it("omits empty groups", () => {
     expect(serviceSections([redis]).map((s) => s.group)).toEqual(["cache"]);
     expect(serviceSections([mariadb])).toEqual([]);
@@ -127,6 +162,10 @@ describe("status copy", () => {
     [svc({ state: "stopped" }), 16, "stopped · :3308"],
     [svc({ state: "failed" }), null, "failed · :3308"],
     [reverb, null, "running · :8081"],
+    [s3, 6, "running · :7070 · 6 buckets"],
+    [s3, 1, "running · :7070 · 1 bucket"],
+    [s3, null, "running · :7070"],
+    [svc({ ...s3, state: "stopped" }), 6, "stopped · :7070"],
   ])("statusLine %#", (s, count, expected) => {
     expect(statusLine(s, count)).toBe(expected);
   });
@@ -147,6 +186,9 @@ describe("status copy", () => {
     [svc({ state: "stopped" }), 4, "—"],
     [reverb, null, "WebSockets"],
     [meili, null, "—"],
+    [s3, 6, "6 buckets"],
+    [s3, null, "—"],
+    [svc({ ...s3, state: "stopped" }), 6, "—"],
   ])("detailsCell %#", (s, count, expected) => {
     expect(detailsCell(s, count)).toBe(expected);
   });
@@ -279,6 +321,7 @@ describe("connectKind", () => {
     [postgres, "sql"],
     [redis, "redis"],
     [meili, "meilisearch"],
+    [s3, "s3"],
     [reverb, "site"],
     [unknown, "none"],
   ])("%# is %s", (s, expected) => {
@@ -397,5 +440,95 @@ describe("version changes", () => {
     [svc({ installed_versions: [], selected_version: null }), ""],
   ])("uninstallVersion %#", (s, expected) => {
     expect(uninstallVersion(s)).toBe(expected);
+  });
+});
+
+describe("S3 helpers", () => {
+  it.each([
+    ["avatars", null],
+    ["a.b-c", null],
+    ["abc", null],
+    ["a".repeat(63), null],
+    ["User_Uploads", "Use lowercase letters, digits, hyphens and dots only."],
+    ["my bucket", "Use lowercase letters, digits, hyphens and dots only."],
+    ["ab", "Use at least 3 characters."],
+    ["a".repeat(64), "Use at most 63 characters."],
+    ["-abc", "Start and end with a letter or digit."],
+    ["abc.", "Start and end with a letter or digit."],
+    ["a..b", "Don't use two dots in a row."],
+  ])("bucketNameError(%j)", (name, expected) => {
+    expect(bucketNameError(name)).toBe(expected);
+    expect(isValidBucketName(name)).toBe(expected === null);
+  });
+
+  it("states the naming rules in the hint", () => {
+    expect(BUCKET_NAME_HINT).toBe(
+      "3–63 characters: lowercase letters, digits, hyphens and dots. Starts and ends with a letter or digit.",
+    );
+  });
+
+  it.each([
+    [0, "0 B"],
+    [999, "999 B"],
+    [1000, "1.0 KB"],
+    [999_949, "999.9 KB"],
+    [999_950, "1.0 MB"],
+    [312_400_000, "312.4 MB"],
+    [4_000_000_000, "4.0 GB"],
+    [2_500_000_000_000, "2.5 TB"],
+    [5_000_000_000_000_000, "5000.0 TB"],
+  ])("formatBytes(%j)", (bytes, expected) => {
+    expect(formatBytes(bytes)).toBe(expected);
+  });
+
+  it.each([
+    [0, "empty"],
+    [1, "1 object"],
+    [12, "12 objects"],
+    [1284, "1,284 objects"],
+  ])("objectsLabel(%j)", (n, expected) => {
+    expect(objectsLabel(n)).toBe(expected);
+  });
+
+  it("totals the footer", () => {
+    expect(bucketsFooter(6, 5535, 4_000_000_000)).toBe("6 buckets · 5,535 objects · 4.0 GB");
+    expect(bucketsFooter(1, 1, 10)).toBe("1 bucket · 1 object · 10 B");
+  });
+
+  it("builds the masked .env block", () => {
+    const env = s3Env("http://127.0.0.1:7070", "yerd_7Kq2XH9PmA", null, "codestash-uploads");
+    expect(envText(env)).toBe(
+      [
+        "FILESYSTEM_DISK=s3",
+        "AWS_ACCESS_KEY_ID=yerd_7Kq2XH9PmA",
+        "AWS_SECRET_ACCESS_KEY=••••••••••••••••",
+        "AWS_DEFAULT_REGION=us-east-1",
+        "AWS_BUCKET=codestash-uploads",
+        "AWS_ENDPOINT=http://127.0.0.1:7070",
+        "AWS_USE_PATH_STYLE_ENDPOINT=true",
+      ].join("\n"),
+    );
+    expect(env.filter((l) => l.strong).map((l) => l.text)).toEqual(["AWS_BUCKET=codestash-uploads"]);
+  });
+
+  it("puts the real secret in and falls back to a bucket placeholder", () => {
+    const text = envText(s3Env("http://127.0.0.1:7071", "yerd_x", "s3cr3t", "  "));
+    expect(text).toContain("AWS_SECRET_ACCESS_KEY=s3cr3t");
+    expect(text).toContain("AWS_BUCKET=your_bucket");
+    expect(text).toContain("AWS_ENDPOINT=http://127.0.0.1:7071");
+  });
+
+  it.each([
+    [6, false, "The gateway stops and its binary is removed. Your 6 buckets stay on disk as plain folders, so reinstalling picks them back up."],
+    [1, false, "The gateway stops and its binary is removed. Your 1 bucket stays on disk as a plain folder, so reinstalling picks it back up."],
+    [null, false, "The gateway stops and its binary is removed. Your buckets stay on disk as plain folders, so reinstalling picks them back up."],
+    [6, true, "The gateway stops, its binary is removed, and your 6 buckets and access keys are deleted. Reinstalling generates new keys."],
+    [null, true, "The gateway stops, its binary is removed, and your buckets and access keys are deleted. Reinstalling generates new keys."],
+  ])("s3UninstallCopy(%j, %j)", (count, purge, expected) => {
+    expect(s3UninstallCopy(count, purge)).toBe(expected);
+  });
+
+  it("labels the purge checkbox", () => {
+    expect(S3_PURGE_LABEL).toBe("Also delete the stored buckets");
   });
 });

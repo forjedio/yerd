@@ -18,7 +18,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use yerd_supervise::{HealthProbe, Listen};
 
-use crate::service::ReadinessKind;
+use crate::service::{ReadinessKind, VERSITYGW_HEALTH_PATH};
 
 /// A service-aware readiness probe.
 ///
@@ -55,6 +55,7 @@ impl ReadinessProbe for ServiceProbes {
             ReadinessKind::PostgresStartup => PostgresProbe.probe(listen).await,
             ReadinessKind::MeilisearchHealth => MeilisearchProbe.probe(listen).await,
             ReadinessKind::TcpConnect => TcpConnectProbe.probe(listen).await,
+            ReadinessKind::VersityGwHealth => VersityGwProbe.probe(listen).await,
         }
     }
 }
@@ -97,6 +98,52 @@ impl HealthProbe for MeilisearchProbe {
             Ok(())
         } else {
             Err(io::Error::other("Meilisearch is not available"))
+        }
+    }
+}
+
+/// versitygw readiness probe: `GET` [`VERSITYGW_HEALTH_PATH`] (the path the
+/// gateway is launched with `--health`) and require an HTTP 200 status line.
+/// The body is ignored: versitygw answers `OK`, but nothing else depends on it.
+pub struct VersityGwProbe;
+
+const VERSITYGW_HEALTH_RESPONSE_LIMIT: u64 = 8 * 1024;
+
+/// Whether `response` opens with an `HTTP/1.0` or `HTTP/1.1` status line whose
+/// code is exactly 200.
+fn is_http_200(response: &[u8]) -> bool {
+    let line_end = response
+        .iter()
+        .position(|b| *b == b'\r' || *b == b'\n')
+        .unwrap_or(response.len());
+    let Some(line) = response.get(..line_end) else {
+        return false;
+    };
+    let mut parts = line.split(|b| *b == b' ');
+    matches!(
+        (parts.next(), parts.next()),
+        (Some(b"HTTP/1.1" | b"HTTP/1.0"), Some(b"200"))
+    )
+}
+
+#[async_trait]
+impl HealthProbe for VersityGwProbe {
+    async fn probe(&self, listen: &Listen) -> Result<(), io::Error> {
+        let addr = tcp_addr(listen)?;
+        let mut stream = TcpStream::connect(addr).await?;
+        let request = format!(
+            "GET {VERSITYGW_HEALTH_PATH} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).await?;
+        let mut response = Vec::new();
+        stream
+            .take(VERSITYGW_HEALTH_RESPONSE_LIMIT)
+            .read_to_end(&mut response)
+            .await?;
+        if is_http_200(&response) {
+            Ok(())
+        } else {
+            Err(io::Error::other("versitygw health returned non-200 status"))
         }
     }
 }
@@ -388,6 +435,100 @@ mod tests {
                 .await
                 .is_err());
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn versitygw_probe_accepts_200_with_or_without_body() {
+        for body in ["OK", ""] {
+            let addr = fake_http("200 OK", body).await;
+            assert!(
+                VersityGwProbe
+                    .probe(&Listen::TcpLoopback(addr))
+                    .await
+                    .is_ok(),
+                "{body:?}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn versitygw_probe_rejects_non_200() {
+        for status in ["403 Forbidden", "404 Not Found", "503 Service Unavailable"] {
+            let addr = fake_http(status, "OK").await;
+            assert!(
+                VersityGwProbe
+                    .probe(&Listen::TcpLoopback(addr))
+                    .await
+                    .is_err(),
+                "{status}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn versitygw_probe_fails_when_nothing_listening() {
+        let dead: SocketAddr = (Ipv4Addr::LOCALHOST, 1).into();
+        assert!(VersityGwProbe
+            .probe(&Listen::TcpLoopback(dead))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn versitygw_probe_sends_get_for_the_health_path() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 256];
+            let n = sock.read(&mut request).await.unwrap();
+            let _ = sock
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK")
+                .await;
+            String::from_utf8_lossy(&request[..n]).into_owned()
+        });
+        VersityGwProbe
+            .probe(&Listen::TcpLoopback(addr))
+            .await
+            .unwrap();
+        let request = server.await.unwrap();
+        assert!(
+            request.starts_with("GET /_yerd/health HTTP/1.1\r\n"),
+            "{request}"
+        );
+        assert!(request.contains("Host: 127.0.0.1\r\n"), "{request}");
+    }
+
+    #[test]
+    fn http_200_status_line_table() {
+        let cases: &[(&[u8], bool)] = &[
+            (b"HTTP/1.1 200 OK\r\n\r\nOK", true),
+            (b"HTTP/1.0 200 OK\r\n\r\n", true),
+            (b"HTTP/1.1 200\r\n\r\n", true),
+            (b"HTTP/1.1 2000 OK\r\n", false),
+            (b"HTTP/1.1 204 No Content\r\n", false),
+            (b"HTTP/1.1 403 Forbidden\r\n", false),
+            (b"HTTP/2 200\r\n", false),
+            (b"garbage", false),
+            (b"", false),
+        ];
+        for (response, want) in cases {
+            assert_eq!(
+                is_http_200(response),
+                *want,
+                "{}",
+                String::from_utf8_lossy(response)
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn service_probes_dispatches_versitygw_health() {
+        let ok = fake_http("200 OK", "OK").await;
+        assert!(ServiceProbes::new()
+            .probe(ReadinessKind::VersityGwHealth, &Listen::TcpLoopback(ok))
+            .await
+            .is_ok());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

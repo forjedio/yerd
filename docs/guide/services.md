@@ -1,12 +1,12 @@
 # Services & Databases
 
-Yerd installs and supervises local **database, cache, and search** engines as native,
+Yerd installs and supervises local **database, cache, search, and S3 storage** engines as native,
 per-user processes - the way [DBngin](https://dbngin.com) does, but folded into
 the same [`yerdd` daemon](./daemon) that already runs your sites, PHP, HTTPS, and
 DNS. No Docker, no containers, no VM. A single `yerd status` shows the whole
 stack.
 
-The five engines:
+The six engines:
 
 | Service | `id` | Kind | Default port |
 |---|---|---|---|
@@ -15,6 +15,7 @@ The five engines:
 | MariaDB | `mariadb` | SQL database | 3306 |
 | PostgreSQL | `postgres` | SQL database | 5432 |
 | Meilisearch | `meilisearch` | Search index | 7700 |
+| S3 (versitygw) | `versitygw` | S3-compatible object storage | 7070 |
 
 ::: info Redis is served by Valkey
 The `redis` slot is filled by **Valkey**, the BSD-licensed fork, because recent
@@ -23,7 +24,7 @@ your Redis clients work unchanged. Yerd shows it as `Redis (Valkey)`.
 :::
 
 ::: tip Engine availability
-All five engines are implemented end-to-end. Whether a specific engine/version
+All six engines are implemented end-to-end. Whether a specific engine/version
 installs depends on whether a prebuilt build is published for your platform in
 Yerd's hosted distribution - run `yerd service available` to see what you can
 install right now. MySQL/MariaDB share port 3306, so only one can be enabled on it
@@ -60,9 +61,10 @@ so what you install stays running across reboots.
 
 <ThemedImage light="/images/services-add-light.png" dark="/images/services-add-dark.png" alt="The Add a service dialog with MariaDB picked, its version, the next free port and Start with Yerd" />
 
-The list groups services under **Databases**, **Cache & search** and
-**Per-site**, each row showing its version, state, port and (for a running SQL
-engine) how many databases it holds. Selecting one opens its inspector:
+The list groups services under **Databases**, **Cache & search**, **Storage**
+and **Per-site**, each row showing its version, state, port and (for a running
+SQL engine) how many databases it holds, or (for running S3 storage) how many
+buckets. Selecting one opens its inspector:
 
 - **Logs** opens a live tail of the service log (the last 500 lines, refreshed
   every two seconds, with Copy). **Start**, **Restart** and **Stop** appear when
@@ -105,6 +107,8 @@ engine) how many databases it holds. Selecting one opens its inspector:
 - **Config overrides**: your own engine config directives (config-backed engines
   only; see [below](#service-configuration-overrides)). They apply on the next
   restart.
+- **Buckets** and **Credentials** (S3 storage only; see
+  [S3 storage (versitygw)](#s3-storage-versitygw)).
 
 In a narrow window the list becomes a table (version, port, status, details)
 and the inspector slides in as a drawer when you click a row.
@@ -159,6 +163,108 @@ generated SQL is injection-proof. Engine-internal databases are protected and
 can't be dropped. `backup` writes to a temp file and atomically renames it, so a
 failed dump never clobbers an existing one. See the [Databases CLI
 reference](../reference/cli/db) for details.
+
+## S3 storage (versitygw)
+
+The `versitygw` service is a local, S3-compatible object store for code that
+talks to Amazon S3 - Laravel's `s3` filesystem disk, the AWS SDKs, or any other
+S3 client. It runs the [Versity S3 Gateway](https://github.com/versity/versitygw)
+with its POSIX backend: every bucket is a plain folder and every object a plain
+file under the service's data directory.
+
+```sh
+yerd service available                  # find the published versitygw version
+yerd service install versitygw 1.7.0    # download, generate keys, start
+yerd s3 create-bucket user-uploads
+yerd s3 creds --show-secret             # endpoint + keys for your .env
+```
+
+| | |
+|---|---|
+| Endpoint | `http://127.0.0.1:7070` (change it with `yerd service set-port versitygw <port>`) |
+| Region | `us-east-1` |
+| Addressing | Path-style (`http://127.0.0.1:7070/<bucket>/<key>`) |
+| Buckets on disk | `<data>/services/versitygw/data/<bucket>/` |
+| Access keys | `<state>/services/versitygw/credentials` |
+
+`<data>` is `~/Library/Application Support/io.yerd.Yerd` on macOS and
+`~/.local/share/yerd` on Linux; `<state>` is `~/Library/Application
+Support/io.yerd.Yerd` on macOS and `~/.local/state/yerd` on Linux. The gateway
+binds to `127.0.0.1` only and serves no web UI or admin port.
+
+### Access keys
+
+Yerd generates one access key (`yerd_` followed by 10 letters and digits) and a
+40-character secret key the first time it starts the gateway, or the first time
+you ask for them with `yerd s3 creds`. They are written to the `credentials`
+file above, readable only by your user (mode `0600`), and are handed to the
+gateway through its environment - they never appear in `yerd.toml`, on a
+process command line, or in a log. The same pair is reused on every start,
+restart and version change.
+
+`yerd s3 creds` prints the endpoint and access key; add `--show-secret` to
+include the secret. If you edit the file by hand and break it, Yerd refuses to
+start the gateway and names the file rather than silently rotating the keys:
+delete it and restart `versitygw` to generate a new pair.
+
+### Connect a Laravel app
+
+Laravel's S3 driver needs the Flysystem adapter:
+
+```sh
+composer require league/flysystem-aws-s3-v3 "^3.0"
+```
+
+Then point the `s3` disk at Yerd:
+
+```ini
+FILESYSTEM_DISK=s3
+AWS_ACCESS_KEY_ID=yerd_7Kq2XH9PmA
+AWS_SECRET_ACCESS_KEY=your_secret_key
+AWS_DEFAULT_REGION=us-east-1
+AWS_BUCKET=user-uploads
+AWS_ENDPOINT=http://127.0.0.1:7070
+AWS_USE_PATH_STYLE_ENDPOINT=true
+```
+
+`AWS_USE_PATH_STYLE_ENDPOINT=true` is required: a `<bucket>.127.0.0.1` host does
+not resolve. Yerd does not create buckets for you, so create the one you name
+in `AWS_BUCKET` first.
+
+### Managing buckets
+
+The [`yerd s3`](../reference/cli/s3) commands list, create and delete buckets
+and show a bucket's object count and size. They talk to the gateway over the S3
+API, so versitygw must be **running**; a stopped gateway gets
+`start S3 (versitygw) first`. Deleting a bucket deletes every object in it first,
+one at a time, so a bucket with many objects takes a while.
+
+In the desktop app, the S3 inspector holds three cards:
+
+- **Buckets**: **New bucket** (the name is checked as you type), a filter, and
+  one row per bucket with its object count and size, plus a total in the
+  footer. Each row's `···` menu offers **Use in Connect** and **Delete bucket**,
+  which confirms in the row itself. When the gateway is stopped the card says
+  so and offers **Start S3**; your buckets stay on disk.
+- **Connect a Laravel app**: the `.env` block above with a bucket picker. The
+  secret is masked on screen; **Copy for .env** copies it in full.
+- **Credentials**: the endpoint, access key and secret key, each with a copy
+  button. The secret stays masked until you reveal it.
+
+### Uninstalling
+
+`yerd service uninstall versitygw <version>` (or **Uninstall** in the inspector)
+removes the binary and keeps your buckets and access keys, so reinstalling picks
+both back up. `--purge` (*Also delete the stored buckets* in the app) also
+deletes every bucket and the `credentials` file; the next install generates new
+keys, so update any `.env` that used the old ones.
+
+::: info Filesystem requirements
+The POSIX backend stores object metadata in extended attributes, so the data
+directory must be on a filesystem that supports user xattrs (APFS, ext4, btrfs
+and XFS all do; some tmpfs and network mounts don't). If it doesn't, the gateway
+fails to start and `yerd service logs versitygw` shows why.
+:::
 
 ## Client commands on your PATH
 
@@ -282,9 +388,9 @@ precedence comes from.
 **Precedence:** `50-local` beats `10-yerd`, which beats Yerd's own defaults.
 
 ::: info Which engines support this
-`mysql`, `mariadb`, `postgres`, and `redis`. Meilisearch takes its settings from
-command-line flags and environment variables rather than a config file, so it
-refuses with `does not support configuration overrides` (the same goes for
+`mysql`, `mariadb`, `postgres`, and `redis`. Meilisearch and S3 (versitygw) take
+their settings from command-line flags and environment variables rather than a
+config file, so they refuse with `does not support configuration overrides` (the same goes for
 per-site app servers such as Reverb). In the desktop app the **Config
 overrides** card simply doesn't appear for them.
 :::
@@ -471,7 +577,7 @@ engines run today (subject to a published build for your architecture).
 
 ## See also
 
-- [Services CLI reference](../reference/cli/services) and [Databases CLI reference](../reference/cli/db)
+- [Services CLI reference](../reference/cli/services), [Databases CLI reference](../reference/cli/db) and [S3 CLI reference](../reference/cli/s3)
 - [PHP Versions](./php-versions) - the supervision model services share
 - [Configuration Reference](../reference/configuration) - the `[services.<id>]` tables
 - [yerd-services](../developer/crates/yerd-services) and [yerd-supervise](../developer/crates/yerd-supervise) - the crates behind this

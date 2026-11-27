@@ -5,6 +5,9 @@ import { ChevronsUpDown, Copy, Plug } from "lucide-vue-next";
 import Button from "@/components/ui/Button.vue";
 import { FIELD } from "@/components/services/styles";
 import { CARD } from "@/components/ui/styles";
+import { useToast } from "@/composables/useToast";
+import type { S3PublicCredentials } from "@/composables/useS3Storage";
+import { IpcError, s3Credentials } from "@/ipc/client";
 import type { ServiceStatus, SiteEntry, StatusReport } from "@/ipc/types";
 import { copyWithToast } from "@/lib/toastActions";
 import {
@@ -15,6 +18,7 @@ import {
   redisEnv,
   reverbEnv,
   reverbPublic,
+  s3Env,
   siteDomain,
   sqlEnv,
 } from "@/lib/services";
@@ -24,8 +28,11 @@ import { cn } from "@/lib/utils";
  * The inspector's Connect card: the `.env` block that points a Laravel app at
  * this service, with Copy for .env. SQL engines pick the database (the
  * inspector owns that choice so a Databases row can set it), Meilisearch picks
- * a Laravel site for the Scout prefix, and a Reverb instance shows its server
- * and browser halves side by side (`layout="wide"`).
+ * a Laravel site for the Scout prefix, S3 storage picks the bucket (owned by
+ * the inspector so a Buckets row can set it) and shows its secret masked, and
+ * a Reverb instance shows its server and browser halves side by side
+ * (`layout="wide"`). For S3, Copy for .env fetches the secret just for the
+ * clipboard; it is never shown or kept here.
  */
 const props = defineProps<{
   service: ServiceStatus;
@@ -35,15 +42,24 @@ const props = defineProps<{
   sites: SiteEntry[];
   tld: string;
   layout: "stack" | "wide";
+  /** The running S3 gateway's bucket names; null while unknown or stopped. */
+  buckets?: string[] | null;
+  /** The S3 endpoint (live port) and access key, once loaded. */
+  credentials?: S3PublicCredentials | null;
 }>();
 
 const database = defineModel<string>("database", { default: "" });
+const bucket = defineModel<string>("bucket", { default: "" });
+
+const toast = useToast();
 
 const kind = computed(() => connectKind(props.service));
 const typeId = computed(() => props.service.type_id ?? props.service.service);
 const laravelSites = computed(() => props.sites.filter((s) => s.is_laravel));
 const linkedSite = computed(() => props.sites.find((s) => s.name === props.service.site) ?? null);
 const dbNames = computed(() => (props.service.state === "running" ? (props.databases ?? []) : []));
+const bucketNames = computed(() => (props.service.state === "running" ? (props.buckets ?? []) : []));
+const s3Endpoint = computed(() => props.credentials?.endpoint ?? `http://127.0.0.1:${props.service.port}`);
 
 const prefix = ref("");
 const prefixTouched = ref(false);
@@ -66,6 +82,7 @@ const block = computed<EnvLine[]>(() => {
   if (kind.value === "sql") return sqlEnv(typeId.value, s.port, database.value);
   if (kind.value === "redis") return redisEnv(s.port);
   if (kind.value === "meilisearch") return meilisearchEnv(s.port, prefix.value);
+  if (kind.value === "s3") return s3Env(s3Endpoint.value, props.credentials?.access_key ?? "", null, bucket.value);
   return [];
 });
 
@@ -86,8 +103,25 @@ const dbHint = computed(() => {
     : `Start ${props.service.display_name} to pick a database.`;
 });
 
+const bucketHint = computed(() => {
+  if (kind.value !== "s3" || bucketNames.value.length) return "";
+  return props.service.state === "running" ? "No buckets yet." : `Start ${props.service.display_name} to pick a bucket.`;
+});
+
+async function s3EnvText(): Promise<string | null> {
+  try {
+    const c = await s3Credentials(true);
+    return envText(s3Env(c.endpoint, c.access_key, c.secret_key ?? null, bucket.value));
+  } catch (e) {
+    toast.error("Couldn't read the S3 credentials", (e as IpcError).message);
+    return null;
+  }
+}
+
 async function copy(): Promise<void> {
-  await copyWithToast(envText(reverb.value ?? block.value), {
+  const text = kind.value === "s3" ? await s3EnvText() : envText(reverb.value ?? block.value);
+  if (text === null) return;
+  await copyWithToast(text, {
     title: "Copied to clipboard",
     detail: "Paste these into your Laravel .env",
   });
@@ -132,6 +166,23 @@ const HEADING = "mb-1.5 text-[10px] font-medium uppercase tracking-[0.6px] text-
         <ChevronsUpDown class="size-3.5 shrink-0 text-faint" aria-hidden="true" />
       </label>
       <p v-if="dbHint" class="mt-1.5 text-xs text-faint">{{ dbHint }}</p>
+    </template>
+
+    <template v-else-if="kind === 's3'">
+      <label :class="cn(PICKER, 'mt-3', !bucketNames.length && 'opacity-60')">
+        <span class="shrink-0 text-faint">Bucket</span>
+        <select
+          v-model="bucket"
+          class="min-w-0 flex-1 appearance-none bg-transparent font-mono text-[13px] outline-none disabled:cursor-not-allowed"
+          aria-label="Bucket"
+          :disabled="!bucketNames.length"
+        >
+          <option v-if="!bucketNames.length" value="">your_bucket</option>
+          <option v-for="name in bucketNames" :key="name" :value="name">{{ name }}</option>
+        </select>
+        <ChevronsUpDown class="size-3.5 shrink-0 text-faint" aria-hidden="true" />
+      </label>
+      <p v-if="bucketHint" class="mt-1.5 text-xs text-faint">{{ bucketHint }}</p>
     </template>
 
     <template v-else-if="kind === 'meilisearch'">
