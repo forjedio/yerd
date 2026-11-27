@@ -54,6 +54,7 @@ impl ReadinessProbe for ServiceProbes {
             ReadinessKind::MySqlHandshake => MySqlProbe.probe(listen).await,
             ReadinessKind::PostgresStartup => PostgresProbe.probe(listen).await,
             ReadinessKind::MeilisearchHealth => MeilisearchProbe.probe(listen).await,
+            ReadinessKind::RustFsHealth => RustFsProbe.probe(listen).await,
             ReadinessKind::TcpConnect => TcpConnectProbe.probe(listen).await,
         }
     }
@@ -63,41 +64,71 @@ impl ReadinessProbe for ServiceProbes {
 /// documented available status, rather than treating an open HTTP port as ready.
 pub struct MeilisearchProbe;
 
-const MEILISEARCH_HEALTH_RESPONSE_LIMIT: u64 = 8 * 1024;
-
 #[async_trait]
 impl HealthProbe for MeilisearchProbe {
     async fn probe(&self, listen: &Listen) -> Result<(), io::Error> {
-        let addr = tcp_addr(listen)?;
-        let mut stream = TcpStream::connect(addr).await?;
-        stream
-            .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
-            .await?;
-        let mut response = Vec::new();
-        stream
-            .take(MEILISEARCH_HEALTH_RESPONSE_LIMIT)
-            .read_to_end(&mut response)
-            .await?;
-        let split = response
-            .windows(4)
-            .position(|w| w == b"\r\n\r\n")
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "malformed HTTP response"))?;
-        let headers = std::str::from_utf8(response.get(..split).unwrap_or_default())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "non-UTF-8 HTTP headers"))?;
-        let status = headers.lines().next().unwrap_or_default();
-        if !status.starts_with("HTTP/1.1 200 ") && !status.starts_with("HTTP/1.0 200 ") {
-            return Err(io::Error::other(
-                "Meilisearch health returned non-200 status",
-            ));
-        }
-        let body = response.get(split + 4..).unwrap_or_default();
-        let value: serde_json::Value = serde_json::from_slice(body)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        if value.get("status").and_then(serde_json::Value::as_str) == Some("available") {
-            Ok(())
-        } else {
-            Err(io::Error::other("Meilisearch is not available"))
-        }
+        http_health_status(listen, "Meilisearch", "/health", "available").await
+    }
+}
+
+/// `RustFS` readiness probe: require its readiness endpoint to answer 200 with
+/// `{ "status": "ok" }`, rather than treating an open S3 port as ready.
+/// `/health` is liveness only: it answers 200 `ok` while storage and IAM are
+/// still initialising, whereas `/health/ready` answers 503 `degraded` until
+/// S3 requests can succeed.
+pub struct RustFsProbe;
+
+#[async_trait]
+impl HealthProbe for RustFsProbe {
+    async fn probe(&self, listen: &Listen) -> Result<(), io::Error> {
+        http_health_status(listen, "RustFS", "/health/ready", "ok").await
+    }
+}
+
+const HTTP_HEALTH_RESPONSE_LIMIT: u64 = 8 * 1024;
+
+/// `GET path` over plain HTTP/1.1 and require a 200 whose JSON body carries
+/// `"status": expected`. Shared by the HTTP-speaking engines, which differ only
+/// in the endpoint and the status word they report once ready. `name` labels
+/// the error.
+async fn http_health_status(
+    listen: &Listen,
+    name: &str,
+    path: &str,
+    expected: &str,
+) -> Result<(), io::Error> {
+    let addr = tcp_addr(listen)?;
+    let mut stream = TcpStream::connect(addr).await?;
+    stream
+        .write_all(
+            format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .await?;
+    let mut response = Vec::new();
+    stream
+        .take(HTTP_HEALTH_RESPONSE_LIMIT)
+        .read_to_end(&mut response)
+        .await?;
+    let split = response
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "malformed HTTP response"))?;
+    let headers = std::str::from_utf8(response.get(..split).unwrap_or_default())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "non-UTF-8 HTTP headers"))?;
+    let status = headers.lines().next().unwrap_or_default();
+    if !status.starts_with("HTTP/1.1 200 ") && !status.starts_with("HTTP/1.0 200 ") {
+        return Err(io::Error::other(format!(
+            "{name} health returned non-200 status"
+        )));
+    }
+    let body = response.get(split + 4..).unwrap_or_default();
+    let value: serde_json::Value =
+        serde_json::from_slice(body).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    if value.get("status").and_then(serde_json::Value::as_str) == Some(expected) {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("{name} is not available")))
     }
 }
 
@@ -353,13 +384,20 @@ mod tests {
             .is_ok());
     }
 
-    async fn fake_http(status: &'static str, body: &'static str) -> SocketAddr {
+    /// Answers one request: `status`/`body` when it is `GET path`, 404 otherwise,
+    /// so a probe hitting the wrong endpoint fails.
+    async fn fake_http(path: &'static str, status: &'static str, body: &'static str) -> SocketAddr {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             if let Ok((mut sock, _)) = listener.accept().await {
                 let mut request = [0u8; 256];
                 let _ = sock.read(&mut request).await;
+                let (status, body) = if request.starts_with(format!("GET {path} ").as_bytes()) {
+                    (status, body)
+                } else {
+                    ("404 Not Found", "")
+                };
                 let reply = format!(
                     "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
@@ -372,7 +410,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn meilisearch_probe_requires_healthy_200_response() {
-        let healthy = fake_http("200 OK", r#"{"status":"available"}"#).await;
+        let healthy = fake_http("/health", "200 OK", r#"{"status":"available"}"#).await;
         assert!(MeilisearchProbe
             .probe(&Listen::TcpLoopback(healthy))
             .await
@@ -382,12 +420,76 @@ mod tests {
             ("200 OK", r#"{"status":"unavailable"}"#),
             ("200 OK", "not json"),
         ] {
-            let addr = fake_http(status, body).await;
+            let addr = fake_http("/health", status, body).await;
             assert!(MeilisearchProbe
                 .probe(&Listen::TcpLoopback(addr))
                 .await
                 .is_err());
         }
+    }
+
+    /// The bodies are the shapes `RustFS` 1.0.3 actually returns from
+    /// `/health/ready`; the extra fields must not matter, only `status`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rustfs_probe_requires_ok_status_on_200() {
+        let healthy = fake_http(
+            "/health/ready",
+            "200 OK",
+            r#"{"ready":true,"service":"rustfs-endpoint","status":"ok","version":"1.0.3"}"#,
+        )
+        .await;
+        assert!(RustFsProbe
+            .probe(&Listen::TcpLoopback(healthy))
+            .await
+            .is_ok());
+        for (status, body) in [
+            (
+                "503 Service Unavailable",
+                r#"{"ready":false,"service":"rustfs-endpoint","status":"degraded"}"#,
+            ),
+            ("200 OK", r#"{"status":"available"}"#),
+            ("200 OK", r#"{"service":"rustfs-endpoint"}"#),
+            ("200 OK", "not json"),
+        ] {
+            let addr = fake_http("/health/ready", status, body).await;
+            assert!(
+                RustFsProbe.probe(&Listen::TcpLoopback(addr)).await.is_err(),
+                "{status} {body} must not count as ready"
+            );
+        }
+        // Liveness `/health` answers `ok` before storage and IAM are up.
+        let liveness_only = fake_http("/health", "200 OK", r#"{"status":"ok"}"#).await;
+        assert!(RustFsProbe
+            .probe(&Listen::TcpLoopback(liveness_only))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn service_probes_dispatches_http_health_by_kind() {
+        let probes = ServiceProbes::new();
+        let rustfs = fake_http("/health/ready", "200 OK", r#"{"status":"ok"}"#).await;
+        assert!(probes
+            .probe(ReadinessKind::RustFsHealth, &Listen::TcpLoopback(rustfs))
+            .await
+            .is_ok());
+        let meili_body_to_rustfs =
+            fake_http("/health/ready", "200 OK", r#"{"status":"available"}"#).await;
+        assert!(probes
+            .probe(
+                ReadinessKind::RustFsHealth,
+                &Listen::TcpLoopback(meili_body_to_rustfs)
+            )
+            .await
+            .is_err());
+        let meili = fake_http("/health", "200 OK", r#"{"status":"available"}"#).await;
+        assert!(probes
+            .probe(
+                ReadinessKind::MeilisearchHealth,
+                &Listen::TcpLoopback(meili)
+            )
+            .await
+            .is_ok());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

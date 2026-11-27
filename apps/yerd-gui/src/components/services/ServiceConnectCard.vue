@@ -15,6 +15,7 @@ import {
   redisEnv,
   reverbEnv,
   reverbPublic,
+  rustfsEnv,
   siteDomain,
   sqlEnv,
 } from "@/lib/services";
@@ -24,7 +25,7 @@ import { cn } from "@/lib/utils";
  * The inspector's Connect card: the `.env` block that points a Laravel app at
  * this service, with Copy for .env. SQL engines pick the database (the
  * inspector owns that choice so a Databases row can set it), Meilisearch picks
- * a Laravel site for the Scout prefix, and a Reverb instance shows its server
+ * a Laravel site for the Scout prefix, RustFS shows the S3 disk block, and a Reverb instance shows its server
  * and browser halves side by side (`layout="wide"`).
  */
 const props = defineProps<{
@@ -66,6 +67,7 @@ const block = computed<EnvLine[]>(() => {
   if (kind.value === "sql") return sqlEnv(typeId.value, s.port, database.value);
   if (kind.value === "redis") return redisEnv(s.port);
   if (kind.value === "meilisearch") return meilisearchEnv(s.port, prefix.value);
+  if (kind.value === "rustfs") return rustfsEnv(s.port);
   return [];
 });
 
@@ -195,6 +197,17 @@ const HEADING = "mb-1.5 text-[10px] font-medium uppercase tracking-[0.6px] text-
       <code>php artisan scout:sync-index-settings</code> and
       <code>php artisan scout:import "App\\Models\\YourModel"</code>. Yerd does not change project
       files or run Composer or Artisan for you.
+    </p>
+
+    <p
+      v-if="kind === 'rustfs'"
+      class="mt-3 text-xs leading-relaxed text-muted-foreground"
+      data-testid="rustfs-note"
+    >
+      Install <code>league/flysystem-aws-s3-v3</code>. RustFS does not create buckets on its own:
+      create <code>your_bucket</code> once with any S3 client, e.g.
+      <code>AWS_ACCESS_KEY_ID=rustfsadmin AWS_SECRET_ACCESS_KEY=rustfsadmin AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url http://127.0.0.1:{{ service.port }} s3 mb s3://your_bucket</code>.
+      Yerd does not change project files or run Composer for you.
     </p>
 
     <Button

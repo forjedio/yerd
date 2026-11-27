@@ -20,6 +20,7 @@ import {
   isValidDbName,
   logLineTone,
   meilisearchEnv,
+  rustfsEnv,
   purgeCopy,
   redisEnv,
   reverbEnv,
@@ -238,6 +239,14 @@ describe(".env snippets", () => {
     expect(envText(meilisearchEnv(7700, prefix))).toBe(expected);
   });
 
+  it("matches the RustFS S3 block on the instance's port", () => {
+    const env = rustfsEnv(9002);
+    expect(envText(env)).toBe(
+      "FILESYSTEM_DISK=s3\nAWS_ACCESS_KEY_ID=rustfsadmin\nAWS_SECRET_ACCESS_KEY=rustfsadmin\nAWS_DEFAULT_REGION=us-east-1\nAWS_BUCKET=your_bucket\nAWS_ENDPOINT=http://127.0.0.1:9002\nAWS_USE_PATH_STYLE_ENDPOINT=true",
+    );
+    expect(env.filter((l) => l.strong).map((l) => l.text)).toEqual(["AWS_ENDPOINT=http://127.0.0.1:9002"]);
+  });
+
   function reverbText(host: string, port: number, scheme: string): string {
     return [
       "# Reverb server - Yerd supervises this on localhost",
@@ -279,6 +288,7 @@ describe("connectKind", () => {
     [postgres, "sql"],
     [redis, "redis"],
     [meili, "meilisearch"],
+    [svc({ service: "rustfs", type_id: "rustfs", display_name: "RustFS", supports_databases: false }), "rustfs"],
     [reverb, "site"],
     [unknown, "none"],
   ])("%# is %s", (s, expected) => {

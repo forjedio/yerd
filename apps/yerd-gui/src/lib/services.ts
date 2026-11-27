@@ -367,6 +367,23 @@ export function meilisearchEnv(port: number, prefix: string): EnvLine[] {
   ]);
 }
 
+/** The Laravel S3 disk block for RustFS. Credentials mirror the daemon's
+ *  fixed `rustfsadmin`/`rustfsadmin` key pair. */
+export function rustfsEnv(port: number): EnvLine[] {
+  return lines(
+    [
+      "FILESYSTEM_DISK=s3",
+      "AWS_ACCESS_KEY_ID=rustfsadmin",
+      "AWS_SECRET_ACCESS_KEY=rustfsadmin",
+      "AWS_DEFAULT_REGION=us-east-1",
+      "AWS_BUCKET=your_bucket",
+      `AWS_ENDPOINT=http://127.0.0.1:${port}`,
+      "AWS_USE_PATH_STYLE_ENDPOINT=true",
+    ],
+    ["AWS_ENDPOINT"],
+  );
+}
+
 /** Where a browser reaches a site: host, scheme and port. */
 export interface SitePublic {
   host: string;
@@ -442,7 +459,7 @@ export function envText(env: EnvLine[] | ReverbEnv): string {
 
 /** Which `.env` block the Connect card shows, or `none` for a kind it has no
  *  snippet for. */
-export type ConnectKind = "sql" | "redis" | "meilisearch" | "site" | "none";
+export type ConnectKind = "sql" | "redis" | "meilisearch" | "rustfs" | "site" | "none";
 
 /** The Connect card's block for a service. */
 export function connectKind(s: ServiceStatus): ConnectKind {
@@ -451,6 +468,7 @@ export function connectKind(s: ServiceStatus): ConnectKind {
   if (type === "mysql" || type === "mariadb" || type === "postgres") return "sql";
   if (type === "redis") return "redis";
   if (type === "meilisearch") return "meilisearch";
+  if (type === "rustfs") return "rustfs";
   return "none";
 }
 

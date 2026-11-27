@@ -763,3 +763,28 @@ describe("ServicesView drawer layering", () => {
     expect(w.find('[data-testid="service-inspector"]').exists()).toBe(true);
   });
 });
+
+describe("ServicesView RustFS connect card", () => {
+  it("shows the S3 .env block on the instance's port and how to create a bucket", async () => {
+    const rustfs = svc({
+      service: "rustfs",
+      type_id: "rustfs",
+      display_name: "RustFS",
+      installed_versions: ["1.0.3"],
+      selected_version: "1.0.3",
+      listen: "127.0.0.1:9002",
+      port: 9002,
+      supports_databases: false,
+    });
+    stubIpc({ services: [rustfs] });
+    const w = await mountView();
+
+    const card = inspector(w).get('[data-testid="connect-card"]');
+    const env = card.get('[data-testid="connect-env"]').text();
+    expect(env).toContain("FILESYSTEM_DISK=s3");
+    expect(env).toContain("AWS_ACCESS_KEY_ID=rustfsadmin");
+    expect(env).toContain("AWS_ENDPOINT=http://127.0.0.1:9002");
+    expect(env).toContain("AWS_USE_PATH_STYLE_ENDPOINT=true");
+    expect(card.get('[data-testid="rustfs-note"]').text()).toContain("s3 mb s3://your_bucket");
+  });
+});
