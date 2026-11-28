@@ -99,6 +99,7 @@ pub fn state_in(tmp: &Path) -> DaemonState {
     let dirs = dirs_in(tmp);
     let router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
     let ca_path = dirs.data.join("ca.cert.pem");
+    let insights_root = crate::insights::Insights::store_root(&dirs.state);
     let php_manager = Arc::new(Mutex::new(yerd_php::PhpManager::new(
         yerd_php::TokioProcessSpawner,
         yerd_php::SystemClock,
@@ -159,6 +160,11 @@ pub fn state_in(tmp: &Path) -> DaemonState {
         watch_dirty: tokio::sync::Notify::new(),
         config_unsaved: std::sync::atomic::AtomicBool::new(false),
         dumps: Arc::new(crate::dump_server::DumpStore::new()),
+        insights: Arc::new(crate::insights::Insights::new(
+            yerd_insights::Store::new(insights_root),
+            1,
+            &yerd_config::Config::default(),
+        )),
         shim_reconcile: Mutex::new(()),
         tunnel_manager: Arc::new(Mutex::new(crate::tunnel::new_manager())),
         cloudflared_resolution: RwLock::new(None),

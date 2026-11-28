@@ -89,7 +89,7 @@ pub struct Config {
     pub services: ServicesSection,
     /// Built-in mail-capture SMTP server (Herd-style). Enabled by default.
     pub mail: MailSection,
-    /// Dump-telemetry settings (the Laravel ▸ Dumps feature).
+    /// Extension-capture settings (dumps, queries and other telemetry).
     pub dumps: DumpsSection,
     /// Cloudflare Tunnel persistence (Named Tunnels). Empty by default.
     pub tunnel: TunnelSection,
@@ -118,6 +118,9 @@ pub struct Config {
     /// When each site was added to Yerd, for the GUI's "Recently added" list.
     /// Empty by default.
     pub added: AddedSection,
+    /// Sites with Insights recording on, plus the issue-detection thresholds.
+    /// Empty and default by default.
+    pub insights: InsightsSection,
 }
 
 impl Default for Config {
@@ -150,6 +153,7 @@ impl Default for Config {
             network: NetworkSection::default(),
             favourites: FavouritesSection::default(),
             added: AddedSection::default(),
+            insights: InsightsSection::default(),
         }
     }
 }
@@ -350,6 +354,70 @@ impl FavouritesSection {
     }
 }
 
+/// Insights recording (see [`Config::insights`]).
+///
+/// `sites` is a GUI overlay like [`FavouritesSection`]: lowercased site names,
+/// never validated against live sites, so an entry for a site that later
+/// disappears is simply ignored.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InsightsSection {
+    /// Lowercased names of the sites with Insights recording on.
+    pub sites: BTreeSet<String>,
+    /// Issue-detection thresholds.
+    pub thresholds: InsightsThresholds,
+}
+
+impl InsightsSection {
+    /// True when no site records and the thresholds are the defaults, so the
+    /// serialiser omits the `[insights]` table and a default config stays
+    /// byte-stable.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.sites.is_empty() && self.thresholds == InsightsThresholds::default()
+    }
+}
+
+/// Persisted Insights issue-detection thresholds. Every value must be at least
+/// 1, and `duplicate_min` at least 2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InsightsThresholds {
+    /// Minimum repeats of one query shape from one call site to flag an N+1.
+    pub n_plus_one_min: u32,
+    /// Minimum identical queries (same SQL and bindings) to flag a duplicate.
+    pub duplicate_min: u32,
+    /// A query slower than this many milliseconds is flagged as slow.
+    pub slow_query_ms: u32,
+    /// A read without `LIMIT` returning at least this many rows is flagged.
+    pub large_read_rows: u32,
+    /// A request running more than this many queries is flagged.
+    pub max_queries: u32,
+}
+
+impl Default for InsightsThresholds {
+    fn default() -> Self {
+        Self {
+            n_plus_one_min: 5,
+            duplicate_min: 2,
+            slow_query_ms: 100,
+            large_read_rows: 1000,
+            max_queries: 50,
+        }
+    }
+}
+
+impl InsightsThresholds {
+    /// True when every value is in range: at least 1, `duplicate_min` at
+    /// least 2.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.n_plus_one_min >= 1
+            && self.duplicate_min >= 2
+            && self.slow_query_ms >= 1
+            && self.large_read_rows >= 1
+            && self.max_queries >= 1
+    }
+}
+
 /// When each site was added to Yerd (see [`Config::added`]), as Unix seconds.
 ///
 /// A GUI overlay keyed like [`DomainsSection`]: **linked** sites by site name,
@@ -459,15 +527,15 @@ impl fmt::Debug for NgrokSettings {
 /// Default loopback port for the dump server (see [`DumpsSection::port`]).
 pub const DEFAULT_DUMP_PORT: u16 = 2304;
 
-/// Dump-telemetry settings.
+/// Extension-capture settings.
 ///
-/// The daemon writes a runtime mirror of these to a state file the
-/// `yerd-php-ext` extension reads each request; the config here is the durable
-/// source of truth. Defaults are off, port [`DEFAULT_DUMP_PORT`], and no
-/// per-feature overrides (every feature on when interception is enabled).
+/// The config here is the durable source of truth for the dump server and the
+/// extension's capture features. Defaults are on, port [`DEFAULT_DUMP_PORT`],
+/// and no per-feature overrides (every feature on when capture is enabled).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DumpsSection {
-    /// Whether dump interception is enabled (the "antenna").
+    /// Global extension-capture switch, on by default; per-site recording is
+    /// chosen in Insights.
     pub enabled: bool,
     /// Loopback port the dump server listens on and the extension connects to.
     pub port: u16,
@@ -484,7 +552,7 @@ pub struct DumpsSection {
 impl Default for DumpsSection {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             port: DEFAULT_DUMP_PORT,
             persist: false,
             features: BTreeMap::new(),

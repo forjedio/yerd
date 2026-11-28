@@ -16,7 +16,7 @@ The crate has three jobs, layered so they can be tested in isolation:
 The top three layers are **pure**: no sockets, no async, no I/O. The `transport` feature pulls in `tokio` async helpers; the actual socket/named-pipe binding never enters the crate at all - it lives in `yerdd`, `yerd`, and the Tauri sidecar.
 
 ::: info Source map
-`crates/yerd-ipc/src/`: `lib.rs` (re-exports + `PROTOCOL_VERSION`), `frame.rs` (framing), `message.rs` (JSON codec), `request.rs` / `response.rs` / `status.rs` (the wire types), `dump.rs` (the Laravel ▸ Dumps data model: `DumpCategory`, `DumpEvent`, `DumpCounts`, `DumpExtStatus`), `error.rs` (`FrameError` / `IpcError`), `transport.rs` (feature-gated async helpers). Tests: `tests/frame_codec.rs`, `tests/wire_stability.rs`, `tests/roundtrip.rs`. Browse them on [GitHub](https://github.com/forjedio/yerd).
+`crates/yerd-ipc/src/`: `lib.rs` (re-exports + `PROTOCOL_VERSION`), `frame.rs` (framing), `message.rs` (JSON codec), `request.rs` / `response.rs` / `status.rs` (the wire types), `dump.rs` (the Laravel ▸ Dumps data model: `DumpCategory`, `DumpEvent`, `DumpCounts`, `DumpExtStatus`), `insights.rs` (the Insights payloads), `error.rs` (`FrameError` / `IpcError`), `transport.rs` (feature-gated async helpers). Tests: `tests/frame_codec.rs`, `tests/wire_stability.rs`, `tests/roundtrip.rs`. Browse them on [GitHub](https://github.com/forjedio/yerd).
 :::
 
 ## Transport
@@ -149,7 +149,7 @@ The two derives differ in one respect: `Request` derives `Eq`, but **`Response` 
 
 ### Request (client → daemon)
 
-The variant set is the daemon's whole RPC surface - liveness, site management, PHP version management, **database/cache service management**, **SQL database administration**, **mail capture**, **dump telemetry**, **Cloudflare Tunnel sharing**, status/doctor, and daemon lifecycle. A representative sample with its exact wire shape (the full list of tags lives in `request.rs`):
+The variant set is the daemon's whole RPC surface - liveness, site management, PHP version management, **database/cache service management**, **SQL database administration**, **mail capture**, **dump telemetry**, **Insights**, **Cloudflare Tunnel sharing**, status/doctor, and daemon lifecycle. A representative sample with its exact wire shape (the full list of tags lives in `request.rs`):
 
 | Variant | Wire JSON |
 | --- | --- |
@@ -218,6 +218,14 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `SetDumpFeature { feature, enabled }` | `{"type":"set_dump_feature","feature":"queries","enabled":true}` |
 | `SetDumpsPersist { persist }` | `{"type":"set_dumps_persist","persist":true}` |
 | `DumpsStatus` | `{"type":"dumps_status"}` |
+| `InsightsStatus` | `{"type":"insights_status"}` (replies `InsightsStatus`) |
+| `SetInsightsEnabled { site, enabled }` | `{"type":"set_insights_enabled","site":"blog","enabled":true}` (starts or stops [Insights](../guide/laravel-dumps) recording for one site; disabling flushes that site first; replies `Ok`) |
+| `SetInsightsThresholds { thresholds }` | `{"type":"set_insights_thresholds","thresholds":{"n_plus_one_min":5,"duplicate_min":2,"slow_query_ms":100,"large_read_rows":1000,"max_queries":50}}` (every value at least 1, `duplicate_min` at least 2; applies to new requests only; replies `Ok`) |
+| `InsightsOverview { site, range }` | `{"type":"insights_overview","site":"blog","range":"1h"}` (`range` is `"5m"`, `"1h"` or `"24h"`; replies `InsightsOverview`) |
+| `ListInsightsRequests { site, range, query: Option, sort, limit }` | `{"type":"list_insights_requests","site":"blog","range":"24h","query":"orders","sort":"slowest","limit":10}` (`query` skipped when `None`; `sort` is `"recent"` or `"slowest"`; `limit` is clamped to 500; replies `InsightsRequests`) |
+| `GetInsightsRequest { site, request_id, ts_ms }` | `{"type":"get_insights_request","site":"blog","request_id":"0123456789abcdef0000000000000001","ts_ms":1}` (`ts_ms` picks the one hour file to read; an unknown id is `not_found`; replies `InsightsRequest`) |
+| `DismissInsightsIssue { site, key, dismissed }` | `{"type":"dismiss_insights_issue","site":"blog","key":"00000000000000ff","dismissed":true}` (`key` is the 16-char hex issue key; replies `Ok`) |
+| `ClearInsights { site }` | `{"type":"clear_insights","site":"blog"}` (deletes the site's recorded data in memory and on disk; replies `Ok`) |
 | `ListTools` | `{"type":"list_tools"}` |
 | `InstallTool { tool }` | `{"type":"install_tool","tool":"node"}` |
 | `UninstallTool { tool }` | `{"type":"uninstall_tool","tool":"bun"}` |
@@ -321,6 +329,10 @@ pub enum Response {
         counts: DumpCounts,
         features: BTreeMap<String, bool>,
     },
+    InsightsStatus { sites: Vec<String>, thresholds: InsightsThresholds, capture_enabled: bool, open_issues: u32 },
+    InsightsOverview { overview: Box<InsightsOverview> },        // boxed: large payload
+    InsightsRequests { requests: Vec<InsightsRequestSummary> },
+    InsightsRequest { request: Box<InsightsRequestDetail> },     // boxed: large payload
     JobStarted { job_id: JobId },                 // CreateSite / InstallToolStreamed / InstallPhpStreamed / InstallNodeStreamed
     JobProgress { state: JobState, /* phase label, … */ },  // streamed updates
 }
@@ -532,6 +544,16 @@ There is deliberately **no `#[serde(other)]` catch-all**. An unknown code from a
 `StatusReport` is also how the MCP gate is read back: `mcp_enabled: bool` (additive, `#[serde(default)]`, always emitted) reports whether `SetMcpEnabled` has been turned on. The daemon runs no MCP server itself - it persists the flag and reports it here, and each `yerd mcp` session reads it to decide whether to serve tools. See [yerd-mcp](./crates/yerd-mcp).
 
 `dump.rs` holds the dump-telemetry payloads carried inside the `Dumps` / `DumpsStatus` responses: `DumpCategory` (the per-tab category enum), `DumpEvent` (one buffered event; its `payload` is an opaque `serde_json::Value`), `DumpCounts` (per-category buffered counts), and `DumpExtStatus` (per-PHP-version extension presence). Same contract rules apply.
+
+`insights.rs` holds the [Insights](../guide/laravel-dumps) payloads: `InsightsRange` (`"5m"` / `"1h"` / `"24h"`), `InsightsSort` (`"recent"` / `"slowest"`), `InsightsThresholds`, `InsightsOverview` (with `InsightsKpis`, `InsightsPoint`, `InsightsSlice` / `InsightsTimePart`, `InsightsRoute` / `InsightsRouteKind`, `InsightsQuery`, and `InsightsIssue` / `InsightsIssueKind`), `InsightsRequestSummary`, and `InsightsRequestDetail` (with `InsightsEvent` and `InsightsRequestIssue`). Issue keys cross the wire as 16-char lowercase hex strings, not JSON numbers, because a `u64` does not survive a JavaScript `number`. Optional fields are skipped when absent and the enums are `#[non_exhaustive]`. The added `Request` and `Response` variants are pinned byte for byte in `tests/wire_stability.rs`, for example:
+
+```json
+{"type":"insights_status","sites":["blog"],"thresholds":{"n_plus_one_min":5,"duplicate_min":2,"slow_query_ms":100,"large_read_rows":1000,"max_queries":50},"capture_enabled":true,"open_issues":3}
+{"type":"insights_overview","overview":{"range":"5m","kpis":{"requests":0,"per_minute":0.0,"static_skipped":0,"failed_pct":0.0,"s5xx":0,"s4xx":0,"queries_max":0},"cold":0,"dropped_requests":0,"dropped_frames":0,"ext_seen":false,"ext_available":true,"series":[],"breakdown":[],"routes":[],"queries":[],"issues":[]}}
+{"type":"insights_requests","requests":[{"id":"0123456789abcdef0000000000000001","ts_ms":1700000000000,"method":"GET","path":"/orders/1042","route_label":"/orders/{order}","route_action":"OrderController@show","status":200,"duration_ms":48.5,"bytes":1024,"content_type":"text/html","cold":true,"traced":true,"queries":2,"dumps":0,"logs":1,"db_ms":1.5,"wait_ms":0.0,"app_ms":47.0}]}
+```
+
+The existing dump requests and their pins are unchanged, and no `PROTOCOL_VERSION` bump was needed. `capture_enabled` mirrors `[dumps] enabled`, which is now the global extension-capture switch; per-site recording is `SetInsightsEnabled`. See [yerd-insights](./crates/yerd-insights) for how the daemon computes these payloads.
 
 ::: tip Integer-encoded scalars (the load average)
 `Request` derives `Eq`, but `Response` does **not** - the `Dumps` response carries arbitrary JSON dump payloads (a `serde_json::Value`, which may hold floats), so an `Eq` derive is impossible there. That float escape hatch is confined to opaque dump payloads, though: the daemon never interprets them. The daemon's *own* status scalars are still integer-encoded so they stay exact and comparable. The system load average therefore crosses as integer hundredths - `StatusReport::load_avg` is `Option<[u32; 3]>`, each value `load × 100` - and the CLI renders it back to `x.xx`.

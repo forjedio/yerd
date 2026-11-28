@@ -15,11 +15,11 @@ If you live in the terminal, the [CLI](../reference/cli/) is a first-class alter
 The window controls sit at the top-left of the sidebar, above the Yerd logo, the daemon's version and a status line showing whether the daemon is running. The window opens at 1312×860, or shrinks to fit inside the screen (with a small margin) when the display is smaller than that. The sidebar opens on **Overview** and lists the pages in one flat list:
 
 - **Overview** - a live dashboard of what's running
-- **Sites** · **Proxies** · **PHP** · **Node** · **Tooling** · **Services** · **Mail** · **Dumps**
+- **Sites** · **Proxies** · **PHP** · **Node** · **Tooling** · **Services** · **Mail** · **Insights**
 - **Share** - publish a site over a public URL ([guide](./sharing))
 - Pinned at the bottom: **Doctor** · **Settings**
 
-Some rows carry a badge: Sites shows your site count, PHP and Node their available updates, Mail its unread count (click it to open the Mail viewer), Share how many sites are shared, Dumps whether interception is on or off, Doctor an amber dot when a system privilege needs elevating, and Settings a badge when a Yerd update is available.
+Some rows carry a badge: Sites shows your site count, PHP and Node their available updates, Mail its unread count (click it to open the Mail viewer), Share how many sites are shared, Insights its open issues across the sites you are recording, Doctor an amber dot when a system privilege needs elevating, and Settings a badge when a Yerd update is available.
 
 Each page opens with a toolbar: the page title, a search box that opens the [command palette](#keyboard-shortcuts), a **Docs** link, and the page's own actions. Drag the window by the toolbar or the top of the sidebar; double-click either to zoom.
 
@@ -115,7 +115,7 @@ The selected site's details sit beside the list at the default window size, or s
 - **Response headers.** Custom [response headers](../reference/cli/headers) such as `Access-Control-Allow-Origin`, each with **Edit** and **Remove**; **Add header** opens a dialog.
 - **Unpark folder…** (which stops serving every site in that parked folder) or, for a linked site, **Remove site…**, in a bar pinned to the bottom of the inspector, each with a confirmation. Your files are never deleted.
 
-The **⋯** menu holds the rest: **Copy URL**; **Share publicly…** (a [Cloudflare Quick Tunnel](#share)); **Change web root…** (blank means auto-detect); **Move to group**, including **New group…**; **Routing rules…**, with the **Route through front controller** switch (on: everything funnels through `index.php`, as Laravel and Symfony want; off: named `.php` files execute directly) above the per-prefix [routing rules](../reference/cli/routes) that carve exceptions out of that default; **Editor**, the editor used for this site; **WP Admin** or the **Dumps viewer**; and **Unpark** or **Remove site…**.
+The **⋯** menu holds the rest: **Copy URL**; **Share publicly…** (a [Cloudflare Quick Tunnel](#share)); **Change web root…** (blank means auto-detect); **Move to group**, including **New group…**; **Routing rules…**, with the **Route through front controller** switch (on: everything funnels through `index.php`, as Laravel and Symfony want; off: named `.php` files execute directly) above the per-prefix [routing rules](../reference/cli/routes) that carve exceptions out of that default; **Editor**, the editor used for this site; **WP Admin** or **Insights** (opens the Insights page on that site); and **Unpark** or **Remove site…**.
 
 <ThemedImage light="/images/site-actions-menu-light.png" dark="/images/site-actions-menu-dark.png" alt="The site inspector's ⋯ menu open, with the Move to group submenu showing No group, Client work and New group…" />
 
@@ -154,11 +154,16 @@ The **Config overrides** card lists the engine's stored [configuration overrides
 
 The built-in SMTP **mail capture** server - point your app's mailer at `127.0.0.1` on the shown port and every outgoing email is captured for preview instead of being sent. The page is an inbox: the messages beside a reader with **Preview**, **Text** and **Headers** tabs, remote images blocked until you **Load** them (images from your `.test` sites always load), attachments and **Delete** (a table and a drawer in a narrow window). An **All apps** menu filters by sending app and the trash button clears the mailbox. The toolbar shows whether capture is running, **Setup** toggles capture, links to the port in Settings ▸ Application Ports and emits the Laravel `.env` mail keys (`MAIL_HOST`, `MAIL_PORT`, …) with editable From name/address, and the pop-out button opens the same inbox in the separate **Mails** window. Captured mail is tracked read/unread: the sidebar **Mail** item shows an unread-count pill (click it to open the Mails window), and opening a message marks it read. See [Mail Capture](./mail).
 
-### Dumps
+### Insights
 
-<ThemedImage light="/images/dumps-light.png" dark="/images/dumps-dark.png" alt="The Dumps page: captured requests beside a request's dump, query, cache, HTTP, job and log events" />
+Per-site request performance and query problems. Pick a site in the toolbar's site picker and start recording it (other sites are unaffected); the **Recording** pill turns it on and off. The toolbar also has the **5m / 1h / 24h** range, **Pause** (freezes the view while recording carries on), a trash button that clears the site's recorded data, and a sliders button for **Insights settings**: the five issue thresholds, the **Capture from the PHP extension** switch, the dump server address with **Change port** (Settings ▸ Application Ports), the captured signals, and the per-version extension status. Four tabs:
 
-Laravel telemetry interception - `dump()`/`dd()` plus queries, jobs, views, requests, logs, cache, and outgoing HTTP - captured by a per-version PHP extension with no code changes. The page lists captured requests beside the selected request's events, with category chips, an event filter and clickable callers (a table and a drawer in a narrow window); **Keep history** keeps older requests and the trash button clears the buffer. The toolbar shows whether capture is live, **Pause / Resume** toggles it, **Setup** holds the interception switch, the captured signals, the per-version extension status and a link to the port in Settings ▸ Application Ports, and the pop-out button opens the same list and detail in the separate **Dumps** window (with pin on top). See [Laravel ▸ Dumps](./laravel-dumps).
+- **Overview** - KPI tiles (p50 and p95 of warm requests, requests, failed %, queries per request), cold requests set aside and dropped samples, a latency chart, where the time goes, detected issues, and Routes / Requests / Queries tables.
+- **Requests** - a filterable list (slow first or recent) with a drill-in: time breakdown, issue callouts with **Open in editor**, and an event timeline with grouped N+1 rows (a table and a drawer in a narrow window).
+- **Issues** - N+1, duplicate, slow query, large read and too-many-queries issues, filterable by type, with **Dismiss**.
+- **Live feed** - the site's `dump()`/`dd()` output, queries, jobs, views, logs, cache and outgoing HTTP as they arrive, with category chips, an event filter, clickable callers and **Keep history**. **Pop out** opens it in the separate **Live feed** window (with pin on top), which follows the site selected in Insights.
+
+See [Insights](./laravel-dumps).
 
 ### Share
 
@@ -193,7 +198,7 @@ On the Sites page the table shows each site's **PHP**, **Node**, **Framework** a
 
 <ThemedImage light="/images/sites-compact-drawer-light.png" dark="/images/sites-compact-drawer-dark.png" alt="The same narrow Sites page with the acme-shop.test inspector pulled out as a drawer from the right over a dimmed table" />
 
-The same applies to the other list pages: **PHP**, **Services**, **Proxies**, **Mail**, **Dumps** and **Share**.
+The same applies to the other list pages: **PHP**, **Services**, **Proxies**, **Mail**, **Insights** and **Share**.
 
 ## Keyboard shortcuts
 
@@ -211,20 +216,20 @@ The command palette also lists your sites at the bottom (grouped by domain): **O
 | Shortcuts | `⌘/` | `Ctrl+/` | Show this list inside the app |
 | Go to a page | `⌘1` … `⌘9` | `Ctrl+1` … `Ctrl+9` | Jump straight to a sidebar page (see order below) |
 | Settings | `⌘,` | `Ctrl+,` | Open the Settings page |
-| Find | `⌘F` | `Ctrl+F` | Focus the page's filter box (Sites, the Dumps window's event filter) |
+| Find | `⌘F` | `Ctrl+F` | Focus the page's filter box (Sites, the Live feed window's event filter) |
 | New | `⌘N` | `Ctrl+N` | Start the page's primary action (Add site, Install PHP) |
 | Refresh | `⌘R` | `Ctrl+R` | Re-fetch the current page's data |
 | Restart daemon | `⇧⌘R` | `Ctrl+Shift+R` | Restart `yerdd` |
 | Toggle theme | `⇧⌘L` | `Ctrl+Shift+L` | Switch light / dark (applies to every window) |
 | Open Mail viewer | `⇧⌘M` | `Ctrl+Shift+M` | Open the standalone Mail capture window |
-| Open Dumps viewer | `⇧⌘D` | `Ctrl+Shift+D` | Open the standalone Dumps telemetry window |
+| Open Dumps viewer | `⇧⌘D` | `Ctrl+Shift+D` | Open the standalone Live feed window for the site selected in Insights |
 | Link Site | `⇧⌘N` | `Ctrl+Shift+N` | Open the Link-site dialog on the Sites page |
 | Park Folder | `⇧⌘P` | `Ctrl+Shift+P` | Open the park-folder picker on the Sites page |
-| Cycle Dumps categories | `⌃⇥` / `⌃⇧⇥` | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Move between category chips in the Dumps window |
+| Cycle Dumps categories | `⌃⇥` / `⌃⇧⇥` | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Move between category chips in the Live feed window |
 | Close window | `⌘W` | `Ctrl+W` | Hide the window to the tray |
 | Close dialog | `Esc` | `Esc` | Dismiss the open modal |
 
-`⌘1`…`⌘9` are: **1** Overview, **2** PHP, **3** Sites, **4** Tooling, **5** Services, **6** Mail, **7** Dumps, **8** Settings, **9** Doctor. Node, Proxies, and Share have no digit - reach them from the sidebar or the command palette.
+`⌘1`…`⌘9` are: **1** Overview, **2** PHP, **3** Sites, **4** Tooling, **5** Services, **6** Mail, **7** Insights, **8** Settings, **9** Doctor. Node, Proxies, and Share have no digit - reach them from the sidebar or the command palette.
 
 ::: info Quitting the app
 There's no Quit shortcut: closing the window (`⌘W` / `Ctrl+W`) hides it to the tray and leaves the daemon running, by design. Quit from the tray menu, or on macOS with the standard `⌘Q`.

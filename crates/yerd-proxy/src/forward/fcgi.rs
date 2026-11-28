@@ -37,7 +37,7 @@ use crate::backend::Backend;
 use crate::error::ProxyError;
 use crate::forward::{empty_body, BoxBody};
 use crate::pure::cgi_head::{Head, HeadAccumulator, HeadFeed};
-use crate::pure::cgi_params::{build_params, PrependParams};
+use crate::pure::cgi_params::{build_params, PrependParams, TraceParams};
 use crate::pure::fcgi_codec::{
     encode_begin_request_body, encode_name_value, FcgiError, Header, RecordType, FCGI_MAX_PAYLOAD,
     FCGI_RESPONDER, FCGI_VERSION,
@@ -76,7 +76,8 @@ const MAX_DISCARDED_BYTES: u64 = 8 * 1024 * 1024;
 /// ([`crate::forward::script_file::ScriptResolution::ScriptWithPathInfo`])
 /// and overrides the default full-path `PATH_INFO`. `prepend`, if given, is passed
 /// straight through to [`build_params`] - see [`PrependParams`] for
-/// when/why.
+/// when/why. `trace`, if given, adds the Insights `YERD_TRACE_*` params - see
+/// [`TraceParams`].
 #[allow(clippy::too_many_arguments)]
 pub async fn forward(
     req: Request<Incoming>,
@@ -88,6 +89,7 @@ pub async fn forward(
     peer_addr: SocketAddr,
     https: bool,
     prepend: Option<PrependParams<'_>>,
+    trace: Option<TraceParams<'_>>,
 ) -> Result<Response<BoxBody>, ProxyError> {
     let backend_label = backend.to_string();
     let (parts, body) = req.into_parts();
@@ -118,15 +120,9 @@ pub async fn forward(
         peer_addr,
         server_addr,
         prepend,
+        trace,
     );
-    let mut param_buf: Vec<u8> = Vec::new();
-    for (name, value) in &params {
-        encode_name_value(name, value, &mut param_buf)?;
-    }
-    for chunk in param_buf.chunks(FCGI_MAX_PAYLOAD) {
-        write_record(&mut prelude, RecordType::Params, chunk);
-    }
-    write_record(&mut prelude, RecordType::Params, &[]);
+    write_params(&mut prelude, &params)?;
 
     let writer_label = backend_label.clone();
     let (stop_writing, stop_signal) = oneshot::channel();
@@ -194,6 +190,20 @@ pub async fn forward(
         backend_label,
     ));
     synthesise_response(head, ChannelBody { rx }.boxed())
+}
+
+/// Encode `params` as PARAMS records, chunked at `FCGI_MAX_PAYLOAD`, followed
+/// by the empty PARAMS terminator.
+fn write_params(prelude: &mut Vec<u8>, params: &[(Vec<u8>, Vec<u8>)]) -> Result<(), FcgiError> {
+    let mut param_buf: Vec<u8> = Vec::new();
+    for (name, value) in params {
+        encode_name_value(name, value, &mut param_buf)?;
+    }
+    for chunk in param_buf.chunks(FCGI_MAX_PAYLOAD) {
+        write_record(prelude, RecordType::Params, chunk);
+    }
+    write_record(prelude, RecordType::Params, &[]);
+    Ok(())
 }
 
 /// Whether hyper will let this response carry a body. Mirrors hyper's own rule

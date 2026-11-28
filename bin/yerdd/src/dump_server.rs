@@ -25,6 +25,7 @@ use yerd_config::DumpsSection;
 use yerd_ipc::{DumpCategory, DumpCounts, DumpEvent, DumpExtStatus, Response};
 use yerd_platform::PlatformDirs;
 
+use crate::insights::Insights;
 use crate::state::DaemonState;
 
 /// Maximum number of events retained in the ring before the oldest are evicted.
@@ -39,8 +40,11 @@ const REMOVED_LOG_CAP: usize = 4096;
 /// whose frames interleave at the ring from separate FPM workers - coexist
 /// instead of clearing each other on every cross-request frame.
 const RETAINED_REQUESTS: usize = 25;
-/// Hard cap on a single newline-delimited frame; longer lines drop the
-/// connection (the extension truncates payloads well below this).
+/// Hard cap on a single newline-delimited frame, including its `\n`. It
+/// matches the extension's `MAX_LINE`, so every frame the extension sends
+/// fits. The cap applies per line after splitting, so a near-limit line
+/// followed by the next frame in the same read is still accepted; an
+/// unterminated line that reaches the cap drops the connection.
 const MAX_LINE_BYTES: usize = 256 * 1024;
 
 /// The telemetry feature keys mirrored into the extension's state file.
@@ -53,6 +57,24 @@ const FEATURES: &[&str] = &[
 /// and only emitted by extension v0.1.4+).
 fn feature_default(name: &str) -> bool {
     name != "http"
+}
+
+/// Every known feature with its effective value: the configured one, else
+/// [`feature_default`].
+pub(crate) fn resolved_features(dumps: &DumpsSection) -> std::collections::BTreeMap<String, bool> {
+    FEATURES
+        .iter()
+        .map(|&f| {
+            (
+                f.to_owned(),
+                dumps
+                    .features
+                    .get(f)
+                    .copied()
+                    .unwrap_or_else(|| feature_default(f)),
+            )
+        })
+        .collect()
 }
 
 /// Shared dump-telemetry state: the ring plus a rebind signal and a bound flag.
@@ -238,7 +260,8 @@ impl DumpRing {
 }
 
 /// A frame as sent by the extension. `ts` is epoch milliseconds; 0 (or absent)
-/// means "stamp on receipt".
+/// means "stamp on receipt". `v`, `seq` and `t_us` are the protocol-2 envelope
+/// additions (contract C3); a frame with `v >= 2` also feeds Insights.
 #[derive(Deserialize)]
 struct IncomingFrame {
     category: DumpCategory,
@@ -249,6 +272,34 @@ struct IncomingFrame {
     #[serde(default)]
     request_id: String,
     payload: serde_json::Value,
+    #[serde(default)]
+    v: u8,
+    #[serde(default)]
+    seq: Option<u32>,
+    #[serde(default)]
+    t_us: Option<u64>,
+}
+
+impl IncomingFrame {
+    /// The Insights view of a protocol-2 frame, `None` for a legacy frame.
+    fn insights_frame(&self) -> Option<yerd_insights::ExtFrame> {
+        (self.v >= yerd_insights::pure::contract::PROTOCOL_VERSION).then(|| {
+            yerd_insights::ExtFrame {
+                request_id: self.request_id.clone(),
+                site: self.site.clone(),
+                category: self.category,
+                seq: self.seq,
+                t_us: self.t_us,
+                payload: self.payload.clone(),
+            }
+        })
+    }
+}
+
+/// Record whether the dump server is bound, on the store and the Insights tap.
+fn set_bound(state: &DaemonState, bound: bool) {
+    state.dumps.bound.store(bound, Ordering::Release);
+    state.insights.tap.set_bound(bound);
 }
 
 fn now_ms() -> u64 {
@@ -265,12 +316,12 @@ pub async fn run(state: Arc<DaemonState>, mut shutdown_rx: watch::Receiver<bool>
         let port = state.config.lock().await.dumps.port;
         let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
             Ok(l) => {
-                state.dumps.bound.store(true, Ordering::Release);
+                set_bound(&state, true);
                 tracing::info!(port, "dump server bound");
                 l
             }
             Err(e) => {
-                state.dumps.bound.store(false, Ordering::Release);
+                set_bound(&state, false);
                 tracing::warn!(port, error = %e, "dump server bind failed; will retry on port change");
                 tokio::select! {
                     () = state.dumps.rebind.notified() => continue,
@@ -282,7 +333,7 @@ pub async fn run(state: Arc<DaemonState>, mut shutdown_rx: watch::Receiver<bool>
         loop {
             tokio::select! {
                 _ = shutdown_rx.changed() => {
-                    state.dumps.bound.store(false, Ordering::Release);
+                    set_bound(&state, false);
                     return;
                 }
                 () = state.dumps.rebind.notified() => break,
@@ -290,21 +341,24 @@ pub async fn run(state: Arc<DaemonState>, mut shutdown_rx: watch::Receiver<bool>
                     match accepted {
                         Ok((stream, _peer)) => {
                             let store = state.dumps.clone();
-                            tokio::spawn(handle_conn(stream, store));
+                            let insights = state.insights.clone();
+                            tokio::spawn(handle_conn(stream, store, insights));
                         }
                         Err(e) => tracing::debug!(error = %e, "dump server accept failed"),
                     }
                 }
             }
         }
-        state.dumps.bound.store(false, Ordering::Release);
+        set_bound(&state, false);
     }
 }
 
 /// Read newline-delimited JSON frames from one connection until EOF, pushing each
-/// valid frame into the ring. Bounded: an over-long line drops the connection;
-/// malformed lines are skipped.
-async fn handle_conn(stream: TcpStream, store: Arc<DumpStore>) {
+/// valid frame into the ring and each protocol-2 frame into the Insights
+/// aggregator. Bounded: complete lines at or over [`MAX_LINE_BYTES`] and
+/// malformed lines are skipped; an unterminated line that reaches the cap drops
+/// the connection.
+async fn handle_conn(stream: TcpStream, store: Arc<DumpStore>, insights: Arc<Insights>) {
     let mut stream = stream;
     let mut pending: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 8192];
@@ -316,22 +370,37 @@ async fn handle_conn(stream: TcpStream, store: Arc<DumpStore>) {
         let Some(slice) = chunk.get(..n) else {
             return;
         };
-        if pending.len().saturating_add(slice.len()) > MAX_LINE_BYTES {
-            return;
-        }
         pending.extend_from_slice(slice);
         while let Some(pos) = pending.iter().position(|&b| b == b'\n') {
             let line: Vec<u8> = pending.drain(..pos).collect();
             pending.drain(..1);
-            if line.is_empty() {
+            if line.is_empty() || line.len() >= MAX_LINE_BYTES {
                 continue;
             }
             if let Ok(frame) = serde_json::from_slice::<IncomingFrame>(&line) {
-                let persist = store.persist.load(Ordering::Acquire);
-                let mut ring = store.ring.lock().await;
-                ring.push(frame, now_ms(), persist);
+                ingest_frame(&store, &insights, frame).await;
             }
         }
+        if pending.len() >= MAX_LINE_BYTES {
+            return;
+        }
+    }
+}
+
+/// Push one parsed frame into the live ring and, for protocol 2, the Insights
+/// aggregator. A protocol-2 `request` summary stays out of the ring while the
+/// `requests` feature is off, since trace mode always sends it.
+async fn ingest_frame(store: &DumpStore, insights: &Insights, frame: IncomingFrame) {
+    let ext = frame.insights_frame();
+    let hide = ext.is_some()
+        && frame.category == DumpCategory::Request
+        && !insights.tap.features().split(',').any(|f| f == "requests");
+    if !hide {
+        let persist = store.persist.load(Ordering::Acquire);
+        store.ring.lock().await.push(frame, now_ms(), persist);
+    }
+    if let Some(ext) = ext {
+        insights.agg.lock().await.on_frame(ext, now_ms());
     }
 }
 
@@ -404,12 +473,13 @@ pub async fn set_persist(state: &DaemonState, persist: bool) -> Response {
     resp
 }
 
-/// Set the antenna (enabled) flag: persist config and rewrite the state file.
+/// Set the global capture flag: persist config, mirror it to the Insights tap
+/// and rewrite the state file.
 ///
 /// On the first enable, also fetch the extension `.so` for each installed PHP
-/// version and restart any started pools so they load `-d zend_extension`
-/// (subsequent toggles only rewrite the state file - no restart). The extension
-/// self-disables when off, so disabling never restarts FPM.
+/// version and restart any started pools so they load it (subsequent toggles
+/// never restart FPM). With capture off the proxy stops sending trace params,
+/// so the protocol-2 extension records nothing.
 pub async fn set_enabled(state: &DaemonState, enabled: bool) -> Response {
     let was = state.config.lock().await.dumps.enabled;
     let resp = apply_config(state, |d| d.enabled = enabled).await;
@@ -420,20 +490,63 @@ pub async fn set_enabled(state: &DaemonState, enabled: bool) -> Response {
 }
 
 /// Download the extension for installed versions (best-effort, time-bounded) and
-/// restart started pools so the new `-d zend_extension` flag takes effect.
-async fn ensure_ext_and_restart(state: &DaemonState) {
+/// restart the started pools whose `.so` was placed or replaced, so they load
+/// it. Pools of versions left unchanged (already current, unpublished or a
+/// failed download) keep running. After a timeout the full placed set is
+/// unknown, so every started pool that now has a `.so` restarts.
+pub(crate) async fn ensure_ext_and_restart(state: &DaemonState) {
+    let outcome = fetch_ext(state).await;
+    let replaced = if outcome.timed_out {
+        crate::ext_install::installed_versions(&state.dirs)
+            .into_iter()
+            .filter(|v| crate::ext_install::so_path(&state.dirs, *v).is_file())
+            .collect()
+    } else {
+        outcome.replaced
+    };
+    restart_started_pools(state, &replaced).await;
+}
+
+/// Check the published extension against the installed `.so` files and
+/// restart only the started pools whose file was replaced. Unlike
+/// [`ensure_ext_and_restart`], a timed-out check restarts only the versions
+/// replaced before the timeout: this runs on every Insights enable, where
+/// pools usually already have a working `.so`.
+pub(crate) async fn refresh_ext_and_restart(state: &DaemonState) {
+    let outcome = fetch_ext(state).await;
+    restart_started_pools(state, &outcome.replaced).await;
+}
+
+async fn fetch_ext(state: &DaemonState) -> crate::ext_install::EnsureOutcome {
     let dl = crate::network::downloader(state).await;
-    let ensure = crate::ext_install::ensure_for_installed(&state.dirs, &dl);
-    if tokio::time::timeout(std::time::Duration::from_secs(30), ensure)
-        .await
-        .is_err()
-    {
+    let outcome = crate::ext_install::ensure_for_installed_within(
+        &state.dirs,
+        &dl,
+        std::time::Duration::from_secs(30),
+    )
+    .await;
+    if outcome.timed_out {
         tracing::warn!("yerd-dump extension download timed out");
     }
+    outcome
+}
+
+/// Restart the started pools of `versions` so a freshly replaced
+/// `yerd-dump.so` is loaded. Versions without a started pool are skipped.
+pub(crate) async fn restart_started_pools(state: &DaemonState, versions: &[yerd_core::PhpVersion]) {
+    if versions.is_empty() {
+        return;
+    }
     let mut mgr = state.php_manager.lock().await;
-    for snap in mgr.snapshots() {
-        if let Err(e) = mgr.restart(snap.version).await {
-            tracing::warn!(version = %snap.version, error = %e, "failed to restart FPM pool after enabling dumps");
+    let started: Vec<_> = mgr
+        .snapshots()
+        .into_iter()
+        .map(|snap| snap.version)
+        .filter(|v| versions.contains(v))
+        .collect();
+    for v in started {
+        if let Err(e) = mgr.restart(v).await {
+            tracing::warn!(version = %v, error = %e, "failed to restart FPM pool after updating the dump extension");
         }
     }
 }
@@ -494,13 +607,14 @@ async fn apply_config<F: FnOnce(&mut DumpsSection)>(state: &DaemonState, mutate:
         }
         cfg.dumps.clone()
     };
+    crate::insights::sync_tap(&state.insights.tap, &snapshot);
     if let Err(e) = write_state_file(&state.dirs, &snapshot) {
         tracing::warn!(error = %e, "failed to write dump state file");
     }
     Response::Ok
 }
 
-/// Mirror of the `[dumps]` config the extension reads each request.
+/// The legacy state file older extensions read each request (contract C5).
 #[derive(Serialize)]
 struct StateFile<'a> {
     enabled: bool,
@@ -511,6 +625,11 @@ struct StateFile<'a> {
 /// Write `{state}/dumps/state.json` atomically (temp-then-rename). The features
 /// map is fully resolved (every known key present) so the extension needs no
 /// default logic.
+///
+/// `enabled` is always `false` (contracts C1 and C5): a protocol-2 extension
+/// never reads this file and arms per request from the proxy's trace params,
+/// while an older extension that still reads it must stay inert everywhere so
+/// it never captures every site. The byte shape is unchanged.
 pub fn write_state_file(dirs: &PlatformDirs, dumps: &DumpsSection) -> std::io::Result<()> {
     let dir = dirs.state.join("dumps");
     std::fs::create_dir_all(&dir)?;
@@ -528,7 +647,7 @@ pub fn write_state_file(dirs: &PlatformDirs, dumps: &DumpsSection) -> std::io::R
         })
         .collect();
     let body = StateFile {
-        enabled: dumps.enabled,
+        enabled: false,
         port: dumps.port,
         features,
     };
@@ -580,6 +699,9 @@ mod tests {
             site: "blog.test".into(),
             request_id: req.to_string(),
             payload: serde_json::json!({"x": 1}),
+            v: 0,
+            seq: None,
+            t_us: None,
         }
     }
 
@@ -797,7 +919,7 @@ mod tests {
         write_state_file(&dirs, &dumps).unwrap();
         let body = std::fs::read_to_string(dirs.state.join("dumps").join("state.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(v["enabled"], serde_json::json!(true));
+        assert_eq!(v["enabled"], serde_json::json!(false));
         assert_eq!(v["port"], serde_json::json!(2304));
         assert_eq!(v["features"]["queries"], serde_json::json!(false));
         assert_eq!(v["features"]["dumps"], serde_json::json!(true));
@@ -891,7 +1013,7 @@ mod tests {
                 counts,
                 features,
             } => {
-                assert!(!enabled);
+                assert!(enabled);
                 assert_eq!(port, 2304);
                 assert!(!running);
                 assert!(!persist);
@@ -1000,5 +1122,269 @@ mod tests {
         assert_eq!(v["features"]["cache"], serde_json::json!(false));
         assert_eq!(v["features"]["queries"], serde_json::json!(true));
         assert_eq!(v["enabled"], serde_json::json!(false));
+        assert!(state.config.lock().await.dumps.enabled);
+    }
+
+    fn v2_line(category: &str, req: &str, seq: u32, payload: &serde_json::Value) -> String {
+        serde_json::json!({
+            "category": category, "ts": 0, "site": "blog", "request_id": req,
+            "payload": payload, "v": 2, "seq": seq, "t_us": 5
+        })
+        .to_string()
+    }
+
+    fn v2_frame(category: DumpCategory, req: &str) -> IncomingFrame {
+        IncomingFrame {
+            v: 2,
+            seq: Some(1),
+            t_us: Some(5),
+            ..frame_req(category, req)
+        }
+    }
+
+    #[test]
+    fn protocol_two_envelope_parses_and_legacy_defaults() {
+        let line = v2_line("query", "abc", 3, &serde_json::json!({"sql": "select 1"}));
+        let f: IncomingFrame = serde_json::from_str(&line).unwrap();
+        assert_eq!((f.v, f.seq, f.t_us), (2, Some(3), Some(5)));
+        let ext = f.insights_frame().unwrap();
+        assert_eq!(
+            (ext.request_id.as_str(), ext.site.as_str()),
+            ("abc", "blog")
+        );
+        assert_eq!(ext.category, DumpCategory::Query);
+        assert!(frame(DumpCategory::Query).insights_frame().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_v2_frame_reaches_pending_and_a_v1_frame_does_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        ingest_frame(&state.dumps, &state.insights, frame(DumpCategory::Query)).await;
+        assert_eq!(state.insights.agg.lock().await.pending_len(), 0);
+        ingest_frame(
+            &state.dumps,
+            &state.insights,
+            v2_frame(DumpCategory::Query, "x"),
+        )
+        .await;
+        assert_eq!(state.insights.agg.lock().await.pending_len(), 1);
+        assert_eq!(state.dumps.ring.lock().await.list(0).events.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_v2_summary_stays_out_of_the_ring_without_the_requests_feature() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        ingest_frame(
+            &state.dumps,
+            &state.insights,
+            v2_frame(DumpCategory::Request, "a"),
+        )
+        .await;
+        assert_eq!(state.dumps.ring.lock().await.list(0).events.len(), 1);
+        assert!(matches!(
+            set_feature(&state, "requests".into(), false).await,
+            Response::Ok
+        ));
+        ingest_frame(
+            &state.dumps,
+            &state.insights,
+            v2_frame(DumpCategory::Request, "b"),
+        )
+        .await;
+        ingest_frame(&state.dumps, &state.insights, frame(DumpCategory::Request)).await;
+        assert_eq!(state.dumps.ring.lock().await.list(0).events.len(), 2);
+        assert_eq!(state.insights.agg.lock().await.pending_len(), 2);
+    }
+
+    #[tokio::test]
+    async fn loopback_v2_frames_finalise_an_injected_sample() {
+        use tokio::io::AsyncWriteExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let now = now_ms();
+        let id = "00000000000000010000000000000001";
+        state.insights.agg.lock().await.on_sample(
+            yerd_insights::ProxySample {
+                id: id.to_owned(),
+                site: "blog".to_owned(),
+                php: "8.3".to_owned(),
+                method: "GET".to_owned(),
+                path: "/orders/1".to_owned(),
+                script: None,
+                status: 200,
+                bytes: 10,
+                content_type: None,
+                start_us: now * 1000,
+                duration_us: 20_000,
+                aborted: false,
+                proxy_error: false,
+                traced: true,
+            },
+            now,
+        );
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (store, insights) = (state.dumps.clone(), state.insights.clone());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            handle_conn(stream, store, insights).await;
+        });
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let query = v2_line(
+            "query",
+            id,
+            1,
+            &serde_json::json!({"sql": "select 1", "bindings": [], "time_ms": 2.0, "row_count": 1}),
+        );
+        let summary = v2_line(
+            "request",
+            id,
+            2,
+            &serde_json::json!({
+                "method": "GET", "uri": "/orders/1", "status": 200, "duration_ms": 9.0,
+                "start_us": now * 1000, "duration_us": 9_000, "worker_pid": 1,
+                "worker_requests": 1, "route": null, "frames": 2, "frames_unsent": 0
+            }),
+        );
+        client
+            .write_all(format!("{query}\n{summary}\n").as_bytes())
+            .await
+            .unwrap();
+        client.shutdown().await.unwrap();
+        server.await.unwrap();
+        let agg = state.insights.agg.lock().await;
+        let rows = agg.recent_requests(
+            "blog",
+            yerd_ipc::InsightsRange::OneHour,
+            None,
+            yerd_ipc::InsightsSort::Recent,
+            10,
+            now,
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].queries, 1);
+        assert!(rows[0].cold);
+        assert_eq!(agg.pending_len(), 0);
+    }
+
+    fn dump_line(req: &str, value_len: usize) -> String {
+        serde_json::json!({
+            "category": "dump", "ts": 0, "site": "blog", "request_id": req,
+            "payload": {"value_html": "x".repeat(value_len)}
+        })
+        .to_string()
+    }
+
+    async fn ring_ids_after_sending(state: &DaemonState, bytes: Vec<u8>) -> Vec<String> {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (store, insights) = (state.dumps.clone(), state.insights.clone());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            handle_conn(stream, store, insights).await;
+        });
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let _ = client.write_all(&bytes).await;
+        let _ = client.shutdown().await;
+        server.await.unwrap();
+        state
+            .dumps
+            .ring
+            .lock()
+            .await
+            .list(0)
+            .events
+            .iter()
+            .map(|e| e.request_id.clone())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_near_limit_line_and_the_next_frame_in_one_read_both_arrive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let overhead = dump_line("big", 0).len();
+        let big = dump_line("big", MAX_LINE_BYTES - 1 - overhead);
+        assert_eq!(big.len() + 1, MAX_LINE_BYTES);
+        let bytes = format!("{big}\n{}\n", dump_line("small", 4)).into_bytes();
+        let ids = ring_ids_after_sending(&state, bytes).await;
+        assert_eq!(ids, ["big", "small"]);
+    }
+
+    #[tokio::test]
+    async fn an_unterminated_line_reaching_the_cap_drops_the_connection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let unterminated = "x".repeat(MAX_LINE_BYTES + 16 * 1024);
+        let bytes = format!(
+            "{}\n{unterminated}\n{}\n",
+            dump_line("kept", 4),
+            dump_line("lost", 4)
+        )
+        .into_bytes();
+        let ids = ring_ids_after_sending(&state, bytes).await;
+        assert_eq!(ids, ["kept"]);
+    }
+
+    #[tokio::test]
+    async fn run_mirrors_bound_into_the_tap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(state_in(tmp.path()));
+        let probe = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        state.config.lock().await.dumps.port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let (tx, rx) = watch::channel(false);
+        let task = tokio::spawn(run(state.clone(), rx));
+        for _ in 0..200 {
+            if state.insights.tap.bound() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(state.insights.tap.bound());
+        assert!(state.dumps.bound.load(Ordering::Acquire));
+        tx.send(true).unwrap();
+        task.await.unwrap();
+        assert!(!state.insights.tap.bound());
+    }
+
+    #[tokio::test]
+    async fn config_changes_propagate_to_the_tap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let tap = &state.insights.tap;
+        tap.set_bound(true);
+        assert!(tap.begin("blog", false).traced());
+
+        assert!(matches!(
+            set_feature(&state, "cache".into(), false).await,
+            Response::Ok
+        ));
+        assert_eq!(&*tap.features(), "dumps,queries,jobs,views,requests,logs");
+        assert!(matches!(
+            set_feature(&state, "http".into(), true).await,
+            Response::Ok
+        ));
+        assert_eq!(
+            &*tap.features(),
+            "dumps,queries,jobs,views,requests,logs,http"
+        );
+
+        let probe = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let free = probe.local_addr().unwrap().port();
+        drop(probe);
+        assert!(matches!(set_port(&state, free).await, Response::Ok));
+        assert_eq!(tap.port(), free);
+
+        assert!(matches!(set_enabled(&state, false).await, Response::Ok));
+        assert!(!tap.capture());
+        let ticket = tap.begin("blog", false);
+        assert!(!ticket.traced());
+        assert!(ticket.trace_params().is_none());
     }
 }

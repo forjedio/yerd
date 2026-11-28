@@ -13,6 +13,7 @@ use http::header::{
     SET_COOKIE, WWW_AUTHENTICATE,
 };
 use http::{HeaderValue, Method, StatusCode};
+use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
@@ -31,6 +32,7 @@ use crate::forward::{
     bytes_body, empty_body, fcgi, http as http_fwd, owned_bytes_body, proxy as proxy_fwd,
     script_file, static_file, upgrade, BoxBody,
 };
+use crate::insights::{RequestClock, RequestInfo, RequestTap, Ticket};
 use crate::pure::cgi_params;
 use crate::pure::query;
 use crate::pure::redirect::{build_redirect_uri, directory_redirect_location};
@@ -786,12 +788,24 @@ fn finish_site_response(
 
 /// Backend resolution, a WebSocket upgrade, `FrankenPHP`, or the PHP-FPM path
 /// (static files, scripts, routing rules) for a routed site.
+///
+/// For an Insights-enabled site the clock starts before `backend_for`, so
+/// pool spawn time counts as wait. Only the PHP-FPM path records anything; a
+/// failed resolve, an upgrade and `FrankenPHP` discard the clock.
 async fn serve_site<R: BackendResolver>(
     req: Request<Incoming>,
     site: &Site,
     route: Option<RouteRule>,
     ctx: RoutedCtx<'_, R>,
 ) -> Result<Response<BoxBody>, ProxyError> {
+    let tap = ctx
+        .resolver
+        .request_tap()
+        .filter(|tap| tap.is_enabled(site.name()))
+        .map(|tap| TapCtx {
+            tap,
+            clock: RequestClock::start(),
+        });
     let served_root = site.served_root();
     let allowed_root = site.document_root().to_path_buf();
 
@@ -828,10 +842,17 @@ async fn serve_site<R: BackendResolver>(
                 ctx.peer_addr,
                 ctx.https,
                 ctx.symlink_protection,
+                tap,
             )
             .await
         }
     }
+}
+
+/// The Insights tap for a request to an enabled site, with its start clock.
+struct TapCtx<'a> {
+    tap: &'a RequestTap,
+    clock: RequestClock,
 }
 
 /// The `Backend::PhpFpm`/`PhpFpmTcp` half of [`serve_site`]: static files,
@@ -851,6 +872,11 @@ async fn serve_site<R: BackendResolver>(
 /// one request only. On the tunnel listener `prepend` is
 /// [`PrependSource::PublicUrl`] or [`PrependSource::None`], so no token is
 /// ever consumed there.
+///
+/// With `tap` set, a served static file is noted, and a forwarded request is
+/// recorded: its body is wrapped in a [`crate::insights::RecordingBody`], or a
+/// forward error sends a `proxy_error` sample at once. Redirects, `403`s and
+/// routing-rule answers record nothing.
 #[allow(clippy::too_many_arguments)]
 async fn serve_php_fpm<R: BackendResolver>(
     mut req: Request<Incoming>,
@@ -865,6 +891,7 @@ async fn serve_php_fpm<R: BackendResolver>(
     peer_addr: SocketAddr,
     https: bool,
     symlink_protection: bool,
+    tap: Option<TapCtx<'_>>,
 ) -> Result<Response<BoxBody>, ProxyError> {
     let outcome = static_file::try_serve(
         req.method(),
@@ -874,6 +901,7 @@ async fn serve_php_fpm<R: BackendResolver>(
         symlink_protection,
     )
     .await;
+    note_static_served(tap.as_ref(), site, &outcome);
     if let Some(resp) = resolve_static_outcome(outcome) {
         return Ok(resp);
     }
@@ -885,6 +913,7 @@ async fn serve_php_fpm<R: BackendResolver>(
         symlink_protection,
     )
     .await;
+    note_static_served(tap.as_ref(), site, &outcome);
     if let Some(resp) = resolve_static_outcome(outcome) {
         return Ok(resp);
     }
@@ -941,7 +970,11 @@ async fn serve_php_fpm<R: BackendResolver>(
         }
         _ => None,
     };
-    fcgi::forward(
+    let recording = tap.map(|tap| begin_recording(tap, site, &req, script_rel.as_deref()));
+    let trace = recording
+        .as_ref()
+        .and_then(|(ticket, _, _)| ticket.trace_params());
+    let result = fcgi::forward(
         req,
         backend,
         served_root.to_path_buf(),
@@ -951,8 +984,66 @@ async fn serve_php_fpm<R: BackendResolver>(
         peer_addr,
         https,
         params,
+        trace,
     )
-    .await
+    .await;
+    match recording {
+        Some((ticket, clock, info)) => finish_recording(result, ticket, clock, info),
+        None => result,
+    }
+}
+
+/// Note a static file answered for an Insights-enabled site. A symlink `403`
+/// and a miss are not noted.
+fn note_static_served(tap: Option<&TapCtx<'_>>, site: &Site, outcome: &static_file::StaticOutcome) {
+    if let (Some(tap), static_file::StaticOutcome::Served(_)) = (tap, outcome) {
+        tap.tap.note_static(site.name());
+    }
+}
+
+/// Mint the Insights ticket and capture the request facts for a request about
+/// to be forwarded to PHP-FPM.
+fn begin_recording(
+    tap: TapCtx<'_>,
+    site: &Site,
+    req: &Request<Incoming>,
+    script_rel: Option<&std::path::Path>,
+) -> (Ticket, RequestClock, RequestInfo) {
+    let ticket = tap.tap.begin(site.name(), site.php().is_legacy());
+    let info = RequestInfo {
+        php: site.php().to_string(),
+        method: req.method().as_str().to_owned(),
+        path: path_and_query_or_root(req.uri()).to_owned(),
+        script: script_rel.map(|rel| rel.to_string_lossy().replace('\\', "/")),
+    };
+    (ticket, tap.clock, info)
+}
+
+/// Hand the forward result to the ticket: a response gets a recording body,
+/// an error sends a `proxy_error` sample. The result itself is unchanged.
+fn finish_recording(
+    result: Result<Response<BoxBody>, ProxyError>,
+    ticket: Ticket,
+    clock: RequestClock,
+    info: RequestInfo,
+) -> Result<Response<BoxBody>, ProxyError> {
+    match result {
+        Ok(resp) => {
+            let (parts, body) = resp.into_parts();
+            let content_type = parts
+                .headers
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok());
+            let body = ticket
+                .record(clock, info, parts.status.as_u16(), content_type, body)
+                .boxed();
+            Ok(Response::from_parts(parts, body))
+        }
+        Err(e) => {
+            ticket.proxy_error(clock, info);
+            Err(e)
+        }
+    }
 }
 
 fn path_and_query_or_root(uri: &http::Uri) -> &str {

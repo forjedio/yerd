@@ -128,7 +128,7 @@ update never deletes it.
   you uninstall that version.
 
 ::: info Needs a matching released build
-Like the [dumps extension](./laravel-dumps), pcov is ABI-specific: one build per
+Like the [`yerd-dump` extension](./laravel-dumps#the-php-extension), pcov is ABI-specific: one build per
 PHP minor, per OS, per architecture. If a build for your exact PHP version and
 platform hasn't been published yet, the cover shim reports that pcov isn't
 installed for that version rather than running without coverage. The fetch is
@@ -165,5 +165,5 @@ front doors, subcommand and shim, share one implementation.
 ## See also
 
 - [PHP Versions](./php-versions) - installing versions and the `php`/`php<version>` shims.
-- [Laravel Dumps](./laravel-dumps) - the other extension served from `yerd-php-ext`.
+- [Insights](./laravel-dumps) - uses the other extension served from `yerd-php-ext`.
 - [Debugging with Xdebug](./xdebug#code-coverage-with-xdebug) - branch and path coverage with `XDEBUG_MODE=coverage phpdebug`.

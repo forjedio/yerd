@@ -1,30 +1,75 @@
 <script setup lang="ts">
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Pause, Pin, PinOff, Play } from "lucide-vue-next";
-import { computed, onUnmounted, ref } from "vue";
+import { Pin, PinOff } from "lucide-vue-next";
+import { onMounted, onUnmounted, ref } from "vue";
 
 import DumpsCapturePill from "@/components/dumps/DumpsCapturePill.vue";
 import DumpsRequestDetail from "@/components/dumps/DumpsRequestDetail.vue";
 import DumpsRequestList from "@/components/dumps/DumpsRequestList.vue";
 import TitleBar from "@/components/TitleBar.vue";
-import Spinner from "@/components/ui/Spinner.vue";
 import { useDumps } from "@/composables/useDumps";
+import { INSIGHTS_SITE_EVENT, storedInsightsSite } from "@/composables/useInsights";
 import { useToast } from "@/composables/useToast";
+import { status as daemonStatus } from "@/ipc/client";
 import { CATEGORY_CHIPS } from "@/lib/dumps";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { cn } from "@/lib/utils";
 
 /**
- * The separate Dumps window (opened from the Dumps toolbar, the tray, ⇧⌘D and
- * a site's menu): the same request list and detail as the Dumps screen, always
- * side by side, streaming while the window is hidden. The title bar carries the
- * capture pill, Pause / Resume and pin on top; setup stays in the main window.
+ * The separate Dumps window (opened from the Insights Live feed, the tray, ⇧⌘D
+ * and a site's menu): the Live feed's request list and detail, always side by
+ * side, streaming while the window is hidden. It shows the site picked in
+ * Insights, read from storage on open and then followed through the
+ * `yerd:insights-site-changed` event (storage is re-read once the listener is
+ * up, so a change in between isn't lost). The TLD for older extensions' host
+ * form comes from one daemon status read. The title bar carries the site, the
+ * capture pill and pin on top; setup stays in the main window.
  */
 const toast = useToast();
-const dumps = useDumps({ pollWhileHidden: true, follow: () => true });
+const site = ref<string | null>(storedInsightsSite());
+const tld = ref("test");
+const dumps = useDumps({ pollWhileHidden: true, follow: () => true, site: () => site.value, tld: () => tld.value });
 const { busy, category, query, requests, selected, selectedKey, status, visible } = dumps;
 
-const enabled = computed(() => status.value?.enabled ?? false);
+let unlisten: UnlistenFn | null = null;
+let disposed = false;
+
+function followSite(next: string | null): void {
+  if (next !== null && next !== site.value) {
+    site.value = next;
+    dumps.select(null);
+  }
+}
+
+async function loadTld(): Promise<void> {
+  try {
+    const report = await daemonStatus();
+    if (typeof report.tld === "string" && report.tld) tld.value = report.tld;
+  } catch {
+    return;
+  }
+}
+
+onMounted(async () => {
+  void loadTld();
+  try {
+    const off = await listen<string>(INSIGHTS_SITE_EVENT, ({ payload }) => {
+      if (typeof payload === "string") followSite(payload);
+    });
+    if (disposed) off();
+    else unlisten = off;
+  } catch {
+    unlisten = null;
+  }
+  followSite(storedInsightsSite());
+});
+
+onUnmounted(() => {
+  disposed = true;
+  unlisten?.();
+});
+
 const alwaysOnTop = ref(false);
 const detail = ref<InstanceType<typeof DumpsRequestDetail> | null>(null);
 
@@ -59,22 +104,9 @@ const ICON_BUTTON =
 
 <template>
   <div class="flex h-full w-full flex-col overflow-hidden bg-background text-foreground">
-    <TitleBar title="Dumps">
+    <TitleBar :title="site ? `Live feed · ${site}` : 'Live feed'">
       <template #actions>
         <DumpsCapturePill :status="status" compact />
-        <button
-          type="button"
-          :class="ICON_BUTTON"
-          :disabled="!status || busy === 'enabled'"
-          :aria-label="enabled ? 'Pause' : 'Resume'"
-          :title="enabled ? 'Pause interception' : 'Resume interception'"
-          data-testid="pause-resume"
-          @click="dumps.setEnabled(!enabled)"
-        >
-          <Spinner v-if="busy === 'enabled'" class="size-3.5 text-current" />
-          <Pause v-else-if="enabled" class="size-3.5" />
-          <Play v-else class="size-3.5" />
-        </button>
         <button
           type="button"
           :class="cn(ICON_BUTTON, alwaysOnTop && 'bg-brand/15 text-brand hover:bg-brand/20 hover:text-brand')"

@@ -524,3 +524,51 @@ fn project_config_variants_roundtrip() {
         message: "invalid `php` in .yerd.toml".into(),
     });
 }
+
+#[test]
+fn insights_variants_roundtrip() {
+    assert_request_roundtrips(Request::InsightsStatus);
+    assert_request_roundtrips(Request::SetInsightsEnabled {
+        site: "blog".into(),
+        enabled: false,
+    });
+    assert_request_roundtrips(Request::SetInsightsThresholds {
+        thresholds: yerd_ipc::InsightsThresholds::default(),
+    });
+    assert_request_roundtrips(Request::InsightsOverview {
+        site: "blog".into(),
+        range: yerd_ipc::InsightsRange::OneDay,
+    });
+    assert_request_roundtrips(Request::ListInsightsRequests {
+        site: "blog".into(),
+        range: yerd_ipc::InsightsRange::OneHour,
+        query: Some("GET".into()),
+        sort: yerd_ipc::InsightsSort::Slowest,
+        limit: 500,
+    });
+    assert_request_roundtrips(Request::GetInsightsRequest {
+        site: "blog".into(),
+        request_id: "ab".repeat(16),
+        ts_ms: 1_700_000_000_000,
+    });
+    assert_request_roundtrips(Request::DismissInsightsIssue {
+        site: "blog".into(),
+        key: "00000000000000ff".into(),
+        dismissed: false,
+    });
+    assert_request_roundtrips(Request::ClearInsights {
+        site: "blog".into(),
+    });
+    assert_response_roundtrips(Response::InsightsStatus {
+        sites: vec![],
+        thresholds: yerd_ipc::InsightsThresholds::default(),
+        capture_enabled: false,
+        open_issues: 0,
+    });
+    assert_response_roundtrips(Response::InsightsOverview {
+        overview: Box::new(yerd_ipc::InsightsOverview::empty(
+            yerd_ipc::InsightsRange::OneHour,
+        )),
+    });
+    assert_response_roundtrips(Response::InsightsRequests { requests: vec![] });
+}

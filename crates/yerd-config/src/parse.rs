@@ -160,6 +160,9 @@ struct Wire {
     // the v33→v34 migration sets `baseline_pending`.
     #[serde(default)]
     added: AddedSectionWire,
+    // v35: optional `[insights]` table; absent in v34 and earlier → empty.
+    #[serde(default)]
+    insights: InsightsSectionWire,
 }
 
 /// One `[[proxies]]` table: a whole-host proxy's name, upstream, and HTTPS flag.
@@ -298,6 +301,42 @@ struct AddedSectionWire {
     baseline_pending: BTreeSet<String>,
 }
 
+/// The `[insights]` table. Every key defaults, so an absent table parses to
+/// [`crate::schema::InsightsSection::default`].
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InsightsSectionWire {
+    #[serde(default)]
+    sites: BTreeSet<String>,
+    #[serde(default)]
+    thresholds: InsightsThresholdsWire,
+}
+
+/// The `[insights.thresholds]` table. Each key defaults independently to
+/// [`crate::schema::InsightsThresholds::default`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct InsightsThresholdsWire {
+    n_plus_one_min: u32,
+    duplicate_min: u32,
+    slow_query_ms: u32,
+    large_read_rows: u32,
+    max_queries: u32,
+}
+
+impl Default for InsightsThresholdsWire {
+    fn default() -> Self {
+        let t = crate::schema::InsightsThresholds::default();
+        Self {
+            n_plus_one_min: t.n_plus_one_min,
+            duplicate_min: t.duplicate_min,
+            slow_query_ms: t.slow_query_ms,
+            large_read_rows: t.large_read_rows,
+            max_queries: t.max_queries,
+        }
+    }
+}
+
 /// The `[tunnel]` table. Every key defaults, so an absent table parses
 /// to [`crate::schema::TunnelSection::default`].
 #[derive(Default, Deserialize)]
@@ -330,7 +369,7 @@ struct NgrokWire {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DumpsSectionWire {
-    #[serde(default)]
+    #[serde(default = "default_dumps_enabled")]
     enabled: bool,
     #[serde(default = "default_dump_port")]
     port: u16,
@@ -343,12 +382,16 @@ struct DumpsSectionWire {
 impl Default for DumpsSectionWire {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_dumps_enabled(),
             port: crate::schema::DEFAULT_DUMP_PORT,
             persist: false,
             features: BTreeMap::new(),
         }
     }
+}
+
+fn default_dumps_enabled() -> bool {
+    DumpsSection::default().enabled
 }
 
 fn default_dump_port() -> u16 {
@@ -780,6 +823,22 @@ impl TryFrom<Wire> for Config {
                 parked: w.added.parked,
                 baseline_pending: w.added.baseline_pending,
             },
+            insights: crate::schema::InsightsSection {
+                sites: w
+                    .insights
+                    .sites
+                    .into_iter()
+                    .map(|name| name.trim().to_ascii_lowercase())
+                    .filter(|name| !name.is_empty())
+                    .collect(),
+                thresholds: crate::schema::InsightsThresholds {
+                    n_plus_one_min: w.insights.thresholds.n_plus_one_min,
+                    duplicate_min: w.insights.thresholds.duplicate_min,
+                    slow_query_ms: w.insights.thresholds.slow_query_ms,
+                    large_read_rows: w.insights.thresholds.large_read_rows,
+                    max_queries: w.insights.thresholds.max_queries,
+                },
+            },
         })
     }
 }
@@ -1140,6 +1199,9 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     validate_proxies(c)?;
     validate_route_rules(c)?;
     validate_response_headers(c)?;
+    if !c.insights.thresholds.is_valid() {
+        return Err(ve(ValidateErrorReason::InsightsThresholdInvalid));
+    }
     if c.network.mode == yerd_core::network::OutboundProxyMode::Manual
         && c.network.http_proxy.is_none()
         && c.network.https_proxy.is_none()
@@ -1701,7 +1763,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 34,
+                current: 35,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -1863,6 +1925,83 @@ mod tests {
         );
         let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
         assert_eq!(back, c);
+    }
+
+    #[test]
+    fn dumps_capture_is_on_by_default() {
+        assert!(Config::default().dumps.enabled);
+        assert!(Config::from_toml("version = 35\n").unwrap().dumps.enabled);
+        assert!(
+            !Config::from_toml("version = 35\n[dumps]\nenabled = false\n")
+                .unwrap()
+                .dumps
+                .enabled
+        );
+    }
+
+    #[test]
+    fn v34_config_upgrades_to_dumps_enabled() {
+        let cases = [
+            "version = 34\n",
+            "version = 34\n[dumps]\nenabled = false\n",
+            "version = 34\n[dumps]\nenabled = true\n",
+        ];
+        for src in cases {
+            assert!(Config::from_toml(src).unwrap().dumps.enabled, "{src}");
+        }
+    }
+
+    #[test]
+    fn insights_absent_table_is_empty() {
+        let c = Config::from_toml("version = 35\n").unwrap();
+        assert!(c.insights.is_empty());
+        assert_eq!(c.insights, crate::InsightsSection::default());
+    }
+
+    #[test]
+    fn insights_section_parses_and_round_trips() {
+        let s = "version = 35\n[insights]\nsites = [\" Blog \", \"api\", \"\"]\n\n[insights.thresholds]\nn_plus_one_min = 8\nslow_query_ms = 250\n";
+        let c = Config::from_toml(s).unwrap();
+        assert_eq!(
+            c.insights
+                .sites
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["api", "blog"]
+        );
+        let t = c.insights.thresholds;
+        assert_eq!(t.n_plus_one_min, 8);
+        assert_eq!(t.slow_query_ms, 250);
+        assert_eq!(t.duplicate_min, 2);
+        assert_eq!(t.large_read_rows, 1000);
+        assert_eq!(t.max_queries, 50);
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn insights_thresholds_are_validated() {
+        let cases: &[(&str, bool)] = &[
+            ("duplicate_min = 1", false),
+            ("duplicate_min = 2", true),
+            ("n_plus_one_min = 0", false),
+            ("n_plus_one_min = 1", true),
+            ("slow_query_ms = 0", false),
+            ("large_read_rows = 0", false),
+            ("max_queries = 0", false),
+            ("max_queries = 1", true),
+        ];
+        for (line, ok) in cases {
+            let src = format!("version = 35\n[insights.thresholds]\n{line}\n");
+            match Config::from_toml(&src) {
+                Ok(_) => assert!(ok, "{line} should be rejected"),
+                Err(ConfigError::Validate {
+                    reason: ValidateErrorReason::InsightsThresholdInvalid,
+                }) => assert!(!ok, "{line} should be accepted"),
+                Err(other) => panic!("{line}: unexpected {other:?}"),
+            }
+        }
     }
 
     #[test]

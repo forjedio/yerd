@@ -37,7 +37,7 @@ In a wide window (the default size) the inspector sits beside the list. It keeps
 
 <ThemedImage light="/images/site-unpark-confirm-light.png" dark="/images/site-unpark-confirm-dark.png" alt="The Unpark ~/Sites? confirmation, saying 8 sites in the folder stop being served" />
 
-The **⋯** menu has **Copy URL**, **Share publicly…**, **Change web root…** (not for WordPress), **Move to group**, **Routing rules…** (including the front-controller switch), **Editor** (a per-site editor override), **WP Admin** for WordPress sites or the **Dumps viewer** for others, and **Unpark** or **Remove site…**.
+The **⋯** menu has **Copy URL**, **Share publicly…**, **Change web root…** (not for WordPress), **Move to group**, **Routing rules…** (including the front-controller switch), **Editor** (a per-site editor override), **WP Admin** for WordPress sites or **Insights** (opens the Insights page on that site) for others, and **Unpark** or **Remove site…**.
 
 <ThemedImage light="/images/site-actions-menu-light.png" dark="/images/site-actions-menu-dark.png" alt="The site inspector's ⋯ menu open, with the Move to group submenu showing No group, Client work and New group…" />
 

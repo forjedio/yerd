@@ -588,6 +588,65 @@ pub enum Request {
     /// Fetch dump-server status (enabled, port, running, per-version extension
     /// presence, current counts).
     DumpsStatus,
+    /// Fetch the Insights settings: recording sites, thresholds, the global
+    /// capture switch and the open-issue count.
+    InsightsStatus,
+    /// Turn Insights recording on or off for one site.
+    SetInsightsEnabled {
+        /// Site name.
+        site: String,
+        /// Desired recording state.
+        enabled: bool,
+    },
+    /// Replace the issue-detection thresholds. Applies to new requests only.
+    SetInsightsThresholds {
+        /// The new thresholds.
+        thresholds: crate::InsightsThresholds,
+    },
+    /// Fetch the Overview tab for one site and range.
+    InsightsOverview {
+        /// Site name.
+        site: String,
+        /// The time range.
+        range: crate::InsightsRange,
+    },
+    /// List recorded requests for one site, newest or slowest first.
+    ListInsightsRequests {
+        /// Site name.
+        site: String,
+        /// The time range.
+        range: crate::InsightsRange,
+        /// Case-insensitive substring filter over method, path and route.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        /// Ordering.
+        sort: crate::InsightsSort,
+        /// Maximum rows; the daemon clamps it to 500.
+        limit: u32,
+    },
+    /// Fetch one recorded request's drill-in.
+    GetInsightsRequest {
+        /// Site name.
+        site: String,
+        /// The request id.
+        request_id: String,
+        /// The request's start, Unix epoch milliseconds; selects the hour file.
+        ts_ms: u64,
+    },
+    /// Dismiss or restore one detected issue.
+    DismissInsightsIssue {
+        /// Site name.
+        site: String,
+        /// The issue key (16 lowercase hex chars).
+        key: String,
+        /// `true` to dismiss, `false` to restore.
+        dismissed: bool,
+    },
+    /// Delete every recorded request, rollup and dismissal for one site.
+    ClearInsights {
+        /// Site name.
+        site: String,
+    },
     /// List captured emails (metadata only), newest first.
     ListMails,
     /// Fetch one captured email's full decoded content by id.
@@ -1181,6 +1240,14 @@ mod variant_name_pinning {
             Request::SetDumpFeature { .. } => {}
             Request::SetDumpsPersist { .. } => {}
             Request::DumpsStatus => {}
+            Request::InsightsStatus => {}
+            Request::SetInsightsEnabled { .. } => {}
+            Request::SetInsightsThresholds { .. } => {}
+            Request::InsightsOverview { .. } => {}
+            Request::ListInsightsRequests { .. } => {}
+            Request::GetInsightsRequest { .. } => {}
+            Request::DismissInsightsIssue { .. } => {}
+            Request::ClearInsights { .. } => {}
             Request::ListMails => {}
             Request::GetMail { .. } => {}
             Request::ClearMails => {}
@@ -1439,6 +1506,38 @@ mod variant_name_pinning {
         });
         pin(Request::SetDumpsPersist { persist: true });
         pin(Request::DumpsStatus);
+        pin(Request::InsightsStatus);
+        pin(Request::SetInsightsEnabled {
+            site: "blog".into(),
+            enabled: true,
+        });
+        pin(Request::SetInsightsThresholds {
+            thresholds: crate::InsightsThresholds::default(),
+        });
+        pin(Request::InsightsOverview {
+            site: "blog".into(),
+            range: crate::InsightsRange::OneHour,
+        });
+        pin(Request::ListInsightsRequests {
+            site: "blog".into(),
+            range: crate::InsightsRange::FiveMinutes,
+            query: None,
+            sort: crate::InsightsSort::Slowest,
+            limit: 10,
+        });
+        pin(Request::GetInsightsRequest {
+            site: "blog".into(),
+            request_id: "0".repeat(32),
+            ts_ms: 1,
+        });
+        pin(Request::DismissInsightsIssue {
+            site: "blog".into(),
+            key: "00000000000000ff".into(),
+            dismissed: true,
+        });
+        pin(Request::ClearInsights {
+            site: "blog".into(),
+        });
         pin(Request::ListMails);
         pin(Request::GetMail {
             id: "000001".into(),

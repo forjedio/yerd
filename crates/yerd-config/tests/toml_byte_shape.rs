@@ -54,8 +54,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 34\n"),
-        "expected first line `version = 34`; got: {s}"
+        s.starts_with("version = 35\n"),
+        "expected first line `version = 35`; got: {s}"
     );
 }
 
@@ -969,6 +969,56 @@ fn populated_parked_claims_emit_under_parked_and_round_trip() {
         s.contains(
             "[parked]\npaths = [\"/srv\"]\n\n[parked.claims.\"/srv/laravel.com\"]\nname = \"laravel\"\nurl_synced = false\n"
         ),
+        "got: {s}"
+    );
+    assert_eq!(Config::from_toml(&s).unwrap(), c);
+}
+
+#[test]
+fn default_config_emits_no_dumps_or_insights_table() {
+    let s = Config::default().to_toml().unwrap();
+    assert!(!s.contains("[dumps"), "got: {s}");
+    assert!(!s.contains("[insights"), "got: {s}");
+}
+
+#[test]
+fn dumps_capture_off_emits_explicit_false() {
+    let mut c = Config::default();
+    c.dumps.enabled = false;
+    let s = c.to_toml().unwrap();
+    assert!(
+        s.ends_with("\n[dumps]\nenabled = false\nport = 2304\npersist = false\n"),
+        "got: {s}"
+    );
+    assert_eq!(Config::from_toml(&s).unwrap(), c);
+}
+
+#[test]
+fn populated_insights_section_emits_last_and_round_trips() {
+    let mut c = Config::default();
+    c.added.linked.insert("blog".to_string(), 1);
+    c.insights.sites.insert("blog".to_string());
+    c.insights.thresholds.slow_query_ms = 250;
+    let s = c.to_toml().unwrap();
+    let added_at = s.find("\n[added.linked]\n").expect("[added] present");
+    let insights_at = s.find("\n[insights]\n").expect("[insights] present");
+    assert!(added_at < insights_at, "got: {s}");
+    assert!(
+        s.ends_with(
+            "\n[insights]\nsites = [\"blog\"]\n\n[insights.thresholds]\nn_plus_one_min = 5\nduplicate_min = 2\nslow_query_ms = 250\nlarge_read_rows = 1000\nmax_queries = 50\n"
+        ),
+        "got: {s}"
+    );
+    assert_eq!(Config::from_toml(&s).unwrap(), c);
+}
+
+#[test]
+fn insights_sites_with_default_thresholds_emit_no_thresholds_table() {
+    let mut c = Config::default();
+    c.insights.sites.insert("blog".to_string());
+    let s = c.to_toml().unwrap();
+    assert!(
+        s.ends_with("\n[insights]\nsites = [\"blog\"]\n"),
         "got: {s}"
     );
     assert_eq!(Config::from_toml(&s).unwrap(), c);

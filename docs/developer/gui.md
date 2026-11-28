@@ -43,7 +43,7 @@ apps/yerd-gui/
 └── src/                    Vue FRONTEND
     ├── main.ts             createApp + router; initTheme(); initDesktopChrome()
     ├── App.vue             AppShell + Toaster; shared daemon poller; first-run daemon start
-    ├── router.ts           hash router: /overview (default) /general /php /sites /tooling /services /proxies /dumps /integrations /mail /doctor (+ /dumps-window, /mails-viewer standalone routes; a legacy route redirects to /general for the tray)
+    ├── router.ts           hash router: /overview (default) /general /php /sites /tooling /services /proxies /insights /integrations /mail /doctor (+ /dumps-window, /mails-viewer standalone routes; /dumps redirects to /insights, and a legacy route redirects to /general for the tray)
     ├── ipc/
     │   ├── types.ts        TypeScript mirror of the yerd-ipc wire JSON
     │   ├── client.ts       typed wrappers around invoke() + IpcError
@@ -53,7 +53,8 @@ apps/yerd-gui/
     │                       useAutoScroll (pins a streamed log box to its bottom),
     │                       useElevation (OS-privilege Fix / Fix all / Revert, shared by Welcome and Doctor),
     │                       useCreateSiteJob / useToolPrereqs / useSiteBasics and the starters
-    │                       (useSiteStarters, useLaravelStarter, useWordPressStarter) behind New site
+    │                       (useSiteStarters, useLaravelStarter, useWordPressStarter) behind New site,
+    │                       useDumps (the Live feed, optionally scoped to one site), useInsights (the Insights page)
     ├── components/         AppShell, SideNav, NavLink, TitleBar, PageHeader, AboutSection, StatusPill, ComingSoon, EnvironmentCard,
     │                       SiteRoutesPanel / SiteNodePanel,
     │                       sites/ (SitesList, SiteFilterChips, SitesWarningStrip, SitesEmptyState, SiteInspector,
@@ -69,8 +70,10 @@ apps/yerd-gui/
     │                       services/ (ServicesList, ServiceInspector, ServiceDatabasesCard, ServiceConnectCard,
     │                       ServiceOverridesCard, AddServiceDialog, ServiceLogsDialog, ServiceIcon),
     │                       mail/ (MailInbox, MailReader, MailSetupDialog),
-    │                       dumps/ (DumpsRequestList, DumpsRequestDetail, DumpsEventCard, DumpsCapturePill,
-    │                       DumpsSetupDialog),
+    │                       dumps/ (DumpsRequestList, DumpsRequestDetail, DumpsEventCard, DumpsCapturePill),
+    │                       insights/ (InsightsToolbar, InsightsKpiTiles, InsightsLatencyChart, InsightsTimeBreakdown,
+    │                       InsightsIssueList, InsightsRoutesPanel, InsightsRequestList, InsightsRequestDetail,
+    │                       InsightsLiveFeed, InsightsSettingsDialog),
     │                       share/ (ShareProviderCards, ShareList, ShareInspector, ShareSiteDialog,
     │                       CloudflareLoginDialog, providers/ (TunnelProvidersDialog,
     │                       CloudflarePane, NgrokPane, ZrokPane, PaneHeader, BinarySection, ProviderTile)),
@@ -84,7 +87,7 @@ apps/yerd-gui/
     │                       SegmentedControl, SuffixInput, FilterChips, InspectorFrame, InspectorFooter (teleported
     │                       into the frame's pinned bar below its scroll area),
     │                       styles.ts with the shared CARD / INSPECTOR_TOOL / DANGER_TOOL / SECTION_LABEL / LIST_LABEL classes)
-    ├── views/              OverviewView, GeneralView, PhpView, NodeView, SitesView, ProxiesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView
+    ├── views/              OverviewView, GeneralView, PhpView, NodeView, SitesView, ProxiesView, ToolingView, ServicesView, InsightsView, DumpsWindowView, MailView, MailsViewerView, DoctorView
     └── lib/                utils (cn, plural / joinWithAnd, humanisers, CHIP_TONE and the run-state dot), theme,
                             desktop chrome, domainValidation,
                             toastActions (copy-to-clipboard and fire-and-forget actions that toast the outcome),
@@ -95,7 +98,9 @@ apps/yerd-gui/
                             services (Services sections, status lines, test-copy grouping, .env snippets),
                             mail (app labels, time labels, capture state, Laravel .env),
                             dumps (merging dump pages, grouping by request, event tags and bodies,
-                            capture pill, follow-newest selection), dumpLog,
+                            capture pill, follow-newest selection, the captured-signal list), dumpLog,
+                            insights (KPI tiles, status line, chart geometry, breakdown bar, issue chips,
+                            timeline grouping of N+1 rows, threshold fields and validation),
                             share (Share sections, state labels, facts copy, tunnel chip),
                             elevation (OS-privilege rows, the single source for the Doctor dot),
                             doctor (Doctor finding groups, default selection, permission copy),
@@ -385,9 +390,10 @@ shown:
 - **`main`** - the app shell (`index.html`, default route).
 - **`mails`** - the standalone Mails viewer (`#/mails-viewer`), declared
   statically.
-- **`dumps`** - the live Laravel Dumps viewer (`#/dumps-window`). It is also
-  declared statically, but `main.rs`'s `show_dumps` helper *lazily (re)creates* it
-  if it has been destroyed, so opening it from the Dumps page is robust either way.
+- **`dumps`** - the Live feed window (`#/dumps-window`), scoped to the site
+  selected in Insights. It is also declared statically, but `main.rs`'s
+  `show_dumps` helper *lazily (re)creates* it if it has been destroyed, so
+  opening it from the Insights Live feed tab is robust either way.
 
 The auxiliary windows are **shown, not spawned**: `mail_window::show_mails_window`
 and `show_dumps_window` just `get_webview_window(label)` then `show()` + focus.
@@ -576,24 +582,39 @@ default landing dashboard: quick actions, status, pinned and recently added site
 streamed installs, Update, uninstall, and the global default; in the command
 palette without a digit), **SitesView**, **ToolingView** (`/tooling`; Node is
 not listed there, it has its own page), **ServicesView**,
-**LaravelDumpsView** (`/dumps`), **MailView** (`/mail`), **DoctorView** (findings
+**InsightsView** (`/insights`; `/dumps` redirects there), **MailView** (`/mail`), **DoctorView** (findings
 plus the OS-privilege rows - CA trust / resolver / ports - via `useElevation`),
 and **IntegrationsView** (`/integrations`, Share). `/about` redirects to
 `/general` (the tray's About and Update items still navigate there; the build
 info, updates, links and troubleshooting live in `AboutSection.vue`, the right
 column of Settings in a wide window and its first card in a narrow one). Plus two **standalone** routes that the auxiliary windows load:
 
-- **DumpsWindowView** (`/dumps-window`) and **LaravelDumpsView** (the in-shell
-  `/dumps` page) both compose `components/dumps/` (`DumpsRequestList`,
+- **InsightsView** (`/insights`) is built from `components/insights/` over the
+  `useInsights` composable. It owns the selected site (persisted in
+  `localStorage` as `yerd.insights.site` and broadcast as the Tauri event
+  `yerd:insights-site-changed`), the range, the tab and a view-only pause, and
+  polls `insightsOverview` every 2 s on the Overview and Issues tabs and
+  `listInsightsRequests` on the Requests tab, stopping while the window is
+  hidden. Actions go through `setInsightsEnabled`, `setInsightsThresholds`,
+  `dismissInsightsIssue` and `clearInsights`; `getInsightsRequest` loads a
+  drill-in. `InsightsSettingsDialog` (the toolbar's sliders button) holds the
+  five thresholds, the **Capture from the PHP extension** switch, the dump
+  server address with a link to the port in Settings, the captured-signal
+  switches and the per-PHP-version extension status (legacy versions read
+  "TOO OLD: TIMING ONLY"). The sidebar entry's badge is
+  `insightsStatus().open_issues`, hidden at 0. The site inspector's `⋯` menu
+  item **Insights** opens the page on that site.
+- **DumpsWindowView** (`/dumps-window`) and the Insights **Live feed** tab
+  (`InsightsLiveFeed`) both compose `components/dumps/` (`DumpsRequestList`,
   `DumpsRequestDetail`, `DumpsEventCard`, `DumpsCapturePill`) over the
   `useDumps` composable, which pages the daemon's ring incrementally with
   `listDumps(since)` (reconciled by `mergePage` in `lib/dumps.ts`), polls
   `dumpsStatus`, groups events by request, follows the newest request, and
-  drives `setDumpsEnabled` / `setDumpsPersist` / `setDumpFeature` /
-  `clearDumps`. The page adds `DumpsSetupDialog` (interception, signals,
-  per-PHP-version extension presence, a link to the port in Settings) and an
-  open-in-window button (`showDumpsWindow`); the window adds always-on-top and
-  keeps streaming while hidden.
+  drives `setDumpsPersist` / `clearDumps`. Both pass a `site` getter so events
+  are filtered to the site selected in Insights. The tab's **Pop out** button
+  calls `showDumpsWindow`; the window takes its initial site from
+  `localStorage`, follows `yerd:insights-site-changed`, shows the site in its
+  title bar, adds always-on-top and keeps streaming while hidden.
 - **MailsViewerView** (`/mails-viewer`, `meta.standalone`) and **MailView**
   (the in-shell `/mail` page) both compose `components/mail/` (`MailInbox`,
   `MailReader`) over the `useMailbox` composable, which polls `listMails`, keeps

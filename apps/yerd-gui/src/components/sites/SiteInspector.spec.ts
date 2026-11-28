@@ -12,7 +12,8 @@ const getPreferredIde = vi.fn();
 const getSiteIdeOverrides = vi.fn();
 const setSiteIdeOverride = vi.fn();
 const pickDirectory = vi.fn();
-const showDumpsWindow = vi.fn();
+const routerPush = vi.fn();
+const emitEvent = vi.fn(async (..._args: unknown[]) => {});
 const mintWordPressLoginToken = vi.fn();
 const wordpressAdminUsers = vi.fn();
 const addDomain = vi.fn();
@@ -37,7 +38,6 @@ vi.mock("@/ipc/client", () => ({
   getSiteIdeOverrides: (...args: unknown[]) => getSiteIdeOverrides(...args),
   setSiteIdeOverride: (...args: unknown[]) => setSiteIdeOverride(...args),
   pickDirectory: (...args: unknown[]) => pickDirectory(...args),
-  showDumpsWindow: (...args: unknown[]) => showDumpsWindow(...args),
   mintWordPressLoginToken: (...args: unknown[]) => mintWordPressLoginToken(...args),
   wordpressAdminUsers: (...args: unknown[]) => wordpressAdminUsers(...args),
   addDomain: (...args: unknown[]) => addDomain(...args),
@@ -60,7 +60,12 @@ vi.mock("@/composables/useToast", () => ({
 }));
 
 vi.mock("vue-router", () => ({
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => ({ push: routerPush }),
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  emit: (...args: unknown[]) => emitEvent(...args),
+  listen: vi.fn(async () => () => {}),
 }));
 
 const hostPlatform = ref("linux");
@@ -372,11 +377,11 @@ describe("SiteInspector domains", () => {
 });
 
 describe("SiteInspector menu", () => {
-  it("offers web root and Dumps for a non-WordPress linked site", () => {
+  it("offers web root and Insights for a non-WordPress linked site", () => {
     const w = mountInspector();
     const items = menuItems(w);
     expect(items.some((t) => t.includes("Change web root"))).toBe(true);
-    expect(items.some((t) => t.includes("Dumps viewer"))).toBe(true);
+    expect(items.some((t) => t.includes("Insights"))).toBe(true);
     expect(items.some((t) => t.includes("WP Admin"))).toBe(false);
     expect(items.some((t) => t.includes("Remove site"))).toBe(true);
     expect(items.some((t) => t.includes("Unpark"))).toBe(false);
@@ -385,7 +390,7 @@ describe("SiteInspector menu", () => {
   it("offers WP Admin and no web root for WordPress", () => {
     const items = menuItems(mountInspector(wpSite()));
     expect(items.some((t) => t.includes("WP Admin"))).toBe(true);
-    expect(items.some((t) => t.includes("Dumps viewer"))).toBe(false);
+    expect(items.some((t) => t.includes("Insights"))).toBe(false);
     expect(items.some((t) => t.includes("Change web root"))).toBe(false);
   });
 
@@ -403,10 +408,11 @@ describe("SiteInspector menu", () => {
     expect(w.emitted("unlink")).toEqual([[site()]]);
   });
 
-  it("opens the Dumps viewer", async () => {
+  it("opens Insights on this site", async () => {
     const w = mountInspector();
-    await pick(w, "Dumps viewer");
-    expect(showDumpsWindow).toHaveBeenCalledOnce();
+    await pick(w, "Insights");
+    expect(emitEvent).toHaveBeenCalledWith("yerd:insights-site-changed", "blog");
+    expect(routerPush).toHaveBeenCalledWith("/insights");
   });
 
   it("copies the URL from the menu", async () => {

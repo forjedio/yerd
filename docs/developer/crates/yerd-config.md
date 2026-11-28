@@ -78,7 +78,7 @@ pub use schema::{
     DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
 };
 
-pub const CURRENT_VERSION: u32 = 34;
+pub const CURRENT_VERSION: u32 = 35;
 ```
 
 `Config` exposes exactly four pure methods and two I/O methods:
@@ -187,14 +187,24 @@ Notable design decisions, all grounded in the source:
   non-fatal (the daemon logs and runs with capture not listening). The struct is
   `Copy`.
 - **`DumpsSection`** (the `[dumps]` table, added in schema v5) configures the
-  Laravel ▸ Dumps telemetry feature. Fields: `enabled: bool` (**default
-  `false`** - the "antenna"), `port: u16` (loopback port the dump server listens
+  extension telemetry behind Insights and its Live feed. Fields: `enabled: bool`
+  (**default `true`** since v35 - the global extension-capture switch; per-site
+  recording is chosen in `InsightsSection`), `port: u16` (loopback port the dump server listens
   on and the PHP extension connects to, default `DEFAULT_DUMP_PORT` = `2304`),
   `persist: bool` (default `false`: the buffer is cleared each new request so the
   viewer shows only the latest request; `true` accumulates across requests), and
   `features: BTreeMap<String, bool>` (per-feature capture toggles keyed by
-  feature name - `dumps`/`queries`/`jobs`/`views`/`requests`/`logs`/`cache` - an
-  absent key meaning "on"). `BTreeMap` for stable serialisation order.
+  feature name - `dumps`/`queries`/`jobs`/`views`/`requests`/`logs`/`cache`/`http` -
+  an absent key taking the daemon's default). `BTreeMap` for stable serialisation
+  order.
+- **`InsightsSection`** (the `[insights]` table, added in schema v35) holds
+  `sites: BTreeSet<String>` (lowercased names of the sites with Insights
+  recording on, a GUI overlay like `[favourites]`) and `thresholds:
+  InsightsThresholds` (`n_plus_one_min` 5, `duplicate_min` 2, `slow_query_ms`
+  100, `large_read_rows` 1000, `max_queries` 50). The table is omitted while
+  `is_empty()` (no sites and default thresholds), and validation rejects a zero
+  threshold or a `duplicate_min` below 2 (`InsightsThresholdInvalid`). The
+  `v34 → v35` step also forces `[dumps] enabled = true` once.
 
 `DEFAULT_DNS_PORT` is `1053`. A fixed (non-ephemeral) port keeps the resolver
 configuration installed by `yerd elevate resolver` valid across daemon restarts.
@@ -339,7 +349,7 @@ version is the single trigger for forward migrations.
 
 ```rust
 /// The on-disk schema version this crate writes.
-pub const CURRENT_VERSION: u32 = 34;
+pub const CURRENT_VERSION: u32 = 35;
 ```
 
 `CURRENT_VERSION` is **decoupled** from `yerd_ipc::PROTOCOL_VERSION`: the on-disk
@@ -348,7 +358,7 @@ with a new entry in `migrate::STEPS`.
 
 `migrate.rs` holds the steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**
 - matching `migrate::up`, which indexes `STEPS[current]` (the version being
-migrated *from*). At v34 there are thirty-four (`STEPS.len() == CURRENT_VERSION`,
+migrated *from*). At v35 there are thirty-five (`STEPS.len() == CURRENT_VERSION`,
 pinned by `steps_cover_every_version_below_current`). Most entries are **bare
 version bumps** - the version added an optional table or scalar that defaults
 when absent, so the step only rewrites the `version` line. `v14 → v15` (the

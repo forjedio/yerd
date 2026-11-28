@@ -6,9 +6,9 @@ import {
   Ellipsis,
   FileCog,
   FileDown,
-  FileText,
   FolderMinus,
   FolderTree,
+  Gauge,
   Layers,
   Plus,
   Route,
@@ -18,6 +18,7 @@ import {
 } from "lucide-vue-next";
 import { PopoverAnchor, PopoverContent, PopoverPortal, PopoverRoot } from "reka-ui";
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 
 import SiteRoutesPanel from "@/components/SiteRoutesPanel.vue";
 import WebRootDialog from "@/components/sites/WebRootDialog.vue";
@@ -36,20 +37,20 @@ import Input from "@/components/ui/Input.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
-import { showDumpsWindow } from "@/ipc/client";
+import { rememberInsightsSite } from "@/composables/useInsights";
 import type { GroupsState, SiteEntry, StatusReport } from "@/ipc/types";
 import { formatChord } from "@/lib/shortcuts/format";
 import { isMac } from "@/lib/shortcuts/platform";
 import { groupNameAvailable, tildify } from "@/lib/sites";
 import { siteHost, siteUrl } from "@/lib/siteUrl";
-import { copyUrlWithToast, toastOnError } from "@/lib/toastActions";
+import { copyUrlWithToast } from "@/lib/toastActions";
 import { openWpAdmin } from "@/lib/wpAdmin";
 
 /**
  * The inspector's `···` menu. It holds the actions the draft draws (Copy URL,
  * Share publicly, Change web root, Move to group with its New group popover,
  * Routing rules, Unpark or Remove) plus those the old details sidebar had and
- * the draft does not (the Editor override, WP Admin or the Dumps viewer).
+ * the draft does not (the Editor override, WP Admin or Insights).
  * Dialogs opened from here open on the next tick so the menu's focus restore
  * doesn't fight them.
  *
@@ -90,6 +91,8 @@ const emit = defineEmits<{
 }>();
 
 const layerOpen = defineModel<boolean>("layerOpen", { default: false });
+
+const router = useRouter();
 
 const copyHint = formatChord({ mod: true, key: "c" }, isMac());
 
@@ -147,8 +150,9 @@ async function copyUrl(): Promise<void> {
   await copyUrlWithToast(siteUrl(props.site, props.report));
 }
 
-async function openDumps(): Promise<void> {
-  await toastOnError("Couldn't open the dumps window", () => showDumpsWindow());
+function openInsights(): void {
+  rememberInsightsSite(props.site.name);
+  void router.push("/insights");
 }
 </script>
 
@@ -232,8 +236,8 @@ async function openDumps(): Promise<void> {
           <DropdownMenuItem v-if="site.is_wordpress" @select="openWpAdmin(site, report)">
             <UserRound class="size-4" /> WP Admin
           </DropdownMenuItem>
-          <DropdownMenuItem v-else @select="openDumps">
-            <FileText class="size-4" /> Dumps viewer
+          <DropdownMenuItem v-else @select="openInsights">
+            <Gauge class="size-4" /> Insights
           </DropdownMenuItem>
           <template v-if="(site.kind === 'parked' && parentDir) || site.kind === 'linked'">
             <DropdownMenuSeparator />

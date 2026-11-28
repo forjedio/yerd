@@ -428,6 +428,184 @@ export interface DumpExtStatus {
   legacy?: boolean;
 }
 
+// ── insights (insights.rs) ──────────────────────────────────────────────────
+
+/** crates/yerd-ipc/src/insights.rs - InsightsRange. */
+export type InsightsRange = "5m" | "1h" | "24h";
+
+/** crates/yerd-ipc/src/insights.rs - InsightsSort. */
+export type InsightsSort = "recent" | "slowest";
+
+/** crates/yerd-ipc/src/insights.rs - InsightsRouteKind. */
+export type InsightsRouteKind = "template" | "script" | "path";
+
+/** crates/yerd-ipc/src/insights.rs - InsightsIssueKind. */
+export type InsightsIssueKind = "n_plus_one" | "duplicate" | "slow_query" | "large_read" | "too_many_queries";
+
+/** crates/yerd-ipc/src/insights.rs - InsightsTimePart. */
+export type InsightsTimePart = "app" | "db" | "http" | "wait";
+
+/** crates/yerd-ipc/src/insights.rs - InsightsThresholds. */
+export interface InsightsThresholds {
+  n_plus_one_min: number;
+  duplicate_min: number;
+  slow_query_ms: number;
+  large_read_rows: number;
+  max_queries: number;
+}
+
+/** crates/yerd-ipc/src/insights.rs - InsightsKpis. Optional fields are omitted when unknown. */
+export interface InsightsKpis {
+  p50_ms?: number;
+  p95_ms?: number;
+  p50_delta_ms?: number;
+  p95_spike_ms?: number;
+  /** Unix epoch milliseconds. */
+  p95_spike_at_ms?: number;
+  requests: number;
+  per_minute: number;
+  static_skipped: number;
+  failed_pct: number;
+  s5xx: number;
+  s4xx: number;
+  queries_avg?: number;
+  queries_max: number;
+  /** `METHOD label`. */
+  queries_max_route?: string;
+}
+
+/** crates/yerd-ipc/src/insights.rs - InsightsPoint. */
+export interface InsightsPoint {
+  t_ms: number;
+  count: number;
+  p50_ms?: number;
+  p95_ms?: number;
+  errors: number;
+}
+
+/** crates/yerd-ipc/src/insights.rs - InsightsSlice. */
+export interface InsightsSlice {
+  part: InsightsTimePart;
+  /** Fraction of the total, 0..1. */
+  share: number;
+  mean_ms: number;
+}
+
+/** crates/yerd-ipc/src/insights.rs - InsightsRoute. */
+export interface InsightsRoute {
+  method: string;
+  label: string;
+  kind: InsightsRouteKind;
+  name?: string;
+  action?: string;
+  requests: number;
+  p50_ms?: number;
+  p95_ms?: number;
+  share: number;
+  queries_per_request?: number;
+  issue_kinds?: InsightsIssueKind[];
+}
+
+/** crates/yerd-ipc/src/insights.rs - InsightsQuery. */
+export interface InsightsQuery {
+  fingerprint: string;
+  count: number;
+  total_ms: number;
+  mean_ms: number;
+  route_label?: string;
+}
+
+/** crates/yerd-ipc/src/insights.rs - InsightsIssue. `key` is 16 lowercase hex chars. */
+export interface InsightsIssue {
+  key: string;
+  kind: InsightsIssueKind;
+  sql?: string;
+  hint: string;
+  file?: string;
+  line?: number;
+  route_method?: string;
+  route_label?: string;
+  occurrences: number;
+  affected_requests: number;
+  impact_ms: number;
+  max_in_request: number;
+  last_request_id?: string;
+  last_request_ts_ms?: number;
+  dismissed?: boolean;
+}
+
+/** crates/yerd-ipc/src/insights.rs - InsightsOverview. */
+export interface InsightsOverview {
+  range: InsightsRange;
+  kpis: InsightsKpis;
+  cold: number;
+  dropped_requests: number;
+  dropped_frames: number;
+  ext_seen: boolean;
+  ext_available: boolean;
+  series: InsightsPoint[];
+  breakdown: InsightsSlice[];
+  routes: InsightsRoute[];
+  queries: InsightsQuery[];
+  issues: InsightsIssue[];
+}
+
+/** crates/yerd-ipc/src/insights.rs - InsightsRequestSummary. */
+export interface InsightsRequestSummary {
+  id: string;
+  ts_ms: number;
+  method: string;
+  path: string;
+  route_label: string;
+  route_name?: string;
+  route_action?: string;
+  status: number;
+  duration_ms: number;
+  ext_duration_ms?: number;
+  bytes: number;
+  content_type?: string;
+  cold?: boolean;
+  aborted?: boolean;
+  traced?: boolean;
+  queries: number;
+  dumps: number;
+  logs: number;
+  issue_kinds?: InsightsIssueKind[];
+  db_ms?: number;
+  http_ms?: number;
+  wait_ms?: number;
+  app_ms?: number;
+}
+
+/** crates/yerd-ipc/src/insights.rs - InsightsEvent. */
+export interface InsightsEvent {
+  idx: number;
+  category: DumpCategory;
+  t_us?: number;
+  dur_us?: number;
+  payload: Record<string, unknown>;
+}
+
+/** crates/yerd-ipc/src/insights.rs - InsightsRequestIssue. */
+export interface InsightsRequestIssue {
+  kind: InsightsIssueKind;
+  key: string;
+  event_indices: number[];
+  count: number;
+  time_ms: number;
+  file?: string;
+  line?: number;
+  hint: string;
+}
+
+/** crates/yerd-ipc/src/insights.rs - InsightsRequestDetail. */
+export interface InsightsRequestDetail {
+  summary: InsightsRequestSummary;
+  events: InsightsEvent[];
+  issues: InsightsRequestIssue[];
+  truncated?: boolean;
+}
+
 // ── site creation (create.rs) ───────────────────────────────────────────────
 // Unlike most requests, the GUI *does* build this payload (the wizard), so the
 // spec types live here and are sent via `createSite`.
@@ -729,6 +907,16 @@ export type Response =
       /** Resolved per-feature flags (every key present). */
       features: Record<string, boolean>;
     }
+  | {
+      type: "insights_status";
+      sites: string[];
+      thresholds: InsightsThresholds;
+      capture_enabled: boolean;
+      open_issues: number;
+    }
+  | { type: "insights_overview"; overview: InsightsOverview }
+  | { type: "insights_requests"; requests: InsightsRequestSummary[] }
+  | { type: "insights_request"; request: InsightsRequestDetail }
   | { type: "mails"; mails: MailSummary[] }
   | { type: "mail"; mail: MailDetail }
   | { type: "tools"; tools: ToolStatus[] }
@@ -1078,6 +1266,7 @@ export type AvailableServicesResponse = Extract<Response, { type: "available_ser
 export type ServiceLogsResponse = Extract<Response, { type: "service_logs" }>;
 export type DumpsResponse = Extract<Response, { type: "dumps" }>;
 export type DumpsStatusResponse = Extract<Response, { type: "dumps_status" }>;
+export type InsightsStatusResponse = Extract<Response, { type: "insights_status" }>;
 export type MailsResponse = Extract<Response, { type: "mails" }>;
 export type MailResponse = Extract<Response, { type: "mail" }>;
 export type NodeVersionsResponse = Extract<Response, { type: "node_versions" }>;

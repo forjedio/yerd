@@ -13,6 +13,24 @@ vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ setAlwaysOnTop }),
 }));
 
+let siteListener: ((e: { payload: unknown }) => void) | null = null;
+const listenMock = vi.fn((_name: string, cb: (e: { payload: unknown }) => void) => {
+  siteListener = cb;
+  return Promise.resolve(() => undefined);
+});
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: (name: string, cb: (e: { payload: unknown }) => void) => listenMock(name, cb),
+  emit: vi.fn(() => Promise.resolve()),
+}));
+
+const storage = new Map<string, string>();
+vi.stubGlobal("localStorage", {
+  getItem: (k: string) => storage.get(k) ?? null,
+  setItem: (k: string, v: string) => void storage.set(k, v),
+  removeItem: (k: string) => void storage.delete(k),
+  clear: () => storage.clear(),
+});
+
 import DumpsWindowView from "./DumpsWindowView.vue";
 import type { DumpEvent } from "@/ipc/types";
 import { getViewActions } from "@/lib/shortcuts/useViewActions";
@@ -23,7 +41,10 @@ const EVENTS: DumpEvent[] = [
   { id: 1, category: "dump", ts_ms: 1_700_000_000_000, site: "codestash.test", request_id: "a", payload: { value_text: "hi" } },
 ];
 
-const TitleBarStub = { template: '<div><slot name="actions" /></div>' };
+const TitleBarStub = {
+  props: ["title"],
+  template: '<div><span data-testid="window-title">{{ title }}</span><slot name="actions" /></div>',
+};
 const mounted: VueWrapper[] = [];
 
 async function mountView() {
@@ -37,6 +58,9 @@ async function mountView() {
 }
 
 beforeEach(() => {
+  storage.clear();
+  siteListener = null;
+  listenMock.mockClear();
   invokeMock.mockReset();
   setAlwaysOnTop.mockReset();
   setAlwaysOnTop.mockResolvedValue(undefined);
@@ -79,5 +103,72 @@ describe("DumpsWindowView", () => {
     getViewActions().nextTab?.();
     await flushPromises();
     expect(w.get('[data-chip="dump"]').attributes("aria-checked")).toBe("true");
+  });
+});
+
+describe("DumpsWindowView site scope", () => {
+  const SCOPED: DumpEvent[] = [
+    { id: 1, category: "dump", ts_ms: 1_700_000_000_000, site: "blog", request_id: "a", payload: { value_text: "a" } },
+    { id: 2, category: "dump", ts_ms: 1_700_000_000_001, site: "shop", request_id: "b", payload: { value_text: "b" } },
+  ];
+
+  beforeEach(() => {
+    const base = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation((cmd: string, args: unknown) =>
+      cmd === "list_dumps"
+        ? Promise.resolve({ type: "dumps", events: SCOPED, removed_ids: [], counts: COUNTS, latest_id: 2, min_live_id: 0 })
+        : base?.(cmd, args),
+    );
+  });
+
+  it("starts on the stored site and follows the Insights site event", async () => {
+    storage.set("yerd.insights.site", "blog");
+    const w = await mountView();
+    expect(w.get('[data-testid="window-title"]').text()).toBe("Live feed · blog");
+    expect(w.find('[data-key="a"]').exists()).toBe(true);
+    expect(w.find('[data-key="b"]').exists()).toBe(false);
+    expect(listenMock).toHaveBeenCalledWith("yerd:insights-site-changed", expect.any(Function));
+    siteListener?.({ payload: "shop" });
+    await flushPromises();
+    expect(w.get('[data-testid="window-title"]').text()).toBe("Live feed · shop");
+    expect(w.find('[data-key="a"]').exists()).toBe(false);
+    expect(w.find('[data-key="b"]').exists()).toBe(true);
+  });
+
+  it("applies a site stored before the listener was registered", async () => {
+    storage.set("yerd.insights.site", "blog");
+    listenMock.mockImplementationOnce((_name, cb) => {
+      siteListener = cb;
+      storage.set("yerd.insights.site", "shop");
+      return Promise.resolve(() => undefined);
+    });
+    const w = await mountView();
+    expect(w.get('[data-testid="window-title"]').text()).toBe("Live feed · shop");
+    expect(w.find('[data-key="b"]').exists()).toBe(true);
+    expect(w.find('[data-key="a"]').exists()).toBe(false);
+  });
+
+  it("matches the host form under the daemon's TLD", async () => {
+    storage.set("yerd.insights.site", "blog");
+    const hosts: DumpEvent[] = [
+      { id: 1, category: "dump", ts_ms: 1_700_000_000_000, site: "blog.dev.local", request_id: "a", payload: {} },
+      { id: 2, category: "dump", ts_ms: 1_700_000_000_001, site: "blog-api.dev.local", request_id: "b", payload: {} },
+    ];
+    const base = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation((cmd: string, args: unknown) => {
+      if (cmd === "status") return Promise.resolve({ type: "status", report: { tld: "dev.local" } });
+      if (cmd === "list_dumps") {
+        return Promise.resolve({ type: "dumps", events: hosts, removed_ids: [], counts: COUNTS, latest_id: 2, min_live_id: 0 });
+      }
+      return base?.(cmd, args);
+    });
+    const w = await mountView();
+    expect(w.find('[data-key="a"]').exists()).toBe(true);
+    expect(w.find('[data-key="b"]').exists()).toBe(false);
+  });
+
+  it("has no global pause button", async () => {
+    const w = await mountView();
+    expect(w.find('[data-testid="pause-resume"]').exists()).toBe(false);
   });
 });

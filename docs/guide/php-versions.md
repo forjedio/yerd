@@ -76,10 +76,11 @@ A legacy version carries hard restrictions once installed:
   disables **Make default** for legacy versions.
 - **No code coverage.** `phpcover`, `php7.4cover` / `php8.0cover` / `php8.1cover`,
   and `yerd coverage` all error rather than run - see [Code Coverage](./code-coverage).
-- **No yerd-dumps capture.** The Dumps view flags legacy rows as unsupported -
-  see [Laravel Dumps](./laravel-dumps).
+- **Insights is timing only.** Requests are still timed, but there are no
+  queries, dumps or cold starts; Insights settings marks legacy rows **TOO OLD:
+  TIMING ONLY** - see [Insights](./laravel-dumps).
 - **No `pcov` or `yerd-dump` `.so` builds.** Neither extension is built for EOL
-  PHP, which is why coverage and dumps don't work on legacy versions.
+  PHP, which is why coverage and Insights' extension data don't work on legacy versions.
 
 A legacy version **can** still be assigned to an individual site
 (`yerd use my-app 7.4`), just not as the global default. See
@@ -260,7 +261,7 @@ Dropped versus the stable builds:
 - **`pcov` and `yerd-dump`** - the external `.so` partners from
   [`forjedio/yerd-php-ext`](https://github.com/forjedio/yerd-php-ext) aren't
   built for EOL PHP, which is why [coverage](./code-coverage) and
-  [dumps](./laravel-dumps) don't work on legacy versions.
+  [Insights](./laravel-dumps) queries and dumps don't work on legacy versions.
 
 </details>
 

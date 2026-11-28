@@ -24,6 +24,7 @@ pub mod error;
 pub mod ext_install;
 pub mod ffi_cache;
 pub mod fs_watch;
+pub mod insights;
 pub mod ipc_server;
 pub mod jobs;
 pub mod lan_setup;
@@ -129,6 +130,7 @@ fn spawn_tunnel_listener(
     let resolver = Arc::new(DaemonBackendResolver {
         php_manager: state.php_manager.clone(),
         wordpress_sites: state.wordpress_sites.clone(),
+        tap: state.insights.tap.clone(),
     });
     let binding = yerd_proxy::TunnelBinding {
         listener,
@@ -218,6 +220,7 @@ async fn run_until_shutdown(
         let resolver = Arc::new(DaemonBackendResolver {
             php_manager: daemon.php_manager.clone(),
             wordpress_sites: daemon.state.wordpress_sites.clone(),
+            tap: daemon.state.insights.tap.clone(),
         });
         let https = yerd_proxy::HttpsBinding {
             listener: tls_listener,
@@ -284,6 +287,9 @@ async fn run_until_shutdown(
         let state = daemon.state.clone();
         tokio::spawn(crate::dump_server::run(state, shutdown_rx.clone()))
     };
+
+    let insights_handle =
+        crate::insights::spawn(daemon.state.insights.clone(), shutdown_rx.clone());
 
     let _network_probe = {
         let state = daemon.state.clone();
@@ -398,7 +404,8 @@ async fn run_until_shutdown(
             }
             if state.config.lock().await.dumps.enabled {
                 let dl = crate::network::downloader(&state).await;
-                crate::ext_install::ensure_for_installed(&state.dirs, &dl).await;
+                let replaced = crate::ext_install::ensure_for_installed(&state.dirs, &dl).await;
+                crate::dump_server::restart_started_pools(&state, &replaced).await;
             }
         })
     };
@@ -462,6 +469,7 @@ async fn run_until_shutdown(
     }
     let _ = tokio::time::timeout(Duration::from_secs(5), ipc_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), dump_handle).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), insights_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), update_check_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), network_refresher).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), watch_handle).await;

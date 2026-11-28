@@ -341,6 +341,34 @@ pub enum Response {
         /// config means on). `BTreeMap` for stable order.
         features: BTreeMap<String, bool>,
     },
+    /// Reply to [`crate::Request::InsightsStatus`].
+    InsightsStatus {
+        /// Lowercased names of the sites with recording on.
+        sites: Vec<String>,
+        /// The issue-detection thresholds.
+        thresholds: crate::InsightsThresholds,
+        /// The global extension-capture switch (`[dumps] enabled`).
+        capture_enabled: bool,
+        /// Open (undismissed) issues across the recording sites in the last 24h.
+        open_issues: u32,
+    },
+    /// Reply to [`crate::Request::InsightsOverview`]. Boxed to keep
+    /// `Response` small; `Box<T>` serialises transparently.
+    InsightsOverview {
+        /// The overview.
+        overview: Box<crate::InsightsOverview>,
+    },
+    /// Reply to [`crate::Request::ListInsightsRequests`].
+    InsightsRequests {
+        /// The matching requests, in the requested order.
+        requests: Vec<crate::InsightsRequestSummary>,
+    },
+    /// Reply to [`crate::Request::GetInsightsRequest`]. Boxed like
+    /// [`Self::InsightsOverview`].
+    InsightsRequest {
+        /// The request's drill-in.
+        request: Box<crate::InsightsRequestDetail>,
+    },
     /// Reply to [`crate::Request::ListMails`] - captured email metadata, newest first.
     Mails {
         /// One entry per captured email.
@@ -896,6 +924,10 @@ mod variant_name_pinning {
             Response::S3Credentials { .. } => {}
             Response::Dumps { .. } => {}
             Response::DumpsStatus { .. } => {}
+            Response::InsightsStatus { .. } => {}
+            Response::InsightsOverview { .. } => {}
+            Response::InsightsRequests { .. } => {}
+            Response::InsightsRequest { .. } => {}
             Response::Mails { .. } => {}
             Response::Mail { .. } => {}
             Response::Tools { .. } => {}
@@ -1131,6 +1163,50 @@ mod variant_name_pinning {
             extensions: vec![],
             counts: DumpCounts::default(),
             features: BTreeMap::new(),
+        });
+        pin_response(Response::InsightsStatus {
+            sites: vec!["blog".into()],
+            thresholds: crate::InsightsThresholds::default(),
+            capture_enabled: true,
+            open_issues: 0,
+        });
+        pin_response(Response::InsightsOverview {
+            overview: Box::new(crate::InsightsOverview::empty(
+                crate::InsightsRange::OneHour,
+            )),
+        });
+        pin_response(Response::InsightsRequests { requests: vec![] });
+        pin_response(Response::InsightsRequest {
+            request: Box::new(crate::InsightsRequestDetail {
+                summary: crate::InsightsRequestSummary {
+                    id: "0".repeat(32),
+                    ts_ms: 1,
+                    method: "GET".into(),
+                    path: "/".into(),
+                    route_label: "/".into(),
+                    route_name: None,
+                    route_action: None,
+                    status: 200,
+                    duration_ms: 1.0,
+                    ext_duration_ms: None,
+                    bytes: 0,
+                    content_type: None,
+                    cold: false,
+                    aborted: false,
+                    traced: false,
+                    queries: 0,
+                    dumps: 0,
+                    logs: 0,
+                    issue_kinds: vec![],
+                    db_ms: None,
+                    http_ms: None,
+                    wait_ms: None,
+                    app_ms: None,
+                },
+                events: vec![],
+                issues: vec![],
+                truncated: false,
+            }),
         });
         pin_response(Response::Mails {
             mails: vec![crate::status::MailSummary {

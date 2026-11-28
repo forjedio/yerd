@@ -21,6 +21,7 @@ import {
   groupRequests,
   mergePage,
   nextSelection,
+  siteMatches,
   streamRestarted,
 } from "@/lib/dumps";
 
@@ -31,6 +32,14 @@ export interface DumpsOptions {
   /** Whether to keep the newest request selected on its own. A getter, so a
    *  window resize can turn it on and off. */
   follow: () => boolean;
+  /** Keep only events whose `site` is this Yerd site name (the Insights site),
+   *  or its `{name}.{tld}` host from older extensions. A getter, so the scope can
+   *  follow the picked site; null keeps every event. */
+  site?: () => string | null;
+  /** The local TLD for the host form of `site`. Defaults to `test`. */
+  tld?: () => string;
+  /** While true the stream stops polling and the list holds still. */
+  paused?: () => boolean;
 }
 
 /** The action in flight, so its control can disable itself. */
@@ -72,7 +81,8 @@ export interface Dumps {
  * evicted moves to the newest visible (following) or clears. A page fetched
  * before a clear is dropped, so it can't bring the cleared events back for a
  * tick. A daemon restart (ids start over) drops the held events and re-reads
- * the stream from the start.
+ * the stream from the start. While `paused`, the stream skips its fetches and
+ * picks up from the cursor on resume.
  */
 export function useDumps(options: DumpsOptions): Dumps {
   const toast = useToast();
@@ -82,6 +92,7 @@ export function useDumps(options: DumpsOptions): Dumps {
 
   const stream = usePoll(
     async () => {
+      if (options.paused?.()) return;
       const fetchedIn = generation;
       let page = await listDumps(cursor);
       if (fetchedIn !== generation) return;
@@ -103,7 +114,13 @@ export function useDumps(options: DumpsOptions): Dumps {
 
   const category = ref<ChipKey>("all");
   const query = ref("");
-  const requests = computed(() => groupRequests(events.value));
+  const scoped = computed(() => {
+    const site = options.site?.() ?? null;
+    if (site === null) return events.value;
+    const tld = options.tld?.() ?? "test";
+    return events.value.filter((e) => siteMatches(e.site, site, tld));
+  });
+  const requests = computed(() => groupRequests(scoped.value));
   const visible = computed(() => filterRequests(requests.value, query.value, category.value));
 
   const selectedKey = ref<string | null>(null);
@@ -128,6 +145,12 @@ export function useDumps(options: DumpsOptions): Dumps {
   watch(options.follow, (on) => {
     if (on) sync();
   });
+  watch(
+    () => options.paused?.() ?? false,
+    (p) => {
+      if (!p) void stream.refresh();
+    },
+  );
 
   function select(key: string | null): void {
     selectedKey.value = key;

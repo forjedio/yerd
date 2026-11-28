@@ -900,7 +900,10 @@ mod pure_helper_tests {
         let config = PathBuf::from("/run/yerd/fpm-8.3.conf");
         let env: Vec<(String, String)> = vec![];
         let so = Path::new("/lib/yerd-dump.so");
-        let defines = vec![("yerd_dump.state_path".to_owned(), "/var/state".to_owned())];
+        let defines = vec![
+            ("yerd_dump.state_path".to_owned(), "/var/state".to_owned()),
+            ("yerd_dump.protocol".to_owned(), "2".to_owned()),
+        ];
         let cmd = build_cmd(&binary, &config, &env, Some(so), &defines, &[], None);
 
         let args = args_of(&cmd);
@@ -911,6 +914,8 @@ mod pure_helper_tests {
                 "extension=/lib/yerd-dump.so",
                 "-d",
                 "yerd_dump.state_path=/var/state",
+                "-d",
+                "yerd_dump.protocol=2",
                 "--fpm-config",
                 "/run/yerd/fpm-8.3.conf",
             ]

@@ -31,10 +31,10 @@ pub use project::{
 };
 pub use schema::{
     AddedSection, Config, DomainDelta, DomainsSection, DumpsSection, ExtEntry, FavouritesSection,
-    GroupsSection, MailSection, NetworkSection, NgrokSettings, NodeSection, ParkedClaim,
-    ParkedSection, PhpSection, Ports, ResponseHeadersSection, ServiceInstance, ServicesSection,
-    SiteOverride, TunnelSection, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT,
-    RESERVED_GROUP_NAME,
+    GroupsSection, InsightsSection, InsightsThresholds, MailSection, NetworkSection, NgrokSettings,
+    NodeSection, ParkedClaim, ParkedSection, PhpSection, Ports, ResponseHeadersSection,
+    ServiceInstance, ServicesSection, SiteOverride, TunnelSection, DEFAULT_DNS_PORT,
+    DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
 };
 
 /// The on-disk schema version this crate writes. Bumped together with a new
@@ -140,8 +140,11 @@ pub use schema::{
 /// v32→v33 is a bare bump too. v34 added the optional `[added]` table
 /// ([`Config::added`]) of per-site added times; v33→v34 is structural because
 /// it copies the parked roots into `[added] baseline_pending` so existing parked
-/// sites are recorded as undated rather than recently added.
+/// sites are recorded as undated rather than recently added. v35 added the
+/// optional `[insights]` table ([`Config::insights`]) and turned
+/// `[dumps] enabled` on by default; v34→v35 is structural because it forces
+/// `dumps.enabled = true` once, overriding an explicit `false`.
 ///
 /// The per-version detail, including how to hand-edit a file back down for an
 /// older binary, lives in `docs/developer/config-schema-history.md`.
-pub const CURRENT_VERSION: u32 = 34;
+pub const CURRENT_VERSION: u32 = 35;

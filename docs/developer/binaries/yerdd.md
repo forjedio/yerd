@@ -111,8 +111,9 @@ The daemon's modules (`src/lib.rs` re-exports each as `pub mod`):
 | `node_updates` | Node update poller + cache (notify-only): newest patch per major, per-release updates for `ListNode`, and the `Status` count. |
 | `public_url` | Site URLs mirroring the GUI's `siteUrl` (scheme, host, and the bound port on an unredirected rootless fallback): `site_url` for values written into projects, and `browser_url` for job-log links, which switches to the `http://localhost/~{host}` fallback when `.test` names don't resolve. |
 | `self_update` | Yerd self-update poller: fetches the GitHub Releases API, decides via the pure `yerd-update` crate, and persists a snapshot (`checked_at` + decision) both to disk and in `DaemonState` (notify-only). |
-| `dump_server` | Loopback TCP server reading newline-delimited JSON dump frames from the native `yerd-dump` extension into a bounded ring buffer; serves the ring to the GUI over IPC (`ListDumps`/`DumpsStatus`/…). |
-| `ext_install` | Downloads + SHA-256-verifies native PHP extension `.so`s per installed PHP version (from the `forjedio/yerd-php-ext` releases) into `{data}/php-ext/php-<ver>/`. An `ExtSpec` abstraction drives one fetch loop for **both** `yerd-dump` (`DUMP_SPEC`, gated on dumps) and `pcov` (`PCOV_SPEC`, ungated) - two manifests, one release. |
+| `dump_server` | Loopback TCP server reading newline-delimited JSON dump frames from the native `yerd-dump` extension into a bounded ring buffer (the Live feed); serves the ring to the GUI over IPC (`ListDumps`/`DumpsStatus`/…) and hands protocol-2 frames to the Insights aggregator. See [Insights wiring](#insights-wiring-insights-rs). |
+| `insights` | Insights wiring: the shared `Insights` state (aggregator, store, proxy request tap), the startup load, the drain and tick tasks, and the `Insights*` IPC handlers. All behaviour lives in [`yerd-insights`](../crates/yerd-insights) and `yerd-proxy`'s tap. See [Insights wiring](#insights-wiring-insights-rs). |
+| `ext_install` | Downloads + SHA-256-verifies native PHP extension `.so`s per installed PHP version (from the `forjedio/yerd-php-ext` releases) into `{data}/php-ext/php-<ver>/`. An `ExtSpec` abstraction drives one fetch loop for **both** `yerd-dump` (`DUMP_SPEC`, gated on dumps) and `pcov` (`PCOV_SPEC`, ungated) - two manifests, one release. `ensure_for_installed` returns the PHP versions whose `yerd-dump.so` was replaced, so the caller restarts only those pools. |
 | `tools` | Dev-tool installers (Composer, Node, Bun, pnpm, the Laravel installer, WP-CLI, cloudflared, ngrok, zrok): download/build + verify into `{data}/tools/<id>/` and reconcile their `{data}/bin` shims. See [Dev-tool installers](../dev-tools). |
 | `create_site` | Site-scaffolding job bodies for the GUI wizards (`laravel.rs`, `wordpress.rs`, and `composer_project.rs` for the CodeIgniter/CakePHP/Slim `composer create-project` templates) - see [WordPress support](#wordpress-support) below. |
 | `wordpress_detect` | Narrow marker-file check for whether a site is a `WordPress` install (`wp-config.php`/`wp-load.php`). |
@@ -147,8 +148,8 @@ The daemon's modules (`src/lib.rs` re-exports each as `pub mod`):
 7. **IPC listener** - `build_ipc_listener` (Unix socket `runtime/yerd.sock` on Unix, named pipe `yerd-<pid>` on Windows).
 8. **DNS bind** - `yerd_dns::Bound::bind(127.0.0.1:<dns_port>)`. A **fixed** port is required so an installed resolver config (`DNS=127.0.0.1:<port>`) survives restarts; `dns_port = 0` requests an ephemeral port (dev/tests only), read back via `Bound::local_addr`.
 9. **Mail-capture store + listener** (the Email Capture feature). A `yerd_mail::Store` is opened over `{data}/mail` **unconditionally** - so already-captured mail stays listable even when capture is off - and is a hard error if it can't open. The SMTP listener is then bound via `yerd_mail::bind(mail_port)` **only when `config.mail.enabled`**; a bind failure (e.g. the port is busy) is logged and degrades to not-listening (`mail_listener = None`) rather than aborting the daemon. The resulting `mail_listening` flag is recorded on `DaemonState` and surfaced by `Status`.
-10. **Dump-extension wiring.** Before the manager is shared, `php_manager.set_dump_ext(..)` is called so any pool with a matching `yerd-dump.so` under `{data}/php-ext/php-<ver>/` starts with `-d extension=<so>` plus the extension's `yerd_dump.state_path` ini define. The `.so` itself is fetched on demand (see [the run loop](#the-run-loop-lib-rs) / `ext_install`); the extension self-disables via its state file when dumps are off.
-11. **DaemonState assembly** - everything the running tasks share (next section), including the `DumpStore` (the ring + rebind signal) and the mail store/runtime flag. After assembly, the extension's runtime `state.json` is seeded from the persisted `[dumps]` config (best-effort) so a fresh boot reflects the durable settings.
+10. **Dump-extension wiring.** Before the manager is shared, `php_manager.set_dump_ext(..)` is called so any pool with a matching `yerd-dump.so` under `{data}/php-ext/php-<ver>/` starts with `-d extension=<so>` plus two ini defines: `yerd_dump.state_path={state}/dumps/state.json` and `yerd_dump.protocol=2` (`PROTOCOL_INI` / `PROTOCOL_VERSION` from `yerd_insights::pure::contract`). The protocol define puts a current extension in trace mode, where it never reads the state file and arms a request only when the proxy sends `YERD_TRACE_ID` ([contract C1](../crates/yerd-insights#c1-mode-selection-ini-set-by-yerd)). An older extension does not know the directive (PHP ignores unknown `-d` keys) and keeps reading `state.json`. The `.so` itself is fetched on demand (see [the run loop](#the-run-loop-lib-rs) / `ext_install`).
+11. **DaemonState assembly** - everything the running tasks share (next section), including the `DumpStore` (the ring + rebind signal), the `Insights` state (built over a `yerd_insights::Store` rooted at `{state}/insights`, with a random boot nonce for request ids and a tap seeded from `[insights] sites` and `[dumps]`), and the mail store/runtime flag. After assembly, `state.json` is written from the persisted `[dumps]` config (best-effort). Its `enabled` is always `false` (see [Insights wiring](#insights-wiring-insights-rs)).
 
 ### Site discovery: `scan_sites` / `build_routing`
 
@@ -205,6 +206,7 @@ A site is dropped from the watch set once it resolves or is manually overridden 
 | `wordpress_sites: Arc<RwLock<HashMap<String, bool>>>` | Cache of which sites are `WordPress` (site name → bool), refreshed on every router rebuild. Read by `ListSites` (badge), the login/user-listing handlers, `wordpress_url_sync`, and the proxy's `DaemonBackendResolver::allows_direct_script_execution` (see [Backend resolver](#backend-resolver-backend-resolver-rs)). |
 | `wordpress_login_tokens: Arc<wordpress_login::LoginTokenRegistry>` | One-click admin-login token store, shared with `yerd-proxy` via `LoginTokenConsumer`. See [WordPress support](#wordpress-support). |
 | `wordpress_login_prepend_script: Option<PathBuf>` | Path the auto-login bootstrap script was written to at startup, or `None` if that write failed - one-click login is then unavailable this boot (the ordinary `/wp-admin/` link still works). |
+| `insights: Arc<insights::Insights>` | The Insights aggregator, on-disk store and proxy request tap, shared with the proxy resolver, the dump server and the IPC handlers. See [Insights wiring](#insights-wiring-insights-rs). |
 | `wordpress_versions: RwLock<Option<(Instant, Vec<WordPressVersionInfo>)>>` | Last successful `WordPress` core-version fetch, plus when, so a request can decide whether to re-fetch. Served stale-on-failure. |
 
 ::: warning Lock order
@@ -222,6 +224,7 @@ The mutation path is the only place that holds two locks, and always in the orde
    - **proxy** (`yerd_proxy::ProxyServer::serve` with the `DaemonBackendResolver` and an `HttpsBinding` carrying the cert store),
    - **IPC** (`ipc_server::run`),
    - the **dump-telemetry server** (`dump_server::run`) - a loopback TCP listener receiving newline-delimited JSON frames from the native PHP `yerd-dump` extension into a ring buffer; it rebinds on a port change and a bind failure is non-fatal (logged, retried on the next rebind),
+   - the **Insights startup task** (`insights::spawn`) - loads the stored Insights data, then runs the drain task and the 1 s tick loop until shutdown, then a final forced flush (see [Insights wiring](#insights-wiring-insights-rs)),
    - an **update checker** covering two independent cadences in one task: a
      **PHP and Node checker** (poll once, then every 12h; the two polls run
      concurrently and a shutdown interrupts them; Node only while a release is
@@ -234,8 +237,8 @@ The mutation path is the only place that holds two locks, and always in the orde
    - conditionally, the **mail-capture SMTP task** (`yerd_mail::serve`) - spawned only when `daemon.mail_listener` is `Some` (mail capture enabled *and* the SMTP port bound at startup; a disabled or failed bind is non-fatal and already logged in `bring_up`), and
    - conditionally, the **redirect-port prober** (`spawn_redirect_probe`) - spawned only when the proxy is up *and* `state.https.fell_back` (the HTTPS listener bound the rootless fallback, e.g. `8443`). Every 5s it calls `yerd_platform::PortRedirector::is_active` (via `spawn_blocking`, since the probe does real loopback I/O) and stores `effective_redirect_port(state.https, active)` into `DaemonState::redirect_https_port` - flipping the HTTP→HTTPS redirect target to the well-known port once a macOS port forwarder (`yerd elevate ports`) is confirmed live, and back if it later disappears. On platforms/configs where `is_active` is always `None` (Linux, or a well-known-port bind that never fell back) this task is either unnecessary (not spawned) or a cheap no-op poll.
 
-   That is **six always-on tasks plus two conditional ones** (mail, redirect-probe). Four further spawns are fire-and-forget background work, deliberately *not* awaited so a slow boot can't delay the listeners: an **installed-services auto-start** (`services::auto_start_installed`) that brings up every engine with an installed version, regardless of the persisted `enabled` flag (a `Stop` lasts only the session). It watches the shutdown channel and bails the moment shutdown is requested, so an instance torn down shortly after booting (an upgrade-restart bounce) never spawns DB engines it would only have to stop again - that 10s `stop_grace` would otherwise hold the instance lock and stall the next launch. When dumps are enabled in config, an **extension-install** pass (`ext_install::ensure_for_installed`) that fetches the dump `.so` for installed PHP versions so on-demand pools pick it up; an **always-on pcov + cover-shim** pass (`ipc_server::refresh_pcov_and_shims`) that bundles `pcov.so` for installed versions and (re)builds the `{data}/bin` cover/clean shims. This pass is where the **cover symlinks self-heal**: it re-points them at the current `yerd` binary, so a moved-binary install still resolves, and warm/offline starts skip the network (a local-presence check on the `.so`s) - see [cover-shim reconciliation](#cover-shim-reconciliation-and-pcov). The fourth spawn is a **dev-tool shim reconcile** (`reconcile_tool_shims_now`) that self-heals the `composer`/`node`/`bun` shims (re-pointing the `composer` multi-call link if the `yerd` binary moved) and the `cloudflared` link, and prunes shims for tools removed between runs; the same task then runs the **service client shim reconcile** (`reconcile_client_shims_now`), which links the client commands of installed engines (`mysql`, `psql`, `valkey-cli`, ...) into `{data}/bin` and prunes those of engines removed between runs.
-4. Awaits the shutdown channel, then caps each task's join with a `timeout` (10s DNS/proxy, 5s IPC/dump/update/watch, and 5s for the mail and redirect-probe tasks when present) so a stuck task can't hang the exit.
+   That is **seven always-on tasks plus two conditional ones** (mail, redirect-probe). Four further spawns are fire-and-forget background work, deliberately *not* awaited so a slow boot can't delay the listeners: an **installed-services auto-start** (`services::auto_start_installed`) that brings up every engine with an installed version, regardless of the persisted `enabled` flag (a `Stop` lasts only the session). It watches the shutdown channel and bails the moment shutdown is requested, so an instance torn down shortly after booting (an upgrade-restart bounce) never spawns DB engines it would only have to stop again - that 10s `stop_grace` would otherwise hold the instance lock and stall the next launch. When dumps are enabled in config (the default), an **extension-install** pass (`ext_install::ensure_for_installed`) that fetches the dump `.so` for installed PHP versions so on-demand pools pick it up, then restarts the started pools of only the versions whose `.so` was replaced (`dump_server::restart_started_pools`), since a running FPM keeps the old extension mapped until it restarts; an **always-on pcov + cover-shim** pass (`ipc_server::refresh_pcov_and_shims`) that bundles `pcov.so` for installed versions and (re)builds the `{data}/bin` cover/clean shims. This pass is where the **cover symlinks self-heal**: it re-points them at the current `yerd` binary, so a moved-binary install still resolves, and warm/offline starts skip the network (a local-presence check on the `.so`s) - see [cover-shim reconciliation](#cover-shim-reconciliation-and-pcov). The fourth spawn is a **dev-tool shim reconcile** (`reconcile_tool_shims_now`) that self-heals the `composer`/`node`/`bun` shims (re-pointing the `composer` multi-call link if the `yerd` binary moved) and the `cloudflared` link, and prunes shims for tools removed between runs; the same task then runs the **service client shim reconcile** (`reconcile_client_shims_now`), which links the client commands of installed engines (`mysql`, `psql`, `valkey-cli`, ...) into `{data}/bin` and prunes those of engines removed between runs.
+4. Awaits the shutdown channel, then caps each task's join with a `timeout` (10s DNS/proxy, 5s IPC/dump/update/watch/Insights, and 5s for the mail and redirect-probe tasks when present) so a stuck task can't hang the exit.
 5. Shuts down the PhpManager and the service manager, reads `restart_requested`, drops the instance lock, and returns `Outcome`.
 
 After `run_until_shutdown` returns, the signal task is **aborted** rather than awaited - when shutdown came from a `RestartDaemon` IPC (which trips the channel directly with no OS signal), the signal task is still parked and awaiting it would hang the restart forever.
@@ -250,7 +253,8 @@ After `run_until_shutdown` returns, the signal task is **aborted** rather than a
 - **Mutations:** `Park`, `Link`, `Unlink`, `Unpark`, `SetPhp`, `SetSecure`, `SetWebRoot`, `AddDomain`, `RemoveDomain`, `SetPrimaryDomain`, `ResetDomains` → `handle_mutation`.
 - **PHP lifecycle:** `InstallPhp`, `UpdatePhp`, `CheckPhpUpdates`, `SetDefaultPhp`, `SetPhpSettings`, `RestartPhp`, `RestartAllPhp`, `UninstallPhp`.
 - **Doctor:** `Diagnose` (via `yerd_doctor::diagnose`), `DoctorFix` (runs `plan_auto_fixes`, applies FPM restarts, re-diagnoses).
-- **Dumps (Laravel telemetry):** `ListDumps` (pages the ring), `ClearDumps`, `DeleteDump`, `DumpsStatus`, `SetDumpsEnabled` (first enable fetches the `.so` and restarts started pools), `SetDumpsPort` (test-binds then triggers a hot rebind), `SetDumpsPersist`, `SetDumpFeature` → `dump_server::*`.
+- **Dumps (extension telemetry):** `ListDumps` (pages the ring), `ClearDumps`, `DeleteDump`, `DumpsStatus`, `SetDumpsEnabled` (the global capture switch; first enable fetches the `.so` and restarts started pools), `SetDumpsPort` (test-binds then triggers a hot rebind), `SetDumpsPersist`, `SetDumpFeature` → `dump_server::*`. Every successful `[dumps]` change is also mirrored into the Insights tap (port, capture switch, feature list).
+- **Insights:** `InsightsStatus`, `SetInsightsEnabled`, `SetInsightsThresholds`, `InsightsOverview`, `ListInsightsRequests`, `GetInsightsRequest`, `DismissInsightsIssue`, `ClearInsights` → `insights::*` (see [Insights wiring](#insights-wiring-insights-rs)).
 - **Mail capture:** `ListMails`, `GetMail`, `ClearMails`, `DeleteMails`, `MarkMailsRead` (marks the given mails read in the store), `SetMailPort`, `SetMailEnabled` (port/enabled persist to config and take effect on the next restart - no hot rebind) → the `mail_store` / `set_mail_*` handlers. `Status` reports the store's total and unread counts via `MailStatus`.
 - **Dev tools:** `ListTools` (pure fs status), `InstallTool`/`UninstallTool` → `tools::*` then a `{data}/bin` shim reconcile. See [Dev-tool installers](../dev-tools).
 - **WordPress:** `CreateSite` (Laravel, WordPress, CodeIgniter, CakePHP or Slim spec) → a background job under `create_site::*`, polled via `JobStatus`. `MintWordpressLoginToken`, `SetWordpressAutoLogin` → `handle_mutation`, `WordpressAdminUsers`, `AvailableWordpressVersions` → `wordpress_login::*` / `wordpress_users::*` / `wordpress_versions::*`. See [WordPress support](#wordpress-support) above.
@@ -414,6 +418,53 @@ tool), and the same edge already exists for `composer`, `laravel` and `wp`.
 
 `DaemonCertStore` implements `yerd_proxy::CertStore`. On the first SNI miss for a host it issues a fresh leaf via the in-memory `CertAuthority` (~395-day validity), persists the PEM under `data/leaves/<host>.{cert,key}.pem`, parses it into a `rustls::sign::CertifiedKey`, and caches it. SNI lookups are normalised (trailing dot stripped, lowercased) so `app.test`, `APP.TEST.`, and `app.test` share one cached `Arc`. The unit tests assert the issue-then-cache identity (`Arc::ptr_eq`), PEM persistence, and case-insensitive lookup.
 
+## Insights wiring (`insights.rs`)
+
+The `insights` module schedules [Insights](../../guide/laravel-dumps); the behaviour lives in [`yerd-insights`](../crates/yerd-insights) (aggregation, codec, store) and in `yerd-proxy`'s `RequestTap` / `RecordingBody`. `DaemonState.insights` is an `Arc<Insights>`:
+
+```rust
+pub struct Insights {
+    pub agg: Mutex<Aggregator>,      // tokio mutex, never held across disk work
+    pub store: Arc<Store>,           // used only from spawn_blocking
+    pub tap: Arc<RequestTap>,        // the proxy's request tap
+    pub flushing: Mutex<()>,         // held from take_flush to confirm, and for the startup load
+    /* the tap receiver and the prune threshold */
+}
+```
+
+`Insights::new` builds the tap (a bounded channel of 16,384 messages and a random boot nonce) and seeds it from config: the recording sites (`[insights] sites`), and, through `sync_tap`, the dump-server port, the capture switch (`[dumps] enabled`) and the resolved feature list. The aggregator gets the configured thresholds. `dump_server::apply_config` calls `sync_tap` again after every successful `[dumps]` change, and `dump_server::run` mirrors its bound state into `tap.set_bound`, so the proxy only sends trace params when capture is on and the dump server is listening.
+
+**Tasks.** `insights::spawn` starts one startup task, which:
+
+1. takes `flushing` and holds it for the whole load,
+2. runs `store.load_all(now)` on `spawn_blocking` and calls `agg.load_site` for each stored site. The load never fails: a missing root, an unreadable site or a failed task logs a warning and that data starts empty,
+3. releases `flushing`, then spawns the **drain task** and runs the **tick loop** itself.
+
+While the load runs, proxy samples wait in the tap channel (overflow is counted as dropped) and dump-server frames land in the aggregator's `pending` joins, which are not site state, so they join their samples afterwards.
+
+- **Drain task:** `recv_many(256)` on the tap channel, then one aggregator lock per batch: each `TapMessage::Sample` is mapped field for field (`sample_from_proxy`) into `on_sample`, and each `TapMessage::Static` into `note_static`.
+- **Tick, every 1 s:** take `flushing`; under the aggregator lock fold the tap's dropped counters (`note_proxy_dropped`), `tick`, and `take_flush`; write each batch with `store.append_batch` on `spawn_blocking`; re-lock to `confirm_flush` on success or `flush_failed` on error (logged at `warn`). It then prunes, still under `flushing`, when a UTC hour boundary has passed since the last prune or when 128 MiB has been appended since then (`PRUNE_CHECK_BYTES`), and calls `on_pruned` for the removed hours. Sites whose dismissed set changed during a rollup prune get `save_dismissed`.
+- **Shutdown:** the drain task ingests whatever is queued, and the startup task runs one final forced flush. `run_until_shutdown` awaits the startup handle with a 5 s timeout. A shutdown that arrives during the load skips the loop and flushes straight away.
+
+Lock order is `flushing` then `agg`; `agg` is never held across an await of disk work, and the config mutex is never held while either is taken.
+
+**IPC handlers.** One `dispatch` arm each:
+
+| Request | Handler behaviour |
+| --- | --- |
+| `InsightsStatus` | Config sites, thresholds, `dumps.enabled` as `capture_enabled`, and `open_issues` summed over the recording sites from the aggregator's running open-issue sets (the GUI's sidebar badge). |
+| `SetInsightsEnabled` | Persists the lowercased site in `[insights] sites` and mirrors the set into the tap. Disabling force-flushes that site under `flushing`. Enabling a site whose non-legacy PHP version has no `yerd-dump.so` yet spawns `dump_server::ensure_ext_and_restart` in the background. |
+| `SetInsightsThresholds` | Validates (every value at least 1, duplicate minimum at least 2, else `invalid_setting`), persists, and applies to new requests. |
+| `InsightsOverview` | Computed under the aggregator lock; `ext_available` is set from whether the site's PHP version is non-legacy. |
+| `ListInsightsRequests` | `5m` is memory only. `1h` / `24h` merge the in-memory requests with the store's cached `scan_requests` (on `spawn_blocking`), de-duplicated by id. |
+| `GetInsightsRequest` | Memory first, then `store.find_detail` for the hour of `ts_ms`; an unknown id is `not_found`. |
+| `DismissInsightsIssue` | Takes `flushing`, updates the aggregator, then saves the site's dismissed keys still present in its dictionary. |
+| `ClearInsights` | Takes `flushing`, resets the site in the aggregator, then `store.clear_site` (deletes the directory and invalidates the scan cache). |
+
+Mutating handlers take `flushing` first, so they wait for the startup load and can never land between a batch being taken and confirmed. Read handlers never take `flushing` and never create site state; an unknown site returns empty data.
+
+**Dump server changes.** `IncomingFrame` gained `#[serde(default)]` `v`, `seq` and `t_us` (contract C3). Every frame still goes to the live ring; a frame with `v >= 2` is also handed to the aggregator's `on_frame`. A protocol-2 `request` summary stays out of the ring while the `requests` feature is off, because trace mode always sends it. `write_state_file` always writes `"enabled": false` to `{state}/dumps/state.json` (contracts C1 and C5) with its byte shape unchanged: a protocol-2 extension never reads it, and an older extension that still does stays inert on every site instead of capturing all of them. `DumpsStatus.enabled` still reports the real `[dumps] enabled` switch.
+
 ## Backend resolver (`backend_resolver.rs`)
 
 `DaemonBackendResolver` implements `yerd_proxy::BackendResolver`:
@@ -422,8 +473,11 @@ tool), and the same edge already exists for `composer`, `laravel` and `wp`.
 pub struct DaemonBackendResolver {
     pub php_manager: Arc<Mutex<DaemonPhpManager>>,
     pub wordpress_sites: Arc<RwLock<HashMap<String, bool>>>,
+    pub tap: Arc<RequestTap>,
 }
 ```
+
+`tap` is the Insights request tap. The resolver hands it to the proxy through the trait's sync `request_tap()` method (default `None`), so the proxy can time PHP-FPM requests for Insights-enabled sites without the daemon touching `ProxyServer::serve`'s signature. The tunnel listener's resolver carries the same tap.
 
 For a routed `&Site`, `backend_for` locks the `PhpManager` only for the duration of `ensure(site.php())` (which has a fast path for already-running pools), then maps the returned `yerd_php::Listen` to a proxy `Backend`:
 

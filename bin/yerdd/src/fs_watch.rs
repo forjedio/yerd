@@ -125,8 +125,7 @@ async fn recompute(state: &DaemonState, unsaved: &mut bool) -> Option<HashSet<Pa
         |p| std::path::Path::new(p).is_dir(),
     );
     if moved || claimed || stamped {
-        *state.site_added.write().await = next.added.clone();
-        *state.favourite_sites.write().await = next.favourites.sites.clone();
+        startup::publish_name_mirrors(state, &next).await;
         *guard = next;
         *unsaved = true;
     }
@@ -234,6 +233,7 @@ mod tests {
                 .paths
                 .insert(parked.to_string_lossy().into_owned());
             cfg.favourites.sites.insert("laravel-com".to_owned());
+            cfg.insights.sites.insert("laravel-com".to_owned());
         }
         recompute(&state, &mut false).await.unwrap();
         assert!(state.router.read().await.get("laravel-com").is_some());
@@ -244,9 +244,12 @@ mod tests {
         assert!(state.router.read().await.get("laravel").is_some());
         let mirror = state.favourite_sites.read().await.clone();
         assert!(mirror.contains("laravel") && !mirror.contains("laravel-com"));
+        assert!(state.insights.tap.is_enabled("laravel"));
+        assert!(!state.insights.tap.is_enabled("laravel-com"));
         let cfg = state.config.lock().await;
         assert!(cfg.favourites.sites.contains("laravel"));
         assert!(!cfg.favourites.sites.contains("laravel-com"));
+        assert!(cfg.insights.sites.contains("laravel"));
         let root = parked.join("laravel.com").to_string_lossy().into_owned();
         let claim = cfg.parked.claims.get(&root).unwrap();
         assert_eq!(claim.name, "laravel");

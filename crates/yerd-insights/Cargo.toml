@@ -1,0 +1,22 @@
+[package]
+name                   = "yerd-insights"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+publish.workspace      = true
+description            = "Insights: per-site request timing, query issue detection, rollups and on-disk codec for Yerd."
+
+[dependencies]
+yerd-ipc   = { path = "../yerd-ipc" }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+thiserror  = { workspace = true }
+# Per-request detail is stored as one gzip member each (Compression::fast).
+flate2     = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

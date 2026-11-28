@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
   cachedUpdateStatus: vi.fn(),
   listPhp: vi.fn(),
   showMailsWindow: vi.fn(),
-  dumpsStatus: vi.fn(),
+  insightsStatus: vi.fn(),
   hostPlatform: vi.fn(),
 }));
 
@@ -25,7 +25,7 @@ vi.mock("@/ipc/client", () => ({
   cachedUpdateStatus: mocks.cachedUpdateStatus,
   listPhp: mocks.listPhp,
   showMailsWindow: mocks.showMailsWindow,
-  dumpsStatus: mocks.dumpsStatus,
+  insightsStatus: mocks.insightsStatus,
   hostPlatform: mocks.hostPlatform,
   getTitleBarStyle: vi.fn(async () => "auto"),
   setTitleBarStyle: vi.fn(async () => {}),
@@ -75,7 +75,7 @@ const PATHS = [
   "/tooling",
   "/services",
   "/mail",
-  "/dumps",
+  "/insights",
   "/integrations",
   "/doctor",
   "/general",
@@ -130,7 +130,7 @@ beforeEach(() => {
   daemon.report.value = makeReport();
   mocks.cachedUpdateStatus.mockResolvedValue({ available: false });
   mocks.listPhp.mockResolvedValue({ updates: [] });
-  mocks.dumpsStatus.mockResolvedValue({ enabled: true });
+  mocks.insightsStatus.mockResolvedValue({ open_issues: 0 });
   mocks.hostPlatform.mockResolvedValue("macos");
   mocks.showMailsWindow.mockResolvedValue(undefined);
 });
@@ -153,7 +153,7 @@ describe("SideNav", () => {
       "Tooling",
       "Services",
       "Mail",
-      "Dumps",
+      "Insights",
       "Share",
     ]);
     expect(labels(w, "nav-pinned")).toEqual(["Doctor", "Settings"]);
@@ -184,22 +184,32 @@ describe("SideNav", () => {
     expect(router.currentRoute.value.path).toBe("/overview");
   });
 
-  it("shows the Dumps on/off pill from dumps_status", async () => {
+  it("badges Insights with the open-issue count from insights_status", async () => {
+    mocks.insightsStatus.mockResolvedValue({ open_issues: 3 });
     const w = await mountNav();
-    expect(row(w, "Dumps").get('[data-testid="nav-state"]').text()).toBe("on");
 
-    w.unmount();
-    resetResourceCache();
-    mocks.dumpsStatus.mockResolvedValue({ enabled: false });
-    const off = await mountNav();
-    expect(row(off, "Dumps").get('[data-testid="nav-state"]').text()).toBe("off");
+    expect(row(w, "Insights").get('[data-testid="nav-badge"]').text()).toBe("3");
+    expect(row(w, "Insights").find('[data-testid="nav-state"]').exists()).toBe(false);
   });
 
-  it("omits the Dumps pill while there is no status report", async () => {
+  it("hides the Insights badge at zero open issues", async () => {
+    const w = await mountNav();
+
+    expect(row(w, "Insights").find('[data-testid="nav-badge"]').exists()).toBe(false);
+  });
+
+  it("omits the Insights badge while there is no status report", async () => {
+    mocks.insightsStatus.mockResolvedValue({ open_issues: 5 });
     daemon.report.value = null;
     const w = await mountNav();
 
-    expect(row(w, "Dumps").find('[data-testid="nav-state"]').exists()).toBe(false);
+    expect(row(w, "Insights").find('[data-testid="nav-badge"]').exists()).toBe(false);
+  });
+
+  it("links Insights to /insights", async () => {
+    const w = await mountNav();
+
+    expect(row(w, "Insights").attributes("href")).toBe("/insights");
   });
 
   it("marks Doctor when a privilege needs elevating", async () => {

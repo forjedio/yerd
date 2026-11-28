@@ -28,7 +28,29 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v34 (current)
+### v35 (current)
+
+**Added:** the optional `[insights]` table - the sites with [Insights](../guide/laravel-dumps) recording on (`sites`, lowercased names) and the issue-detection thresholds (`[insights.thresholds]`: `n_plus_one_min`, `duplicate_min`, `slow_query_ms`, `large_read_rows`, `max_queries`). Every key defaults when absent, the whole table is omitted while no site records and the thresholds are the defaults, and `[insights.thresholds]` is omitted while every value is the default. Validation rejects a threshold of `0` and a `duplicate_min` below `2`.
+
+**Changed:** `[dumps] enabled` is now the global extension-capture switch and **defaults to `true`** (it was `false`). A v35 file with no `[dumps]` table, or a `[dumps]` table with no `enabled` key, therefore has capture on, and a default config still omits `[dumps]` entirely. Which sites are actually recorded is chosen per site in `[insights] sites`.
+
+```toml
+[insights]
+sites = ["blog"]
+
+[insights.thresholds]
+n_plus_one_min = 5
+duplicate_min = 2
+slow_query_ms = 250
+large_read_rows = 1000
+max_queries = 50
+```
+
+**Migration from v34:** structural but small - the migration sets `[dumps] enabled = true`, creating the `[dumps]` table when absent and leaving its other keys alone. An older explicit `enabled = false` meant "no dumps anywhere", which v35 expresses by leaving every Insights site off, so it is overridden once on upgrade. `[insights]` defaults to empty, so nothing else changes.
+
+**To downgrade to v34:** change `version = 35` to `version = 34` and delete the `[insights]` table and its `[insights.thresholds]` sub-table (a v34 daemon rejects the unknown table under `deny_unknown_fields`). If you want the old Laravel Dumps antenna on under v34, make sure `[dumps]` contains `enabled = true`, since v34 defaults an absent key to `false`. The recorded Insights data under the state directory's `insights/` folder is ignored by older builds and can be deleted.
+
+### v34
 
 **Added:** the optional `[added]` table - when each site was added to Yerd, as Unix seconds, for the desktop app's **Recently added** list. `[added.linked]` is keyed by site name and `[added.parked]` by byte-exact document root (like `[domains.parked]`), so renaming a parked folder never carries a time across to a different site. A value of `0` means the site was already there before Yerd recorded added times: it is kept so the site is never stamped later, but reported as undated. `baseline_pending` lists the parked roots whose existing sites the migration asked to record as undated. The table is omitted when empty, so a fresh config never writes it.
 
