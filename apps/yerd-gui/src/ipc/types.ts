@@ -704,6 +704,10 @@ export type Response =
   | { type: "service_logs"; lines: string[] }
   | { type: "service_overrides"; overrides: Record<string, string> }
   | { type: "databases"; databases: DatabaseSummary[] }
+  | { type: "buckets"; buckets: BucketSummary[] }
+  | { type: "bucket_stats"; objects: number; bytes: number }
+  | { type: "bucket_dropped"; objects_removed: number }
+  | { type: "s3_credentials"; endpoint: string; access_key: string; secret_key?: string }
   | {
       type: "dumps";
       events: DumpEvent[];
@@ -951,6 +955,24 @@ export interface Contributor {
 /** One user database in a SQL service (mirrors the daemon's `DatabaseSummary`). */
 export interface DatabaseSummary {
   name: string;
+}
+
+/** One bucket in the S3 gateway (mirrors the daemon's `BucketSummary`). */
+export interface BucketSummary {
+  name: string;
+}
+
+/** The S3 gateway endpoint and root credentials; `secret_key` only when requested. */
+export interface S3Credentials {
+  endpoint: string;
+  access_key: string;
+  secret_key?: string;
+}
+
+/** A bucket's object count and total size in bytes. */
+export interface BucketStats {
+  objects: number;
+  bytes: number;
 }
 
 // ── tunnels (status.rs - Cloudflare Tunnel integration) ──────────────────────

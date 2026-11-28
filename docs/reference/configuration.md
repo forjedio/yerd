@@ -356,7 +356,7 @@ The `path` key is the parked site's document-root string, stored **byte-exact an
 ### `[services.<id>]`
 
 Installed services, one table per engine, keyed by its `id`
-(`mysql`, `mariadb`, `postgres`, `redis`, or `meilisearch`). An unknown service id fails
+(`mysql`, `mariadb`, `postgres`, `redis`, `meilisearch`, or `versitygw`). An unknown service id fails
 validation (`UnknownService`). See [Services & Databases](../guide/services).
 
 | Key         | TOML type      | Meaning                                            | Default |
@@ -424,7 +424,7 @@ maxmemory-policy = "allkeys-lru"
 Like `[php.directives]`, a hand-edited invalid or reserved entry here never fails
 the load - it is silently dropped while its valid siblings survive, so a bad edit
 can't stop the daemon. An overrides table under a service that accepts none
-(`meilisearch`, `reverb:<site>`) is inert rather than fatal. Setting a value
+(`meilisearch`, `versitygw`, `reverb:<site>`) is inert rather than fatal. Setting a value
 through the CLI or desktop app still validates strictly, and refuses a reserved
 directive with a hint naming the command that manages it.
 :::
@@ -919,7 +919,7 @@ secure = true
 web_root = "public"
 
 # Installed services, one table per engine.
-# Known ids: mysql, mariadb, postgres, redis, meilisearch. Usually managed via `yerd service`.
+# Known ids: mysql, mariadb, postgres, redis, meilisearch, versitygw. Usually managed via `yerd service`.
 [services.redis]
 version = "8"
 port = 6379

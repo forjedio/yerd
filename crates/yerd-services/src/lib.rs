@@ -5,8 +5,8 @@
 //! machine (under the database [`yerd_supervise::supervisor::SupervisorPolicy`]),
 //! and reports their live state. Mirrors `yerd-php` in structure.
 //!
-//! The engines - **Redis (Valkey)**, `MySQL`, `MariaDB`, Postgres, and
-//! Meilisearch - are
+//! The engines - **Redis (Valkey)**, `MySQL`, `MariaDB`, Postgres,
+//! Meilisearch, and the versitygw S3 gateway - are
 //! implemented end-to-end (supervision, datadir init, config rendering, health
 //! probing, and SQL database administration for the three SQL engines). Whether a
 //! given engine/version installs depends only on whether a prebuilt build is
@@ -16,19 +16,24 @@
 
 pub mod client;
 pub mod config_render;
+pub mod credentials;
 pub mod database;
 pub mod error;
 pub mod health;
 pub mod manager;
 pub mod port;
 pub mod release;
+pub mod s3;
 pub mod service;
 pub mod version;
 
 pub use client::{ClientDefaults, ClientTools, ConnectionPlan, ShimPlan};
+pub use credentials::RootCredentials;
 pub use database::{DbNameError, ExistingDbNameError};
 pub use error::ServiceError;
-pub use health::{MeilisearchProbe, ReadinessProbe, RedisProbe, ServiceProbes, TcpConnectProbe};
+pub use health::{
+    MeilisearchProbe, ReadinessProbe, RedisProbe, ServiceProbes, TcpConnectProbe, VersityGwProbe,
+};
 pub use manager::{ServiceManager, ServiceRunState, ServiceSnapshot};
 pub use port::candidate_ports;
 pub use release::{
@@ -38,6 +43,7 @@ pub use release::{
 pub use service::{
     DatadirScope, LaunchContext, LaunchPlan, MariaDb, Meilisearch, Multiplicity, MySql, Postgres,
     ReadinessKind, Redis, Reverb, ServiceDefinition, ServiceKind, ServiceRegistry, SqlEngine,
+    VersityGw, S3_REGION, VERSITYGW_HEALTH_PATH,
 };
 pub use version::{discover_installed, ServiceVersion};
 

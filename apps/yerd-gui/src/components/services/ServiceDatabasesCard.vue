@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { Download, Ellipsis, Plug, Plus, Search, Trash2, Upload } from "lucide-vue-next";
 
-import { FIELD } from "@/components/services/styles";
+import { CONFIRM_BTN, FIELD, ROW } from "@/components/services/styles";
 import { CARD } from "@/components/ui/styles";
 import Button from "@/components/ui/Button.vue";
 import {
@@ -219,10 +219,6 @@ function clearFilter(event: KeyboardEvent): void {
 function cancelConfirm(): void {
   confirm.value = null;
 }
-
-const ROW = "flex h-9 items-center gap-2 pl-4 pr-2";
-const CONFIRM_BTN =
-  "inline-flex h-7 shrink-0 items-center rounded-md px-3 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50";
 </script>
 
 <template>

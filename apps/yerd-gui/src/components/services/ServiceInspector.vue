@@ -2,7 +2,9 @@
 import { computed, ref, watch } from "vue";
 import { Ellipsis, FileText, Play, RotateCw, Square, Trash2, X } from "lucide-vue-next";
 
+import ServiceBucketsCard from "@/components/services/ServiceBucketsCard.vue";
 import ServiceConnectCard from "@/components/services/ServiceConnectCard.vue";
+import ServiceCredentialsCard from "@/components/services/ServiceCredentialsCard.vue";
 import ServiceDatabasesCard from "@/components/services/ServiceDatabasesCard.vue";
 import ServiceOverridesCard from "@/components/services/ServiceOverridesCard.vue";
 import Button from "@/components/ui/Button.vue";
@@ -16,6 +18,7 @@ import InspectorFrame from "@/components/ui/InspectorFrame.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
 import { CARD, INSPECTOR_TOOL } from "@/components/ui/styles";
+import type { S3StorageState } from "@/composables/useS3Storage";
 import type { ServiceStatus, SiteEntry, StatusReport } from "@/ipc/types";
 import {
   address,
@@ -26,6 +29,7 @@ import {
   hasVersion,
   headerStatus,
   isPerSite,
+  isS3,
   siteDomain,
   uninstallVersion,
   versionLabel,
@@ -44,7 +48,8 @@ export interface DatabaseListState {
  * Start / Restart / Stop that apply, the `···` menu), the facts strip (address,
  * version or site, Start with Yerd) and the cards for its kind: Databases,
  * Connect and Config overrides for a SQL engine, Connect and overrides for a
- * cache or search engine, and Reverb's two-column Connect block. In `panel`
+ * cache or search engine, Buckets, Connect and Credentials for S3 storage, and
+ * Reverb's two-column Connect block. In `panel`
  * mode it sits beside the list; in `drawer` mode it slides over the window
  * (760px, for the two columns), and Escape is left to an open menu inside it.
  */
@@ -58,6 +63,8 @@ const props = defineProps<{
   tld: string;
   /** The view's in-flight action key, e.g. `restart:postgres`. */
   busy: string | null;
+  /** The view's S3 buckets, stats and credentials, used when the service is S3. */
+  s3?: S3StorageState;
 }>();
 
 const emit = defineEmits<{
@@ -72,6 +79,8 @@ const emit = defineEmits<{
   uninstall: [];
   remove: [];
   databasesChanged: [];
+  bucketsChanged: [];
+  bucketDropped: [name: string];
   openSite: [site: SiteEntry];
 }>();
 
@@ -79,10 +88,31 @@ const drawer = computed(() => props.mode === "drawer");
 const headerMenuOpen = ref(false);
 const databasesLayerOpen = ref(false);
 const connectDb = ref("");
+const bucketsLayerOpen = ref(false);
+const connectBucket = ref("");
+
+const EMPTY_S3: S3StorageState = {
+  buckets: { names: null, loading: false, error: null },
+  stats: {},
+  credentials: null,
+};
+const s3State = computed(() => props.s3 ?? EMPTY_S3);
+const s3Endpoint = computed(
+  () => s3State.value.credentials?.endpoint ?? `http://127.0.0.1:${props.service?.port ?? 0}`,
+);
 
 function isLayerOpen(): boolean {
-  return headerMenuOpen.value || databasesLayerOpen.value;
+  return headerMenuOpen.value || databasesLayerOpen.value || bucketsLayerOpen.value;
 }
+
+watch(
+  [() => props.service?.service, () => s3State.value.buckets.names],
+  ([id, names], [prevId]) => {
+    const list = names ?? [];
+    if (id !== prevId || !list.includes(connectBucket.value)) connectBucket.value = list[0] ?? "";
+  },
+  { immediate: true },
+);
 
 watch(
   [() => props.service?.service, () => props.databases.names],
@@ -102,6 +132,7 @@ const kind = computed(() => (props.service ? connectKind(props.service) : "none"
 const hasConnect = computed(() => kind.value !== "none");
 const hasOverrides = computed(() => props.service?.supports_overrides === true);
 const hasDatabases = computed(() => props.service?.supports_databases === true && !perSite.value);
+const hasBuckets = computed(() => !!props.service && isS3(props.service));
 
 function actionBusy(action: string): boolean {
   return props.busy === `${action}:${id.value}`;
@@ -282,7 +313,42 @@ const LINK =
       </div>
 
       <div
-        v-if="hasDatabases"
+        v-if="hasBuckets"
+        class="mt-5 grid grid-cols-[minmax(0,1fr)_324px] items-stretch gap-4"
+        data-testid="service-body"
+      >
+        <ServiceBucketsCard
+          v-model:layer-open="bucketsLayerOpen"
+          :service="service"
+          :names="s3State.buckets.names"
+          :loading="s3State.buckets.loading"
+          :error="s3State.buckets.error"
+          :stats="s3State.stats"
+          :endpoint="s3Endpoint"
+          :connect-bucket="connectBucket"
+          @use-in-connect="(name: string) => (connectBucket = name)"
+          @changed="emit('bucketsChanged')"
+          @dropped="(name: string) => emit('bucketDropped', name)"
+          @start="emit('start')"
+        />
+        <div class="flex min-w-0 flex-col gap-4">
+          <ServiceConnectCard
+            v-model:bucket="connectBucket"
+            :service="service"
+            :databases="null"
+            :buckets="s3State.buckets.names"
+            :credentials="s3State.credentials"
+            :report="report"
+            :sites="sites"
+            :tld="tld"
+            layout="stack"
+          />
+          <ServiceCredentialsCard :service="service" :credentials="s3State.credentials" />
+        </div>
+      </div>
+
+      <div
+        v-else-if="hasDatabases"
         class="mt-5 grid grid-cols-[minmax(0,1fr)_324px] items-start gap-4"
         data-testid="service-body"
       >

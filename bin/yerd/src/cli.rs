@@ -144,7 +144,7 @@ pub enum Command {
         #[command(subcommand)]
         action: NodeAction,
     },
-    /// Manage a local service (redis, mysql, mariadb, postgres, meilisearch).
+    /// Manage a local service (redis, mysql, mariadb, postgres, meilisearch, versitygw).
     Service {
         /// What to do.
         #[command(subcommand)]
@@ -155,6 +155,12 @@ pub enum Command {
         /// What to do.
         #[command(subcommand)]
         action: DbAction,
+    },
+    /// Manage buckets in the running S3 storage service (versitygw).
+    S3 {
+        /// What to do.
+        #[command(subcommand)]
+        action: S3Action,
     },
     /// Publish a local site to the internet via a Cloudflare Tunnel.
     Tunnel {
@@ -660,7 +666,7 @@ pub enum ServiceAction {
     Available,
     /// Install a service version (downloads a prebuilt build).
     Install {
-        /// Service id: `redis`, `mysql`, `mariadb`, `postgres`, or `meilisearch`.
+        /// Service id: `redis`, `mysql`, `mariadb`, `postgres`, `meilisearch`, or `versitygw`.
         service: String,
         /// Version to install, e.g. `8` (see `yerd service available`).
         version: String,
@@ -741,7 +747,8 @@ pub enum ServiceAction {
     /// Add a new service instance (a DB/cache/search engine, or a per-site app
     /// server like `reverb`).
     Add {
-        /// Service type id: `redis`, `mysql`, `mariadb`, `postgres`, `meilisearch`, or `reverb`.
+        /// Service type id: `redis`, `mysql`, `mariadb`, `postgres`, `meilisearch`, `versitygw`,
+        /// or `reverb`.
         #[arg(long = "type")]
         type_id: String,
         /// Linked site name (required for a per-site type like `reverb`).
@@ -987,6 +994,34 @@ pub enum DbAction {
         name: String,
         /// Source file to replay (relative paths resolve against your current directory).
         path: PathBuf,
+    },
+}
+
+/// Action of `yerd s3`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum S3Action {
+    /// List the buckets.
+    Buckets,
+    /// Create a bucket.
+    CreateBucket {
+        /// Bucket name (3-63 lowercase letters, digits, hyphens and dots).
+        name: String,
+    },
+    /// Delete a bucket and every object in it (irreversible).
+    DropBucket {
+        /// Bucket name to delete.
+        name: String,
+    },
+    /// Show a bucket's object count and total size.
+    BucketStats {
+        /// Bucket name.
+        name: String,
+    },
+    /// Show the endpoint and access keys for S3 clients.
+    Creds {
+        /// Also print the secret key.
+        #[arg(long)]
+        show_secret: bool,
     },
 }
 
@@ -1282,6 +1317,38 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).unwrap()
+    }
+
+    #[test]
+    fn parses_s3_subcommands() {
+        let cli = parse(&["yerd", "s3", "creds", "--show-secret"]);
+        let Command::S3 {
+            action: S3Action::Creds { show_secret },
+        } = cli.command
+        else {
+            panic!("expected s3 creds");
+        };
+        assert!(show_secret);
+
+        let cli = parse(&["yerd", "--json", "s3", "buckets"]);
+        assert!(cli.json);
+        assert!(matches!(
+            cli.command,
+            Command::S3 {
+                action: S3Action::Buckets
+            }
+        ));
+
+        let cli = parse(&["yerd", "s3", "drop-bucket", "media"]);
+        let Command::S3 {
+            action: S3Action::DropBucket { name },
+        } = cli.command
+        else {
+            panic!("expected s3 drop-bucket");
+        };
+        assert_eq!(name, "media");
+
+        assert!(Cli::try_parse_from(["yerd", "s3", "create-bucket"]).is_err());
     }
 
     /// `yerd exec php -v` must work without a `--` separator: the flags after

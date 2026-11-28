@@ -24,9 +24,9 @@ use yerd_ipc::{
 };
 use yerd_platform::{ActivePortBinder, PlatformDirs, PortBinder};
 use yerd_services::{
-    available_versions, candidate_ports, current_os_arch, listing_url, version as svc_version,
-    Multiplicity, ServiceDefinition, ServiceError, ServiceManager, ServiceProbes, ServiceRegistry,
-    ServiceRunState as MgrRunState, ServiceVersion,
+    available_versions, candidate_ports, credentials, current_os_arch, listing_url,
+    version as svc_version, Multiplicity, ServiceDefinition, ServiceError, ServiceManager,
+    ServiceProbes, ServiceRegistry, ServiceRunState as MgrRunState, ServiceVersion,
 };
 use yerd_supervise::{Downloader, SystemClock, TokioProcessSpawner};
 
@@ -383,6 +383,11 @@ pub async fn change_service_version(
 }
 
 /// `uninstall service <svc> <version> [--purge]` - versioned engines.
+///
+/// With `purge`, a type that
+/// [`uses_root_credentials`](ServiceDefinition::uses_root_credentials) also
+/// loses its stored credentials file, so a purged reinstall gets fresh keys. A
+/// plain uninstall keeps the file beside the retained datadir.
 pub async fn uninstall_service(
     service_id: &str,
     version: &str,
@@ -410,6 +415,12 @@ pub async fn uninstall_service(
             if let Some(path) = retained {
                 tracing::info!(service = def.id(), datadir = %path.display(),
                     "uninstalled service; datadir retained (use --purge to delete)");
+            }
+            if purge && def.uses_root_credentials() {
+                if let Err(e) = credentials::remove(&state.dirs, def.id()) {
+                    tracing::warn!(service = def.id(), error = %e,
+                        "uninstalled service; couldn't delete its stored access keys");
+                }
             }
             Response::Ok
         }
@@ -1665,6 +1676,48 @@ mod tests {
             }
             other => panic!("expected AvailableServices, got {other:?}"),
         }
+    }
+
+    fn stage_versitygw(dirs: &PlatformDirs) -> (PathBuf, PathBuf, PathBuf) {
+        let def = def_of("versitygw");
+        let v: ServiceVersion = "1.7.0".parse().unwrap();
+        let bin = svc_version::server_path(dirs, def.id(), def.server_binary().unwrap(), &v);
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
+        let datadir = svc_version::datadir(dirs, def.id(), def.datadir_scope(), &v);
+        std::fs::create_dir_all(datadir.join("media")).unwrap();
+        credentials::load_or_create(dirs, def.id()).unwrap();
+        let creds = svc_version::credentials_path(dirs, def.id());
+        (svc_version::install_dir(dirs, def.id(), &v), datadir, creds)
+    }
+
+    #[tokio::test]
+    async fn uninstall_versitygw_without_purge_keeps_datadir_and_credentials() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let (install, datadir, creds) = stage_versitygw(&state.dirs);
+        let before = std::fs::read_to_string(&creds).unwrap();
+        assert!(matches!(
+            uninstall_service("versitygw", "1.7.0", false, &state).await,
+            Response::Ok
+        ));
+        assert!(!install.exists());
+        assert!(datadir.join("media").is_dir());
+        assert_eq!(std::fs::read_to_string(&creds).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn uninstall_versitygw_with_purge_removes_datadir_and_credentials() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let (install, datadir, creds) = stage_versitygw(&state.dirs);
+        assert!(matches!(
+            uninstall_service("versitygw", "1.7.0", true, &state).await,
+            Response::Ok
+        ));
+        assert!(!install.exists());
+        assert!(!datadir.exists());
+        assert!(!creds.exists());
     }
 
     #[tokio::test]

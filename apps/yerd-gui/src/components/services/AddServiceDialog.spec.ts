@@ -50,6 +50,14 @@ const TYPES = [
   }),
 ];
 
+const S3_TYPE = type({
+  type_id: "versitygw",
+  display_name: "S3 (versitygw)",
+  available_versions: ["1.7.0"],
+  default_port: 7070,
+  suggested_port: 7070,
+});
+
 function site(name: string, laravel = true): SiteEntry {
   return { name, document_root: `/srv/${name}`, php: "8.4", secure: false, kind: "linked", is_laravel: laravel };
 }
@@ -167,6 +175,26 @@ describe("AddServiceDialog", () => {
     expect(w.emitted("add")?.[1]).toEqual([
       { type_id: "reverb", site: "codestash", port: 8083, version: null, autostart: false },
       "Reverb",
+    ]);
+  });
+
+  it("describes S3 storage: tile note, both autostart subtitles and the submit label", async () => {
+    client.addableServiceTypes.mockResolvedValue([...TYPES, S3_TYPE]);
+    const w = await mountDialog();
+    expect(w.get('[data-type="versitygw"]').text()).toContain("Object storage");
+    await pick(w, "versitygw");
+    expect(w.get('[data-testid="add-subtitle"]').text()).toBe(
+      "Downloads versitygw 1.7.0, generates access keys for this install, and starts it now and whenever Yerd starts.",
+    );
+    await w.get('[aria-label="Start with Yerd"]').trigger("click");
+    expect(w.get('[data-testid="add-subtitle"]').text()).toBe(
+      "Downloads versitygw 1.7.0, generates access keys for this install, and starts it now.",
+    );
+    expect(submit(w).text()).toBe("Add S3 storage");
+    await submit(w).trigger("click");
+    expect(w.emitted("add")?.[0]).toEqual([
+      { type_id: "versitygw", site: null, port: 7070, version: "1.7.0", autostart: false },
+      "S3 (versitygw)",
     ]);
   });
 

@@ -162,8 +162,13 @@ export function isValidDbName(name: string): boolean {
 export const DB_NAME_HINT =
   "Use letters, digits, and underscores; start with a letter or underscore (max 63).";
 
-/** The list's three groups, in display order. */
-export type ServiceGroup = "databases" | "cache" | "site";
+/** Whether this is the S3 storage gateway (versitygw). */
+export function isS3(s: ServiceStatus): boolean {
+  return (s.type_id ?? s.service) === "versitygw";
+}
+
+/** The list's groups, in display order. */
+export type ServiceGroup = "databases" | "cache" | "storage" | "site";
 
 /** One labelled group of installed services. */
 export interface ServiceSection {
@@ -175,20 +180,23 @@ export interface ServiceSection {
 const GROUP_LABELS: Record<ServiceGroup, string> = {
   databases: "Databases",
   cache: "Cache & search",
+  storage: "Storage",
   site: "Per-site",
 };
 
-/** The group a service is listed under: per-site instances, SQL engines, then
- *  everything else (caches, search, any kind the GUI doesn't know yet). */
+/** The group a service is listed under: per-site instances, S3 storage, SQL
+ *  engines, then everything else (caches, search, any kind the GUI doesn't know
+ *  yet). */
 export function serviceGroup(s: ServiceStatus): ServiceGroup {
   if (isPerSite(s)) return "site";
+  if (isS3(s)) return "storage";
   return s.supports_databases ? "databases" : "cache";
 }
 
 /** Installed services grouped for the list, in daemon order within a group and
  *  with empty groups left out. */
 export function serviceSections(services: ServiceStatus[]): ServiceSection[] {
-  const order: ServiceGroup[] = ["databases", "cache", "site"];
+  const order: ServiceGroup[] = ["databases", "cache", "storage", "site"];
   return order
     .map((group) => ({
       group,
@@ -203,11 +211,16 @@ export function statusWord(state: ServiceRunState): string {
   return state;
 }
 
-/** A list row's second line: `running · :3308 · 16 databases`. The count shows
- *  only for a running engine whose databases have been listed. */
+function countNoun(s: ServiceStatus, count: number): string {
+  return isS3(s) ? plural(count, "bucket", "buckets") : plural(count, "database", "databases");
+}
+
+/** A list row's second line: `running · :3308 · 16 databases`, or `6 buckets`
+ *  for S3. The count shows only for a running engine whose databases or buckets
+ *  have been listed. */
 export function statusLine(s: ServiceStatus, dbCount: number | null): string {
   const parts = [statusWord(s.state), `:${s.port}`];
-  if (s.state === "running" && dbCount !== null) parts.push(plural(dbCount, "database", "databases"));
+  if (s.state === "running" && dbCount !== null) parts.push(countNoun(s, dbCount));
   return parts.join(" · ");
 }
 
@@ -234,8 +247,8 @@ export function address(s: ServiceStatus): string {
 /** The compact table's DETAILS cell. */
 export function detailsCell(s: ServiceStatus, dbCount: number | null): string {
   if (isPerSite(s)) return "WebSockets";
-  if (s.supports_databases && s.state === "running" && dbCount !== null) {
-    return plural(dbCount, "database", "databases");
+  if ((s.supports_databases || isS3(s)) && s.state === "running" && dbCount !== null) {
+    return countNoun(s, dbCount);
   }
   return "—";
 }
@@ -442,7 +455,7 @@ export function envText(env: EnvLine[] | ReverbEnv): string {
 
 /** Which `.env` block the Connect card shows, or `none` for a kind it has no
  *  snippet for. */
-export type ConnectKind = "sql" | "redis" | "meilisearch" | "site" | "none";
+export type ConnectKind = "sql" | "redis" | "meilisearch" | "s3" | "site" | "none";
 
 /** The Connect card's block for a service. */
 export function connectKind(s: ServiceStatus): ConnectKind {
@@ -451,6 +464,7 @@ export function connectKind(s: ServiceStatus): ConnectKind {
   if (type === "mysql" || type === "mariadb" || type === "postgres") return "sql";
   if (type === "redis") return "redis";
   if (type === "meilisearch") return "meilisearch";
+  if (type === "versitygw") return "s3";
   return "none";
 }
 
@@ -477,4 +491,95 @@ export function purgeCopy(name: string, dbCount: number | null, purge = false): 
     return `${name} stops and its binaries are removed. Your 1 database stays on disk, so reinstalling picks it back up.`;
   }
   return `${name} stops and its binaries are removed. Your ${dbCount} databases stay on disk, so reinstalling picks them back up.`;
+}
+
+/** Instant feedback for a new bucket name: the S3 length, character and
+ *  start/end rules plus no `..`. The daemon re-validates authoritatively and
+ *  alone enforces the reserved prefixes, suffixes and IP-address form. */
+export function bucketNameError(name: string): string | null {
+  if (!/^[a-z0-9.-]*$/.test(name)) return "Use lowercase letters, digits, hyphens and dots only.";
+  if (name.length < 3) return "Use at least 3 characters.";
+  if (name.length > 63) return "Use at most 63 characters.";
+  if (!/^[a-z0-9]/.test(name) || !/[a-z0-9]$/.test(name)) return "Start and end with a letter or digit.";
+  if (name.includes("..")) return "Don't use two dots in a row.";
+  return null;
+}
+
+/** Whether a new bucket name passes the client-side rules in {@link bucketNameError}. */
+export function isValidBucketName(name: string): boolean {
+  return bucketNameError(name) === null;
+}
+
+/** The hint under the new-bucket field. */
+export const BUCKET_NAME_HINT =
+  "3–63 characters: lowercase letters, digits, hyphens and dots. Starts and ends with a letter or digit.";
+
+const COUNT = new Intl.NumberFormat("en-US");
+
+/** A byte size in decimal units with one decimal: `312.4 MB`, `512 B`. */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1000) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1000;
+  let unit = 0;
+  while (value >= 999.95 && unit < units.length - 1) {
+    value /= 1000;
+    unit += 1;
+  }
+  return `${value.toFixed(1)} ${units[unit]}`;
+}
+
+/** A bucket row's object count: `empty`, `1 object`, `1,284 objects`. */
+export function objectsLabel(n: number): string {
+  if (n === 0) return "empty";
+  return `${COUNT.format(n)} ${n === 1 ? "object" : "objects"}`;
+}
+
+/** The Buckets card's footer: `6 buckets · 5,535 objects · 4.0 GB`. */
+export function bucketsFooter(count: number, objects: number, bytes: number): string {
+  return [
+    plural(count, "bucket", "buckets"),
+    `${COUNT.format(objects)} ${objects === 1 ? "object" : "objects"}`,
+    formatBytes(bytes),
+  ].join(" · ");
+}
+
+/** The masked stand-in for a secret the GUI hasn't fetched. */
+export const SECRET_MASK = "•".repeat(16);
+
+/** The Laravel `.env` block for S3 storage. A null secret is masked; a blank
+ *  bucket becomes the `your_bucket` placeholder. */
+export function s3Env(endpoint: string, accessKey: string, secret: string | null, bucket: string): EnvLine[] {
+  return lines(
+    [
+      "FILESYSTEM_DISK=s3",
+      `AWS_ACCESS_KEY_ID=${accessKey}`,
+      `AWS_SECRET_ACCESS_KEY=${secret ?? SECRET_MASK}`,
+      "AWS_DEFAULT_REGION=us-east-1",
+      `AWS_BUCKET=${bucket.trim() || "your_bucket"}`,
+      `AWS_ENDPOINT=${endpoint}`,
+      "AWS_USE_PATH_STYLE_ENDPOINT=true",
+    ],
+    ["AWS_BUCKET"],
+  );
+}
+
+/** The Uninstall confirm's purge checkbox label for S3. */
+export const S3_PURGE_LABEL = "Also delete the stored buckets";
+
+/** The Uninstall confirm's body for S3; `purge` deletes the buckets and keys. */
+export function s3UninstallCopy(bucketCount: number | null, purge: boolean): string {
+  if (purge) {
+    if (bucketCount === null) {
+      return "The gateway stops, its binary is removed, and your buckets and access keys are deleted. Reinstalling generates new keys.";
+    }
+    return `The gateway stops, its binary is removed, and your ${plural(bucketCount, "bucket", "buckets")} and access keys are deleted. Reinstalling generates new keys.`;
+  }
+  if (bucketCount === null) {
+    return "The gateway stops and its binary is removed. Your buckets stay on disk as plain folders, so reinstalling picks them back up.";
+  }
+  if (bucketCount === 1) {
+    return "The gateway stops and its binary is removed. Your 1 bucket stays on disk as a plain folder, so reinstalling picks it back up.";
+  }
+  return `The gateway stops and its binary is removed. Your ${bucketCount} buckets stay on disk as plain folders, so reinstalling picks them back up.`;
 }

@@ -417,6 +417,13 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             name,
             path,
         } => crate::db_admin::restore(&service, &name, &path, state).await,
+        Request::ListBuckets => crate::s3_admin::list(state).await,
+        Request::CreateBucket { name } => crate::s3_admin::create(&name, state).await,
+        Request::DropBucket { name } => crate::s3_admin::drop(&name, state).await,
+        Request::BucketStats { name } => crate::s3_admin::stats(&name, state).await,
+        Request::S3Credentials { show_secret } => {
+            crate::s3_admin::credentials(show_secret, state).await
+        }
         Request::ChangeServiceVersion { service, version } => {
             let dl = crate::network::downloader(state).await;
             let response =
@@ -4268,6 +4275,19 @@ mod tests {
             &router
         )
         .is_none());
+    }
+
+    #[tokio::test]
+    async fn dispatch_list_buckets_without_install_is_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        assert!(matches!(
+            dispatch(Request::ListBuckets, &state).await,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
