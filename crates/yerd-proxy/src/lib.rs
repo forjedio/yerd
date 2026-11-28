@@ -13,6 +13,7 @@ pub mod backend;
 pub mod client_tls;
 pub mod error;
 pub mod forward;
+pub mod insights;
 pub mod pure;
 pub mod server;
 pub mod tls;
@@ -21,6 +22,7 @@ pub mod traits;
 pub use backend::Backend;
 pub use client_tls::ProxyClientTls;
 pub use error::ProxyError;
+pub use insights::{ProxySample, RecordingBody, RequestTap, TapMessage};
 pub use server::{
     HttpsBinding, ProxyServer, SharedRouter, SharedTunnelRoutes, TunnelBinding, TunnelRoute,
 };

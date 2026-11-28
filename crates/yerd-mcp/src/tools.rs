@@ -145,7 +145,7 @@ const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "set_dumps_enabled",
-        description: "Turn dump/telemetry interception (Laravel dumps, queries, jobs) on or off.",
+        description: "Turn extension telemetry capture (dumps, queries, jobs) on or off globally; per-site recording is enabled in Insights.",
     },
     ToolDef {
         name: "dumps_status",

@@ -184,3 +184,16 @@ fn node_preferences_round_trip_and_old_configs_default_to_none() {
         assert!(cfg.validate().is_err());
     }
 }
+
+#[test]
+fn insights_sites_and_thresholds_round_trip() {
+    let mut c = Config::default();
+    c.insights.sites.insert("api".to_string());
+    c.insights.sites.insert("blog".to_string());
+    c.insights.thresholds.duplicate_min = 3;
+    c.insights.thresholds.max_queries = 80;
+    c.validate().unwrap();
+    let s = c.to_toml().unwrap();
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
+}

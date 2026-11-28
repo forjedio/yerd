@@ -30,7 +30,8 @@ src/
 ├── request.rs     Request enum (client → daemon)
 ├── response.rs    Response enum + ErrorCode + PhpUpdate (daemon → client)
 ├── create.rs      CreateSiteSpec + Framework/StarterKit/Database/… (the `yerd create` site-scaffold spec) + JobId/JobState
-├── dump.rs        DumpCategory / DumpEvent / DumpCounts / DumpExtStatus (Laravel ▸ Dumps telemetry)
+├── dump.rs        DumpCategory / DumpEvent / DumpCounts / DumpExtStatus (extension telemetry, the Live feed)
+├── insights.rs    InsightsRange / InsightsOverview / InsightsRequestSummary / InsightsRequestDetail and friends (Insights)
 ├── status.rs      StatusReport / Diagnosis / FixReport and friends
 ├── error.rs       FrameError, IpcError, IpcErrorKind
 └── transport.rs   #[cfg(feature = "transport")] async read/write helpers
@@ -153,7 +154,8 @@ The variants, grouped by area:
 | PHP | `InstallPhp`, `InstallPhpStreamed`, `SetDefaultPhp`, `ListPhp`, `UpdatePhp`, `CheckPhpUpdates`, `AvailablePhp`, `SetPhpSettings`, `RestartPhp`, `RestartAllPhp`, `UninstallPhp` |
 | Services | `ListServices`, `AvailableServices`, `InstallService`, `UninstallService`, `StartService`, `StopService`, `RestartService`, `SetServicePort`, `ServiceLogs`, `ChangeServiceVersion` |
 | Databases | `CreateDatabase`, `ListDatabases`, `DropDatabase`, `BackupDatabase`, `RestoreDatabase` |
-| Dumps (Laravel ▸ telemetry) | `ListDumps`, `ClearDumps`, `DeleteDump`, `SetDumpsEnabled`, `SetDumpsPort`, `SetDumpFeature`, `SetDumpsPersist`, `DumpsStatus` |
+| Dumps (extension telemetry) | `ListDumps`, `ClearDumps`, `DeleteDump`, `SetDumpsEnabled`, `SetDumpsPort`, `SetDumpFeature`, `SetDumpsPersist`, `DumpsStatus` |
+| Insights | `InsightsStatus`, `SetInsightsEnabled`, `SetInsightsThresholds`, `InsightsOverview`, `ListInsightsRequests`, `GetInsightsRequest`, `DismissInsightsIssue`, `ClearInsights` (wire shapes in [IPC Protocol](../ipc-protocol)) |
 | Mail | `ListMails`, `GetMail`, `ClearMails`, `DeleteMails`, `MarkMailsRead`, `SetMailPort`, `SetMailEnabled` |
 | Tools | `ListTools`, `InstallTool`, `UninstallTool`, `InstallToolStreamed` |
 | Site creation / jobs | `CreateSite`, `JobStatus`, `JobCancel` |
@@ -190,6 +192,10 @@ Same shape - internally tagged, `snake_case`, `#[non_exhaustive]`:
 | `Databases` | `ListDatabases` | `databases: Vec<DatabaseSummary>` |
 | `Dumps` | `ListDumps` | `events: Vec<DumpEvent>` + deleted ids (cursor paging) |
 | `DumpsStatus` | `DumpsStatus` / dump toggles | `enabled`, `port`, persist/feature flags |
+| `InsightsStatus` | `InsightsStatus` | `sites`, `thresholds`, `capture_enabled`, `open_issues` |
+| `InsightsOverview` | `InsightsOverview` | `overview: Box<InsightsOverview>` |
+| `InsightsRequests` | `ListInsightsRequests` | `requests: Vec<InsightsRequestSummary>` |
+| `InsightsRequest` | `GetInsightsRequest` | `request: Box<InsightsRequestDetail>` |
 | `Mails` | `ListMails` | `mails: Vec<MailSummary>` |
 | `Mail` | `GetMail` | `Box<MailDetail>` |
 | `Tools` | `ListTools` | `tools: Vec<ToolStatus>` |
@@ -223,7 +229,7 @@ One entry per installed minor that has a newer published patch (e.g. version `8.
 
 ## Dump telemetry (`dump.rs`)
 
-The Laravel ▸ Dumps feature ships per-request telemetry from the `yerd-php-ext` extension to the daemon's loopback dump server; the daemon buffers it and serves it to the GUI over IPC. `dump.rs` holds the shared data model. The daemon treats each event's payload as **opaque** JSON, so the extension's payload schema can evolve without daemon changes; the GUI renders it per category. Wire shapes are pinned in `tests/wire_stability.rs`.
+The extension telemetry behind [Insights](../../guide/laravel-dumps) and its Live feed ships per-request telemetry from the `yerd-php-ext` extension to the daemon's loopback dump server; the daemon buffers it and serves it to the GUI over IPC. `dump.rs` holds the shared data model. The daemon treats each event's payload as **opaque** JSON, so the extension's payload schema can evolve without daemon changes; the GUI renders it per category. Wire shapes are pinned in `tests/wire_stability.rs`.
 
 | Type | Shape | Role |
 | --- | --- | --- |

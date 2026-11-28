@@ -1053,6 +1053,90 @@ pub async fn dumps_status() -> Result<Response, GuiError> {
     finish(exchange(&Request::DumpsStatus).await?)
 }
 
+// ── insights (per-site request performance) ─────────────────────────────────
+
+#[tauri::command]
+pub async fn insights_status() -> Result<Response, GuiError> {
+    finish(exchange(&Request::InsightsStatus).await?)
+}
+
+#[tauri::command]
+pub async fn set_insights_enabled(site: String, enabled: bool) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetInsightsEnabled { site, enabled }).await?)
+}
+
+#[tauri::command]
+pub async fn set_insights_thresholds(
+    thresholds: yerd_ipc::InsightsThresholds,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetInsightsThresholds { thresholds }).await?)
+}
+
+#[tauri::command]
+pub async fn insights_overview(
+    site: String,
+    range: yerd_ipc::InsightsRange,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::InsightsOverview { site, range }).await?)
+}
+
+#[tauri::command]
+pub async fn list_insights_requests(
+    site: String,
+    range: yerd_ipc::InsightsRange,
+    query: Option<String>,
+    sort: yerd_ipc::InsightsSort,
+    limit: u32,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::ListInsightsRequests {
+            site,
+            range,
+            query,
+            sort,
+            limit,
+        })
+        .await?,
+    )
+}
+
+#[tauri::command]
+pub async fn get_insights_request(
+    site: String,
+    request_id: String,
+    ts_ms: u64,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::GetInsightsRequest {
+            site,
+            request_id,
+            ts_ms,
+        })
+        .await?,
+    )
+}
+
+#[tauri::command]
+pub async fn dismiss_insights_issue(
+    site: String,
+    key: String,
+    dismissed: bool,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::DismissInsightsIssue {
+            site,
+            key,
+            dismissed,
+        })
+        .await?,
+    )
+}
+
+#[tauri::command]
+pub async fn clear_insights(site: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::ClearInsights { site }).await?)
+}
+
 // ── dev tools (composer / node / bun) ────────────────────────────────────────
 
 #[tauri::command]

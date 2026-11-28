@@ -24,7 +24,15 @@ import {
   deleteMails,
   getMail,
   homeDirectory,
+  clearInsights,
+  dismissInsightsIssue,
+  getInsightsRequest,
+  insightsOverview,
+  insightsStatus,
   IpcError,
+  listInsightsRequests,
+  setInsightsEnabled,
+  setInsightsThresholds,
   installNodeStreamed,
   installNodeWithProgress,
   listMails,
@@ -471,6 +479,77 @@ describe("error handling", () => {
     });
   });
 
+});
+
+describe("insights commands", () => {
+  const thresholds = {
+    n_plus_one_min: 5,
+    duplicate_min: 2,
+    slow_query_ms: 100,
+    large_read_rows: 1000,
+    max_queries: 50,
+  };
+
+  it("insightsStatus returns the status variant", async () => {
+    const r = { type: "insights_status", sites: ["blog"], thresholds, capture_enabled: true, open_issues: 2 };
+    invokeMock.mockResolvedValue(r);
+    await expect(insightsStatus()).resolves.toEqual(r);
+    expect(invokeMock).toHaveBeenCalledWith("insights_status", undefined);
+  });
+
+  it("insightsOverview unwraps the overview", async () => {
+    const overview = { range: "1h", kpis: { requests: 3 } };
+    invokeMock.mockResolvedValue({ type: "insights_overview", overview });
+    await expect(insightsOverview("blog", "1h")).resolves.toBe(overview);
+    expect(invokeMock).toHaveBeenCalledWith("insights_overview", { site: "blog", range: "1h" });
+  });
+
+  it("listInsightsRequests sends a null query when blank", async () => {
+    invokeMock.mockResolvedValue({ type: "insights_requests", requests: [] });
+    await expect(listInsightsRequests("blog", "5m", "slowest", 10, "  ")).resolves.toEqual([]);
+    expect(invokeMock).toHaveBeenCalledWith("list_insights_requests", {
+      site: "blog",
+      range: "5m",
+      query: null,
+      sort: "slowest",
+      limit: 10,
+    });
+  });
+
+  it("listInsightsRequests trims a query", async () => {
+    invokeMock.mockResolvedValue({ type: "insights_requests", requests: [] });
+    await listInsightsRequests("blog", "24h", "recent", 100, " orders ");
+    expect(invokeMock).toHaveBeenCalledWith(
+      "list_insights_requests",
+      expect.objectContaining({ query: "orders", range: "24h", sort: "recent" }),
+    );
+  });
+
+  it("getInsightsRequest passes the id and start time", async () => {
+    const request = { summary: { id: "ab" }, events: [], issues: [] };
+    invokeMock.mockResolvedValue({ type: "insights_request", request });
+    await expect(getInsightsRequest("blog", "ab", 17)).resolves.toBe(request);
+    expect(invokeMock).toHaveBeenCalledWith("get_insights_request", { site: "blog", requestId: "ab", tsMs: 17 });
+  });
+
+  it("getInsightsRequest rejects an unexpected variant", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await expect(getInsightsRequest("blog", "ab", 1)).rejects.toBeInstanceOf(IpcError);
+  });
+
+  it("mutations map onto their commands", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await setInsightsEnabled("blog", true);
+    await setInsightsThresholds(thresholds);
+    await dismissInsightsIssue("blog", "00000000000000ff", true);
+    await clearInsights("blog");
+    expect(invokeMock.mock.calls).toEqual([
+      ["set_insights_enabled", { site: "blog", enabled: true }],
+      ["set_insights_thresholds", { thresholds }],
+      ["dismiss_insights_issue", { site: "blog", key: "00000000000000ff", dismissed: true }],
+      ["clear_insights", { site: "blog" }],
+    ]);
+  });
 });
 
 describe("node commands", () => {

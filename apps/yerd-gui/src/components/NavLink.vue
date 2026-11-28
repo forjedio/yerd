@@ -15,7 +15,7 @@ import { RouterLink } from "vue-router";
  * the same place via the row itself), and `badgeTitle` gives the pill its
  * tooltip.
  *
- * `state`, an "on"/"off" pill in green/red (e.g. Dumps interception).
+ * `state`, an "on"/"off" pill in green/red for a feature toggle.
  *
  * `warn`, an amber dot flagging a row that needs attention (e.g. Doctor when an
  * OS privilege is unelevated), titled by `warnTitle`.

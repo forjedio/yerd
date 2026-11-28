@@ -72,6 +72,31 @@ pub enum PrependParams<'a> {
     },
 }
 
+/// FastCGI param carrying the Insights request id (contract C2).
+pub const TRACE_ID_PARAM: &str = "YERD_TRACE_ID";
+/// FastCGI param carrying the dump-server loopback port (contract C2).
+pub const TRACE_PORT_PARAM: &str = "YERD_TRACE_PORT";
+/// FastCGI param carrying the Yerd site name (contract C2).
+pub const TRACE_SITE_PARAM: &str = "YERD_TRACE_SITE";
+/// FastCGI param carrying the comma-separated capture features (contract C2).
+pub const TRACE_FEATURES_PARAM: &str = "YERD_TRACE_FEATURES";
+
+/// The per-request Insights trace params handed to the `yerd-php-ext`
+/// extension. None of the names start with `HTTP_`, so a client cannot
+/// inject them through request headers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TraceParams<'a> {
+    /// The request id: 32 lowercase hex chars, a 16-hex boot nonce followed
+    /// by a 16-hex counter.
+    pub id: &'a str,
+    /// The dump server's loopback port.
+    pub port: u16,
+    /// The Yerd site name.
+    pub site: &'a str,
+    /// Comma-separated categories to emit, possibly empty.
+    pub features: &'a str,
+}
+
 /// Build the CGI parameter pairs. `script_rel`, if given, is a real,
 /// on-disk `.php` file's path relative to `document_root` (see the module
 /// doc) - `None` falls back to the root `index.php` policy. `path_info`, if
@@ -80,7 +105,8 @@ pub enum PrependParams<'a> {
 /// full request path). `prepend`, if given, adds a
 /// `PHP_VALUE: auto_prepend_file=<path>` param plus the custom param its
 /// script gates on (`YERD_LOGIN_USER` or `YERD_PUBLIC_URL`) - see
-/// [`PrependParams`].
+/// [`PrependParams`]. `trace`, if given, appends the four `YERD_TRACE_*`
+/// params after everything else (see [`TraceParams`]).
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn build_params(
@@ -94,6 +120,7 @@ pub fn build_params(
     remote_addr: SocketAddr,
     server_addr: SocketAddr,
     prepend: Option<PrependParams<'_>>,
+    trace: Option<TraceParams<'_>>,
 ) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut out: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(16 + headers.len());
 
@@ -189,6 +216,10 @@ pub fn build_params(
         push(&mut out, &key, value.as_bytes());
     }
 
+    if let Some(trace) = trace {
+        push_trace(&mut out, trace);
+    }
+
     out
 }
 
@@ -213,6 +244,21 @@ fn push_prepend(out: &mut Vec<(Vec<u8>, Vec<u8>)>, prepend: PrependParams<'_>) {
         format!("auto_prepend_file={}", prepend_script.display()).as_bytes(),
     );
     push(out, gate_name, gate_value.as_bytes());
+}
+
+fn push_trace(out: &mut Vec<(Vec<u8>, Vec<u8>)>, trace: TraceParams<'_>) {
+    push(out, TRACE_ID_PARAM.as_bytes(), trace.id.as_bytes());
+    push(
+        out,
+        TRACE_PORT_PARAM.as_bytes(),
+        trace.port.to_string().as_bytes(),
+    );
+    push(out, TRACE_SITE_PARAM.as_bytes(), trace.site.as_bytes());
+    push(
+        out,
+        TRACE_FEATURES_PARAM.as_bytes(),
+        trace.features.as_bytes(),
+    );
 }
 
 fn split_path_query(path_and_query: &str) -> (&str, &str) {
@@ -261,6 +307,7 @@ mod tests {
             "127.0.0.1:54321".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
             None,
+            None,
         );
         assert_eq!(
             lookup(&pairs, b"SCRIPT_NAME"),
@@ -302,6 +349,7 @@ mod tests {
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
             None,
+            None,
         );
         let software = String::from_utf8_lossy(lookup(&pairs, b"SERVER_SOFTWARE").unwrap());
         assert!(software.contains("nginx"), "got {software:?}");
@@ -324,6 +372,7 @@ mod tests {
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
+            None,
             None,
         );
         assert_eq!(
@@ -349,6 +398,7 @@ mod tests {
             "1.2.3.4:1000".parse().unwrap(),
             "127.0.0.1:443".parse().unwrap(),
             None,
+            None,
         );
         assert_eq!(lookup(&pairs, b"HTTPS"), Some(b"on".as_slice()));
     }
@@ -368,6 +418,7 @@ mod tests {
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
+            None,
             None,
         );
         assert_eq!(lookup(&pairs, b"HTTP_X_CUSTOM"), Some(b"yes".as_slice()));
@@ -396,6 +447,7 @@ mod tests {
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
             None,
+            None,
         );
         assert_eq!(
             lookup(&pairs, b"CONTENT_TYPE"),
@@ -419,6 +471,7 @@ mod tests {
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
             None,
+            None,
         );
         assert_eq!(lookup(&pairs, b"PATH_INFO"), Some(b"/just/path".as_slice()));
         assert_eq!(lookup(&pairs, b"QUERY_STRING"), Some(b"".as_slice()));
@@ -436,6 +489,7 @@ mod tests {
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
+            None,
             None,
         );
         assert_eq!(
@@ -467,6 +521,7 @@ mod tests {
                 prepend_script: Path::new("/data/wordpress-autologin-prepend.php"),
                 target_user: "admin",
             }),
+            None,
         );
         assert_eq!(
             lookup(&pairs, b"PHP_VALUE"),
@@ -494,6 +549,7 @@ mod tests {
                 prepend_script: Path::new("/data/wordpress-autologin-prepend.php"),
                 target_user: "",
             }),
+            None,
         );
         assert_eq!(lookup(&pairs, b"YERD_LOGIN_USER"), Some(b"".as_slice()));
     }
@@ -510,6 +566,7 @@ mod tests {
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
+            None,
             None,
         );
         assert!(lookup(&pairs, b"PHP_VALUE").is_none());
@@ -533,6 +590,7 @@ mod tests {
                 prepend_script: Path::new("/data/wordpress-public-url-prepend.php"),
                 url: "https://app.example.com",
             }),
+            None,
         );
         assert_eq!(
             lookup(&pairs, b"PHP_VALUE"),
@@ -558,6 +616,7 @@ mod tests {
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
             None,
+            None,
         );
         assert_eq!(
             lookup(&pairs, b"SCRIPT_NAME"),
@@ -567,5 +626,97 @@ mod tests {
             lookup(&pairs, b"SCRIPT_FILENAME"),
             Some("/srv/www/blog/wp-login.php".as_bytes())
         );
+    }
+
+    fn trace_params_of(
+        trace: Option<TraceParams<'_>>,
+        headers: &HeaderMap,
+    ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        build_params(
+            "GET",
+            "/orders/1042",
+            headers,
+            Path::new("/srv/www/shop"),
+            None,
+            None,
+            false,
+            "127.0.0.1:1".parse().unwrap(),
+            "127.0.0.1:80".parse().unwrap(),
+            None,
+            trace,
+        )
+    }
+
+    fn trace_names(pairs: &[(Vec<u8>, Vec<u8>)]) -> Vec<&[u8]> {
+        pairs
+            .iter()
+            .map(|(k, _)| k.as_slice())
+            .filter(|k| k.starts_with(b"YERD_TRACE_"))
+            .collect()
+    }
+
+    #[test]
+    fn trace_param_names_match_the_extension_contract() {
+        assert_eq!(TRACE_ID_PARAM.as_bytes(), b"YERD_TRACE_ID");
+        assert_eq!(TRACE_PORT_PARAM.as_bytes(), b"YERD_TRACE_PORT");
+        assert_eq!(TRACE_SITE_PARAM.as_bytes(), b"YERD_TRACE_SITE");
+        assert_eq!(TRACE_FEATURES_PARAM.as_bytes(), b"YERD_TRACE_FEATURES");
+    }
+
+    #[test]
+    fn no_trace_emits_no_trace_params_and_keeps_the_list_unchanged() {
+        let headers = make_headers("shop.test");
+        let without = trace_params_of(None, &headers);
+        assert!(trace_names(&without).is_empty());
+        let traced = trace_params_of(
+            Some(TraceParams {
+                id: "0123456789abcdef0000000000000001",
+                port: 9912,
+                site: "shop",
+                features: "dumps,queries",
+            }),
+            &headers,
+        );
+        assert_eq!(&traced[..without.len()], without.as_slice());
+    }
+
+    #[test]
+    fn trace_appends_exactly_four_params() {
+        let pairs = trace_params_of(
+            Some(TraceParams {
+                id: "0123456789abcdef0000000000000001",
+                port: 9912,
+                site: "shop",
+                features: "",
+            }),
+            &make_headers("shop.test"),
+        );
+        let cases: [(&[u8], &[u8]); 4] = [
+            (b"YERD_TRACE_ID", b"0123456789abcdef0000000000000001"),
+            (b"YERD_TRACE_PORT", b"9912"),
+            (b"YERD_TRACE_SITE", b"shop"),
+            (b"YERD_TRACE_FEATURES", b""),
+        ];
+        assert_eq!(trace_names(&pairs).len(), cases.len());
+        for (name, value) in cases {
+            assert_eq!(lookup(&pairs, name), Some(value), "{name:?}");
+        }
+        let tail: Vec<&[u8]> = pairs[pairs.len() - 4..]
+            .iter()
+            .map(|(k, _)| k.as_slice())
+            .collect();
+        assert_eq!(tail, cases.map(|(name, _)| name).to_vec());
+    }
+
+    #[test]
+    fn client_trace_header_cannot_forge_a_trace_param() {
+        let mut headers = make_headers("shop.test");
+        headers.insert("Yerd-Trace-Id", "forged".parse().unwrap());
+        let pairs = trace_params_of(None, &headers);
+        assert_eq!(
+            lookup(&pairs, b"HTTP_YERD_TRACE_ID"),
+            Some(b"forged".as_slice())
+        );
+        assert!(lookup(&pairs, b"YERD_TRACE_ID").is_none());
     }
 }

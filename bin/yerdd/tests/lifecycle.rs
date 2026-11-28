@@ -568,6 +568,7 @@ mod tests {
             let resolver = Arc::new(yerdd::backend_resolver::DaemonBackendResolver {
                 php_manager: daemon.php_manager.clone(),
                 wordpress_sites: daemon.state.wordpress_sites.clone(),
+                tap: daemon.state.insights.tap.clone(),
             });
             let https = yerd_proxy::HttpsBinding {
                 listener: daemon
@@ -604,6 +605,7 @@ mod tests {
             let resolver = Arc::new(yerdd::backend_resolver::DaemonBackendResolver {
                 php_manager: daemon.php_manager.clone(),
                 wordpress_sites: daemon.state.wordpress_sites.clone(),
+                tap: daemon.state.insights.tap.clone(),
             });
             let binding = yerd_proxy::TunnelBinding {
                 listener,

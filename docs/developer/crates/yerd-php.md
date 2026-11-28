@@ -358,7 +358,7 @@ The directives go on the command line rather than into the pool file because `xd
 
 ### Dump-extension loading
 
-`PhpManager::set_dump_ext(Option<DumpExtSettings>)` wires the Laravel ▸ Dumps extension into FPM pools. `DumpExtSettings` is:
+`PhpManager::set_dump_ext(Option<DumpExtSettings>)` wires the `yerd-dump` extension (behind [Insights](../../guide/laravel-dumps) and its Live feed) into FPM pools. `DumpExtSettings` is:
 
 ```rust
 pub struct DumpExtSettings {
@@ -367,13 +367,13 @@ pub struct DumpExtSettings {
 }
 ```
 
-On each `ensure`, if `dump_ext` is set the manager probes for `so_dir/php-<version>/yerd-dump.so`. When that file exists, the pool spawns with `-d extension=<so>` plus one `-d key=value` per entry in `ini_defines` (e.g. `yerd_dump.state_path=<path>`).
+On each `ensure`, if `dump_ext` is set the manager probes for `so_dir/php-<version>/yerd-dump.so`. When that file exists, the pool spawns with `-d extension=<so>` plus one `-d key=value` per entry in `ini_defines`. The daemon passes two: `yerd_dump.state_path=<path>` and `yerd_dump.protocol=2`. The protocol define selects the extension's trace mode, where it ignores the state file and arms a request only when the proxy supplies a `YERD_TRACE_ID` FastCGI param (see [contract C1](./yerd-insights#c1-mode-selection-ini-set-by-yerd)). An older extension does not register the directive, and PHP ignores unknown `-d` keys, so the extra define is harmless. The `build_cmd_*` golden tests pin both defines when the `.so` exists.
 
 ::: warning It is `extension=`, not `zend_extension=`
 The yerd-dump build is a regular PHP extension, so the spawn code emits `-d extension=<so>` - **not** `-d zend_extension=<so>`. A stale code comment on `set_dump_ext` still says `zend_extension`; the authoritative behaviour is the `build_cmd` body, which writes `extension={so}`. Document and rely on `extension=`.
 :::
 
-The probe gates **only on the `.so` being present**, not on the `dumps.enabled` config flag. The extension self-disables via its on-disk state file, so the daemon loads it into every pool whenever a matching artifact exists and lets the extension decide per-request whether to capture. Toggling `dumps.enabled` rewrites the state file rather than restarting FPM.
+The probe gates **only on the `.so` being present**, not on the `dumps.enabled` config flag. The daemon loads the extension into every pool whenever a matching artifact exists, and the extension decides per request whether to capture: in trace mode it records only requests the proxy tagged (Insights-enabled sites, with capture on), and an older extension reads the state file, whose `enabled` the daemon now always writes as `false`. Toggling `dumps.enabled` therefore never restarts FPM.
 
 ::: details Driver invariants (from manager.rs)
 Inside `drive`, the events fed into `transition` never produce `Action::None` in a *non-terminal* state. The `Action::None` arm returns the running child (`Outcome::Running`) or `Stopped`, and **panics** on any other state as an explicit invariant violation. The driver never re-feeds `EnsureRequested` mid-loop, and never feeds `StopTick` after a SIGKILL (the SIGKILL path waits unconditionally and feeds `StopComplete`). `ensure` cleans a stale socket before spawn and `stop` removes it on the way out - the only two serialisation points against stale sockets.

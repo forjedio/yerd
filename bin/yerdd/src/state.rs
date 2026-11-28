@@ -209,6 +209,9 @@ pub struct DaemonState {
     /// Dump-telemetry ring buffer + server control, shared with the dump-server
     /// task and the IPC dump handlers.
     pub dumps: Arc<crate::dump_server::DumpStore>,
+    /// Insights: the aggregator, on-disk store and proxy request tap, shared
+    /// with the proxy resolver, the dump server and the IPC handlers.
+    pub insights: Arc<crate::insights::Insights>,
     /// Serializes every `{data}/bin` reconcile: the PHP shims, the dev-tool
     /// shims, and the service client shims (plus the `cloudflared` link). IPC
     /// dispatch is `tokio::spawn`-per-connection, so two clients can reconcile

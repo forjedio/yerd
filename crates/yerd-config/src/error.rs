@@ -249,6 +249,9 @@ pub enum ValidateErrorReason {
     /// A `[response_headers.linked.<name>]` key names a linked site that does
     /// not exist; the headers would silently never apply.
     ResponseHeaderUnknownSite,
+    /// An `[insights.thresholds]` value was zero, or `duplicate_min` was below
+    /// 2 (a single query is never a duplicate).
+    InsightsThresholdInvalid,
 }
 
 impl fmt::Display for ValidateErrorReason {
@@ -327,6 +330,9 @@ impl fmt::Display for ValidateErrorReason {
             }
             Self::ResponseHeaderUnknownSite => {
                 "a response header references a linked site that does not exist"
+            }
+            Self::InsightsThresholdInvalid => {
+                "insights thresholds must be at least 1, and duplicate_min at least 2"
             }
         };
         f.write_str(msg)
@@ -416,6 +422,7 @@ mod tests {
             ValidateErrorReason::ProxyRuleDuplicatePrefix,
             ValidateErrorReason::ProxyTargetLoop,
             ValidateErrorReason::ProxyRuleUnknownSite,
+            ValidateErrorReason::InsightsThresholdInvalid,
         ] {
             assert!(!r.to_string().is_empty());
             let _ = format!("{r:?}");

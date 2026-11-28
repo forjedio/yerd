@@ -110,6 +110,9 @@ pub(crate) async fn respond(req: Request, state: &Arc<DaemonState>) -> Response 
             confirm_legacy,
         } => install_php_streamed(version, confirm_legacy, state.clone()).await,
         Request::JobStatus { job_id, cursor } => state.jobs.poll(&job_id, cursor).await,
+        Request::SetInsightsEnabled { site, enabled } => {
+            crate::insights::set_enabled(state, &site, enabled).await
+        }
         Request::JobCancel { job_id } => state.jobs.cancel(&job_id).await,
         Request::ApplyProjectConfig { path, contents } => {
             crate::project_file::start_apply(path, contents, state.clone()).await
@@ -438,6 +441,31 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             crate::dump_server::set_persist(state, persist).await
         }
         Request::DumpsStatus => crate::dump_server::status(state).await,
+        Request::InsightsStatus => crate::insights::status(state).await,
+        Request::SetInsightsThresholds { thresholds } => {
+            crate::insights::set_thresholds(state, &thresholds).await
+        }
+        Request::InsightsOverview { site, range } => {
+            crate::insights::overview(state, &site, range).await
+        }
+        Request::ListInsightsRequests {
+            site,
+            range,
+            query,
+            sort,
+            limit,
+        } => crate::insights::list_requests(state, &site, range, query, sort, limit).await,
+        Request::GetInsightsRequest {
+            site,
+            request_id,
+            ts_ms,
+        } => crate::insights::get_request(state, &site, &request_id, ts_ms).await,
+        Request::DismissInsightsIssue {
+            site,
+            key,
+            dismissed,
+        } => crate::insights::dismiss(state, &site, &key, dismissed).await,
+        Request::ClearInsights { site } => crate::insights::clear(state, &site).await,
         Request::ListMails => Response::Mails {
             mails: state.mail_store.list().await,
         },
@@ -8383,6 +8411,102 @@ Subject: Captured\r\n\r\nhi\r\n";
         ));
         assert!(matches!(
             dispatch(Request::DeleteDump { id: 42 }, &state).await,
+            Response::Ok
+        ));
+    }
+
+    #[tokio::test]
+    async fn dispatch_insights_requests_reach_their_handlers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(state_in(tmp.path()));
+        assert!(matches!(
+            respond(
+                Request::SetInsightsEnabled {
+                    site: "blog".into(),
+                    enabled: true,
+                },
+                &state,
+            )
+            .await,
+            Response::Ok
+        ));
+        match dispatch(Request::InsightsStatus, &state).await {
+            Response::InsightsStatus { sites, .. } => assert_eq!(sites, vec!["blog".to_owned()]),
+            other => panic!("expected InsightsStatus, got {other:?}"),
+        }
+        let thresholds = yerd_ipc::InsightsThresholds {
+            duplicate_min: 1,
+            ..Default::default()
+        };
+        assert!(matches!(
+            dispatch(Request::SetInsightsThresholds { thresholds }, &state).await,
+            Response::Error {
+                code: ErrorCode::InvalidSetting,
+                ..
+            }
+        ));
+        match dispatch(
+            Request::InsightsOverview {
+                site: "blog".into(),
+                range: yerd_ipc::InsightsRange::OneHour,
+            },
+            &state,
+        )
+        .await
+        {
+            Response::InsightsOverview { overview } => assert_eq!(overview.kpis.requests, 0),
+            other => panic!("expected InsightsOverview, got {other:?}"),
+        }
+        match dispatch(
+            Request::ListInsightsRequests {
+                site: "blog".into(),
+                range: yerd_ipc::InsightsRange::OneDay,
+                query: None,
+                sort: yerd_ipc::InsightsSort::Slowest,
+                limit: 10,
+            },
+            &state,
+        )
+        .await
+        {
+            Response::InsightsRequests { requests } => assert!(requests.is_empty()),
+            other => panic!("expected InsightsRequests, got {other:?}"),
+        }
+        assert!(matches!(
+            dispatch(
+                Request::GetInsightsRequest {
+                    site: "blog".into(),
+                    request_id: "0".repeat(32),
+                    ts_ms: 1,
+                },
+                &state,
+            )
+            .await,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+        assert!(matches!(
+            dispatch(
+                Request::DismissInsightsIssue {
+                    site: "blog".into(),
+                    key: "00000000000000ff".into(),
+                    dismissed: true,
+                },
+                &state,
+            )
+            .await,
+            Response::Ok
+        ));
+        assert!(matches!(
+            dispatch(
+                Request::ClearInsights {
+                    site: "blog".into()
+                },
+                &state
+            )
+            .await,
             Response::Ok
         ));
     }

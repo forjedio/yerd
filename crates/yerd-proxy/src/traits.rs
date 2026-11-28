@@ -13,6 +13,7 @@ use async_trait::async_trait;
 
 use crate::backend::Backend;
 use crate::error::ProxyError;
+use crate::insights::RequestTap;
 
 /// SNI-keyed lookup of a rustls keypair.
 ///
@@ -66,6 +67,13 @@ pub trait BackendResolver: Send + Sync + 'static {
     async fn is_wordpress(&self, site: &yerd_core::Site) -> bool {
         let _ = site;
         false
+    }
+
+    /// The Insights request tap, or `None` to record nothing. Synchronous
+    /// and called once per site request, so an impl should return a stored
+    /// reference. Defaults to `None`.
+    fn request_tap(&self) -> Option<&RequestTap> {
+        None
     }
 }
 

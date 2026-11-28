@@ -20,12 +20,16 @@ use yerd_ipc::{
     types::{MajorLine, NodeSource, PhpVersion, Site},
     AddableServiceType, CaStatus, Channel, CloudflaredSource, CloudflaredStatus, Contributor,
     DatabaseSummary, Diagnosis, DiagnosisCode, DumpCategory, DumpCounts, DumpEvent, DumpExtStatus,
-    ErrorCode, FixReport, FixResult, MailAttachment, MailDetail, MailHeader, MailStatus,
-    MailSummary, NamedTunnelMeta, NodePreferenceRef, NodeProjectFile, NodeRelease, NodeSiteEntry,
-    PhpPoolStatus, PoolRunState, PortRedirectTargets, PortStatus, ProxyEntry, ProxyRuleEntry,
-    ReleaseNoteItem, ReleaseNotesEntry, Request, Response, ServiceAvailability, ServiceRunState,
-    ServiceStatus, Severity, SiteCounts, SiteHostname, StagedArtifact, StatusReport, ToolStatus,
-    TunnelInfo, TunnelKind, TunnelProviderStatus, TunnelRunState, UpdateSource,
+    ErrorCode, FixReport, FixResult, InsightsEvent, InsightsIssue, InsightsIssueKind, InsightsKpis,
+    InsightsOverview, InsightsPoint, InsightsQuery, InsightsRange, InsightsRequestDetail,
+    InsightsRequestIssue, InsightsRequestSummary, InsightsRoute, InsightsRouteKind, InsightsSlice,
+    InsightsSort, InsightsThresholds, InsightsTimePart, MailAttachment, MailDetail, MailHeader,
+    MailStatus, MailSummary, NamedTunnelMeta, NodePreferenceRef, NodeProjectFile, NodeRelease,
+    NodeSiteEntry, PhpPoolStatus, PoolRunState, PortRedirectTargets, PortStatus, ProxyEntry,
+    ProxyRuleEntry, ReleaseNoteItem, ReleaseNotesEntry, Request, Response, ServiceAvailability,
+    ServiceRunState, ServiceStatus, Severity, SiteCounts, SiteHostname, StagedArtifact,
+    StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelProviderStatus, TunnelRunState,
+    UpdateSource,
 };
 
 // ---------- Request ----------
@@ -2387,6 +2391,317 @@ fn response_dumps_byte_shape() {
     let expected = r#"{"type":"dumps","events":[{"id":1,"category":"dump","ts_ms":1718360452123,"site":"blog.test","request_id":"abc","payload":{"value_text":"hi"}}],"removed_ids":[3],"counts":{"dumps":1,"queries":0,"jobs":0,"views":0,"requests":0,"logs":0,"cache":0,"http":0},"latest_id":1,"min_live_id":1}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+// ---------- Insights ----------
+
+fn assert_request_pin(r: &Request, expected: &str) {
+    let s = serde_json::to_string(r).unwrap();
+    assert_eq!(s, expected);
+    assert_eq!(&serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+fn assert_response_pin(r: &Response, expected: &str) {
+    let s = serde_json::to_string(r).unwrap();
+    assert_eq!(s, expected);
+    assert_eq!(&serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_insights_variants_byte_shape() {
+    let cases: Vec<(Request, &str)> = vec![
+        (Request::InsightsStatus, r#"{"type":"insights_status"}"#),
+        (
+            Request::SetInsightsEnabled {
+                site: "blog".into(),
+                enabled: true,
+            },
+            r#"{"type":"set_insights_enabled","site":"blog","enabled":true}"#,
+        ),
+        (
+            Request::SetInsightsThresholds {
+                thresholds: InsightsThresholds::default(),
+            },
+            r#"{"type":"set_insights_thresholds","thresholds":{"n_plus_one_min":5,"duplicate_min":2,"slow_query_ms":100,"large_read_rows":1000,"max_queries":50}}"#,
+        ),
+        (
+            Request::InsightsOverview {
+                site: "blog".into(),
+                range: InsightsRange::OneHour,
+            },
+            r#"{"type":"insights_overview","site":"blog","range":"1h"}"#,
+        ),
+        (
+            Request::ListInsightsRequests {
+                site: "blog".into(),
+                range: InsightsRange::FiveMinutes,
+                query: None,
+                sort: InsightsSort::Recent,
+                limit: 100,
+            },
+            r#"{"type":"list_insights_requests","site":"blog","range":"5m","sort":"recent","limit":100}"#,
+        ),
+        (
+            Request::ListInsightsRequests {
+                site: "blog".into(),
+                range: InsightsRange::OneDay,
+                query: Some("orders".into()),
+                sort: InsightsSort::Slowest,
+                limit: 10,
+            },
+            r#"{"type":"list_insights_requests","site":"blog","range":"24h","query":"orders","sort":"slowest","limit":10}"#,
+        ),
+        (
+            Request::GetInsightsRequest {
+                site: "blog".into(),
+                request_id: "0123456789abcdef0000000000000001".into(),
+                ts_ms: 1,
+            },
+            r#"{"type":"get_insights_request","site":"blog","request_id":"0123456789abcdef0000000000000001","ts_ms":1}"#,
+        ),
+        (
+            Request::DismissInsightsIssue {
+                site: "blog".into(),
+                key: "00000000000000ff".into(),
+                dismissed: true,
+            },
+            r#"{"type":"dismiss_insights_issue","site":"blog","key":"00000000000000ff","dismissed":true}"#,
+        ),
+        (
+            Request::ClearInsights {
+                site: "blog".into(),
+            },
+            r#"{"type":"clear_insights","site":"blog"}"#,
+        ),
+    ];
+    for (r, expected) in &cases {
+        assert_request_pin(r, expected);
+    }
+}
+
+#[test]
+fn insights_enum_values_byte_shape() {
+    for (r, s) in [
+        (InsightsRange::FiveMinutes, r#""5m""#),
+        (InsightsRange::OneHour, r#""1h""#),
+        (InsightsRange::OneDay, r#""24h""#),
+    ] {
+        assert_eq!(serde_json::to_string(&r).unwrap(), s);
+        assert_eq!(serde_json::from_str::<InsightsRange>(s).unwrap(), r);
+    }
+    for (v, s) in [
+        (InsightsSort::Recent, r#""recent""#),
+        (InsightsSort::Slowest, r#""slowest""#),
+    ] {
+        assert_eq!(serde_json::to_string(&v).unwrap(), s);
+        assert_eq!(serde_json::from_str::<InsightsSort>(s).unwrap(), v);
+    }
+    for (v, s) in [
+        (InsightsRouteKind::Template, r#""template""#),
+        (InsightsRouteKind::Script, r#""script""#),
+        (InsightsRouteKind::Path, r#""path""#),
+    ] {
+        assert_eq!(serde_json::to_string(&v).unwrap(), s);
+        assert_eq!(serde_json::from_str::<InsightsRouteKind>(s).unwrap(), v);
+    }
+    for (v, s) in [
+        (InsightsIssueKind::NPlusOne, r#""n_plus_one""#),
+        (InsightsIssueKind::Duplicate, r#""duplicate""#),
+        (InsightsIssueKind::SlowQuery, r#""slow_query""#),
+        (InsightsIssueKind::LargeRead, r#""large_read""#),
+        (InsightsIssueKind::TooManyQueries, r#""too_many_queries""#),
+    ] {
+        assert_eq!(serde_json::to_string(&v).unwrap(), s);
+        assert_eq!(serde_json::from_str::<InsightsIssueKind>(s).unwrap(), v);
+    }
+    for (v, s) in [
+        (InsightsTimePart::App, r#""app""#),
+        (InsightsTimePart::Db, r#""db""#),
+        (InsightsTimePart::Http, r#""http""#),
+        (InsightsTimePart::Wait, r#""wait""#),
+    ] {
+        assert_eq!(serde_json::to_string(&v).unwrap(), s);
+        assert_eq!(serde_json::from_str::<InsightsTimePart>(s).unwrap(), v);
+    }
+}
+
+#[test]
+fn response_insights_status_byte_shape() {
+    let r = Response::InsightsStatus {
+        sites: vec!["blog".into()],
+        thresholds: InsightsThresholds::default(),
+        capture_enabled: true,
+        open_issues: 3,
+    };
+    assert_response_pin(
+        &r,
+        r#"{"type":"insights_status","sites":["blog"],"thresholds":{"n_plus_one_min":5,"duplicate_min":2,"slow_query_ms":100,"large_read_rows":1000,"max_queries":50},"capture_enabled":true,"open_issues":3}"#,
+    );
+}
+
+#[test]
+fn response_insights_overview_empty_byte_shape() {
+    let r = Response::InsightsOverview {
+        overview: Box::new(InsightsOverview::empty(InsightsRange::FiveMinutes)),
+    };
+    assert_response_pin(
+        &r,
+        r#"{"type":"insights_overview","overview":{"range":"5m","kpis":{"requests":0,"per_minute":0.0,"static_skipped":0,"failed_pct":0.0,"s5xx":0,"s4xx":0,"queries_max":0},"cold":0,"dropped_requests":0,"dropped_frames":0,"ext_seen":false,"ext_available":true,"series":[],"breakdown":[],"routes":[],"queries":[],"issues":[]}}"#,
+    );
+}
+
+#[test]
+fn response_insights_overview_populated_byte_shape() {
+    let overview = InsightsOverview {
+        range: InsightsRange::OneHour,
+        kpis: InsightsKpis {
+            p50_ms: Some(12.5),
+            p95_ms: Some(80.0),
+            p50_delta_ms: Some(-1.5),
+            p95_spike_ms: Some(212.0),
+            p95_spike_at_ms: Some(60_000),
+            requests: 31,
+            per_minute: 0.5,
+            static_skipped: 412,
+            failed_pct: 3.2,
+            s5xx: 1,
+            s4xx: 2,
+            queries_avg: Some(4.5),
+            queries_max: 48,
+            queries_max_route: Some("GET /orders/{order}".into()),
+        },
+        cold: 2,
+        dropped_requests: 0,
+        dropped_frames: 1,
+        ext_seen: true,
+        ext_available: true,
+        series: vec![InsightsPoint {
+            t_ms: 60_000,
+            count: 3,
+            p50_ms: Some(10.0),
+            p95_ms: None,
+            errors: 0,
+        }],
+        breakdown: vec![InsightsSlice {
+            part: InsightsTimePart::Db,
+            share: 0.25,
+            mean_ms: 3.0,
+        }],
+        routes: vec![InsightsRoute {
+            method: "GET".into(),
+            label: "/orders/{order}".into(),
+            kind: InsightsRouteKind::Template,
+            name: Some("orders.show".into()),
+            action: None,
+            requests: 3,
+            p50_ms: Some(10.0),
+            p95_ms: Some(20.0),
+            share: 1.0,
+            queries_per_request: Some(48.0),
+            issue_kinds: vec![InsightsIssueKind::NPlusOne],
+        }],
+        queries: vec![InsightsQuery {
+            fingerprint: "select * from users where id = ?".into(),
+            count: 48,
+            total_ms: 24.0,
+            mean_ms: 0.5,
+            route_label: None,
+        }],
+        issues: vec![InsightsIssue {
+            key: "00000000000000ff".into(),
+            kind: InsightsIssueKind::NPlusOne,
+            sql: Some("select * from users where id = ?".into()),
+            hint: "Eager load".into(),
+            file: Some("app/Http/Controllers/OrderController.php".into()),
+            line: Some(42),
+            route_method: Some("GET".into()),
+            route_label: Some("/orders/{order}".into()),
+            occurrences: 48,
+            affected_requests: 1,
+            impact_ms: 24.0,
+            max_in_request: 48,
+            last_request_id: Some("ab".into()),
+            last_request_ts_ms: Some(60_000),
+            dismissed: false,
+        }],
+    };
+    let r = Response::InsightsOverview {
+        overview: Box::new(overview),
+    };
+    assert_response_pin(
+        &r,
+        r#"{"type":"insights_overview","overview":{"range":"1h","kpis":{"p50_ms":12.5,"p95_ms":80.0,"p50_delta_ms":-1.5,"p95_spike_ms":212.0,"p95_spike_at_ms":60000,"requests":31,"per_minute":0.5,"static_skipped":412,"failed_pct":3.2,"s5xx":1,"s4xx":2,"queries_avg":4.5,"queries_max":48,"queries_max_route":"GET /orders/{order}"},"cold":2,"dropped_requests":0,"dropped_frames":1,"ext_seen":true,"ext_available":true,"series":[{"t_ms":60000,"count":3,"p50_ms":10.0,"errors":0}],"breakdown":[{"part":"db","share":0.25,"mean_ms":3.0}],"routes":[{"method":"GET","label":"/orders/{order}","kind":"template","name":"orders.show","requests":3,"p50_ms":10.0,"p95_ms":20.0,"share":1.0,"queries_per_request":48.0,"issue_kinds":["n_plus_one"]}],"queries":[{"fingerprint":"select * from users where id = ?","count":48,"total_ms":24.0,"mean_ms":0.5}],"issues":[{"key":"00000000000000ff","kind":"n_plus_one","sql":"select * from users where id = ?","hint":"Eager load","file":"app/Http/Controllers/OrderController.php","line":42,"route_method":"GET","route_label":"/orders/{order}","occurrences":48,"affected_requests":1,"impact_ms":24.0,"max_in_request":48,"last_request_id":"ab","last_request_ts_ms":60000}]}}"#,
+    );
+}
+
+fn insights_summary_fixture() -> InsightsRequestSummary {
+    InsightsRequestSummary {
+        id: "0123456789abcdef0000000000000001".into(),
+        ts_ms: 1_700_000_000_000,
+        method: "GET".into(),
+        path: "/orders/1042".into(),
+        route_label: "/orders/{order}".into(),
+        route_name: None,
+        route_action: Some("OrderController@show".into()),
+        status: 200,
+        duration_ms: 48.5,
+        ext_duration_ms: None,
+        bytes: 1024,
+        content_type: Some("text/html".into()),
+        cold: true,
+        aborted: false,
+        traced: true,
+        queries: 2,
+        dumps: 0,
+        logs: 1,
+        issue_kinds: vec![],
+        db_ms: Some(1.5),
+        http_ms: None,
+        wait_ms: Some(0.0),
+        app_ms: Some(47.0),
+    }
+}
+
+#[test]
+fn response_insights_requests_byte_shape() {
+    let r = Response::InsightsRequests {
+        requests: vec![insights_summary_fixture()],
+    };
+    assert_response_pin(
+        &r,
+        r#"{"type":"insights_requests","requests":[{"id":"0123456789abcdef0000000000000001","ts_ms":1700000000000,"method":"GET","path":"/orders/1042","route_label":"/orders/{order}","route_action":"OrderController@show","status":200,"duration_ms":48.5,"bytes":1024,"content_type":"text/html","cold":true,"traced":true,"queries":2,"dumps":0,"logs":1,"db_ms":1.5,"wait_ms":0.0,"app_ms":47.0}]}"#,
+    );
+}
+
+#[test]
+fn response_insights_request_byte_shape() {
+    let r = Response::InsightsRequest {
+        request: Box::new(InsightsRequestDetail {
+            summary: insights_summary_fixture(),
+            events: vec![InsightsEvent {
+                idx: 0,
+                category: DumpCategory::Query,
+                t_us: Some(150),
+                dur_us: Some(500),
+                payload: serde_json::json!({ "sql": "select 1" }),
+            }],
+            issues: vec![InsightsRequestIssue {
+                kind: InsightsIssueKind::Duplicate,
+                key: "00000000000000ff".into(),
+                event_indices: vec![0, 1],
+                count: 2,
+                time_ms: 1.0,
+                file: None,
+                line: None,
+                hint: "Cache it".into(),
+            }],
+            truncated: true,
+        }),
+    };
+    assert_response_pin(
+        &r,
+        r#"{"type":"insights_request","request":{"summary":{"id":"0123456789abcdef0000000000000001","ts_ms":1700000000000,"method":"GET","path":"/orders/1042","route_label":"/orders/{order}","route_action":"OrderController@show","status":200,"duration_ms":48.5,"bytes":1024,"content_type":"text/html","cold":true,"traced":true,"queries":2,"dumps":0,"logs":1,"db_ms":1.5,"wait_ms":0.0,"app_ms":47.0},"events":[{"idx":0,"category":"query","t_us":150,"dur_us":500,"payload":{"sql":"select 1"}}],"issues":[{"kind":"duplicate","key":"00000000000000ff","event_indices":[0,1],"count":2,"time_ms":1.0,"hint":"Cache it"}],"truncated":true}}"#,
+    );
 }
 
 // ---------- Mail ----------

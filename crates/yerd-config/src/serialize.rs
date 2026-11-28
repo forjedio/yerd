@@ -110,6 +110,27 @@ struct WireSer<'a> {
     // existing config's byte shape is untouched. `None` (skipped) when empty.
     #[serde(skip_serializing_if = "Option::is_none")]
     added: Option<AddedSectionSer<'a>>,
+    // v35: optional `[insights]` table, emitted after `[added]` so an existing
+    // config's byte shape is untouched. `None` (skipped) when empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    insights: Option<InsightsSectionSer<'a>>,
+}
+
+#[derive(Serialize)]
+struct InsightsSectionSer<'a> {
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    sites: &'a BTreeSet<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thresholds: Option<InsightsThresholdsSer>,
+}
+
+#[derive(Serialize)]
+struct InsightsThresholdsSer {
+    n_plus_one_min: u32,
+    duplicate_min: u32,
+    slow_query_ms: u32,
+    large_read_rows: u32,
+    max_queries: u32,
 }
 
 #[derive(Serialize)]
@@ -631,6 +652,23 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 parked: &c.added.parked,
             })
         },
+        insights: if c.insights.is_empty() {
+            None
+        } else {
+            let t = c.insights.thresholds;
+            Some(InsightsSectionSer {
+                sites: &c.insights.sites,
+                thresholds: (t != crate::InsightsThresholds::default()).then_some(
+                    InsightsThresholdsSer {
+                        n_plus_one_min: t.n_plus_one_min,
+                        duplicate_min: t.duplicate_min,
+                        slow_query_ms: t.slow_query_ms,
+                        large_read_rows: t.large_read_rows,
+                        max_queries: t.max_queries,
+                    },
+                ),
+            })
+        },
     };
     toml::to_string_pretty(&w).map_err(Into::into)
 }
@@ -744,8 +782,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 34\n"),
-            "expected `version = 34` first line; got: {s}"
+            s.starts_with("version = 35\n"),
+            "expected `version = 35` first line; got: {s}"
         );
     }
 

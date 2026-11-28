@@ -1,6 +1,6 @@
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { defineComponent, h } from "vue";
+import { defineComponent, h, ref } from "vue";
 
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -49,11 +49,11 @@ function stubIpc(): void {
 
 const mounted: VueWrapper[] = [];
 
-async function setup(): Promise<Dumps> {
+async function setup(site?: () => string | null): Promise<Dumps> {
   let dumps: Dumps | null = null;
   const Host = defineComponent({
     setup() {
-      dumps = useDumps({ pollWhileHidden: true, follow: () => true });
+      dumps = useDumps({ pollWhileHidden: true, follow: () => true, site });
       return () => h("div");
     },
   });
@@ -81,6 +81,21 @@ afterEach(() => {
   mounted.forEach((w) => w.unmount());
   mounted.length = 0;
   vi.useRealTimers();
+});
+
+describe("useDumps site scope", () => {
+  it("keeps only the scoped site's events and follows a site change", async () => {
+    const scope = ref<string | null>("blog");
+    pages = [[{ ...ev(1, "a"), site: "blog" }, { ...ev(2, "b"), site: "shop" }, { ...ev(3, "c"), site: "Blog" }]];
+    const dumps = await setup(() => scope.value);
+    expect(dumps.requests.value.map((r) => r.key)).toEqual(["c", "a"]);
+    scope.value = "shop";
+    await flushPromises();
+    expect(dumps.requests.value.map((r) => r.key)).toEqual(["b"]);
+    scope.value = null;
+    await flushPromises();
+    expect(dumps.requests.value).toHaveLength(3);
+  });
 });
 
 describe("useDumps stream", () => {

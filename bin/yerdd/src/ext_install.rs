@@ -194,8 +194,11 @@ pub fn installed_versions(dirs: &PlatformDirs) -> Vec<PhpVersion> {
 
 /// Ensure the `yerd-dump` extension is present and current for every installed
 /// PHP version that has a published artifact for the host triple. Best-effort.
-pub async fn ensure_for_installed(dirs: &PlatformDirs, dl: &dyn Downloader) {
-    ensure_for_installed_spec(dirs, dl, &DUMP_SPEC).await;
+///
+/// Returns the versions whose `.so` was replaced, so the caller can restart
+/// just those pools: a running FPM keeps the old extension mapped until then.
+pub async fn ensure_for_installed(dirs: &PlatformDirs, dl: &dyn Downloader) -> Vec<PhpVersion> {
+    ensure_for_installed_spec(dirs, dl, &DUMP_SPEC).await
 }
 
 /// Ensure the `pcov` extension is present for every installed PHP version.
@@ -221,9 +224,15 @@ pub async fn ensure_pcov_for_installed(dirs: &PlatformDirs, dl: &dyn Downloader)
 /// installed PHP minor, sha-verify, and atomically place the `.so`. Best-effort.
 /// Legacy minors (< 8.2) are skipped: `forjedio/yerd-php-ext` builds neither
 /// `pcov` nor `yerd-dump` for EOL PHP, so a fetch would only 404-log per poll.
-async fn ensure_for_installed_spec(dirs: &PlatformDirs, dl: &dyn Downloader, spec: &ExtSpec) {
+/// Returns the versions whose `.so` was replaced.
+async fn ensure_for_installed_spec(
+    dirs: &PlatformDirs,
+    dl: &dyn Downloader,
+    spec: &ExtSpec,
+) -> Vec<PhpVersion> {
+    let mut replaced = Vec::new();
     let Some(manifest) = fetch_manifest(dl, spec.manifest_name, spec.label).await else {
-        return;
+        return replaced;
     };
     let (os, arch) = host_os_arch();
     for v in installed_versions(dirs)
@@ -231,7 +240,8 @@ async fn ensure_for_installed_spec(dirs: &PlatformDirs, dl: &dyn Downloader, spe
         .filter(|v| !v.is_legacy())
     {
         match place_from_manifest(dirs, dl, &manifest, spec, v, os, arch).await {
-            Ok(_) => {}
+            Ok(true) => replaced.push(v),
+            Ok(false) => {}
             Err(PlaceError::NotPublished) => {
                 tracing::info!(php = %v, os, arch, ext = spec.label, "no extension published for this triple");
             }
@@ -240,6 +250,7 @@ async fn ensure_for_installed_spec(dirs: &PlatformDirs, dl: &dyn Downloader, spe
             }
         }
     }
+    replaced
 }
 
 /// Why [`place_from_manifest`] could not make a version's `.so` current.
@@ -843,6 +854,58 @@ mod tests {
         assert_eq!(dl.call_count(), 1);
     }
 
+    fn dump_routes_for_host(so: &[u8]) -> std::collections::HashMap<String, Vec<u8>> {
+        let (os, arch) = host_os_arch();
+        let name = format!("yerd-dump-php8.4-{os}-{arch}.so");
+        let manifest = serde_json::json!({
+            "files": [
+                {"name": name, "php": "8.4", "os": os, "arch": arch, "sha256": sha256_hex(so)}
+            ]
+        })
+        .to_string();
+        [
+            ("/manifest.json".to_owned(), manifest.into_bytes()),
+            (format!("/{name}"), so.to_vec()),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    #[tokio::test]
+    async fn ensure_for_installed_returns_versions_whose_so_changed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let v = PhpVersion::new(8, 4);
+        fake_install(&dirs, v);
+        fake_install(&dirs, PhpVersion::new(7, 4));
+        let dest = so_path(&dirs, v);
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, b"old build").unwrap();
+
+        let dl = FakeDownloader::new(dump_routes_for_host(b"new build"));
+        let replaced = ensure_for_installed(&dirs, &dl).await;
+
+        assert_eq!(replaced, vec![v]);
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new build");
+    }
+
+    #[tokio::test]
+    async fn ensure_for_installed_returns_nothing_when_sha_matches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let v = PhpVersion::new(8, 4);
+        fake_install(&dirs, v);
+        let dest = so_path(&dirs, v);
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, b"same build").unwrap();
+
+        let dl = FakeDownloader::new(dump_routes_for_host(b"same build"));
+        let replaced = ensure_for_installed(&dirs, &dl).await;
+
+        assert!(replaced.is_empty());
+        assert_eq!(dl.call_count(), 1);
+    }
+
     #[tokio::test]
     async fn ensure_for_installed_is_noop_without_versions() {
         let tmp = tempfile::tempdir().unwrap();
@@ -853,7 +916,7 @@ mod tests {
                 .into_iter()
                 .collect(),
         );
-        ensure_for_installed(&dirs, &dl).await;
+        assert!(ensure_for_installed(&dirs, &dl).await.is_empty());
         assert!(!dirs.data.join("php-ext").exists());
         assert_eq!(
             dl.call_count(),

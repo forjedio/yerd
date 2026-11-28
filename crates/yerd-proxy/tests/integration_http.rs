@@ -26,7 +26,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 
 use yerd_core::{PhpVersion, RouterConfig, Site, SiteRouter, Tld};
-use yerd_proxy::{Backend, BackendResolver, ProxyClientTls, ProxyError, ProxyServer};
+use yerd_proxy::{
+    Backend, BackendResolver, ProxyClientTls, ProxyError, ProxySample, ProxyServer, RequestTap,
+    TapMessage,
+};
 
 /// A client-TLS bundle for tests: both configs accept any certificate (tests
 /// only reach loopback upstreams).
@@ -3575,4 +3578,287 @@ async fn upload_rejected_before_stdin_is_read_still_reaches_the_client() {
     let _ = tx_shutdown.send(());
     let _ = tokio::time::timeout(HARNESS_TIMEOUT, proxy_task).await;
     let _ = tokio::time::timeout(HARNESS_TIMEOUT, fake_task).await;
+}
+
+// ─── Insights request tap ───────────────────────────────────────────
+
+/// Resolver that hands the proxy an Insights [`RequestTap`].
+struct TapResolver {
+    backend: Backend,
+    tap: Arc<RequestTap>,
+}
+
+#[async_trait]
+impl BackendResolver for TapResolver {
+    async fn backend_for(&self, _site: &Site) -> Result<Backend, ProxyError> {
+        Ok(self.backend.clone())
+    }
+
+    fn request_tap(&self) -> Option<&RequestTap> {
+        Some(&self.tap)
+    }
+}
+
+/// How the tap is configured for one test.
+struct TapSetup {
+    enabled: bool,
+    capture: bool,
+}
+
+fn configured_tap(setup: &TapSetup) -> (Arc<RequestTap>, tokio::sync::mpsc::Receiver<TapMessage>) {
+    let (tap, rx) = RequestTap::new(16, 0xfeed_face_cafe_beef);
+    if setup.enabled {
+        tap.set_enabled_sites(["app".to_owned()]);
+    }
+    tap.set_port(9912);
+    tap.set_capture(setup.capture);
+    tap.set_bound(true);
+    tap.set_features("dumps,queries");
+    (tap, rx)
+}
+
+/// Drive one request for `app.test` through a fake FPM with the tap wired in,
+/// returning the response status, the params FPM saw, and the tap receiver.
+async fn tapped_request(
+    setup: &TapSetup,
+    method: &str,
+    path: &str,
+) -> (
+    u16,
+    Vec<u8>,
+    HashMap<String, String>,
+    tokio::sync::mpsc::Receiver<TapMessage>,
+) {
+    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fcgi_addr = fcgi_listener.local_addr().unwrap();
+    let captured = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let fake_task = tokio::spawn(run_fake_fcgi(
+        fcgi_listener,
+        b"Status: 200 OK\r\nContent-Type: text/plain\r\n\r\nhello".to_vec(),
+        captured.clone(),
+    ));
+
+    let (tap, rx) = configured_tap(setup);
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let (router, _docroot) = streaming_router();
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(TapResolver {
+            backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+            tap,
+        }),
+    );
+
+    let resp = tokio::time::timeout(
+        HARNESS_TIMEOUT,
+        client_request_streaming(proxy_addr, "app.test", method, path),
+    )
+    .await
+    .unwrap();
+    let status = resp.status().as_u16();
+    let body = resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec();
+    let _ = tokio::time::timeout(HARNESS_TIMEOUT, fake_task).await;
+    let params = captured.lock().await.clone();
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(HARNESS_TIMEOUT, proxy_task).await;
+    (status, body, params, rx)
+}
+
+fn trace_params_seen(params: &HashMap<String, String>) -> Vec<&str> {
+    let mut names: Vec<&str> = params
+        .keys()
+        .map(String::as_str)
+        .filter(|k| k.starts_with("YERD_TRACE_"))
+        .collect();
+    names.sort_unstable();
+    names
+}
+
+async fn next_sample(rx: &mut tokio::sync::mpsc::Receiver<TapMessage>) -> ProxySample {
+    match tokio::time::timeout(HARNESS_TIMEOUT, rx.recv()).await {
+        Ok(Some(TapMessage::Sample(sample))) => sample,
+        other => panic!("expected a proxy sample, got {other:?}"),
+    }
+}
+
+async fn assert_no_message(rx: &mut tokio::sync::mpsc::Receiver<TapMessage>) {
+    let next = tokio::time::timeout(NO_EOF_WINDOW, rx.recv()).await;
+    assert!(
+        matches!(next, Err(_) | Ok(None)),
+        "expected no tap message, got {next:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn insights_not_enabled_sends_no_params_and_no_sample() {
+    let setup = TapSetup {
+        enabled: false,
+        capture: true,
+    };
+    let (status, body, params, mut rx) = tapped_request(&setup, "GET", "/foo").await;
+    assert_eq!(status, 200);
+    assert_eq!(body, b"hello");
+    assert!(params.contains_key("REQUEST_METHOD"));
+    assert!(trace_params_seen(&params).is_empty());
+    assert_no_message(&mut rx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn insights_enabled_sends_trace_params_and_one_sample() {
+    let setup = TapSetup {
+        enabled: true,
+        capture: true,
+    };
+    let (status, body, params, mut rx) = tapped_request(&setup, "GET", "/foo?bar=1").await;
+    assert_eq!(status, 200);
+    assert_eq!(body, b"hello");
+    assert_eq!(
+        trace_params_seen(&params),
+        [
+            "YERD_TRACE_FEATURES",
+            "YERD_TRACE_ID",
+            "YERD_TRACE_PORT",
+            "YERD_TRACE_SITE"
+        ]
+    );
+    let id = params.get("YERD_TRACE_ID").unwrap();
+    assert_eq!(id.len(), 32);
+    assert!(id.starts_with("feedfacecafebeef"));
+    assert_eq!(
+        params.get("YERD_TRACE_PORT").map(String::as_str),
+        Some("9912")
+    );
+    assert_eq!(
+        params.get("YERD_TRACE_SITE").map(String::as_str),
+        Some("app")
+    );
+    assert_eq!(
+        params.get("YERD_TRACE_FEATURES").map(String::as_str),
+        Some("dumps,queries")
+    );
+
+    let sample = next_sample(&mut rx).await;
+    assert_eq!(&sample.id, id);
+    assert_eq!(sample.site, "app");
+    assert_eq!(sample.php, "8.3");
+    assert_eq!(sample.method, "GET");
+    assert_eq!(sample.path, "/foo?bar=1");
+    assert_eq!(sample.script, None);
+    assert_eq!(sample.status, 200);
+    assert_eq!(sample.bytes, 5);
+    assert_eq!(sample.content_type.as_deref(), Some("text/plain"));
+    assert!(sample.duration_us > 0);
+    assert!(sample.start_us > 0);
+    assert!(sample.traced);
+    assert!(!sample.aborted);
+    assert!(!sample.proxy_error);
+    assert_no_message(&mut rx).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn insights_enabled_with_capture_off_is_timing_only() {
+    let setup = TapSetup {
+        enabled: true,
+        capture: false,
+    };
+    let (status, _body, params, mut rx) = tapped_request(&setup, "GET", "/foo").await;
+    assert_eq!(status, 200);
+    assert!(trace_params_seen(&params).is_empty());
+    let sample = next_sample(&mut rx).await;
+    assert!(!sample.traced);
+    assert_eq!(sample.status, 200);
+    assert_eq!(sample.bytes, 5);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn insights_head_on_enabled_site_is_a_completed_sample() {
+    let setup = TapSetup {
+        enabled: true,
+        capture: true,
+    };
+    let (status, body, _params, mut rx) = tapped_request(&setup, "HEAD", "/").await;
+    assert_eq!(status, 200);
+    assert!(body.is_empty());
+    let sample = next_sample(&mut rx).await;
+    assert_eq!(sample.method, "HEAD");
+    assert_eq!(sample.status, 200);
+    assert_eq!(sample.bytes, 0);
+    assert!(!sample.aborted);
+    assert!(!sample.proxy_error);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn insights_static_file_on_enabled_site_sends_one_static_message() {
+    let (router, docroot) = streaming_router();
+    std::fs::write(docroot.path().join("app.css"), b"body{}").unwrap();
+    let (tap, mut rx) = configured_tap(&TapSetup {
+        enabled: true,
+        capture: true,
+    });
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(TapResolver {
+            backend: unreachable_backend(),
+            tap,
+        }),
+    );
+
+    let (status, _content_type, body) =
+        client_get_response(proxy_addr, "app.test", "/app.css").await;
+    assert_eq!(status, 200);
+    assert_eq!(body, b"body{}");
+    match tokio::time::timeout(HARNESS_TIMEOUT, rx.recv()).await {
+        Ok(Some(TapMessage::Static { site, ts_ms })) => {
+            assert_eq!(site, "app");
+            assert!(ts_ms > 0);
+        }
+        other => panic!("expected a static message, got {other:?}"),
+    }
+    assert_no_message(&mut rx).await;
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(HARNESS_TIMEOUT, proxy_task).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn insights_unreachable_fpm_sends_an_untraced_proxy_error_sample() {
+    let (router, _docroot) = streaming_router();
+    let (tap, mut rx) = configured_tap(&TapSetup {
+        enabled: true,
+        capture: true,
+    });
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(TapResolver {
+            backend: unreachable_backend(),
+            tap,
+        }),
+    );
+
+    let status = client_get_status(proxy_addr, "app.test", "/checkout").await;
+    assert!(status >= 500, "got {status}");
+    let sample = next_sample(&mut rx).await;
+    assert_eq!(sample.status, 500);
+    assert_eq!(sample.path, "/checkout");
+    assert!(sample.proxy_error);
+    assert!(!sample.traced);
+    assert_no_message(&mut rx).await;
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(HARNESS_TIMEOUT, proxy_task).await;
 }

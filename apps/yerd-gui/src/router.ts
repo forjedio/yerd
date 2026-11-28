@@ -59,11 +59,13 @@ export const router = createRouter({
       meta: { title: "Proxies" },
       component: () => import("@/views/ProxiesView.vue"),
     },
+    // The Dumps page became Insights; old links and bookmarks land there.
+    { path: "/dumps", redirect: "/insights" },
     {
-      path: "/dumps",
-      name: "dumps",
-      meta: { title: "Dumps" },
-      component: () => import("@/views/LaravelDumpsView.vue"),
+      path: "/insights",
+      name: "insights",
+      meta: { title: "Insights" },
+      component: () => import("@/views/InsightsView.vue"),
     },
     {
       path: "/integrations",

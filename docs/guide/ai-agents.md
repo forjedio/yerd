@@ -72,7 +72,7 @@ connected, with its tools available.
 | PHP | `list_php`, `list_available_php`, `install_php`, `set_default_php`, `set_php_setting`, `set_xdebug` (turn Xdebug on/off for a version, with optional modes and always/trigger start; leave out `enabled` to change only modes or start and keep the current on/off state; at least one of `enabled`, `modes` or `start` is required) |
 | Services | `list_services`, `list_databases`, `create_database` |
 | Mail | `set_mail_enabled`, `list_mails`, `get_mail` |
-| Dumps | `set_dumps_enabled`, `dumps_status`, `list_dumps` |
+| Dumps | `set_dumps_enabled` (turns extension capture on or off globally; per-site recording is enabled in [Insights](./laravel-dumps)), `dumps_status`, `list_dumps` |
 | Health | `status`, `diagnose`, `job_status` |
 
 ### What agents cannot do
@@ -126,6 +126,6 @@ app (or run `yerdd`) and retry.
 ## See also
 
 - [`yerd mcp`](../reference/cli/mcp) - the command reference and its stdio contract.
-- [Mail Capture](./mail) and [Laravel Dumps](./laravel-dumps) - the features
+- [Mail Capture](./mail) and [Insights](./laravel-dumps) - the features
   behind the mail and dump tools.
 - [The Daemon](./daemon) - what agents are actually talking to.

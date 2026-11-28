@@ -25,6 +25,7 @@ mod create;
 mod dump;
 mod error;
 mod frame;
+mod insights;
 mod message;
 mod network;
 mod node;
@@ -48,6 +49,12 @@ pub use create::{
 pub use dump::{DumpCategory, DumpCounts, DumpEvent, DumpExtStatus};
 pub use error::{FrameError, IpcError, IpcErrorKind};
 pub use frame::{encode_frame, FrameDecoder, DEFAULT_MAX_FRAME};
+pub use insights::{
+    InsightsEvent, InsightsIssue, InsightsIssueKind, InsightsKpis, InsightsOverview, InsightsPoint,
+    InsightsQuery, InsightsRange, InsightsRequestDetail, InsightsRequestIssue,
+    InsightsRequestSummary, InsightsRoute, InsightsRouteKind, InsightsSlice, InsightsSort,
+    InsightsThresholds, InsightsTimePart,
+};
 pub use message::{decode_message, encode_message};
 pub use network::{EffectiveProxy, NetworkSettings, NetworkTestResult};
 pub use node::{NodePreferenceRef, NodeProjectFile, NodeRelease, NodeSiteEntry};

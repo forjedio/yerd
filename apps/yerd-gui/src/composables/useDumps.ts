@@ -31,6 +31,9 @@ export interface DumpsOptions {
   /** Whether to keep the newest request selected on its own. A getter, so a
    *  window resize can turn it on and off. */
   follow: () => boolean;
+  /** Keep only events whose `site` is this Yerd site name (the Insights site).
+   *  A getter, so the scope can follow the picked site; null keeps every event. */
+  site?: () => string | null;
 }
 
 /** The action in flight, so its control can disable itself. */
@@ -103,7 +106,11 @@ export function useDumps(options: DumpsOptions): Dumps {
 
   const category = ref<ChipKey>("all");
   const query = ref("");
-  const requests = computed(() => groupRequests(events.value));
+  const scoped = computed(() => {
+    const site = options.site?.()?.toLowerCase() ?? null;
+    return site === null ? events.value : events.value.filter((e) => e.site.toLowerCase() === site);
+  });
+  const requests = computed(() => groupRequests(scoped.value));
   const visible = computed(() => filterRequests(requests.value, query.value, category.value));
 
   const selectedKey = ref<string | null>(null);

@@ -163,7 +163,8 @@ stateless `yerd-ipc` view - and both keep their pure logic in a crate.
   decoding, retention) from the I/O edge (the tokio TCP server and the disk
   store).
 
-- **Laravel Dumps telemetry.** A live feed of per-request telemetry - `dump()`,
+- **Insights and the Live feed.** Per-site request timing and query-issue
+  detection, plus a live feed of per-request telemetry - `dump()`,
   Eloquent queries, jobs, views, cache, logs, outgoing HTTP - from running PHP
   apps. The data path is **native PHP extension → loopback TCP → ring buffer →
   IPC → GUI**: a native Zend extension emits newline-delimited JSON frames to a
@@ -179,10 +180,14 @@ stateless `yerd-ipc` view - and both keep their pure logic in a crate.
   each installed PHP version's host triple (against the release `manifest.json`),
   placing it beside - not inside - the PHP installs so a PHP patch update never
   removes it. The daemon then wires it into each FPM pool via
-  `-d extension`; the extension self-disables (via a daemon-written state
-  file) when dumps are off. Fetch/verify is best-effort - a failure leaves the
-  site running with no dumps. See the [yerdd](./binaries/yerdd) page for the
-  `dump_server` / `ext_install` modules.
+  `-d extension` plus `-d yerd_dump.protocol=2`, which puts the extension in
+  trace mode: it records a request only when the proxy hands it a trace id,
+  which the proxy does only for sites with Insights recording on. The proxy
+  also times those requests itself, and the daemon joins both sides by id in
+  the pure [`yerd-insights`](./crates/yerd-insights) crate and keeps 24 hours
+  on disk. Fetch/verify is best-effort - a failure leaves the site running
+  with timing only. See the [yerdd](./binaries/yerdd) page for the
+  `dump_server` / `insights` / `ext_install` modules.
 
 ## Dependency direction (downhill, no cycles)
 

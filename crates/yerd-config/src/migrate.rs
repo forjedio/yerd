@@ -58,6 +58,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v31_to_v32,
     migrate_v32_to_v33,
     migrate_v33_to_v34,
+    migrate_v34_to_v35,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -356,6 +357,26 @@ fn migrate_v33_to_v34(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 34)
 }
 
+/// `v34 → v35`: a structural step. v35 added the optional `[insights]` table
+/// (empty when absent) and made `[dumps] enabled` the global extension-capture
+/// switch, on by default, with per-site recording chosen in Insights. An older
+/// config's explicit `enabled = false` meant "no dumps anywhere", which v35
+/// expresses by leaving every Insights site off, so upgrading sets
+/// `dumps.enabled = true` once, creating `[dumps]` when absent. A non-table
+/// `dumps` value is left for the wire deserialisation to reject.
+fn migrate_v34_to_v35(value: &mut Value) -> Result<(), ConfigError> {
+    let root = value.as_table_mut().ok_or(ConfigError::Migration {
+        reason: MigrationErrorReason::MissingVersion,
+    })?;
+    let dumps = root
+        .entry("dumps")
+        .or_insert_with(|| Value::Table(toml::Table::new()));
+    if let Some(table) = dumps.as_table_mut() {
+        table.insert("enabled".to_string(), Value::Boolean(true));
+    }
+    set_version(value, 35)
+}
+
 /// Set the top-level `version` key, erroring if the root is not a table.
 fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
     let table = value.as_table_mut().ok_or(ConfigError::Migration {
@@ -425,7 +446,41 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 34);
+        assert_eq!(crate::CURRENT_VERSION, 35);
+    }
+
+    #[test]
+    fn v34_to_v35_forces_dumps_enabled() {
+        let cases = [
+            "version = 34\n",
+            "version = 34\n[dumps]\nenabled = false\nport = 9000\n",
+            "version = 34\n[dumps]\nenabled = true\n",
+        ];
+        for src in cases {
+            let mut v: Value = toml::from_str(src).unwrap();
+            migrate_v34_to_v35(&mut v).unwrap();
+            assert_eq!(read_version(&v).unwrap(), 35, "{src}");
+            assert_eq!(
+                v.get("dumps")
+                    .and_then(|d| d.get("enabled"))
+                    .and_then(Value::as_bool),
+                Some(true),
+                "{src}"
+            );
+        }
+    }
+
+    #[test]
+    fn v34_to_v35_keeps_other_dumps_keys() {
+        let mut v: Value =
+            toml::from_str("version = 34\n[dumps]\nenabled = false\nport = 9000\n").unwrap();
+        migrate_v34_to_v35(&mut v).unwrap();
+        assert_eq!(
+            v.get("dumps")
+                .and_then(|d| d.get("port"))
+                .and_then(Value::as_integer),
+            Some(9000)
+        );
     }
 
     #[test]

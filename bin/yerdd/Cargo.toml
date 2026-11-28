@@ -39,6 +39,7 @@ yerd-tunnel    = { path = "../../crates/yerd-tunnel" }
 yerd-proxy     = { path = "../../crates/yerd-proxy" }
 yerd-doctor    = { path = "../../crates/yerd-doctor" }
 yerd-mail      = { path = "../../crates/yerd-mail" }
+yerd-insights  = { path = "../../crates/yerd-insights" }
 yerd-update    = { path = "../../crates/yerd-update" }
 yerd-release-manifest = { path = "../../crates/yerd-release-manifest" }
 thiserror      = { workspace = true }

@@ -33,7 +33,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 
 | Key         | TOML type            | Meaning                                                            | Default        |
 | ----------- | -------------------- | ----------------------------------------------------------------- | -------------- |
-| `version`   | integer              | On-disk schema version. **Mandatory**; written as `34` by this release. | `n/a (required)` |
+| `version`   | integer              | On-disk schema version. **Mandatory**; written as `35` by this release. | `n/a (required)` |
 | `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
 | `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
 | `update_channel` | string          | Self-update channel: `"stable"` or `"edge"`.                      | `"stable"`     |
@@ -48,7 +48,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 | `overrides` | array of tables      | Per-site overrides for **parked** sites.                          | empty          |
 | `services`  | table                | Per-service `[services.<id>]` tables; every installed engine auto-starts on boot. | empty          |
 | `mail`      | table                | Built-in mail-capture SMTP server.                                | on / `2525`    |
-| `dumps`     | table                | Laravel ▸ Dumps telemetry settings.                               | off / `2304`   |
+| `dumps`     | table                | Extension telemetry settings: the global capture switch, port and captured signals. | on / `2304`    |
 | `tunnel`    | table                | Site sharing: Cloudflare named tunnels, share passwords, tunnel providers. | empty          |
 | `groups`    | table                | User-defined site groups and per-site membership.                 | empty          |
 | `domains`   | table                | Per-site and per-proxy domain sets (primary, aliases, subdomains, wildcards). | empty |
@@ -59,16 +59,17 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 | `network`   | table                | Outbound HTTP proxy for Yerd's downloads and the tools it runs.   | system detection |
 | `favourites` | table              | Sites starred in the desktop app.                                 | empty          |
 | `added`     | table                | When each site was added, for the desktop app's Recently added list. | empty       |
+| `insights`  | table                | Sites with Insights recording on, and the issue-detection thresholds. | empty / see below |
 
 ::: warning Unknown keys are rejected
-The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, a `[parked.claims."<docroot>"]` entry, `[mail]`, `[dumps]`, `[dumps.features]`, `[domains]`, a `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` / `[domains.proxy.<name>]` entry, `[proxy_rules]`, `[route_rules]`, `[response_headers]`, `[network]`, `[favourites]`, `[added]`, a `[[proxies]]` entry, a `[services.<id>]` table, a `[[linked]]` entry, an `[[overrides]]` entry, or a `[[php.extensions.<version>]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
+The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, a `[parked.claims."<docroot>"]` entry, `[mail]`, `[dumps]`, `[dumps.features]`, `[domains]`, a `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` / `[domains.proxy.<name>]` entry, `[proxy_rules]`, `[route_rules]`, `[response_headers]`, `[network]`, `[favourites]`, `[added]`, `[insights]`, `[insights.thresholds]`, a `[[proxies]]` entry, a `[services.<id>]` table, a `[[linked]]` entry, an `[[overrides]]` entry, or a `[[php.extensions.<version>]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
 
 The free-form maps are the exception, because their keys *are* the data. `[services.<id>.overrides]` (like `[php.directives."<version>"]`) takes arbitrary directive names, so `deny_unknown_fields` does not apply *inside* it - the keys are shape-checked instead, and a bad one is dropped rather than failing the load. It still applies to the enclosing `[services.<id>]` table.
 :::
 
 ### `version`
 
-The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `34`, and Yerd always writes `version = 34`. Older `version = 1` through `version = 33` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `35`, and Yerd always writes `version = 35`. Older `version = 1` through `version = 34` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
 
 ### `tld`
 
@@ -455,22 +456,24 @@ port = 2525
 
 ### `[dumps]`
 
-Telemetry settings for the Laravel ▸ Dumps feature. The dump server buffers per-request telemetry frames from the `yerd-php-ext` extension; this section is the durable source of truth (the daemon writes a runtime mirror the extension reads each request). **Disabled by default.**
+Extension telemetry settings shared by [Insights](../guide/laravel-dumps) and its Live feed. The dump server receives per-request telemetry frames from the `yerd-php-ext` extension; this section is the durable source of truth. **Enabled by default**: `enabled` is the global capture switch, and which sites are actually recorded is chosen per site in [`[insights]`](#insights).
 
 | Key       | TOML type     | Meaning                                                              | Default |
 | --------- | ------------- | ------------------------------------------------------------------- | ------- |
-| `enabled` | boolean       | Whether dump interception is on (the "antenna").                    | `false` |
+| `enabled` | boolean       | Global extension-capture switch. When `false`, no site sends the extension trace parameters, so only request timing is recorded. | `true`  |
 | `port`    | integer (u16) | Loopback port the dump server listens on / the extension connects to. | `2304`  |
 | `persist` | boolean       | When `false`, the buffer is cleared on each new request (latest-request view); `true` accumulates across requests. | `false` |
 | `features`| table         | Per-feature capture toggles (see below).                            | empty   |
 
 Validation rejects `port = 0` (`DumpsPortZero`).
 
-`[dumps.features]` is a map of feature name → bool. The keys are `dumps`, `queries`, `jobs`, `views`, `requests`, `logs`, and `cache`. **An absent key means "on"**, so the table only needs entries for features you have turned *off*. An empty map (every feature on) is omitted from the file, and so is the whole `[dumps]` table when it matches the default (disabled, port `2304`, no overrides).
+`[dumps.features]` is a map of feature name → bool. The keys are `dumps`, `queries`, `jobs`, `views`, `requests`, `logs`, `cache`, and `http`. **An absent key means "on"** (except `http`, which defaults off), so the table only needs entries for features you have changed. An empty map is omitted from the file, and so is the whole `[dumps]` table when it matches the default (enabled, port `2304`, no overrides).
+
+The daemon still writes a runtime `{state}/dumps/state.json` mirror for older extensions, but its `enabled` is always `false`: a current extension takes its instructions per request from the proxy, and an older one stays inert rather than capturing every site.
 
 ```toml
 [dumps]
-enabled = true
+enabled = false   # only written when capture is switched off
 port = 2304
 persist = false
 
@@ -568,6 +571,38 @@ blog = 1764100000
 
 [added.parked]
 "/Users/you/Sites/api" = 0
+```
+
+### `[insights]`
+
+[Insights](../guide/laravel-dumps) settings. **Empty by default**: the whole table is omitted until a site starts recording or a threshold changes, and `[insights.thresholds]` is omitted while every threshold is at its default.
+
+| Key     | TOML type        | Meaning                                                    |
+| ------- | ---------------- | ---------------------------------------------------------- |
+| `sites` | array of strings | Lowercased names of the sites with Insights recording on. Like `[favourites]`, entries are keyed by site name and not checked against live sites. Omitted when empty. |
+
+`[insights.thresholds]` tunes issue detection. Each key defaults independently, and a change applies to requests recorded afterwards.
+
+| Key               | TOML type     | Meaning                                                              | Default |
+| ----------------- | ------------- | ------------------------------------------------------------------- | ------- |
+| `n_plus_one_min`  | integer (u32) | Repeats of one query shape from one call site that count as an N+1. | `5`     |
+| `duplicate_min`   | integer (u32) | Identical queries (same SQL and bindings) that count as a duplicate. | `2`     |
+| `slow_query_ms`   | integer (u32) | A query slower than this many milliseconds is slow.                  | `100`   |
+| `large_read_rows` | integer (u32) | A read without `LIMIT` returning at least this many rows is a large read. | `1000` |
+| `max_queries`     | integer (u32) | A request running more than this many queries is flagged.           | `50`    |
+
+Validation rejects a threshold of `0`, and a `duplicate_min` below `2` (`InsightsThresholdInvalid`).
+
+```toml
+[insights]
+sites = ["blog"]
+
+[insights.thresholds]
+n_plus_one_min = 5
+duplicate_min = 2
+slow_query_ms = 250
+large_read_rows = 1000
+max_queries = 50
 ```
 
 ### `[domains]`
@@ -768,14 +803,14 @@ the desktop app's General settings.
 
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `34`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `35`.
 
 When the daemon loads a file, it routes on the version it finds:
 
 ```text
-found  > CURRENT (34)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (34)   →  parse directly
-found  < CURRENT (34)   →  walk forward migration steps, then parse
+found  > CURRENT (35)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (35)   →  parse directly
+found  < CURRENT (35)   →  walk forward migration steps, then parse
 ```
 
 A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
@@ -813,6 +848,7 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v31 → v32`** is a bare version bump: v32 only **added** `[tunnel] default_provider` and the optional `[tunnel.ngrok]` table, both of which default when absent.
 - **`v32 → v33`** is a bare version bump: v33 only **added** the optional `[response_headers.proxy]` table (whole-host proxy response headers), which defaults to empty when absent.
 - **`v33 → v34`** is a small *structural* migration: v34 **added** the optional `[added]` table (per-site added times), and the migration copies the parked roots into `[added] baseline_pending` so the daemon records the parked sites that already exist as undated instead of recently added.
+- **`v34 → v35`** is a small *structural* migration: v35 **added** the optional `[insights]` table (recording sites and thresholds) and made `[dumps] enabled` the global extension-capture switch, on by default. The migration sets `[dumps] enabled = true` once (creating `[dumps]` when absent), because an older explicit `false` meant "no dumps anywhere", which v35 expresses by leaving every Insights site off.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 
@@ -932,9 +968,9 @@ enabled = true
 enabled = true
 port = 2525
 
-# Laravel ▸ Dumps telemetry. OFF by default - omitted from a default file. When
-# present, absent [dumps.features] keys default to ON, so only disabled features
-# need listing.
+# Extension telemetry. Capture is ON by default - omitted from a default file.
+# When present, absent [dumps.features] keys take their defaults, so only
+# changed features need listing.
 [dumps]
 enabled = true
 port = 2304
@@ -942,6 +978,17 @@ persist = false
 
 [dumps.features]
 queries = false
+
+# Insights. Omitted until a site records or a threshold changes.
+[insights]
+sites = ["blog"]
+
+[insights.thresholds]
+n_plus_one_min = 5
+duplicate_min = 2
+slow_query_ms = 250
+large_read_rows = 1000
+max_queries = 50
 ```
 
 ## Related pages

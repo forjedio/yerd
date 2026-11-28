@@ -289,14 +289,20 @@ pub async fn bring_up_with_dirs(
     php_manager.set_pool_overrides(config.php.pool.clone());
     php_manager.set_dump_ext(Some(yerd_php::DumpExtSettings {
         so_dir: dirs.data.join("php-ext"),
-        ini_defines: vec![(
-            "yerd_dump.state_path".to_string(),
-            dirs.state
-                .join("dumps")
-                .join("state.json")
-                .to_string_lossy()
-                .into_owned(),
-        )],
+        ini_defines: vec![
+            (
+                "yerd_dump.state_path".to_string(),
+                dirs.state
+                    .join("dumps")
+                    .join("state.json")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            (
+                yerd_insights::pure::contract::PROTOCOL_INI.to_string(),
+                yerd_insights::pure::contract::PROTOCOL_VERSION.to_string(),
+            ),
+        ],
     }));
     php_manager.set_extensions(
         config
@@ -407,6 +413,11 @@ pub async fn bring_up_with_dirs(
         .and_then(|l| l.local_addr().ok())
         .map(|a| a.port());
 
+    let insights = Arc::new(crate::insights::Insights::new(
+        yerd_insights::Store::new(crate::insights::Insights::store_root(&dirs.state)),
+        crate::insights::boot_nonce(),
+        &config,
+    ));
     let state = Arc::new(DaemonState {
         config: Mutex::new(config),
         router,
@@ -463,6 +474,7 @@ pub async fn bring_up_with_dirs(
         watch_dirty: tokio::sync::Notify::new(),
         config_unsaved: std::sync::atomic::AtomicBool::new(startup_save_failed),
         dumps: Arc::new(crate::dump_server::DumpStore::new()),
+        insights,
         shim_reconcile: tokio::sync::Mutex::new(()),
         tool_mutate: tokio::sync::Mutex::new(()),
         tunnel_mutate: tokio::sync::Mutex::new(()),

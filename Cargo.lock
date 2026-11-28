@@ -6484,6 +6484,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "yerd-insights"
+version = "2.1.0"
+dependencies = [
+ "flate2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "yerd-ipc",
+]
+
+[[package]]
 name = "yerd-ipc"
 version = "2.1.0"
 dependencies = [
@@ -6701,6 +6713,7 @@ dependencies = [
  "yerd-depcheck",
  "yerd-dns",
  "yerd-doctor",
+ "yerd-insights",
  "yerd-ipc",
  "yerd-mail",
  "yerd-php",

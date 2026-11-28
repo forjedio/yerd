@@ -2,10 +2,10 @@
 import type { Component } from "vue";
 import { computed, onMounted, ref, watch } from "vue";
 import {
-  Activity,
   ArrowLeftRight,
   CodeXml,
   Database,
+  Gauge,
   Globe,
   Hexagon,
   Inbox,
@@ -22,7 +22,7 @@ import TitleBar from "@/components/TitleBar.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { loadPlatform, usePlatform } from "@/composables/usePlatform";
 import { useResource } from "@/composables/useResource";
-import { cachedUpdateStatus, dumpsStatus, listPhp, showMailsWindow } from "@/ipc/client";
+import { cachedUpdateStatus, insightsStatus, listPhp, showMailsWindow } from "@/ipc/client";
 import { needsElevation } from "@/lib/elevation";
 import logoUrl from "@/assets/logo.svg";
 
@@ -34,7 +34,7 @@ import logoUrl from "@/assets/logo.svg";
 //
 // Badges: Sites shows the parked + linked count; PHP and Node their update
 // counts; Mail its unread count (clicking the pill opens the viewer); Share the
-// shared-site count; Dumps an on/off pill; Doctor an amber dot when an OS
+// shared-site count; Insights its open-issue count; Doctor an amber dot when an OS
 // privilege is unelevated; Settings a 1 when a Yerd update is available.
 type Item = {
   to: string;
@@ -63,22 +63,21 @@ const daemonVersion = computed(() => report.value?.daemon_version ?? "");
 const { data: phpData } = useResource("php", listPhp);
 const phpUpdates = computed(() => phpData.value?.updates?.length ?? 0);
 
-// Dumps interception has no field on the status report, so it is re-read on
-// every status tick (the Dumps page invalidates this key when it toggles).
-const { data: dumps, refresh: refreshDumps } = useResource("dumps-status", dumpsStatus, {
-  immediate: false,
-});
+// Insights' open-issue count has no field on the status report, so it is
+// re-read on every status tick from the daemon's running per-site sets.
+const { data: insights, refresh: refreshInsights } = useResource(
+  "insights-status",
+  insightsStatus,
+  { immediate: false },
+);
 watch(
   report,
   (r) => {
-    if (r) void refreshDumps();
+    if (r) void refreshInsights();
   },
   { immediate: true },
 );
-const dumpsEnabled = computed<"on" | "off" | undefined>(() => {
-  if (!report.value || !dumps.value) return undefined;
-  return dumps.value.enabled ? "on" : "off";
-});
+const openIssues = computed(() => (report.value ? (insights.value?.open_issues ?? 0) : 0));
 
 // Yerd self-update: the daemon's last stored check (no network). Shows a 1 when
 // an update is available on the current track, nothing when up to date.
@@ -111,7 +110,7 @@ const items = computed<Item[]>(() => [
     onBadgeClick: () => void showMailsWindow(),
     badgeTitle: "Open mail viewer",
   },
-  { to: "/dumps", label: "Dumps", icon: Activity, state: dumpsEnabled.value },
+  { to: "/insights", label: "Insights", icon: Gauge, badge: openIssues.value },
   { to: "/integrations", label: "Share", icon: Share2, badge: sharedSites.value },
 ]);
 

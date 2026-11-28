@@ -43,6 +43,7 @@ set (it wraps macro-heavy generated Tauri code) but still bans
 | `yerd-doctor` | Pure diagnosis and fix-planning for `yerd doctor`. Turns a `StatusReport` into findings and safe auto-fixes. | pure | [yerd-doctor](./crates/yerd-doctor) |
 | `yerd-platform` | OS abstraction layer: paths, trust store, resolver installer, port binder/redirector, metrics - one impl per OS. | owns I/O (pure submodule) | [yerd-platform](./crates/yerd-platform) |
 | `yerd-mail` | Built-in mail-capture SMTP sink plus its on-disk store. Accepts mail on a loopback port (Herd-style) and persists parsed messages for the GUI. Depends on `yerd-ipc` + `mail-parser`. | owns I/O | [yerd-mail](./crates/yerd-mail) |
+| `yerd-insights` | Insights: per-site request timing, query issue detection, minute rollups and the on-disk hour-file store. A sync, clock-free `pure` core (aggregator, histograms, route keys, SQL fingerprints, retention, codec) plus a small std-fs store the daemon runs on blocking threads. Depends on `yerd-ipc` + `flate2`. | pure core + std-fs store | [yerd-insights](./crates/yerd-insights) |
 | `yerd-mcp` | Model Context Protocol server logic: the curated tool catalog agents call, the sans-io JSON-RPC state machine, and tool-result rendering. Consumed by `yerd mcp`, which owns the stdio loop and the daemon exchange. Depends on `yerd-ipc` and `yerd-core`. | pure | [yerd-mcp](./crates/yerd-mcp) |
 | `yerd-tunnel` | Cloudflare Tunnel support: pure `cloudflared` argv / `config.yml` generation and log parsing, plus a supervised `cloudflared` lifecycle. Powers public site sharing. Depends on `yerd-supervise`. | owns I/O (pure submodules) | [yerd-tunnel](./crates/yerd-tunnel) |
 | `yerd-update` | Pure release-channel selection and version-decision logic for self-update: `select_target` (stable/edge resolution), artifact selection by platform, and checksum/minisign verification. | pure | [yerd-update](./crates/yerd-update) |
@@ -92,7 +93,7 @@ flowchart TD
     gui["yerd-gui (app)"]
     xtask["xtask (no internal deps)"]
     yerd["yerd (CLI)"]
-    yerdd["yerdd (depends on all fourteen libs)"]
+    yerdd["yerdd (depends on all fifteen libs)"]
     helper["yerd-helper"]
     forward["yerd-forward"]
 
@@ -107,6 +108,7 @@ flowchart TD
     tls["yerd-tls"]
     platform["yerd-platform"]
     mail["yerd-mail"]
+    insights["yerd-insights"]
     mcp["yerd-mcp"]
     tunnel["yerd-tunnel"]
     update["yerd-update"]
@@ -143,6 +145,7 @@ flowchart TD
     yerdd --> proxy
     yerdd --> doctor
     yerdd --> mail
+    yerdd --> insights
     yerdd --> tunnel
     yerdd --> update
 
@@ -155,6 +158,7 @@ flowchart TD
     doctor --> core
     doctor --> ipc
     mail --> ipc
+    insights --> ipc
     php --> core
     php --> platform
     php --> supervise
@@ -179,6 +183,7 @@ crate's `Cargo.toml`):
 - **`yerd-php`** → `yerd-core`, `yerd-platform`, `yerd-supervise`
 - **`yerd-services`** → `yerd-platform`, `yerd-supervise`
 - **`yerd-mail`** → `yerd-ipc`
+- **`yerd-insights`** → `yerd-ipc`
 - **`yerd-mcp`** → `yerd-core`, `yerd-ipc`
 - **`yerd-update`** → *(none - workspace leaf)*
 - **`yerd-service-ctl`** → *(none - workspace leaf)*
@@ -186,7 +191,7 @@ crate's `Cargo.toml`):
 - **`yerd-forward`** (bin) → `yerd-core`
 - **`yerd`** (bin) → `yerd-core`, `yerd-ipc` (`transport`), `yerd-platform`, `yerd-update`, `yerd-service-ctl`, `yerd-services`
 - **`yerd-gui`** (app) → `yerd-core`, `yerd-ipc` (`transport`), `yerd-platform`, `yerd-update`
-- **`yerdd`** (bin) → `yerd-core`, `yerd-config`, `yerd-ipc` (`transport`), `yerd-tls`, `yerd-platform`, `yerd-dns`, `yerd-supervise`, `yerd-php`, `yerd-services`, `yerd-proxy`, `yerd-doctor`, `yerd-mail`, `yerd-tunnel`, `yerd-update` - **all fourteen libraries**
+- **`yerdd`** (bin) → `yerd-core`, `yerd-config`, `yerd-ipc` (`transport`), `yerd-tls`, `yerd-platform`, `yerd-dns`, `yerd-supervise`, `yerd-php`, `yerd-services`, `yerd-proxy`, `yerd-doctor`, `yerd-mail`, `yerd-insights`, `yerd-tunnel`, `yerd-update` - **all fifteen libraries**
 - **`xtask`** → *(no internal deps; `anyhow` + `clap` only)*
 
 ::: tip The daemon is the assembly point
@@ -233,6 +238,10 @@ in everything (timestamps, reports) explicitly.
   is pure."* Parse, validate, serialise, and migrate are all pure; load/save are a
   thin atomic file seam. Schema is versioned (`CURRENT_VERSION = 5`), decoupled
   from the IPC `PROTOCOL_VERSION`.
+- **`yerd-insights`** - everything under `pure/` is sync and clock-free (every
+  time-dependent method takes `now`); `io/store.rs` is a synchronous std-fs edge
+  the daemon calls from `spawn_blocking`, so the crate never depends on an async
+  runtime (`tests/no_runtime_deps.rs` guards it).
 
 ### I/O-owning, with a pure submodule
 

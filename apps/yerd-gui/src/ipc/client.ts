@@ -24,6 +24,13 @@ import type {
   GroupsState,
   GuiLogs,
   IdeOption,
+  InsightsOverview,
+  InsightsRange,
+  InsightsRequestDetail,
+  InsightsRequestSummary,
+  InsightsSort,
+  InsightsStatusResponse,
+  InsightsThresholds,
   InfoResponse,
   JobProgressResponse,
   MailDetail,
@@ -1602,6 +1609,67 @@ export async function showDumpsWindow(): Promise<void> {
 
 function emptyDumpCounts(): DumpCounts {
   return { dumps: 0, queries: 0, jobs: 0, views: 0, requests: 0, logs: 0, cache: 0, http: 0 };
+}
+
+// ── insights (per-site request performance) ─────────────────────────────────
+
+function expectInsights<T extends Response["type"]>(r: Response, type: T): Extract<Response, { type: T }> {
+  const ok = ensureOk(r);
+  if (ok.type !== type) throw new IpcError(`unexpected response, wanted ${type}`, "internal");
+  return ok as Extract<Response, { type: T }>;
+}
+
+/** Recording sites, thresholds, the global capture switch and the open-issue count. */
+export async function insightsStatus(): Promise<InsightsStatusResponse> {
+  return expectInsights(await call<Response>("insights_status"), "insights_status");
+}
+
+/** Turn Insights recording on or off for one site. */
+export async function setInsightsEnabled(site: string, enabled: boolean): Promise<void> {
+  ensureOk(await call<Response>("set_insights_enabled", { site, enabled }));
+}
+
+/** Replace the issue-detection thresholds. */
+export async function setInsightsThresholds(thresholds: InsightsThresholds): Promise<void> {
+  ensureOk(await call<Response>("set_insights_thresholds", { thresholds }));
+}
+
+/** The Overview tab for one site and range. */
+export async function insightsOverview(site: string, range: InsightsRange): Promise<InsightsOverview> {
+  return expectInsights(await call<Response>("insights_overview", { site, range }), "insights_overview").overview;
+}
+
+/** Recorded requests for one site, newest or slowest first. A blank query is not sent. */
+export async function listInsightsRequests(
+  site: string,
+  range: InsightsRange,
+  sort: InsightsSort,
+  limit: number,
+  query?: string,
+): Promise<InsightsRequestSummary[]> {
+  const q = query?.trim() || null;
+  return expectInsights(
+    await call<Response>("list_insights_requests", { site, range, query: q, sort, limit }),
+    "insights_requests",
+  ).requests;
+}
+
+/** One recorded request's drill-in; `tsMs` is its start, which picks the hour file. */
+export async function getInsightsRequest(site: string, id: string, tsMs: number): Promise<InsightsRequestDetail> {
+  return expectInsights(
+    await call<Response>("get_insights_request", { site, requestId: id, tsMs }),
+    "insights_request",
+  ).request;
+}
+
+/** Dismiss or restore one detected issue. */
+export async function dismissInsightsIssue(site: string, key: string, dismissed: boolean): Promise<void> {
+  ensureOk(await call<Response>("dismiss_insights_issue", { site, key, dismissed }));
+}
+
+/** Delete everything recorded for one site. */
+export async function clearInsights(site: string): Promise<void> {
+  ensureOk(await call<Response>("clear_insights", { site }));
 }
 
 // ── GUI diagnostic logs (host-only; no daemon IPC) ──────────────────────────

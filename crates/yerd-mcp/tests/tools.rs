@@ -156,6 +156,18 @@ fn every_tool_entry_is_well_formed() {
 }
 
 #[test]
+fn set_dumps_enabled_points_per_site_recording_at_insights() {
+    let tool = tools_list()
+        .into_iter()
+        .find(|t| t["name"] == json!("set_dumps_enabled"))
+        .expect("set_dumps_enabled is listed");
+    assert_eq!(
+        tool["description"],
+        json!("Turn extension telemetry capture (dumps, queries, jobs) on or off globally; per-site recording is enabled in Insights.")
+    );
+}
+
+#[test]
 fn required_arguments_are_declared_in_the_schema() {
     let expected: BTreeMap<&str, Vec<&str>> = [
         ("create_site", vec!["name", "parent_dir", "php"]),

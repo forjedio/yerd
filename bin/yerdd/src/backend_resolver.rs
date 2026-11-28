@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use tokio::sync::{Mutex, RwLock};
 
 use yerd_php::{io::FastCgiProbe, PhpManager, SystemClock, TokioProcessSpawner};
-use yerd_proxy::{Backend, BackendResolver, ProxyError};
+use yerd_proxy::{Backend, BackendResolver, ProxyError, RequestTap};
 
 /// Concrete `PhpManager` shape the daemon uses everywhere.
 pub type DaemonPhpManager = PhpManager<TokioProcessSpawner, SystemClock, FastCgiProbe>;
@@ -23,6 +23,9 @@ pub struct DaemonBackendResolver {
     /// so a site's front-controller default is resolved correctly (WordPress,
     /// any layout, defaults to direct script execution).
     pub wordpress_sites: Arc<RwLock<HashMap<String, bool>>>,
+    /// The Insights request tap (see [`crate::insights::Insights::tap`]),
+    /// handed to the proxy through [`BackendResolver::request_tap`].
+    pub tap: Arc<RequestTap>,
 }
 
 #[async_trait]
@@ -56,6 +59,10 @@ impl BackendResolver for DaemonBackendResolver {
             .copied()
             .unwrap_or(false)
     }
+
+    fn request_tap(&self) -> Option<&RequestTap> {
+        Some(&self.tap)
+    }
 }
 
 #[cfg(test)]
@@ -70,6 +77,7 @@ mod tests {
         DaemonBackendResolver {
             php_manager: state.php_manager.clone(),
             wordpress_sites: Arc::new(RwLock::new(wordpress_sites)),
+            tap: state.insights.tap.clone(),
         }
     }
 
