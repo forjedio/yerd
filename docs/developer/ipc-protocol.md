@@ -194,6 +194,11 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `CreateDatabase` / `DropDatabase` | `{"type":"create_database","service":"mysql","name":"app"}` (and `drop_database`) |
 | `BackupDatabase { service, name, path }` | `{"type":"backup_database","service":"mysql","name":"app","path":"/tmp/app.sql"}` |
 | `RestoreDatabase { service, name, path }` | `{"type":"restore_database","service":"mysql","name":"app","path":"/tmp/app.sql"}` |
+| `ListBuckets` | `{"type":"list_buckets"}` (replies `Buckets { buckets }`) |
+| `CreateBucket { name }` | `{"type":"create_bucket","name":"assets"}` (replies `Ok`) |
+| `DropBucket { name }` | `{"type":"drop_bucket","name":"assets"}` (replies `BucketDropped { objects_removed }`) |
+| `BucketStats { name }` | `{"type":"bucket_stats","name":"assets"}` (replies `BucketStats { objects, bytes }`) |
+| `S3Credentials { show_secret }` | `{"type":"s3_credentials","show_secret":false}` (replies `S3Credentials`) |
 | `Status` | `{"type":"status"}` |
 | `Diagnose` / `DoctorFix` | `{"type":"diagnose"}` / `{"type":"doctor_fix"}` |
 | `RestartDaemon` | `{"type":"restart_daemon"}` (Unix-only re-exec) |
@@ -292,6 +297,10 @@ pub enum Response {
     ResponseHeaders { headers: Vec<ResponseHeaderEntry> }, // every site's and whole-host proxy's custom response headers
     ServiceLogs { lines: Vec<String> },
     Databases { databases: Vec<DatabaseSummary> },
+    Buckets { buckets: Vec<BucketSummary> },      // sorted by name
+    BucketStats { objects: u64, bytes: u64 },
+    BucketDropped { objects_removed: u64 },
+    S3Credentials { endpoint, access_key, secret_key: Option<String> }, // secret skipped when None
     Mails { mails: Vec<MailSummary> },
     Mail { mail: Box<MailDetail> },               // boxed: large payload
     Tools { tools: Vec<ToolStatus> },             // installable dev tools
@@ -376,6 +385,29 @@ convention, `false`/omitted for supported versions and older daemons) marking
 whether a PHP version's extension-presence row is a legacy version, so the Dumps
 view can flag it as unsupported without a second round-trip. Same additive,
 no-`PROTOCOL_VERSION`-bump pattern as `web_subpath`.
+:::
+
+::: info S3 storage requests
+Five additive requests manage the buckets of the `versitygw` S3 storage service
+(see [S3 storage](../reference/cli/s3)). They carry no `service` field: versitygw
+is the only S3 engine. `ListBuckets` replies `Buckets { buckets }`, where
+`BucketSummary { name }` is a struct so it can grow fields additively
+(`{"type":"buckets","buckets":[{"name":"assets"},{"name":"media"}]}`).
+`CreateBucket` validates the name against the S3 bucket rules
+(`ErrorCode::InvalidPath` with the broken rule) and replies `Ok`; an existing
+bucket is `AlreadyExists`. `BucketStats` replies
+`{"type":"bucket_stats","objects":1001,"bytes":5005}` and `DropBucket`, which
+deletes every object and then the bucket, replies
+`{"type":"bucket_dropped","objects_removed":3}`; a missing bucket is `NotFound`
+for both. These four need the gateway running and otherwise reply `Internal`
+with `start S3 (versitygw) first - …`, the same `Internal` + message convention
+as the database requests; a versitygw that isn't installed is `NotFound`.
+`S3Credentials { show_secret }` only needs versitygw installed and replies
+`{"type":"s3_credentials","endpoint":"http://127.0.0.1:7070","access_key":"yerd_x"}`;
+`secret_key` is present only when `show_secret` is `true`
+(`#[serde(default, skip_serializing_if = "Option::is_none")]`). The endpoint
+uses the gateway's live listen port, falling back to the configured one while it
+is stopped. No `PROTOCOL_VERSION` bump.
 :::
 
 ::: info Reverse proxies are additive requests plus their own response variant

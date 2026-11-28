@@ -13,6 +13,11 @@ vi.mock("@tauri-apps/api/path", () => ({
 import {
   addDomain,
   addRouteRule,
+  bucketStats,
+  createBucket,
+  dropBucket,
+  listBuckets,
+  s3Credentials,
   applyProjectConfig,
   exportProjectConfig,
   projectConfigDraft,
@@ -727,6 +732,62 @@ describe("node commands", () => {
   it("listNode rejects an unexpected response type", async () => {
     invokeMock.mockResolvedValue({ type: "ok" });
     await expect(listNode()).rejects.toBeInstanceOf(IpcError);
+  });
+});
+
+describe("S3 bucket commands", () => {
+  it("listBuckets unwraps bucket names", async () => {
+    invokeMock.mockResolvedValue({ type: "buckets", buckets: [{ name: "avatars" }, { name: "backups" }] });
+    await expect(listBuckets()).resolves.toEqual(["avatars", "backups"]);
+    expect(invokeMock).toHaveBeenCalledWith("list_buckets", undefined);
+  });
+
+  it("createBucket sends the name", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await createBucket("media");
+    expect(invokeMock).toHaveBeenCalledWith("create_bucket", { name: "media" });
+  });
+
+  it("dropBucket returns the removed object count", async () => {
+    invokeMock.mockResolvedValue({ type: "bucket_dropped", objects_removed: 241 });
+    await expect(dropBucket("media")).resolves.toBe(241);
+    expect(invokeMock).toHaveBeenCalledWith("drop_bucket", { name: "media" });
+  });
+
+  it("bucketStats returns objects and bytes", async () => {
+    invokeMock.mockResolvedValue({ type: "bucket_stats", objects: 12, bytes: 2048 });
+    await expect(bucketStats("media")).resolves.toEqual({ objects: 12, bytes: 2048 });
+    expect(invokeMock).toHaveBeenCalledWith("bucket_stats", { name: "media" });
+  });
+
+  it("s3Credentials omits the secret when it is not returned", async () => {
+    invokeMock.mockResolvedValue({
+      type: "s3_credentials",
+      endpoint: "http://127.0.0.1:7070",
+      access_key: "yerd_x",
+    });
+    await expect(s3Credentials(false)).resolves.toEqual({
+      endpoint: "http://127.0.0.1:7070",
+      access_key: "yerd_x",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("s3_credentials", { showSecret: false });
+  });
+
+  it("s3Credentials passes the secret through when requested", async () => {
+    invokeMock.mockResolvedValue({
+      type: "s3_credentials",
+      endpoint: "http://127.0.0.1:7070",
+      access_key: "yerd_x",
+      secret_key: "s3cr3t",
+    });
+    const r = await s3Credentials(true);
+    expect(r.secret_key).toBe("s3cr3t");
+    expect(invokeMock).toHaveBeenCalledWith("s3_credentials", { showSecret: true });
+  });
+
+  it("dropBucket rejects an unexpected response type", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await expect(dropBucket("media")).rejects.toBeInstanceOf(IpcError);
   });
 });
 

@@ -14,6 +14,7 @@ import type {
   AvailablePhpResponse,
   CreateSiteSpec,
   DaemonDiagnostics,
+  BucketStats,
   DatabaseSummary,
   Diagnosis,
   DoctorFixResponse,
@@ -45,6 +46,7 @@ import type {
   ContributorsResponse,
   OutboundProxyMode,
   AddableServiceType,
+  S3Credentials,
   PhpExtInfo,
   PhpVersion,
   PhpVersionsResponse,
@@ -1114,6 +1116,41 @@ export async function restoreDatabase(
   path: string,
 ): Promise<void> {
   ensureOk(await call<Response>("restore_database", { service, name, path }));
+}
+
+// ── S3 storage (versitygw) ───────────────────────────────────────────────────
+
+/** Bucket names in the running S3 gateway, sorted by name. */
+export async function listBuckets(): Promise<string[]> {
+  const r = ensureOk(await call<Response>("list_buckets"));
+  if (r.type !== "buckets") throw new IpcError("unexpected response to list_buckets");
+  return r.buckets.map((b) => b.name);
+}
+
+export async function createBucket(name: string): Promise<void> {
+  ensureOk(await call<Response>("create_bucket", { name }));
+}
+
+/** Delete a bucket and its objects; resolves with how many objects were removed. */
+export async function dropBucket(name: string): Promise<number> {
+  const r = ensureOk(await call<Response>("drop_bucket", { name }));
+  if (r.type !== "bucket_dropped") throw new IpcError("unexpected response to drop_bucket");
+  return r.objects_removed;
+}
+
+export async function bucketStats(name: string): Promise<BucketStats> {
+  const r = ensureOk(await call<Response>("bucket_stats", { name }));
+  if (r.type !== "bucket_stats") throw new IpcError("unexpected response to bucket_stats");
+  return { objects: r.objects, bytes: r.bytes };
+}
+
+/** The gateway endpoint and access key; the secret only when `showSecret`. */
+export async function s3Credentials(showSecret: boolean): Promise<S3Credentials> {
+  const r = ensureOk(await call<Response>("s3_credentials", { showSecret }));
+  if (r.type !== "s3_credentials") throw new IpcError("unexpected response to s3_credentials");
+  const creds: S3Credentials = { endpoint: r.endpoint, access_key: r.access_key };
+  if (r.secret_key !== undefined) creds.secret_key = r.secret_key;
+  return creds;
 }
 
 // ── mail capture ─────────────────────────────────────────────────────────────

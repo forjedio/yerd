@@ -11,13 +11,17 @@ const client = vi.hoisted(() => ({
   restoreDatabase: vi.fn(),
   pickSaveFile: vi.fn(),
   pickOpenFile: vi.fn(),
+  createBucket: vi.fn(),
+  dropBucket: vi.fn(),
+  s3Credentials: vi.fn(),
 }));
 
 vi.mock("@/ipc/client", () => ({ IpcError: class IpcError extends Error {}, ...client }));
 
+import ServiceIcon from "./ServiceIcon.vue";
 import ServiceInspector from "./ServiceInspector.vue";
 import type { ServiceStatus, SiteEntry, StatusReport } from "@/ipc/types";
-import { envText, reverbEnv, reverbPublic, sqlEnv } from "@/lib/services";
+import { envText, reverbEnv, reverbPublic, s3Env, sqlEnv } from "@/lib/services";
 
 const Pass = { template: "<div><slot /></div>" };
 const MenuStub = {
@@ -72,6 +76,23 @@ const reverb = svc({
   site: "codestash",
   port: 8081,
 });
+
+const s3 = svc({
+  service: "versitygw",
+  type_id: "versitygw",
+  display_name: "S3 (versitygw)",
+  installed_versions: ["1.7.0"],
+  selected_version: "1.7.0",
+  supports_databases: false,
+  supports_overrides: false,
+  port: 7070,
+});
+
+const S3_STATE = {
+  buckets: { names: ["avatars", "codestash-uploads"], loading: false, error: null },
+  stats: { avatars: { objects: 1284, bytes: 312_400_000 }, "codestash-uploads": { objects: 86, bytes: 48_100_000 } },
+  credentials: { endpoint: "http://127.0.0.1:7070", access_key: "yerd_7Kq2XH9PmA" },
+};
 
 const SITES: SiteEntry[] = [
   { name: "codestash", document_root: "/srv/c", php: "8.4", secure: true, kind: "linked", is_laravel: true },
@@ -278,5 +299,75 @@ describe("ServiceInspector body", () => {
     });
     await flushPromises();
     expect(connectEnv(w)).toContain("DB_DATABASE=shop");
+  });
+});
+
+describe("ServiceInspector S3 storage", () => {
+  async function mountS3(props: Record<string, unknown> = {}) {
+    return mountInspector({
+      service: s3,
+      databases: { names: null, loading: false, error: null },
+      s3: S3_STATE,
+      ...props,
+    });
+  }
+
+  it("shows Buckets, Connect and Credentials and no overrides", async () => {
+    const w = await mountS3();
+    expect(w.find('[data-testid="buckets-card"]').exists()).toBe(true);
+    expect(w.find('[data-testid="connect-card"]').exists()).toBe(true);
+    expect(w.find('[data-testid="credentials-card"]').exists()).toBe(true);
+    expect(w.find('[data-testid="overrides-card"]').exists()).toBe(false);
+    expect(w.find('[data-testid="databases-card"]').exists()).toBe(false);
+    expect(connectEnv(w)).toBe(
+      envText(s3Env("http://127.0.0.1:7070", "yerd_7Kq2XH9PmA", null, "avatars")).replace(/\n/g, ""),
+    );
+  });
+
+  it("points Connect at a bucket chosen with Use in Connect", async () => {
+    const w = await mountS3();
+    await w.get('[data-bucket="codestash-uploads"] [data-action="use"]').trigger("click");
+    await flushPromises();
+    expect(connectEnv(w)).toContain("AWS_BUCKET=codestash-uploads");
+    expect((w.get('select[aria-label="Bucket"]').element as HTMLSelectElement).value).toBe("codestash-uploads");
+  });
+
+  it("copies the .env block with the secret fetched for the clipboard", async () => {
+    client.s3Credentials.mockResolvedValue({
+      endpoint: "http://127.0.0.1:7070",
+      access_key: "yerd_7Kq2XH9PmA",
+      secret_key: "s3cr3t",
+    });
+    const w = await mountS3();
+    await w.findAll("button").find((b) => b.text().trim() === "Copy for .env")!.trigger("click");
+    await flushPromises();
+    expect(client.s3Credentials).toHaveBeenCalledWith(true);
+    expect(clipboardWriteText).toHaveBeenLastCalledWith(
+      envText(s3Env("http://127.0.0.1:7070", "yerd_7Kq2XH9PmA", "s3cr3t", "avatars")),
+    );
+    expect(connectEnv(w)).not.toContain("s3cr3t");
+  });
+
+  it("forwards bucket events and Start from the stopped card", async () => {
+    client.dropBucket.mockResolvedValue(3);
+    const w = await mountS3();
+    await w.get('[data-bucket="avatars"] [data-action="drop"]').trigger("click");
+    await flushPromises();
+    await w.findAll("button").find((b) => b.text().trim() === "Delete")!.trigger("click");
+    await flushPromises();
+    expect(w.emitted("bucketDropped")).toEqual([["avatars"]]);
+
+    await w.setProps({ service: { ...s3, state: "stopped" }, s3: { ...S3_STATE, buckets: { names: null, loading: false, error: null }, stats: {} } });
+    await flushPromises();
+    expect(w.text()).toContain("S3 is stopped");
+    expect(w.text()).toContain("Start S3 (versitygw) to pick a bucket.");
+    await w.findAll("button").find((b) => b.text().trim() === "Start S3")!.trigger("click");
+    expect(w.emitted("start")).toHaveLength(1);
+  });
+
+  it("uses the hard drive icon for S3", () => {
+    const icon = mount(ServiceIcon, { props: { typeId: "versitygw" } });
+    expect(icon.html()).toContain("lucide-hard-drive");
+    icon.unmount();
   });
 });

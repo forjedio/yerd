@@ -28,6 +28,7 @@ use yerd_supervise::supervisor::{
 use yerd_supervise::{ChildHandle, Clock, ExitReason, Listen, ProcessSpawner, SpawnFailureReason};
 
 use crate::config_render;
+use crate::credentials;
 use crate::error::ServiceError;
 use crate::health::ReadinessProbe;
 use crate::service::{LaunchContext, ReadinessKind, ServiceDefinition};
@@ -140,6 +141,11 @@ where
     /// `overrides` are the instance's stored configuration overrides, rendered
     /// to the sidecar file on every start (see [`write_service_config`]); pass an
     /// empty map for a type that accepts none.
+    ///
+    /// A type that [`uses_root_credentials`](ServiceDefinition::uses_root_credentials)
+    /// gets its stored pair loaded (or generated on first start) here, so every
+    /// bring-up path (start, restart, change-version, autostart) launches with
+    /// the same keys.
     #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     pub async fn ensure(
         &mut self,
@@ -245,6 +251,12 @@ where
             _ => Vec::new(),
         };
 
+        let credentials = if def.uses_root_credentials() {
+            Some(credentials::load_or_create(&self.dirs, id)?)
+        } else {
+            None
+        };
+
         let datadir_path = versioned
             .as_ref()
             .map(|(_, d)| d.clone())
@@ -258,6 +270,7 @@ where
                 log_path: &log_path,
                 geo_env: &geo_env,
                 cwd: cwd.as_deref(),
+                credentials: credentials.as_ref(),
             };
             let mut plan = def.plan_launch(&ctx)?;
             set_own_process_group(&mut plan.command);

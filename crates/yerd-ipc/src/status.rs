@@ -465,7 +465,8 @@ pub enum ServiceRunState {
 /// the enclosing `Response` keeps its `Eq` derive (no floats on the wire).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceStatus {
-    /// Stable service id (`"redis"`, `"mysql"`, `"mariadb"`, `"postgres"`, `"meilisearch"`).
+    /// Stable service id (`"redis"`, `"mysql"`, `"mariadb"`, `"postgres"`, `"meilisearch"`,
+    /// `"versitygw"`).
     pub service: String,
     /// Human-facing label (`"Redis (Valkey)"`, `"PostgreSQL"`, …).
     pub display_name: String,
@@ -575,6 +576,16 @@ pub struct WordPressVersionInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DatabaseSummary {
     /// The database name.
+    pub name: String,
+}
+
+/// One bucket in the S3 gateway, returned in [`crate::Response::Buckets`].
+///
+/// A struct (not a bare `String`) so future fields can be added additively
+/// without a wire break.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BucketSummary {
+    /// The bucket name.
     pub name: String,
 }
 

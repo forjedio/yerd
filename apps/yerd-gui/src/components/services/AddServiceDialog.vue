@@ -132,14 +132,27 @@ const subtitle = computed(() => {
       ? `Runs on ${form.value.site}.${props.tld}'s PHP — nothing to download`
       : "Runs on the site's PHP — nothing to download";
   }
+  if (t.type_id === "versitygw") {
+    const what = form.value.version ? `versitygw ${form.value.version}` : "versitygw";
+    return form.value.autostart
+      ? `Downloads ${what}, generates access keys for this install, and starts it now and whenever Yerd starts.`
+      : `Downloads ${what}, generates access keys for this install, and starts it now.`;
+  }
   return form.value.autostart
     ? "Downloads a prebuilt build and starts it now and whenever Yerd starts."
     : "Downloads a prebuilt build and starts it now.";
 });
 
+const submitLabel = computed(() => {
+  const t = selectedType.value;
+  if (!t) return "Add";
+  return t.type_id === "versitygw" ? "Add S3 storage" : `Add ${t.display_name}`;
+});
+
 function tileNote(t: AddableServiceType): string {
   if (t.already_installed) return "Added";
   if (t.requires_site) return "One per Laravel site";
+  if (t.type_id === "versitygw") return "Object storage";
   return "Available";
 }
 
@@ -275,7 +288,7 @@ const LABEL = "mb-1.5 block text-xs font-medium";
       <Button :disabled="!canSubmitAdd || adding" data-testid="add-submit" @click="submit">
         <Spinner v-if="adding" class="size-4" />
         <template v-if="adding">Installing…</template>
-        <template v-else>{{ selectedType ? `Add ${selectedType.display_name}` : "Add" }}</template>
+        <template v-else>{{ submitLabel }}</template>
       </Button>
     </template>
   </DialogFrame>

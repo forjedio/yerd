@@ -267,6 +267,19 @@ pub fn init_file_path(dirs: &PlatformDirs, service_id: &str) -> PathBuf {
         .join(format!("{service_id}-init.sql"))
 }
 
+/// The root-credentials file path: `state/services/<id>/credentials`.
+///
+/// Holds the generated access/secret key pair for engines that need one (see
+/// [`crate::credentials`]). Lives in the state dir, outside `config.toml` and the
+/// datadir, and is owner-only on Unix.
+#[must_use]
+pub fn credentials_path(dirs: &PlatformDirs, service_id: &str) -> PathBuf {
+    dirs.state
+        .join("services")
+        .join(service_id)
+        .join("credentials")
+}
+
 /// The server log-file path: `state/services/<id>/<id>.log`.
 #[must_use]
 pub fn log_path(dirs: &PlatformDirs, service_id: &str) -> PathBuf {

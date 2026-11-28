@@ -81,6 +81,16 @@ pub enum ServiceError {
         source: io::Error,
     },
 
+    /// The stored root-credentials file exists but could not be read or
+    /// parsed, or writing a new one failed. Never carries the file's contents.
+    #[error("credentials file {}: {detail}", path.display())]
+    Credentials {
+        /// The credentials file path.
+        path: PathBuf,
+        /// Human-readable failure detail (never the secret).
+        detail: String,
+    },
+
     /// The readiness window elapsed without the server accepting connections.
     /// The child has been killed before this error surfaces.
     #[error("{service} health check timed out after {attempts} attempts")]

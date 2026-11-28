@@ -22,6 +22,9 @@ tokio       = { version = "1", default-features = false, features = ["io-util"] 
 tempfile    = "=3.10.1"
 rcgen            = { version = "=0.13.2", default-features = false, features = ["pem", "crypto", "ring", "x509-parser"] }
 sha2             = { version = "0.10", default-features = false }
+# SigV4 signing (HMAC-SHA256) and S3 XML replies for the local S3 gateway admin.
+hmac             = "0.12"
+quick-xml        = { version = "0.38", default-features = false }
 flate2           = { version = "1" }
 tar              = { version = "0.4" }
 zip              = { version = "2", default-features = false }

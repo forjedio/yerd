@@ -354,7 +354,8 @@ pub enum Request {
     },
     /// Download + install a prebuilt service version into yerd's data dir.
     InstallService {
-        /// Service id (`"redis"`, `"mysql"`, `"mariadb"`, `"postgres"`, `"meilisearch"`).
+        /// Service id (`"redis"`, `"mysql"`, `"mariadb"`, `"postgres"`, `"meilisearch"`,
+        /// `"versitygw"`).
         service: String,
         /// The version to install.
         version: String,
@@ -507,6 +508,34 @@ pub enum Request {
         /// Absolute source file the daemon reads the dump from. The client
         /// canonicalises this before sending; the path never reaches the client's argv.
         path: PathBuf,
+    },
+    /// List the buckets in the running S3 gateway (versitygw). Additive. See
+    /// [`crate::Response::Buckets`].
+    ListBuckets,
+    /// Create a bucket in the running S3 gateway. Additive. The name is checked
+    /// against the S3 bucket naming rules before anything is sent; replies
+    /// [`crate::Response::Ok`].
+    CreateBucket {
+        /// The bucket name.
+        name: String,
+    },
+    /// Delete a bucket and every object in it from the running S3 gateway.
+    /// Additive. See [`crate::Response::BucketDropped`].
+    DropBucket {
+        /// The bucket name.
+        name: String,
+    },
+    /// Count a bucket's objects and total bytes in the running S3 gateway.
+    /// Additive. See [`crate::Response::BucketStats`].
+    BucketStats {
+        /// The bucket name.
+        name: String,
+    },
+    /// The S3 gateway's endpoint and root credentials (needs it installed, not
+    /// running). Additive. See [`crate::Response::S3Credentials`].
+    S3Credentials {
+        /// Include the secret key in the reply; otherwise it is omitted.
+        show_secret: bool,
     },
     /// Switch a service to a different version: install `version`, restart the
     /// running instance onto it, then remove the previously-installed version
@@ -1197,6 +1226,11 @@ mod variant_name_pinning {
             Request::DropDatabase { .. } => {}
             Request::BackupDatabase { .. } => {}
             Request::RestoreDatabase { .. } => {}
+            Request::ListBuckets => {}
+            Request::CreateBucket { .. } => {}
+            Request::DropBucket { .. } => {}
+            Request::BucketStats { .. } => {}
+            Request::S3Credentials { .. } => {}
             Request::ChangeServiceVersion { .. } => {}
             Request::ListDumps { .. } => {}
             Request::ClearDumps => {}
@@ -1446,6 +1480,17 @@ mod variant_name_pinning {
             name: "app".into(),
             path: PathBuf::from("/x/app.sql"),
         });
+        pin(Request::ListBuckets);
+        pin(Request::CreateBucket {
+            name: "assets".into(),
+        });
+        pin(Request::DropBucket {
+            name: "assets".into(),
+        });
+        pin(Request::BucketStats {
+            name: "assets".into(),
+        });
+        pin(Request::S3Credentials { show_secret: false });
         pin(Request::ChangeServiceVersion {
             service: "redis".into(),
             version: "9.1.0".into(),

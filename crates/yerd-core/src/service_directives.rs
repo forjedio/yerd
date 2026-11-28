@@ -577,6 +577,7 @@ mod tests {
             ("postgres", Some(OverrideDialect::PostgresConf)),
             ("redis", Some(OverrideDialect::RedisConf)),
             ("meilisearch", None),
+            ("versitygw", None),
             ("reverb", None),
             ("", None),
             ("MySQL", None),

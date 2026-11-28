@@ -37,6 +37,7 @@ pub mod php_install;
 pub mod php_updates;
 pub mod project_file;
 pub mod public_url;
+pub mod s3_admin;
 pub mod secure_fs;
 pub mod self_update;
 pub mod service_install;
