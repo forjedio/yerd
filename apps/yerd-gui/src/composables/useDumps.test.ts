@@ -7,7 +7,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 
-import { type Dumps, useDumps } from "./useDumps";
+import { type Dumps, type DumpsOptions, useDumps } from "./useDumps";
 import { useToast } from "@/composables/useToast";
 import type { DumpCategory, DumpEvent } from "@/ipc/types";
 
@@ -49,11 +49,14 @@ function stubIpc(): void {
 
 const mounted: VueWrapper[] = [];
 
-async function setup(site?: () => string | null): Promise<Dumps> {
+async function setup(
+  site?: () => string | null,
+  extra: Pick<DumpsOptions, "tld" | "paused"> = {},
+): Promise<Dumps> {
   let dumps: Dumps | null = null;
   const Host = defineComponent({
     setup() {
-      dumps = useDumps({ pollWhileHidden: true, follow: () => true, site });
+      dumps = useDumps({ pollWhileHidden: true, follow: () => true, site, ...extra });
       return () => h("div");
     },
   });
@@ -95,6 +98,40 @@ describe("useDumps site scope", () => {
     scope.value = null;
     await flushPromises();
     expect(dumps.requests.value).toHaveLength(3);
+  });
+
+  it("matches the host form older extensions send, under the given TLD only", async () => {
+    pages = [
+      [
+        { ...ev(1, "a"), site: "blog.test" },
+        { ...ev(2, "b"), site: "blog-api.test" },
+        { ...ev(3, "c"), site: "blog.dev.local" },
+        { ...ev(4, "d"), site: "blog" },
+      ],
+    ];
+    const tld = ref("test");
+    const dumps = await setup(() => "blog", { tld: () => tld.value });
+    expect(dumps.requests.value.map((r) => r.key)).toEqual(["d", "a"]);
+    tld.value = "dev.local";
+    await flushPromises();
+    expect(dumps.requests.value.map((r) => r.key)).toEqual(["d", "c"]);
+  });
+});
+
+describe("useDumps pause", () => {
+  it("stops streaming while paused and catches up on resume", async () => {
+    const paused = ref(false);
+    const dumps = await setup(undefined, { paused: () => paused.value });
+    expect(dumps.requests.value.map((r) => r.key)).toEqual(["a"]);
+    paused.value = true;
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(1500);
+    await flushPromises();
+    expect(invokeMock.mock.calls.filter((c) => c[0] === "list_dumps")).toHaveLength(1);
+    expect(dumps.requests.value.map((r) => r.key)).toEqual(["a"]);
+    paused.value = false;
+    await flushPromises();
+    expect(dumps.requests.value.map((r) => r.key)).toEqual(["b", "a"]);
   });
 });
 

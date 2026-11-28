@@ -123,7 +123,9 @@ export interface Insights {
  * The Live feed tab polls nothing here (the dumps stream does its own). `paused`
  * is view-only: it stops polling and holds the data. Polling also stops while
  * the window is hidden. The site is persisted and broadcast so the Dumps window
- * follows it; changing it drops the selection and the held data.
+ * follows it; changing it drops the selection, the held data and any detail
+ * still loading. A refresh hands the poll to its own tick, so a superseded tick
+ * never frees the in-flight slot or schedules a second loader.
  */
 export function useInsights(): Insights {
   const toast = useToast();
@@ -150,6 +152,8 @@ export function useInsights(): Insights {
   let inFlight = false;
   let disposed = false;
   let generation = 0;
+  let owner = 0;
+  let selectToken = 0;
 
   function recording(): boolean {
     const name = site.value?.toLowerCase();
@@ -195,14 +199,17 @@ export function useInsights(): Insights {
       return;
     }
     inFlight = true;
+    const mine = ++owner;
     try {
       await load();
-      error.value = null;
+      if (mine === owner) error.value = null;
     } catch (e) {
-      error.value = e instanceof IpcError ? e : new IpcError(String(e));
+      if (mine === owner) error.value = e instanceof IpcError ? e : new IpcError(String(e));
     } finally {
-      inFlight = false;
-      schedule();
+      if (mine === owner) {
+        inFlight = false;
+        schedule();
+      }
     }
   }
 
@@ -236,6 +243,8 @@ export function useInsights(): Insights {
 
   function resetData(): void {
     generation += 1;
+    selectToken += 1;
+    detailLoading.value = false;
     overview.value = null;
     requests.value = [];
     requestsLoaded.value = false;
@@ -276,14 +285,13 @@ export function useInsights(): Insights {
     if (!p) void refresh();
   });
 
-  let selectToken = 0;
-
   async function select(request: { id: string; ts_ms: number } | null): Promise<void> {
     const token = ++selectToken;
     detailError.value = null;
     if (!request || !site.value) {
       selectedId.value = null;
       detail.value = null;
+      detailLoading.value = false;
       return;
     }
     selectedId.value = request.id;

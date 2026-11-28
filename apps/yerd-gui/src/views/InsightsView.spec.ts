@@ -177,6 +177,22 @@ describe("InsightsView", () => {
     expect(w.get('[data-testid="requests-tab"]').attributes("data-layout")).toBe("compact");
   });
 
+  it("holds the Live Feed while paused", async () => {
+    const w = await mountView();
+    await w.get('nav [data-tab="live"]').trigger("click");
+    await flushPromises();
+    expect(w.find('[data-testid="live-feed"]').exists()).toBe(true);
+    await w.get('[aria-label="Pause updates"]').trigger("click");
+    await flushPromises();
+    const before = calls("list_dumps").length;
+    await vi.advanceTimersByTimeAsync(3000);
+    await flushPromises();
+    expect(calls("list_dumps")).toHaveLength(before);
+    await w.get('[aria-label="Resume updates"]').trigger("click");
+    await flushPromises();
+    expect(calls("list_dumps").length).toBeGreaterThan(before);
+  });
+
   it("clears after confirming", async () => {
     const w = await mountView();
     await w.get('[data-testid="clear"]').trigger("click");

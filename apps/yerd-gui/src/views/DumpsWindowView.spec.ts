@@ -135,6 +135,38 @@ describe("DumpsWindowView site scope", () => {
     expect(w.find('[data-key="b"]').exists()).toBe(true);
   });
 
+  it("applies a site stored before the listener was registered", async () => {
+    storage.set("yerd.insights.site", "blog");
+    listenMock.mockImplementationOnce((_name, cb) => {
+      siteListener = cb;
+      storage.set("yerd.insights.site", "shop");
+      return Promise.resolve(() => undefined);
+    });
+    const w = await mountView();
+    expect(w.get('[data-testid="window-title"]').text()).toBe("Live feed · shop");
+    expect(w.find('[data-key="b"]').exists()).toBe(true);
+    expect(w.find('[data-key="a"]').exists()).toBe(false);
+  });
+
+  it("matches the host form under the daemon's TLD", async () => {
+    storage.set("yerd.insights.site", "blog");
+    const hosts: DumpEvent[] = [
+      { id: 1, category: "dump", ts_ms: 1_700_000_000_000, site: "blog.dev.local", request_id: "a", payload: {} },
+      { id: 2, category: "dump", ts_ms: 1_700_000_000_001, site: "blog-api.dev.local", request_id: "b", payload: {} },
+    ];
+    const base = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation((cmd: string, args: unknown) => {
+      if (cmd === "status") return Promise.resolve({ type: "status", report: { tld: "dev.local" } });
+      if (cmd === "list_dumps") {
+        return Promise.resolve({ type: "dumps", events: hosts, removed_ids: [], counts: COUNTS, latest_id: 2, min_live_id: 0 });
+      }
+      return base?.(cmd, args);
+    });
+    const w = await mountView();
+    expect(w.find('[data-key="a"]').exists()).toBe(true);
+    expect(w.find('[data-key="b"]').exists()).toBe(false);
+  });
+
   it("has no global pause button", async () => {
     const w = await mountView();
     expect(w.find('[data-testid="pause-resume"]').exists()).toBe(false);

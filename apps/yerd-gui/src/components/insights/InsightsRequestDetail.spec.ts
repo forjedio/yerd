@@ -32,6 +32,19 @@ describe("InsightsRequestDetail", () => {
     expect(w.findAll('[data-row="child"]')).toHaveLength(48);
   });
 
+  it("makes the N+1 group a keyboard button and leaves event rows inert", async () => {
+    const w = mount(InsightsRequestDetail, { props: { detail: detailFixture() } });
+    const group = w.get('[data-row="group"]');
+    expect(group.element.tagName).toBe("BUTTON");
+    expect(group.attributes("type")).toBe("button");
+    expect(group.attributes("aria-expanded")).toBe("false");
+    await group.trigger("click");
+    expect(w.get('[data-row="group"]').attributes("aria-expanded")).toBe("true");
+    const done = w.get('[data-row="done"]');
+    expect(done.element.tagName).toBe("DIV");
+    expect(done.attributes("aria-expanded")).toBeUndefined();
+  });
+
   it("filters the timeline by chip", async () => {
     const w = mount(InsightsRequestDetail, { props: { detail: detailFixture() } });
     expect(w.text()).toContain("Timeline · 54 events");

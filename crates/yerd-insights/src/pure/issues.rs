@@ -5,8 +5,9 @@
 //! * **N+1:** queries grouped by `(fp_hash, file, line)`; a group with at least
 //!   `n_plus_one_min` members and at least two distinct concrete values. This
 //!   catches bound parameters and inline literals alike.
-//! * **Duplicate:** queries grouped by `raw_key` (identical SQL and bindings);
-//!   at least `duplicate_min` members. Members already reported as N+1 are not
+//! * **Duplicate:** queries grouped by `raw_key` (identical SQL and bindings)
+//!   and `value_key` (identical concrete SQL, when known); at least
+//!   `duplicate_min` members. Members already reported as N+1 are not
 //!   reported again.
 //! * **Slow:** a query over `slow_query_ms`.
 //! * **Large read:** a read without `LIMIT` returning at least
@@ -302,9 +303,9 @@ pub fn detect(events: &[QueryEvent], t: &Thresholds) -> Vec<IssueHit> {
             add_hit(&mut hits, IssueKind::NPlusOne, members);
         }
     }
-    let mut by_raw: BTreeMap<u64, Vec<&QueryEvent>> = BTreeMap::new();
+    let mut by_raw: BTreeMap<(u64, u64), Vec<&QueryEvent>> = BTreeMap::new();
     for e in events.iter().filter(|e| !in_n_plus_one.contains(&e.idx)) {
-        by_raw.entry(e.raw_key).or_default().push(e);
+        by_raw.entry((e.raw_key, e.value_key)).or_default().push(e);
     }
     for members in by_raw.values() {
         if members.len() >= t.duplicate_min.max(2) as usize {
@@ -329,7 +330,9 @@ pub fn detect(events: &[QueryEvent], t: &Thresholds) -> Vec<IssueHit> {
                 key,
                 event_indices: Vec::new(),
                 count: u32::try_from(events.len()).unwrap_or(u32::MAX),
-                time_us: events.iter().map(|e| e.time_us).sum(),
+                time_us: events
+                    .iter()
+                    .fold(0u64, |acc, e| acc.saturating_add(e.time_us)),
                 fp_hash: None,
                 file: None,
                 line: None,
@@ -492,6 +495,74 @@ mod tests {
         }
         let hits = detect(&events(&qs), &Thresholds::default());
         assert_eq!(kinds(&hits), vec![(IssueKind::NPlusOne, 5)]);
+    }
+
+    #[test]
+    fn duplicate_identity_uses_concrete_sql() {
+        let with_full = |full: &str| Q {
+            full: full.to_owned(),
+            ..q("select * from users where id = ?", json!([]), 10)
+        };
+        let cases: Vec<(&str, Vec<Q>, Vec<(IssueKind, u32)>)> = vec![
+            (
+                "different concrete values",
+                vec![
+                    with_full("select * from users where id = 1"),
+                    with_full("select * from users where id = 2"),
+                ],
+                vec![],
+            ),
+            (
+                "same concrete values",
+                vec![
+                    with_full("select * from users where id = 1"),
+                    with_full("select * from users where id = 1"),
+                ],
+                vec![(IssueKind::Duplicate, 2)],
+            ),
+            (
+                "no concrete sql",
+                vec![with_full(""), with_full("")],
+                vec![(IssueKind::Duplicate, 2)],
+            ),
+        ];
+        for (name, qs, want) in cases {
+            assert_eq!(
+                kinds(&detect(&events(&qs), &Thresholds::default())),
+                want,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn too_many_queries_time_saturates() {
+        let t = Thresholds {
+            max_queries: 1,
+            n_plus_one_min: 100,
+            ..Thresholds::default()
+        };
+        let cases: &[(&[u64], u64)] = &[
+            (&[1, 2], 3),
+            (&[u64::MAX, u64::MAX], u64::MAX),
+            (&[u64::MAX, 1], u64::MAX),
+        ];
+        for (times, want) in cases {
+            let qs: Vec<Q> = times
+                .iter()
+                .enumerate()
+                .map(|(i, us)| Q {
+                    us: *us,
+                    ..q("select * from t where id = ?", json!([i]), 1)
+                })
+                .collect();
+            let hits = detect(&events(&qs), &t);
+            let too_many = hits
+                .iter()
+                .find(|h| h.kind == IssueKind::TooManyQueries)
+                .unwrap();
+            assert_eq!(too_many.time_us, *want, "{times:?}");
+        }
     }
 
     #[test]

@@ -185,4 +185,60 @@ describe("useInsights", () => {
     expect(calls("dismiss_insights_issue")[0]?.[1]).toEqual({ site: "blog", key: "00000000000000ff", dismissed: true });
     expect(calls("clear_insights")[0]?.[1]).toEqual({ site: "blog" });
   });
+
+  it("clearing the selection while a detail loads drops the loading flag", async () => {
+    const i = await setup();
+    const base = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation((cmd: string, args: unknown) =>
+      cmd === "get_insights_request" ? new Promise(() => undefined) : base?.(cmd, args),
+    );
+    void i.select({ id: "r1", ts_ms: 5 });
+    expect(i.detailLoading.value).toBe(true);
+    await i.select(null);
+    expect(i.detailLoading.value).toBe(false);
+    expect(i.selectedId.value).toBeNull();
+  });
+
+  it("a detail that lands after a site change is dropped", async () => {
+    const i = await setup();
+    const base = invokeMock.getMockImplementation();
+    let land: (v: unknown) => void = () => undefined;
+    invokeMock.mockImplementation((cmd: string, args: unknown) =>
+      cmd === "get_insights_request"
+        ? new Promise((resolve) => {
+            land = resolve;
+          })
+        : base?.(cmd, args),
+    );
+    const pending = i.select({ id: "r1", ts_ms: 5 });
+    i.setSite("shop");
+    expect(i.detailLoading.value).toBe(false);
+    land({ type: "insights_request", request: { summary: { id: "r1" }, events: [], issues: [] } });
+    await pending;
+    await flushPromises();
+    expect(i.detail.value).toBeNull();
+    expect(i.detailLoading.value).toBe(false);
+  });
+
+  it("a superseded tick does not start a second loader", async () => {
+    const i = await setup();
+    const base = invokeMock.getMockImplementation();
+    const held: ((v: unknown) => void)[] = [];
+    invokeMock.mockImplementation((cmd: string, args: unknown) =>
+      cmd === "insights_overview" ? new Promise((resolve) => held.push(resolve)) : base?.(cmd, args),
+    );
+    await vi.advanceTimersByTimeAsync(INSIGHTS_POLL_MS);
+    expect(held).toHaveLength(1);
+    void i.refresh();
+    await flushPromises();
+    expect(held).toHaveLength(2);
+    held[0]?.({ type: "insights_overview", overview: OVERVIEW });
+    await flushPromises();
+    await advance();
+    expect(held).toHaveLength(2);
+    held[1]?.({ type: "insights_overview", overview: OVERVIEW });
+    await flushPromises();
+    await advance();
+    expect(held).toHaveLength(3);
+  });
 });

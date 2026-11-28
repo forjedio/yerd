@@ -249,7 +249,8 @@ pub struct RequestDetail {
     /// Issues with their timeline indices.
     #[serde(default)]
     pub issues: Vec<IssueHit>,
-    /// The detail hit its size cap.
+    /// The detail hit its size cap, or frames were refused by the per-request
+    /// event or pending-byte cap.
     #[serde(default)]
     pub truncated: bool,
 }

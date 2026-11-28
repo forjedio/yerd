@@ -88,7 +88,7 @@ const COLS = "grid grid-cols-[112px_minmax(0,1fr)_minmax(0,200px)_72px_56px] ite
         </span>
         <button
           type="button"
-          class="min-w-0 text-left focus-visible:outline-none disabled:cursor-default"
+          class="min-w-0 rounded-sm text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-default"
           :disabled="!i.last_request_id"
           :title="i.last_request_id ? 'Open the latest affected request' : undefined"
           @click="emit('open', i)"

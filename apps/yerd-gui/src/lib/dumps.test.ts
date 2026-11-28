@@ -18,6 +18,7 @@ import {
   rowCallerRel,
   rowDuration,
   shownCards,
+  siteMatches,
   statusTag,
   streamRestarted,
   summaryMatches,
@@ -254,5 +255,23 @@ describe("nextSelection", () => {
 
   it("keeps a still-held selection while the filter shows nothing", () => {
     expect(nextSelection("mid", "mid", [], three)).toBe("mid");
+  });
+});
+
+describe("siteMatches", () => {
+  it.each([
+    ["blog", "blog", "test", true],
+    ["Blog", "blog", "test", true],
+    ["blog.test", "blog", "test", true],
+    ["BLOG.TEST", "Blog", "test", true],
+    ["blog.dev.local", "blog", "dev.local", true],
+    ["blog.test", "blog", "dev.local", false],
+    ["blog-api.test", "blog", "test", false],
+    ["blog-api", "blog", "test", false],
+    ["blog.v2", "blog", "test", false],
+    ["blog.v2.test", "blog", "test", false],
+    ["shop.test", "blog", "test", false],
+  ])("%s under %s.%s is %s", (site, name, tld, want) => {
+    expect(siteMatches(site, name, tld)).toBe(want);
   });
 });

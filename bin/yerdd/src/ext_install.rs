@@ -14,6 +14,8 @@
 //! site running with no dumps.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
+use std::time::Duration;
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -198,7 +200,38 @@ pub fn installed_versions(dirs: &PlatformDirs) -> Vec<PhpVersion> {
 /// Returns the versions whose `.so` was replaced, so the caller can restart
 /// just those pools: a running FPM keeps the old extension mapped until then.
 pub async fn ensure_for_installed(dirs: &PlatformDirs, dl: &dyn Downloader) -> Vec<PhpVersion> {
-    ensure_for_installed_spec(dirs, dl, &DUMP_SPEC).await
+    let placed = Mutex::new(Vec::new());
+    ensure_for_installed_spec(dirs, dl, &DUMP_SPEC, &placed).await;
+    placed.into_inner().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// What [`ensure_for_installed_within`] placed before it finished or ran out
+/// of time.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct EnsureOutcome {
+    /// Versions whose `.so` was replaced, including those placed before a
+    /// timeout cut the fetch short.
+    pub replaced: Vec<PhpVersion>,
+    /// Whether `limit` elapsed before every version was checked.
+    pub timed_out: bool,
+}
+
+/// [`ensure_for_installed`] bounded by `limit`. Each placement is recorded as
+/// it happens, so a timeout still reports the versions already replaced: their
+/// running pools keep the old `.so` mapped and a later check would see a
+/// matching hash and never restart them.
+pub async fn ensure_for_installed_within(
+    dirs: &PlatformDirs,
+    dl: &dyn Downloader,
+    limit: Duration,
+) -> EnsureOutcome {
+    let placed = Mutex::new(Vec::new());
+    let ensure = ensure_for_installed_spec(dirs, dl, &DUMP_SPEC, &placed);
+    let timed_out = tokio::time::timeout(limit, ensure).await.is_err();
+    EnsureOutcome {
+        replaced: placed.into_inner().unwrap_or_else(PoisonError::into_inner),
+        timed_out,
+    }
 }
 
 /// Ensure the `pcov` extension is present for every installed PHP version.
@@ -217,22 +250,23 @@ pub async fn ensure_pcov_for_installed(dirs: &PlatformDirs, dl: &dyn Downloader)
     if versions.is_empty() || versions.iter().all(|v| pcov_so_path(dirs, *v).is_file()) {
         return;
     }
-    ensure_for_installed_spec(dirs, dl, &PCOV_SPEC).await;
+    ensure_for_installed_spec(dirs, dl, &PCOV_SPEC, &Mutex::new(Vec::new())).await;
 }
 
 /// Shared fetch loop: resolve the host triple in `spec`'s manifest for each
 /// installed PHP minor, sha-verify, and atomically place the `.so`. Best-effort.
 /// Legacy minors (< 8.2) are skipped: `forjedio/yerd-php-ext` builds neither
 /// `pcov` nor `yerd-dump` for EOL PHP, so a fetch would only 404-log per poll.
-/// Returns the versions whose `.so` was replaced.
+/// Each version whose `.so` was replaced is pushed to `placed` as soon as it
+/// lands, so the record survives the future being cancelled.
 async fn ensure_for_installed_spec(
     dirs: &PlatformDirs,
     dl: &dyn Downloader,
     spec: &ExtSpec,
-) -> Vec<PhpVersion> {
-    let mut replaced = Vec::new();
+    placed: &Mutex<Vec<PhpVersion>>,
+) {
     let Some(manifest) = fetch_manifest(dl, spec.manifest_name, spec.label).await else {
-        return replaced;
+        return;
     };
     let (os, arch) = host_os_arch();
     for v in installed_versions(dirs)
@@ -240,7 +274,10 @@ async fn ensure_for_installed_spec(
         .filter(|v| !v.is_legacy())
     {
         match place_from_manifest(dirs, dl, &manifest, spec, v, os, arch).await {
-            Ok(true) => replaced.push(v),
+            Ok(true) => placed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(v),
             Ok(false) => {}
             Err(PlaceError::NotPublished) => {
                 tracing::info!(php = %v, os, arch, ext = spec.label, "no extension published for this triple");
@@ -250,7 +287,6 @@ async fn ensure_for_installed_spec(
             }
         }
     }
-    replaced
 }
 
 /// Why [`place_from_manifest`] could not make a version's `.so` current.
@@ -904,6 +940,80 @@ mod tests {
 
         assert!(replaced.is_empty());
         assert_eq!(dl.call_count(), 1);
+    }
+
+    struct HangingDownloader {
+        inner: FakeDownloader,
+        hang_suffix: String,
+    }
+
+    #[async_trait::async_trait]
+    impl Downloader for HangingDownloader {
+        async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
+            if url.ends_with(&self.hang_suffix) {
+                std::future::pending::<()>().await;
+            }
+            self.inner.download(url).await
+        }
+    }
+
+    #[tokio::test]
+    async fn ensure_within_keeps_versions_placed_before_the_timeout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let (os, arch) = host_os_arch();
+        let v83 = PhpVersion::new(8, 3);
+        let v84 = PhpVersion::new(8, 4);
+        fake_install(&dirs, v83);
+        fake_install(&dirs, v84);
+        let so = b"new build";
+        let name83 = format!("yerd-dump-php8.3-{os}-{arch}.so");
+        let name84 = format!("yerd-dump-php8.4-{os}-{arch}.so");
+        let manifest = serde_json::json!({
+            "files": [
+                {"name": name83, "php": "8.3", "os": os, "arch": arch, "sha256": sha256_hex(so)},
+                {"name": name84, "php": "8.4", "os": os, "arch": arch, "sha256": sha256_hex(so)}
+            ]
+        })
+        .to_string();
+        let routes = [
+            ("/manifest.json".to_owned(), manifest.into_bytes()),
+            (format!("/{name83}"), so.to_vec()),
+        ]
+        .into_iter()
+        .collect();
+        let dl = HangingDownloader {
+            inner: FakeDownloader::new(routes),
+            hang_suffix: format!("/{name84}"),
+        };
+
+        let outcome = ensure_for_installed_within(&dirs, &dl, Duration::from_millis(200)).await;
+
+        assert_eq!(
+            outcome,
+            EnsureOutcome {
+                replaced: vec![v83],
+                timed_out: true,
+            }
+        );
+        assert_eq!(std::fs::read(so_path(&dirs, v83)).unwrap(), so);
+        assert!(!so_path(&dirs, v84).exists());
+    }
+
+    #[tokio::test]
+    async fn ensure_within_reports_no_timeout_when_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let v = PhpVersion::new(8, 4);
+        fake_install(&dirs, v);
+        let dest = so_path(&dirs, v);
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, b"same build").unwrap();
+
+        let dl = FakeDownloader::new(dump_routes_for_host(b"same build"));
+        let outcome = ensure_for_installed_within(&dirs, &dl, Duration::from_secs(5)).await;
+
+        assert_eq!(outcome, EnsureOutcome::default());
     }
 
     #[tokio::test]

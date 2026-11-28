@@ -14,11 +14,18 @@ import { toastOnError } from "@/lib/toastActions";
  * The Live feed tab: the dumps stream (dumps, queries, logs, jobs...) scoped
  * to the Insights site, with the request list beside its detail on wide
  * windows and a drawer on compact ones. Mounted only while the tab is open, so
- * the stream polls only then. The same feed pops out into the Dumps window.
+ * the stream polls only then. The page's Pause holds it still. The same feed
+ * pops out into the Dumps window.
  */
-const props = defineProps<{ site: string | null; wide: boolean }>();
+const props = defineProps<{ site: string | null; tld: string; wide: boolean; paused: boolean }>();
 
-const dumps = useDumps({ pollWhileHidden: false, follow: () => props.wide, site: () => props.site });
+const dumps = useDumps({
+  pollWhileHidden: false,
+  follow: () => props.wide,
+  site: () => props.site,
+  tld: () => props.tld,
+  paused: () => props.paused,
+});
 const { busy, category, query, requests, selected, selectedKey, status, visible } = dumps;
 
 const drawerOpen = ref(false);

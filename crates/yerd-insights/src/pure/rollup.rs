@@ -288,7 +288,8 @@ impl MinuteRollup {
     }
 
     fn merge_route(&mut self, id: u64, agg: &RouteAgg) {
-        let id = if self.routes.contains_key(&id) || self.routes.len() < ROUTES_CAP {
+        let named = self.routes.len() - usize::from(self.routes.contains_key(&OTHER_ROUTE));
+        let id = if self.routes.contains_key(&id) || named < ROUTES_CAP {
             id
         } else {
             OTHER_ROUTE
@@ -415,7 +416,8 @@ fn layout(range: InsightsRange) -> (u64, u64) {
 
 /// Inputs to [`overview`] for one site.
 pub struct OverviewInput<'a> {
-    /// The site's minute rollups, any order.
+    /// The site's minute rollups, oldest first: a fingerprint's route is the
+    /// one from the last rollup that ran it.
     pub rollups: Vec<&'a MinuteRollup>,
     /// The site's in-memory recent requests.
     pub recent: Vec<&'a FinalRequest>,
@@ -432,8 +434,9 @@ pub struct OverviewInput<'a> {
 /// minute points and 24h 96 points of 15 min, both from rollups. The p50 delta
 /// (5m and 1h only) compares against the previous equal window taken from
 /// minute rollups, because those requests may already be trimmed from
-/// `recent`. `ext_available` is left `true`: the caller knows the site's PHP
-/// version.
+/// `recent`. That window ends at the minute holding the current window's
+/// start, so no request is counted on both sides. `ext_available` is left
+/// `true`: the caller knows the site's PHP version.
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub fn overview(input: &OverviewInput<'_>, range: InsightsRange, now_ms: u64) -> InsightsOverview {
@@ -455,6 +458,7 @@ pub fn overview(input: &OverviewInput<'_>, range: InsightsRange, now_ms: u64) ->
                 p.fold_request(r);
             }
         }
+        total.dropped_frames = 0;
         let first_minute = minute_of(start);
         for m in input
             .rollups
@@ -481,7 +485,7 @@ pub fn overview(input: &OverviewInput<'_>, range: InsightsRange, now_ms: u64) ->
     let p50_delta_ms = if range == InsightsRange::OneDay {
         None
     } else {
-        let cur_start = minute_of(now_ms) + MINUTE_MS - range.millis();
+        let cur_start = minute_of(start);
         let prev_start = cur_start.saturating_sub(range.millis());
         let mut prev = LatencyHist::new();
         for m in input
@@ -823,6 +827,76 @@ mod tests {
     }
 
     #[test]
+    fn other_route_does_not_take_a_named_slot_on_merge() {
+        let mut source = MinuteRollup::new(NOW);
+        for i in 1..=(ROUTES_CAP as u64 + 3) {
+            source.fold_request(&with_route(request("x", NOW, 1_000), i));
+        }
+        assert_eq!(source.routes.len(), ROUTES_CAP + 1);
+        let mut merged = MinuteRollup::new(NOW);
+        merged.merge(&source);
+        assert_eq!(merged.routes, source.routes);
+        merged.merge(&source);
+        assert_eq!(merged.routes.len(), ROUTES_CAP + 1);
+        assert_eq!(merged.routes.get(&OTHER_ROUTE).map(|r| r.requests), Some(6));
+        assert_eq!(merged.routes.get(&1).map(|r| r.requests), Some(2));
+    }
+
+    #[test]
+    fn five_minute_dropped_frames_are_counted_once() {
+        let d = Dict::new();
+        let dismissed = BTreeSet::new();
+        let cases: &[(u32, u64, u64)] = &[(2, 0, 2), (2, 3, 5), (0, 3, 3), (0, 0, 0)];
+        for (per_request, orphans, want) in cases {
+            let mut r = request("a", NOW, 1_000);
+            r.dropped_frames = *per_request;
+            let mut m = MinuteRollup::new(NOW);
+            m.fold_request(&r);
+            m.dropped_frames += orphans;
+            let o = overview(
+                &OverviewInput {
+                    rollups: vec![&m],
+                    recent: vec![&r],
+                    dict: &d,
+                    dismissed: &dismissed,
+                },
+                InsightsRange::FiveMinutes,
+                NOW,
+            );
+            assert_eq!(o.dropped_frames, *want, "{per_request} {orphans}");
+        }
+    }
+
+    #[test]
+    fn five_minute_delta_excludes_the_overlapping_minute() {
+        let d = Dict::new();
+        let dismissed = BTreeSet::new();
+        let start = NOW - NOW % 10_000 + 10_000 - 5 * MINUTE_MS;
+        let cur_req = request("a", start + 20_000, 20_000);
+        let mut cur = MinuteRollup::new(cur_req.ts_ms);
+        cur.fold_request(&cur_req);
+        let prev_ts = minute_of(start) - 1;
+        let mut prev = MinuteRollup::new(prev_ts);
+        prev.fold_request(&request("b", prev_ts, 10_000));
+        let cases: Vec<(Vec<&MinuteRollup>, bool)> =
+            vec![(vec![&cur], false), (vec![&prev, &cur], true)];
+        for (rollups, want) in cases {
+            let o = overview(
+                &OverviewInput {
+                    rollups,
+                    recent: vec![&cur_req],
+                    dict: &d,
+                    dismissed: &dismissed,
+                },
+                InsightsRange::FiveMinutes,
+                NOW,
+            );
+            assert_eq!(o.kpis.requests, 1);
+            assert_eq!(o.kpis.p50_delta_ms.is_some(), want);
+        }
+    }
+
+    #[test]
     fn cold_is_counted_but_not_in_the_histogram() {
         let mut m = MinuteRollup::new(NOW);
         let mut cold = request("c", NOW, 900_000);
@@ -952,7 +1026,7 @@ mod tests {
         let cur_req = request("a", NOW, 20_000);
         let mut cur = MinuteRollup::new(NOW);
         cur.fold_request(&cur_req);
-        let prev_ts = NOW - 5 * MINUTE_MS;
+        let prev_ts = NOW - 6 * MINUTE_MS;
         let mut prev = MinuteRollup::new(prev_ts);
         prev.fold_request(&request("b", prev_ts, 10_000));
         let o = overview(

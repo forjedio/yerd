@@ -206,7 +206,7 @@ function changePort(): void {
       <EmptyState :icon="Gauge" title="No sites yet" description="Link or park a PHP site, then record its requests here." />
     </div>
 
-    <InsightsLiveFeed v-else-if="tab === 'live'" ref="live" :site="site" :wide="wide" />
+    <InsightsLiveFeed v-else-if="tab === 'live'" ref="live" :site="site" :tld="tld" :wide="wide" :paused="paused" />
 
     <div v-else-if="!status || (!overview && tab !== 'requests')" class="flex flex-1 items-center justify-center">
       <Spinner />

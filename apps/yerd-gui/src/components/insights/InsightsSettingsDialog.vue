@@ -20,7 +20,9 @@ import { CHIP_TONE, cn } from "@/lib/utils";
  * extension-capture switch, the dump server address with a link to Settings ▸
  * Application Ports where the port lives, the captured-signal switches and the
  * per-version PHP extension status. The capture controls load their own status
- * each time the dialog opens and apply immediately.
+ * each time the dialog opens and apply immediately; a failed load says so with
+ * a Retry instead of showing a stopped server. Thresholds that arrive after the
+ * dialog opened fill the form unless the user has started editing.
  */
 const props = defineProps<{
   open: boolean;
@@ -44,7 +46,9 @@ const EMPTY: ThresholdDraft = {
 
 const draft = ref<ThresholdDraft>({ ...EMPTY });
 const touched = ref(false);
+const seeded = ref(false);
 const capture = ref<DumpsStatusResponse | null>(null);
+const captureError = ref<string | null>(null);
 const captureBusy = ref<string | null>(null);
 
 const parsed = computed(() => parseThresholds(draft.value));
@@ -57,17 +61,29 @@ watch(
   (open) => {
     if (!open) return;
     draft.value = props.thresholds ? thresholdDraft(props.thresholds) : { ...EMPTY };
+    seeded.value = !!props.thresholds;
     touched.value = false;
     void loadCapture();
   },
   { immediate: true },
 );
 
+watch(
+  () => props.thresholds,
+  (t) => {
+    if (!props.open || seeded.value || touched.value || !t) return;
+    draft.value = thresholdDraft(t);
+    seeded.value = true;
+  },
+);
+
 async function loadCapture(): Promise<void> {
   try {
     capture.value = await dumpsStatus();
-  } catch {
+    captureError.value = null;
+  } catch (e) {
     capture.value = null;
+    captureError.value = e instanceof Error ? e.message : String(e);
   }
 }
 
@@ -150,10 +166,11 @@ function extChip(ext: DumpExtStatus): { text: string; class: string } {
       <div class="mt-4 flex items-end gap-4">
         <div class="min-w-0 flex-1">
           <p class="text-sm font-semibold">Dump server</p>
-          <p class="mt-0.5 text-xs text-muted-foreground" data-testid="dump-server-address">
-            <span class="font-mono text-foreground">127.0.0.1:{{ capture?.port ?? 2304 }}</span>
-            · {{ capture?.running ? "running" : "stopped" }}
+          <p v-if="capture" class="mt-0.5 text-xs text-muted-foreground" data-testid="dump-server-address">
+            <span class="font-mono text-foreground">127.0.0.1:{{ capture.port }}</span>
+            · {{ capture.running ? "running" : "stopped" }}
           </p>
+          <p v-else-if="!captureError" class="mt-0.5 text-xs text-muted-foreground">Checking…</p>
         </div>
         <button
           type="button"
@@ -161,6 +178,21 @@ function extChip(ext: DumpExtStatus): { text: string; class: string } {
           @click="emit('changePort')"
         >
           Change port
+        </button>
+      </div>
+
+      <div
+        v-if="captureError"
+        class="mt-3 flex items-start gap-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2"
+        data-testid="capture-error"
+      >
+        <p class="min-w-0 flex-1 text-xs text-destructive">Couldn't read the capture status: {{ captureError }}</p>
+        <button
+          type="button"
+          class="shrink-0 text-xs font-semibold text-brand hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          @click="loadCapture"
+        >
+          Retry
         </button>
       </div>
     </div>
@@ -185,7 +217,10 @@ function extChip(ext: DumpExtStatus): { text: string; class: string } {
 
     <div class="mt-5 border-t pt-4">
       <p :class="SECTION_LABEL">PHP extension</p>
-      <p v-if="extensions.length === 0" class="mt-3 text-[13px] text-muted-foreground">No PHP versions installed.</p>
+      <p v-if="!capture" class="mt-3 text-[13px] text-muted-foreground" data-testid="ext-unknown">
+        {{ captureError ? "Unavailable until the capture status loads." : "Checking…" }}
+      </p>
+      <p v-else-if="extensions.length === 0" class="mt-3 text-[13px] text-muted-foreground">No PHP versions installed.</p>
       <ul v-else class="mt-2 flex flex-col">
         <li
           v-for="ext in extensions"

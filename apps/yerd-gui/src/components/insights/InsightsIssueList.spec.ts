@@ -41,6 +41,12 @@ describe("InsightsIssueList", () => {
     expect(w.emitted("open")?.[0]?.[0]).toMatchObject({ key: "0000000000000001" });
   });
 
+  it("keeps a visible focus ring on the issue-opening button", () => {
+    const open = render().get('[data-issue="0000000000000001"] button');
+    expect(open.classes()).toContain("focus-visible:ring-1");
+    expect(open.classes()).toContain("focus-visible:ring-ring");
+  });
+
   it("caps the rows and says how many more", () => {
     const w = render("all", 3);
     expect(w.findAll("[data-issue]")).toHaveLength(3);

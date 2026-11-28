@@ -249,6 +249,35 @@ fn det_double_append_keeps_earlier_locators_valid() {
 }
 
 #[test]
+fn lines_skip_an_unterminated_tail() {
+    let cases: &[(&[u8], &[&str])] = &[
+        (b"", &[]),
+        (b"a\n", &["a"]),
+        (b"a\nb", &["a"]),
+        (b"a\n\nb\n", &["a", "b"]),
+        (b"torn", &[]),
+        (b"a\n\xff\nc\n", &["a", "c"]),
+    ];
+    for (input, want) in cases {
+        assert_eq!(lines(input).collect::<Vec<_>>(), *want, "{input:?}");
+    }
+}
+
+#[test]
+fn a_complete_but_unterminated_record_is_not_loaded() {
+    let (_d, s) = store();
+    let now = T0 + 1_000;
+    s.append_batch(&batch(&[("a", T0, 1, false)])).unwrap();
+    let p = path(&s, hour_of(T0), FileKind::Req);
+    s.append_batch(&batch(&[("b", T0 + 1, 1, false)])).unwrap();
+    let mut bytes = fs::read(&p).unwrap();
+    assert_eq!(bytes.pop(), Some(b'\n'));
+    fs::write(&p, &bytes).unwrap();
+    let loaded = s.load_all(now).unwrap();
+    assert_eq!(ids(&loaded[0].recent), vec!["a"]);
+}
+
+#[test]
 fn torn_lines_are_skipped_on_load() {
     let (_d, s) = store();
     let now = T0 + 1_000;

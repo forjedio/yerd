@@ -208,6 +208,18 @@ export function streamRestarted(cursor: number, page: DumpsResponse): boolean {
   return page.latest_id < cursor;
 }
 
+/**
+ * Whether an event's `site` belongs to the Yerd site `name`. Current extensions
+ * send the site name (`blog`); older ones send the host (`blog.test`), so the
+ * name under `tld` matches too. Case-insensitive, and exact on both forms so
+ * `blog` never claims `blog-api.test` or a dotted site such as `blog.v2`.
+ */
+export function siteMatches(eventSite: string, name: string, tld: string): boolean {
+  const site = eventSite.toLowerCase();
+  const want = name.toLowerCase();
+  return site === want || site === `${want}.${tld.toLowerCase()}`;
+}
+
 /** The `request` event of a request, parsed. It arrives when the request ends. */
 export interface RequestSummary {
   method: string;

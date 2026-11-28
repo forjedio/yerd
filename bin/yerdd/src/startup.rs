@@ -1244,13 +1244,25 @@ pub(crate) fn reconcile_parked_added(
     cfg.added != before
 }
 
+/// Publish the runtime mirrors of name-keyed config (first-seen times,
+/// favourites and the Insights recording set) after a config change that may
+/// have rekeyed parked sites.
+pub(crate) async fn publish_name_mirrors(state: &DaemonState, cfg: &yerd_config::Config) {
+    *state.site_added.write().await = cfg.added.clone();
+    *state.favourite_sites.write().await = cfg.favourites.sites.clone();
+    state
+        .insights
+        .tap
+        .set_enabled_sites(cfg.insights.sites.iter().cloned());
+}
+
 /// Rekey every name-keyed setting from each rename's legacy name to its new
 /// one, never overwriting an entry already under the new name. Covers
-/// favourites, group membership, tunnel hostnames and passwords (including the
-/// older `<name>.<tld>` key form), per-site service instances, and the apex
-/// held in the site's parked domain delta (`suppressed` and `primary`; `added`
-/// domains are left so those hosts keep routing). Returns whether anything
-/// changed, so a second run is a no-op.
+/// favourites, Insights recording, group membership, tunnel hostnames and
+/// passwords (including the older `<name>.<tld>` key form), per-site service
+/// instances, and the apex held in the site's parked domain delta
+/// (`suppressed` and `primary`; `added` domains are left so those hosts keep
+/// routing). Returns whether anything changed, so a second run is a no-op.
 pub(crate) fn rekey_parked_names(cfg: &mut yerd_config::Config, renames: &[ParkedRename]) -> bool {
     let mut changed = false;
     for rename in renames {
@@ -1270,6 +1282,10 @@ fn rekey_parked_name(cfg: &mut yerd_config::Config, rename: &ParkedRename) -> bo
     let mut changed = rekey_parked_domains(cfg, rename);
     if cfg.favourites.sites.remove(&rename.legacy) {
         cfg.favourites.sites.insert(rename.new.clone());
+        changed = true;
+    }
+    if cfg.insights.sites.remove(&rename.legacy) {
+        cfg.insights.sites.insert(rename.new.clone());
         changed = true;
     }
     changed |= move_key(
@@ -2213,6 +2229,7 @@ mod tests {
     fn rekey_fixture() -> yerd_config::Config {
         let mut cfg = yerd_config::Config::default();
         cfg.favourites.sites.insert("laravel-com".to_owned());
+        cfg.insights.sites.insert("laravel-com".to_owned());
         cfg.groups.order.push("Work".to_owned());
         cfg.groups
             .members
@@ -2252,6 +2269,8 @@ mod tests {
 
         assert!(cfg.favourites.sites.contains("laravel"));
         assert!(!cfg.favourites.sites.contains("laravel-com"));
+        assert!(cfg.insights.sites.contains("laravel"));
+        assert!(!cfg.insights.sites.contains("laravel-com"));
         assert_eq!(
             cfg.groups.members.get("laravel").map(String::as_str),
             Some("Work")

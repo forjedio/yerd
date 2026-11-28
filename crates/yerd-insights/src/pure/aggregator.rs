@@ -531,6 +531,7 @@ impl Aggregator {
         if summary.is_some() {
             self.v2_seen.insert(s.php.clone());
         }
+        let cap_dropped = p.as_ref().is_some_and(|p| p.cap_dropped > 0);
         let mut frames = p.map(|p| p.frames).unwrap_or_default();
         frames.sort_by_key(|f| (f.t_us.unwrap_or(u64::MAX), f.seq.unwrap_or(u32::MAX)));
 
@@ -679,7 +680,7 @@ impl Aggregator {
                 id: s.id.clone(),
                 events,
                 issues: hits.clone(),
-                truncated,
+                truncated: truncated || cap_dropped,
             })
         });
 
@@ -971,8 +972,9 @@ impl Aggregator {
     }
 
     /// Restore a site from disk. The site must hold no state yet. Dictionary
-    /// entries are inserted when absent; those tagged with the current or
-    /// previous hour are marked written. `recent` is loaded as flushed.
+    /// entries are inserted by [`Dict::insert`] rules; those tagged with the
+    /// current or previous hour are marked written. `recent` is loaded as
+    /// flushed.
     pub fn load_site(
         &mut self,
         site: &str,

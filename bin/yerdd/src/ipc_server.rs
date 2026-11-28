@@ -3208,8 +3208,7 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
         return internal(format!("config save failed: {e}"));
     }
 
-    *state.site_added.write().await = new.added.clone();
-    *state.favourite_sites.write().await = new.favourites.sites.clone();
+    startup::publish_name_mirrors(state, &new).await;
     *cfg_guard = new;
     let site_after = site_needing_url_sync(&req, &candidate);
     *state.router.write().await = candidate;

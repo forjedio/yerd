@@ -252,8 +252,18 @@ const ROW = "grid grid-cols-[52px_84px_minmax(0,1.6fr)_minmax(48px,0.6fr)_44px] 
 
         <div class="overflow-hidden rounded-lg border bg-card">
           <template v-for="r in rows" :key="r.key">
-            <div
-              :class="cn(ROW, 'border-b py-3 last:border-b-0', r.type === 'group' && 'cursor-pointer bg-warning/[0.08]')"
+            <component
+              :is="r.type === 'group' ? 'button' : 'div'"
+              :type="r.type === 'group' ? 'button' : undefined"
+              :aria-expanded="r.type === 'group' ? expanded.has(r.key) : undefined"
+              :class="
+                cn(
+                  ROW,
+                  'border-b py-3 last:border-b-0',
+                  r.type === 'group' &&
+                    'w-full cursor-pointer bg-warning/[0.08] text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring',
+                )
+              "
               :data-row="r.type"
               @click="r.type === 'group' && toggle(r.key)"
             >
@@ -283,7 +293,7 @@ const ROW = "grid grid-cols-[52px_84px_minmax(0,1.6fr)_minmax(48px,0.6fr)_44px] 
               <span :class="cn('text-right font-mono text-xs', r.type === 'group' ? 'text-warning' : 'text-muted-foreground')">
                 {{ rowTime(r) }}
               </span>
-            </div>
+            </component>
             <template v-if="r.type === 'group' && expanded.has(r.key)">
               <div
                 v-for="c in r.children"

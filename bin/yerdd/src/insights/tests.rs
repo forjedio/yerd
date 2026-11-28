@@ -511,6 +511,25 @@ async fn enabling_persists_and_updates_the_tap() {
     ));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_toggles_leave_the_tap_matching_the_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = Arc::new(state_in(tmp.path()));
+    for _ in 0..20 {
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let state = state.clone();
+                tokio::spawn(async move { set_enabled(&state, SITE, i % 2 == 0).await })
+            })
+            .collect();
+        for h in handles {
+            assert!(matches!(h.await.unwrap(), Response::Ok));
+        }
+        let saved = state.config.lock().await.insights.sites.contains(SITE);
+        assert_eq!(state.insights.tap.is_enabled(SITE), saved);
+    }
+}
+
 #[tokio::test]
 async fn disabling_flushes_the_site() {
     let tmp = tempfile::tempdir().unwrap();
@@ -733,6 +752,34 @@ async fn thresholds_persist_and_validate() {
     match status(&state).await {
         Response::InsightsStatus { thresholds, .. } => assert_eq!(thresholds, t),
         other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_threshold_saves_leave_the_aggregator_matching_the_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = Arc::new(state_in(tmp.path()));
+    for _ in 0..20 {
+        let handles: Vec<_> = (10..18)
+            .map(|max_queries| {
+                let state = state.clone();
+                tokio::spawn(async move {
+                    let t = yerd_ipc::InsightsThresholds {
+                        max_queries,
+                        ..Default::default()
+                    };
+                    set_thresholds(&state, &t).await
+                })
+            })
+            .collect();
+        for h in handles {
+            assert!(matches!(h.await.unwrap(), Response::Ok));
+        }
+        let saved = state.config.lock().await.insights.thresholds.max_queries;
+        assert_eq!(
+            state.insights.agg.lock().await.thresholds().max_queries,
+            saved
+        );
     }
 }
 

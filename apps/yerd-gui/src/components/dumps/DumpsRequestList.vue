@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { Antenna, Layers, Play, Radio, Trash2 } from "lucide-vue-next";
-import { computed } from "vue";
+import { computed, ref } from "vue";
 
 import Button from "@/components/ui/Button.vue";
+import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import type { DumpsBusy } from "@/composables/useDumps";
 import type { DumpsStatusResponse } from "@/ipc/types";
@@ -21,7 +22,7 @@ import { CHIP_TONE, cn } from "@/lib/utils";
 
 /**
  * The captured requests: a "Requests" header with Keep history and Clear, then
- * the rows. `list` is the column beside the detail (wide windows and the Dumps
+ * the rows. The daemon's clear is global, so Clear says so and asks first. `list` is the column beside the detail (wide windows and the Dumps
  * window); `table` spans the window (compact) with METHOD to AT columns, where
  * a click opens the detail drawer and no row stays highlighted. With nothing
  * captured it shows the paused state (with Resume) or the waiting state.
@@ -47,6 +48,7 @@ const emit = defineEmits<{
   clearFilter: [];
 }>();
 
+const confirmClear = ref(false);
 const persist = computed(() => props.status?.persist ?? false);
 const paused = computed(() => !!props.status && !props.status.enabled);
 const noMatch = computed(() =>
@@ -96,9 +98,9 @@ const TABLE_COLS = "grid grid-cols-[70px_64px_minmax(0,1fr)_140px_70px_80px_80px
           size="icon"
           class="size-[30px]"
           :disabled="total === 0 || busy === 'clear'"
-          aria-label="Clear dumps"
-          title="Clear dumps"
-          @click="emit('clear')"
+          aria-label="Clear dumps for all sites"
+          title="Clear dumps for all sites"
+          @click="confirmClear = true"
         >
           <Spinner v-if="busy === 'clear'" class="size-3.5" />
           <Trash2 v-else class="!size-3.5" />
@@ -226,5 +228,16 @@ const TABLE_COLS = "grid grid-cols-[70px_64px_minmax(0,1fr)_140px_70px_80px_80px
         History off keeps the 25 most recent requests. On keeps everything, up to 2,000 events.
       </p>
     </div>
+
+    <ConfirmDialog
+      v-model:open="confirmClear"
+      title="Clear dumps for all sites?"
+      confirm-label="Clear all sites"
+      tone="danger"
+      :icon="Trash2"
+      @confirm="emit('clear')"
+    >
+      Every captured request is removed, for every site, not only the ones listed here.
+    </ConfirmDialog>
   </div>
 </template>

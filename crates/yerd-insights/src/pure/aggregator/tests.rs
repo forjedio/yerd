@@ -302,6 +302,31 @@ fn event_cap_counts_refused_frames_once() {
 }
 
 #[test]
+fn detail_truncation_reflects_the_event_cap() {
+    let cap = u32::try_from(MAX_EVENTS_PER_REQUEST).unwrap();
+    for (n, want) in [(cap, false), (cap + 1, true)] {
+        let mut a = Aggregator::new();
+        a.on_sample(sample("r", true, 10_000), T0);
+        for seq in 1..=n {
+            a.on_frame(
+                frame(
+                    "r",
+                    DumpCategory::Log,
+                    seq,
+                    u64::from(seq),
+                    json!({ "m": "x" }),
+                ),
+                T0,
+            );
+        }
+        a.on_frame(summary("r", n + 1, n + 1, 2), T0);
+        let d = a.recent_detail(SITE, "r").unwrap();
+        assert_eq!(d.events.len(), MAX_EVENTS_PER_REQUEST, "{n}");
+        assert_eq!(d.truncated, want, "{n}");
+    }
+}
+
+#[test]
 fn byte_cap_refuses_frames() {
     let mut a = Aggregator::new();
     a.on_sample(sample("r", true, 10_000), T0);

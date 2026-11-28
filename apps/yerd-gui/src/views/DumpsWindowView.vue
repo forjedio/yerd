@@ -11,6 +11,7 @@ import TitleBar from "@/components/TitleBar.vue";
 import { useDumps } from "@/composables/useDumps";
 import { INSIGHTS_SITE_EVENT, storedInsightsSite } from "@/composables/useInsights";
 import { useToast } from "@/composables/useToast";
+import { status as daemonStatus } from "@/ipc/client";
 import { CATEGORY_CHIPS } from "@/lib/dumps";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { cn } from "@/lib/utils";
@@ -20,30 +21,48 @@ import { cn } from "@/lib/utils";
  * and a site's menu): the Live feed's request list and detail, always side by
  * side, streaming while the window is hidden. It shows the site picked in
  * Insights, read from storage on open and then followed through the
- * `yerd:insights-site-changed` event. The title bar carries the site, the
+ * `yerd:insights-site-changed` event (storage is re-read once the listener is
+ * up, so a change in between isn't lost). The TLD for older extensions' host
+ * form comes from one daemon status read. The title bar carries the site, the
  * capture pill and pin on top; setup stays in the main window.
  */
 const toast = useToast();
 const site = ref<string | null>(storedInsightsSite());
-const dumps = useDumps({ pollWhileHidden: true, follow: () => true, site: () => site.value });
+const tld = ref("test");
+const dumps = useDumps({ pollWhileHidden: true, follow: () => true, site: () => site.value, tld: () => tld.value });
 const { busy, category, query, requests, selected, selectedKey, status, visible } = dumps;
 
 let unlisten: UnlistenFn | null = null;
 let disposed = false;
 
+function followSite(next: string | null): void {
+  if (next !== null && next !== site.value) {
+    site.value = next;
+    dumps.select(null);
+  }
+}
+
+async function loadTld(): Promise<void> {
+  try {
+    const report = await daemonStatus();
+    if (typeof report.tld === "string" && report.tld) tld.value = report.tld;
+  } catch {
+    return;
+  }
+}
+
 onMounted(async () => {
+  void loadTld();
   try {
     const off = await listen<string>(INSIGHTS_SITE_EVENT, ({ payload }) => {
-      if (typeof payload === "string" && payload !== site.value) {
-        site.value = payload;
-        dumps.select(null);
-      }
+      if (typeof payload === "string") followSite(payload);
     });
     if (disposed) off();
     else unlisten = off;
   } catch {
     unlisten = null;
   }
+  followSite(storedInsightsSite());
 });
 
 onUnmounted(() => {

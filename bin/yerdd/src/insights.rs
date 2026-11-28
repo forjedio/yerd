@@ -448,7 +448,7 @@ pub async fn set_enabled(state: &Arc<DaemonState>, site: &str, enabled: bool) ->
     if key.is_empty() {
         return error(ErrorCode::NotFound, "site name is empty");
     }
-    let (sites, capture) = {
+    let capture = {
         let mut cfg = state.config.lock().await;
         let before = cfg.insights.sites.clone();
         let changed = if enabled {
@@ -462,9 +462,12 @@ pub async fn set_enabled(state: &Arc<DaemonState>, site: &str, enabled: bool) ->
                 return error(ErrorCode::Internal, format!("failed to save config: {e}"));
             }
         }
-        (cfg.insights.sites.clone(), cfg.dumps.enabled)
+        state
+            .insights
+            .tap
+            .set_enabled_sites(cfg.insights.sites.iter().cloned());
+        cfg.dumps.enabled
     };
-    state.insights.tap.set_enabled_sites(sites);
     let routed = state
         .router
         .read()
@@ -505,13 +508,13 @@ pub async fn set_thresholds(state: &DaemonState, t: &yerd_ipc::InsightsThreshold
             cfg.insights.thresholds = before;
             return error(ErrorCode::Internal, format!("failed to save config: {e}"));
         }
+        state
+            .insights
+            .agg
+            .lock()
+            .await
+            .set_thresholds(thresholds_from_config(&next));
     }
-    state
-        .insights
-        .agg
-        .lock()
-        .await
-        .set_thresholds(thresholds_from_config(&next));
     Response::Ok
 }
 

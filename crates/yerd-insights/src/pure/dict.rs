@@ -60,6 +60,23 @@ pub enum DictEntry {
     },
 }
 
+/// Whether `new` should replace `old` under the same key: a route seen only as
+/// a plain path is replaced once a request identifies it as a framework
+/// template or script. The rule never downgrades, so loading hour files in any
+/// order ends on the same entry.
+fn upgrades(old: &DictEntry, new: &DictEntry) -> bool {
+    matches!(
+        (old, new),
+        (
+            DictEntry::Route {
+                kind: RouteKind::Path,
+                ..
+            },
+            DictEntry::Route { kind, .. },
+        ) if *kind != RouteKind::Path
+    )
+}
+
 /// The per-site dictionary.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Dict {
@@ -74,11 +91,18 @@ impl Dict {
         Self::default()
     }
 
-    /// Add `entry` under `key` if the key is absent. Returns whether it was
-    /// added.
+    /// Add `entry` under `key` if the key is absent, or if it upgrades the
+    /// stored entry (a path-only route identified later as a template or
+    /// script). An upgraded key is marked unwritten for every tracked hour so
+    /// the next flush writes the new entry. Returns whether it was stored.
     pub fn insert(&mut self, key: u64, entry: DictEntry) -> bool {
-        if self.entries.contains_key(&key) {
-            return false;
+        if let Some(old) = self.entries.get(&key) {
+            if !upgrades(old, &entry) {
+                return false;
+            }
+            for (_, set) in &mut self.written {
+                set.remove(&key);
+            }
         }
         self.entries.insert(key, entry);
         true
@@ -221,6 +245,43 @@ mod tests {
         assert!(d.insert(1, sql("a")));
         assert!(!d.insert(1, sql("b")));
         assert_eq!(d.get(1), Some(&sql("a")));
+    }
+
+    fn route(kind: RouteKind, name: Option<&str>) -> DictEntry {
+        DictEntry::Route {
+            method: "GET".into(),
+            label: "/about".into(),
+            kind,
+            name: name.map(str::to_owned),
+            action: None,
+        }
+    }
+
+    #[test]
+    fn route_descriptors_upgrade_from_path_only() {
+        let path = route(RouteKind::Path, None);
+        let template = route(RouteKind::Template, Some("about"));
+        let script = route(RouteKind::Script, None);
+        let cases: &[(&DictEntry, &DictEntry, bool)] = &[
+            (&path, &template, true),
+            (&path, &script, true),
+            (&path, &path, false),
+            (&template, &path, false),
+            (&template, &script, false),
+            (&script, &template, false),
+            (&sql("a"), &template, false),
+            (&path, &sql("a"), false),
+        ];
+        for (old, new, want) in cases {
+            let mut d = Dict::new();
+            d.insert(1, (*old).clone());
+            assert!(d.take_unwritten(10, [1]).len() == 1);
+            assert_eq!(d.insert(1, (*new).clone()), *want, "{old:?} -> {new:?}");
+            let stored = if *want { *new } else { *old };
+            assert_eq!(d.get(1), Some(stored));
+            let rewritten = d.take_unwritten(10, [1]);
+            assert_eq!(rewritten.len(), usize::from(*want), "{old:?} -> {new:?}");
+        }
     }
 
     #[test]

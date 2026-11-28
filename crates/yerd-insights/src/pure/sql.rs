@@ -26,6 +26,15 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '$'
 }
 
+/// Whether `next` is the sign of a decimal exponent ending `token` (`1e-3`).
+/// Hex literals are excluded, so `0x1e-1` stays a subtraction.
+fn signed_exponent(token: &str, next: char) -> bool {
+    (next == '-' || next == '+')
+        && token.ends_with(['e', 'E'])
+        && !token.starts_with("0x")
+        && !token.starts_with("0X")
+}
+
 /// The fingerprint of `sql`. See the module docs.
 #[must_use]
 pub fn fingerprint(sql: &str) -> String {
@@ -76,7 +85,7 @@ pub fn fingerprint(sql: &str) -> String {
             let mut token = String::new();
             token.push(c);
             while let Some(&n) = chars.peek() {
-                if n.is_alphanumeric() || n == '.' || n == '_' {
+                if n.is_alphanumeric() || n == '.' || n == '_' || signed_exponent(&token, n) {
                     token.push(n);
                     chars.next();
                 } else {
@@ -138,38 +147,65 @@ fn collapse_in_lists(fp: &str) -> String {
         if is_list {
             out.push_str(tail.get(..open).unwrap_or(""));
             out.push_str("(?+)");
+            rest = tail.get(close + 1..).unwrap_or("");
         } else {
-            out.push_str(tail.get(..=close).unwrap_or(""));
+            out.push_str(tail.get(..=open).unwrap_or(""));
+            rest = tail.get(open + 1..).unwrap_or("");
         }
-        rest = tail.get(close + 1..).unwrap_or("");
     }
     out.push_str(rest);
     out
 }
 
-/// Byte offset of the next `in (` / `in(` keyword that starts a word.
+/// Byte offset of the next `in (` / `in(` keyword that starts a word,
+/// outside quoted identifiers. `s` must start outside a quoted identifier.
 fn find_in_list(s: &str) -> Option<usize> {
     let bytes = s.as_bytes();
-    let mut from = 0;
-    while let Some(rel) = s.get(from..).and_then(|t| t.find("in")) {
-        let at = from + rel;
+    let mut at = 0;
+    while let Some(&b) = bytes.get(at) {
+        if b == b'"' || b == b'`' {
+            at = bytes
+                .get(at + 1..)
+                .and_then(|t| t.iter().position(|n| *n == b))
+                .map_or(bytes.len(), |rel| at + rel + 2);
+            continue;
+        }
         let before_ok = at == 0
             || bytes
                 .get(at - 1)
-                .is_some_and(|b| !(b.is_ascii_alphanumeric() || *b == b'_' || *b == b'$'));
+                .is_some_and(|p| !(p.is_ascii_alphanumeric() || *p == b'_' || *p == b'$'));
         let after = s.get(at + 2..).unwrap_or("");
         let after_ok = after.starts_with(" (") || after.starts_with('(');
-        if before_ok && after_ok {
+        if before_ok && after_ok && s.get(at..at + 2) == Some("in") {
             return Some(at);
         }
-        from = at + 2;
+        at += 1;
     }
     None
 }
 
-/// The first SQL keyword, uppercased, skipping whitespace and `(`.
+/// `sql` with leading whitespace, `(` and comments (`/* */`, `--`, `#`)
+/// removed.
+fn skip_leading_noise(mut sql: &str) -> &str {
+    loop {
+        sql = sql.trim_start_matches(|c: char| c.is_whitespace() || c == '(');
+        if let Some(rest) = sql.strip_prefix("/*") {
+            sql = rest
+                .find("*/")
+                .map_or("", |end| rest.get(end + 2..).unwrap_or(""));
+        } else if let Some(rest) = sql.strip_prefix("--").or_else(|| sql.strip_prefix('#')) {
+            sql = rest
+                .find('\n')
+                .map_or("", |end| rest.get(end + 1..).unwrap_or(""));
+        } else {
+            return sql;
+        }
+    }
+}
+
+/// The first SQL keyword, uppercased, skipping whitespace, `(` and comments.
 fn first_keyword(sql: &str) -> String {
-    sql.trim_start_matches(|c: char| c.is_whitespace() || c == '(')
+    skip_leading_noise(sql)
         .chars()
         .take_while(char::is_ascii_alphabetic)
         .collect::<String>()
@@ -182,11 +218,32 @@ pub fn is_read(sql: &str) -> bool {
     matches!(first_keyword(sql).as_str(), "SELECT" | "WITH" | "SHOW")
 }
 
-/// True when a fingerprint contains a `limit` keyword.
+/// True when a fingerprint contains a `limit` keyword outside quoted
+/// identifiers.
 #[must_use]
 pub fn has_limit(fp: &str) -> bool {
-    fp.split(|c: char| !is_word_char(c))
-        .any(|w| w.eq_ignore_ascii_case("limit"))
+    let mut quote: Option<char> = None;
+    let mut word = String::new();
+    for c in fp.chars().chain(std::iter::once(' ')) {
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        if is_word_char(c) {
+            word.push(c);
+            continue;
+        }
+        if word.eq_ignore_ascii_case("limit") {
+            return true;
+        }
+        word.clear();
+        if c == '"' || c == '`' {
+            quote = Some(c);
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -253,6 +310,20 @@ mod tests {
                 "select * from `login` where `pin` = ?",
             ),
             ("select 0x1F", "select ?"),
+            ("select 1e-3, 2E+10, 5 - 1", "select ?, ?, ? - ?"),
+            ("select 0x1e-1", "select ?-?"),
+            (
+                "select * from u where id in (select id from v where k in (1, 2))",
+                "select * from u where id in (select id from v where k in (?+))",
+            ),
+            (
+                "select * from u where id in (select id from v where k in (1))",
+                "select * from u where id in (select id from v where k in (?+))",
+            ),
+            (
+                "select \"in (?)\", `a in (?, ?)` from t where x in (3)",
+                "select \"in (?)\", `a in (?, ?)` from t where x in (?+)",
+            ),
         ];
         for (sql, want) in cases {
             assert_eq!(fingerprint(sql), *want, "{sql}");
@@ -279,6 +350,11 @@ mod tests {
             ("insert into t values (1)", false),
             ("update t set a = 1", false),
             ("", false),
+            ("/* report */ SELECT * FROM t", true),
+            ("-- tag\n  /* a */ (select 1)", true),
+            ("# note\nshow tables", true),
+            ("/* select */ delete from t", false),
+            ("/* unterminated select", false),
         ];
         for (sql, want) in cases {
             assert_eq!(is_read(sql), *want, "{sql}");
@@ -292,6 +368,9 @@ mod tests {
             ("select * from t limit ? offset ?", true),
             ("select * from t", false),
             ("select * from `limits`", false),
+            ("select \"limit\" from t", false),
+            ("select `limit` from t limit ?", true),
+            ("select * from \"t\" limit ?", true),
         ];
         for (fp, want) in cases {
             assert_eq!(has_limit(fp), *want, "{fp}");

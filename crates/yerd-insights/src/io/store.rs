@@ -119,10 +119,13 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, InsightsError> {
     }
 }
 
-/// The UTF-8 lines of `bytes`; torn or invalid lines are left to the decoder.
+/// The newline-terminated UTF-8 lines of `bytes`. A final unterminated
+/// fragment is a torn append that the next append truncates, so it is never
+/// returned; other invalid lines are left to the decoder.
 fn lines(bytes: &[u8]) -> impl Iterator<Item = &str> {
     bytes
-        .split(|b| *b == b'\n')
+        .split_inclusive(|b| *b == b'\n')
+        .filter_map(|l| l.strip_suffix(b"\n"))
         .filter(|l| !l.is_empty())
         .filter_map(|l| std::str::from_utf8(l).ok())
 }

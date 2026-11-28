@@ -29,9 +29,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
-/// Every runtime (non-dev, non-build) dependency this crate declares, as
-/// `(name, enabled features)`.
-fn runtime_dependencies() -> Vec<(String, Vec<String>)> {
+/// This crate's `cargo metadata` package entry.
+fn package() -> Value {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let output = Command::new(cargo)
         .args(["metadata", "--format-version", "1", "--locked", "--no-deps"])
@@ -43,13 +42,19 @@ fn runtime_dependencies() -> Vec<(String, Vec<String>)> {
         String::from_utf8_lossy(&output.stderr)
     );
     let meta: Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
-    let packages = meta["packages"].as_array().expect("packages array");
-    let package = packages
+    meta["packages"]
+        .as_array()
+        .expect("packages array")
         .iter()
         .find(|p| p["name"] == "yerd-insights")
-        .expect("yerd-insights must appear in cargo metadata");
+        .expect("yerd-insights must appear in cargo metadata")
+        .clone()
+}
 
-    package["dependencies"]
+/// Every runtime (non-dev, non-build) dependency this crate declares, as
+/// `(name, enabled features)`.
+fn runtime_dependencies() -> Vec<(String, Vec<String>)> {
+    package()["dependencies"]
         .as_array()
         .expect("dependencies array")
         .iter()
@@ -102,5 +107,50 @@ fn does_not_enable_yerd_ipc_transport() {
     assert!(
         !features.iter().any(|f| f == "transport"),
         "yerd-insights must use yerd-ipc's pure default build; `transport` pulls in tokio"
+    );
+}
+
+/// The features in a `[features]` table that forward to `yerd-ipc/transport`.
+fn transport_forwards(features: &Value) -> Vec<String> {
+    features
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(_, enables)| {
+            enables.as_array().is_some_and(|list| {
+                list.iter()
+                    .filter_map(Value::as_str)
+                    .any(|e| e == "yerd-ipc/transport" || e == "yerd-ipc?/transport")
+            })
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+#[test]
+fn transport_forwarding_is_detected() {
+    let cases: &[(Value, &[&str])] = &[
+        (serde_json::json!({}), &[]),
+        (
+            serde_json::json!({ "default": ["yerd-ipc/transport"] }),
+            &["default"],
+        ),
+        (
+            serde_json::json!({ "net": ["serde/std", "yerd-ipc?/transport"] }),
+            &["net"],
+        ),
+        (serde_json::json!({ "default": ["yerd-ipc"] }), &[]),
+    ];
+    for (features, want) in cases {
+        assert_eq!(transport_forwards(features), *want, "{features}");
+    }
+}
+
+#[test]
+fn no_feature_forwards_to_yerd_ipc_transport() {
+    let forwards = transport_forwards(&package()["features"]);
+    assert!(
+        forwards.is_empty(),
+        "features {forwards:?} enable yerd-ipc/transport, which pulls in tokio"
     );
 }

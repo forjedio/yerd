@@ -156,6 +156,42 @@ describe("InsightsSettingsDialog", () => {
     expect(el<HTMLButtonElement>('[aria-label="Cache events"]').disabled).toBe(true);
   });
 
+  it("shows a capture-status failure with Retry instead of a stopped server", async () => {
+    mocks.dumpsStatus.mockRejectedValueOnce(new Error("daemon unreachable"));
+    await mountDialog();
+    expect(el('[data-testid="capture-error"]').textContent).toContain("daemon unreachable");
+    expect(document.body.querySelector('[data-testid="dump-server-address"]')).toBeNull();
+    expect(document.body.textContent).not.toContain("No PHP versions installed.");
+    const retry = Array.from(document.body.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Retry");
+    retry?.click();
+    await flushPromises();
+    expect(document.body.querySelector('[data-testid="capture-error"]')).toBeNull();
+    expect(el('[data-testid="dump-server-address"]').textContent).toContain("running");
+    expect(chips()).toHaveLength(3);
+  });
+
+  it("fills the thresholds when they arrive after opening", async () => {
+    const w = await mountDialog(null);
+    expect(input("Slow query").value).toBe("");
+    await w.setProps({ thresholds: THRESHOLDS });
+    await flushPromises();
+    expect(input("Slow query").value).toBe("100");
+    await type("Slow query", "250");
+    await w.setProps({ thresholds: { ...THRESHOLDS, max_queries: 60 } });
+    await flushPromises();
+    expect(input("Slow query").value).toBe("250");
+    expect(input("Too many queries").value).toBe("50");
+  });
+
+  it("keeps edits made before the thresholds arrive", async () => {
+    const w = await mountDialog(null);
+    await type("Slow query", "250");
+    await w.setProps({ thresholds: THRESHOLDS });
+    await flushPromises();
+    expect(input("Slow query").value).toBe("250");
+    expect(input("N+1 queries").value).toBe("");
+  });
+
   it("emits changePort from the dump server row", async () => {
     const w = await mountDialog();
     const link = Array.from(document.body.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Change port");

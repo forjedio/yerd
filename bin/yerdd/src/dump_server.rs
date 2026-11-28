@@ -492,39 +492,43 @@ pub async fn set_enabled(state: &DaemonState, enabled: bool) -> Response {
 /// Download the extension for installed versions (best-effort, time-bounded) and
 /// restart the started pools whose `.so` was placed or replaced, so they load
 /// it. Pools of versions left unchanged (already current, unpublished or a
-/// failed download) keep running. After a timeout the placed set is unknown,
-/// so every started pool that now has a `.so` restarts.
+/// failed download) keep running. After a timeout the full placed set is
+/// unknown, so every started pool that now has a `.so` restarts.
 pub(crate) async fn ensure_ext_and_restart(state: &DaemonState) {
-    let replaced = match fetch_ext(state).await {
-        Some(replaced) => replaced,
-        None => crate::ext_install::installed_versions(&state.dirs)
+    let outcome = fetch_ext(state).await;
+    let replaced = if outcome.timed_out {
+        crate::ext_install::installed_versions(&state.dirs)
             .into_iter()
             .filter(|v| crate::ext_install::so_path(&state.dirs, *v).is_file())
-            .collect(),
+            .collect()
+    } else {
+        outcome.replaced
     };
     restart_started_pools(state, &replaced).await;
 }
 
 /// Check the published extension against the installed `.so` files and
 /// restart only the started pools whose file was replaced. Unlike
-/// [`ensure_ext_and_restart`], a timed-out check restarts nothing: this runs
-/// on every Insights enable, where pools usually already have a working `.so`.
+/// [`ensure_ext_and_restart`], a timed-out check restarts only the versions
+/// replaced before the timeout: this runs on every Insights enable, where
+/// pools usually already have a working `.so`.
 pub(crate) async fn refresh_ext_and_restart(state: &DaemonState) {
-    if let Some(replaced) = fetch_ext(state).await {
-        restart_started_pools(state, &replaced).await;
-    }
+    let outcome = fetch_ext(state).await;
+    restart_started_pools(state, &outcome.replaced).await;
 }
 
-async fn fetch_ext(state: &DaemonState) -> Option<Vec<yerd_core::PhpVersion>> {
+async fn fetch_ext(state: &DaemonState) -> crate::ext_install::EnsureOutcome {
     let dl = crate::network::downloader(state).await;
-    let ensure = crate::ext_install::ensure_for_installed(&state.dirs, &dl);
-    let fetched = tokio::time::timeout(std::time::Duration::from_secs(30), ensure)
-        .await
-        .ok();
-    if fetched.is_none() {
+    let outcome = crate::ext_install::ensure_for_installed_within(
+        &state.dirs,
+        &dl,
+        std::time::Duration::from_secs(30),
+    )
+    .await;
+    if outcome.timed_out {
         tracing::warn!("yerd-dump extension download timed out");
     }
-    fetched
+    outcome
 }
 
 /// Restart the started pools of `versions` so a freshly replaced
